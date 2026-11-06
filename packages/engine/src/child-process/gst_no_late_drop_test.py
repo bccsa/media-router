@@ -36,14 +36,17 @@ recorded as JSON under MR_GATE_OUT:
   9. waylandsink sync=false, 10 frames inside one refresh: 0007's compositor replaces them
      where the sink's count cannot see it, so the fault is judged from 0008's feedback with
      present-every-frame=false, and with it true every frame shows (DEV-P4b; 0007 alone: recorded);
- 10. kmssink sync=false with Weston stopped: show_frame blocks one refresh; with the connector
-     off (DPMS) what it does, recorded.
+ 10. kmssink sync=false with Weston stopped: show_frame returns every second refresh (its flip at
+     the first vblank after the push, its return at the next: DEV-P4a on both boxes); with the
+     connector off (DPMS) what it does, recorded.
 
 MR_GATE_CASES=6,7 runs only those (any case number). Gate settings: MR_GATE_PULSE_SINK (default:
 a null sink the case loads and unloads), MR_GATE_SUSPEND_SINK, MR_GATE_CARD with
 MR_GATE_CARD_PROFILE (case 8's node removal by card profile), MR_GATE_KMS_CONNECTOR,
-MR_GATE_REFRESH_HZ. Skips (exit 0) without GStreamer; a case whose element is absent skips with a
-line."""
+MR_GATE_KMS_DRIVER (kmssink's driver-name: drm-rp1-dsi for the Pi 5 box's panel, which kmssink's
+own pick never opens), MR_GATE_KMS_SIZE (WxH of the frames, with can-scale=false: 720x1280 on that
+panel, which takes only a full-screen plane), MR_GATE_REFRESH_HZ. Skips (exit 0) without
+GStreamer; a case whose element is absent skips with a line."""
 import array
 import glob
 import json
@@ -955,8 +958,9 @@ def case9():
               r8["presented"] == 10 and r8["replaced"] == 0 and r8["discarded"] == 0 and r8["dropped"] == 0,
               json.dumps(r8))
         if r8["commitToPresentNs"] is not None:
-            check("9: 0008: commit to presentation averages within 1.5 refreshes (the sink's running average)",
-                  r8["commitToPresentNs"] <= 1.5 * refresh,
+            # Two refreshes: 1.5 failed 2 of 5 on both boxes, tighter than the compositor's own spread (T30).
+            check("9: 0008: commit to presentation averages within 2 refreshes (the sink's running average)",
+                  r8["commitToPresentNs"] <= 2 * refresh,
                   f"commit-to-present {r8['commitToPresentNs']} ns, refresh {refresh} ns")
         else:
             skip("9: 0008 commit to presentation", "no average: the presentation clock is not CLOCK_MONOTONIC")
@@ -971,16 +975,20 @@ def kms_run(extra, frames=60):
     the sink (each waits for the previous show_frame), and any error. Run in a child: with the
     connector off, show_frame's drmHandleEvent may never return."""
     conn = os.environ.get("MR_GATE_KMS_CONNECTOR")
+    driver = os.environ.get("MR_GATE_KMS_DRIVER")
+    size = os.environ.get("MR_GATE_KMS_SIZE")
+    w, h = (int(v) for v in size.split("x")) if size else (640, 360)
     pipe = Gst.parse_launch("appsrc name=src is-live=true format=time block=true max-buffers=2"
-                            " caps=video/x-raw,format=BGRx,width=640,height=360,framerate=60/1"
+                            f" caps=video/x-raw,format=BGRx,width={w},height={h},framerate=60/1"
                             " ! kmssink name=sink sync=false qos=false"
+                            + (f" driver-name={driver}" if driver else "") + (" can-scale=false" if size else "")
                             + (f" connector-id={conn}" if conn else "") + (f" {extra}" if extra else ""))
     house(pipe)
     src, sink = pipe.get_by_name("src"), pipe.get_by_name("sink")
     arrivals = []
     sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER,
                                           lambda _p, _i: arrivals.append(mono()) or Gst.PadProbeReturn.OK)
-    frame = b"\x40" * (640 * 360 * 4)
+    frame = b"\x40" * (w * h * 4)
     ret = pipe.set_state(Gst.State.PLAYING)
     error = None
     for _ in range(frames):
@@ -1022,9 +1030,10 @@ def case10():
         skip("10: kmssink", f"kmssink did not start ({on.get('error')}): a box with its display on runs it")
         return
     med = on.get("medianMs")
-    hz = float(os.environ.get("MR_GATE_REFRESH_HZ") or (min((50, 60), key=lambda h: abs(1000 / h - med)) if med else 0))
-    check("10: kmssink sync=false blocks one refresh per frame", med is not None and hz > 0
-          and abs(med - 1000 / hz) <= 0.1 * 1000 / hz, f"median {med} ms, refresh {hz} Hz, error {on.get('error')}")
+    # The interval is two refreshes: pick the mode by half of it.
+    hz = float(os.environ.get("MR_GATE_REFRESH_HZ") or (min((50, 60), key=lambda h: abs(2000 / h - med)) if med else 0))
+    check("10: kmssink sync=false returns every second refresh", med is not None and hz > 0
+          and abs(med - 2000 / hz) <= 0.1 * 1000 / hz, f"median {med} ms, refresh {hz} Hz, error {on.get('error')}")
     off = kms_child('connector-properties="props,DPMS=3"')
     restore = kms_child('connector-properties="props,DPMS=0"', frames=10)
     record("case10.json", {"on": on, "dpmsOff": off, "restored": restore, "refreshHz": hz})

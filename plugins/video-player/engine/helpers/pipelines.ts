@@ -1,5 +1,6 @@
 import * as fs from 'fs';
-import { buildBusDemux } from '@media-router/engine';
+import { buildBusDemux, tsQueueByteCap } from '@media-router/engine';
+import type { KmsDriver } from './kmsDriver.js';
 import {
     DECODEBIN_SELECTION,
     resolveCpuDecodeThreading,
@@ -71,7 +72,12 @@ export interface SinkSelectionEnv {
      * element kmssink" parse errors. Falls back to auto-pick when undefined.
      */
     connectorId?: number;
+    /** The connector's DRM driver when kmssink's own pick cannot open it (`kmsDriverFor`). */
+    kmsDriver?: KmsDriver;
 }
+
+/** Every basesink's timing: it never waits for a timestamp nor drops a frame as late. */
+const SINK_TIMING = 'sync=false qos=false';
 
 /**
  * Sink-selection priority:
@@ -84,68 +90,17 @@ export interface SinkSelectionEnv {
  *      the child's `GLib.set_prgname` lands the surface on the user-picked
  *      output. See `buildPipelineEnv` and the pre-`Gst.init` block in
  *      `gst-pipeline-runner.py`.
- *   2. KMS direct, targeting a specific connector by numeric id.
+ *   2. KMS direct, targeting a specific connector by numeric id, on its DRM
+ *      driver by name when kmssink's own pick cannot reach it (`kmsDriverFor`).
  *   3. KMS direct, auto-pick connector (used when the user picked a name we
  *      can't resolve to an id, or didn't pick at all).
  *   4. autovideosink (dev machines without DRM, last resort).
+ *
+ * Every sink shows each frame as it comes (B-169): `sync=false`, never waiting or dropping late;
+ * `qos=false`, no QoS event for a decoder's hurry-up (B-160); waylandsink `present-every-frame`
+ * (Yocto 0008, B-163). autovideosink is a bin: `sync` only.
  */
-export interface SinkOpts {
-    /**
-     * Honour buffer PTS on the sink. When `true` the sink waits to present each
-     * frame at its PTS against the pipeline clock — required when the upstream
-     * feed has accurate timestamps (the demux's PES times) and you want playback
-     * at the media's intended rate. When `false` the sink presents frames as
-     * fast as upstream delivers them: that's right for live SRT/RIST where
-     * latency dominates, but on a paced HLS feed it surfaces as periods of
-     * "too fast" (segment burst arrives → sink renders the burst) followed by
-     * "too slow" (segment gap → sink stalls waiting). Default `false`
-     * preserves the pre-existing low-latency behaviour for SRT/RIST instances.
-     */
-    sync?: boolean;
-    /**
-     * Lip-sync trim in nanoseconds applied to the video sink's `ts-offset`.
-     * Positive **delays** video (to meet audio that's playing late — the audio
-     * path carries more buffering latency than video). Only has effect with
-     * `sync=true` (the sink must honour timing for ts-offset to mean anything).
-     * 0 = no trim. The named `sink` element makes it live-updatable.
-     */
-    tsOffsetNs?: number;
-}
-
-export function buildSink(display: string, env: SinkSelectionEnv, opts: SinkOpts = {}): string {
-    const sync = opts.sync ?? false;
-    // QoS is NEVER on with a paced sink. A `sync=true` sink answers every late
-    // frame with a QoS event, and GstVideoDecoder turns that into a deadline of
-    // `timestamp + 2 × lateness`: every decoded frame before it is dropped. A
-    // stream that runs consistently late — a producer stamp anchor a few hundred
-    // ms early, a delivery path that slowed after start — is then not "late but
-    // smooth" but ONE frame per 2 × lateness, and past ~250 ms nothing reaches
-    // the display at all while the pipeline stays PLAYING (the Pi 5 test box,
-    // 2026-09-08: 50 fps in, no renderWatch update for 9151 s). `max-lateness`
-    // below already bounds how late a frame may still render; the decoder must
-    // not be asked to drop on top of it. There is no setting for this any more
-    // (the old `qos` option's `?? true` default is what silently overrode the
-    // intent); the unpaced sink keeps GStreamer's own default, where QoS is
-    // moot — with no clock nothing is ever late.
-    const qosClause = sync ? ' qos=false' : ' qos=true';
-    // Pair `max-lateness` with `sync=true` between two failure modes:
-    //   - basesink default (20 ms) is tight enough that software-decoded 1080p
-    //     on Pi 5 (per-frame decode 30-50 ms, IDR frames 60-80 ms) loses every
-    //     GOP-boundary frame — surfaces as a low frame rate even with QoS off.
-    //   - `-1` (disabled) never drops, so any sustained decode lag (consistent
-    //     5 %-slow software decode) accumulates as growing latency that doesn't
-    //     recover — surfaces as "smooth at first then progressively laggy".
-    // 1 s is the compromise: the sink absorbs IDR-frame jitter without dropping
-    // (50-80 ms ≪ 1 s) but caps unbounded lag from sustained decode shortfall.
-    // QoS stays off so the decoder isn't asked to drop per-frame — drops only
-    // happen at the sink, only when a buffer is genuinely 1 s late.
-    // `sync=false` (the unpaced sink, opt-in since B-133 made the paced one the
-    // default) has no clock anchor, so the basesink's late-drop logic doesn't apply.
-    const syncClause = sync ? ' sync=true max-lateness=1000000000' : ' sync=false';
-    // Lip-sync trim — only meaningful with sync=true (a non-syncing sink
-    // ignores timing). `autovideosink` is a bin, not a basesink, so it has no
-    // ts-offset; skip it there.
-    const tsOffset = opts.tsOffsetNs && sync ? ` ts-offset=${opts.tsOffsetNs}` : '';
+export function buildSink(display: string, env: SinkSelectionEnv): string {
     if (env.wayland && env.waylandSession) {
         // `fullscreen=true` does two things we need on a kiosk-shell output:
         //  1. Z-order — it takes the xdg_toplevel fullscreen role, prompting
@@ -158,15 +113,20 @@ export function buildSink(display: string, env: SinkSelectionEnv, opts: SinkOpts
         //     the output's `transform=` (e.g. rotate-90) itself. So we do
         //     NOT pre-rotate client-side; an earlier `videoflip` approach
         //     double-rotated once fullscreen was in play.
-        return `waylandsink name=sink${syncClause}${tsOffset} fullscreen=true${qosClause}`;
-    }
-    if (display && env.kms && env.connectorId !== undefined) {
-        return `kmssink name=sink connector-id=${env.connectorId}${syncClause}${tsOffset}${qosClause}`;
+        return `waylandsink name=sink ${SINK_TIMING} present-every-frame=true fullscreen=true`;
     }
     if (env.kms) {
-        return `kmssink name=sink${syncClause}${tsOffset}${qosClause}`;
+        // A driver kmssink does not try itself is named; a plane that takes only the full
+        // screen (the Pi 5 box's DSI) gets frames at the panel's size from the scaler upstream.
+        const driver =
+            display && env.kmsDriver
+                ? ` driver-name=${env.kmsDriver.name}${env.kmsDriver.fullScreenOnly ? ' can-scale=false' : ''}`
+                : '';
+        const connector =
+            display && env.connectorId !== undefined ? ` connector-id=${env.connectorId}` : '';
+        return `kmssink name=sink${driver}${connector} ${SINK_TIMING}`;
     }
-    return `autovideosink${syncClause}${qosClause}`;
+    return 'autovideosink sync=false';
 }
 
 /**
@@ -255,8 +215,10 @@ export function buildFallbackOnlyPipeline(
     // accepted risk that the two surfaces can now differ in size.
     //
     const caps = surfaceCaps(surface);
+    // Both cards live at 30 fps: the sink never waits (B-169), so a still that is not live would
+    // be repeated as fast as the sink takes it.
     const source = imagePath
-        ? `filesrc location="${imagePath}" ! decodebin ! imagefreeze ! videoconvert ! videoscale add-borders=true ! ${caps},framerate=30/1`
+        ? `filesrc location="${imagePath}" ! decodebin ! imagefreeze is-live=true ! videoconvert ! videoscale add-borders=true ! ${caps},framerate=30/1`
         : `videotestsrc is-live=true pattern=smpte ! ${caps},framerate=30/1`;
     const resumeTap = resumeSocketPath
         ? ` unixfdsrc socket-path=${resumeSocketPath}` +
@@ -280,13 +242,14 @@ export function buildFallbackOnlyPipeline(
  * A DEAD producer needs no watchdog — its edge socket closes and unixfdsrc
  * errors out into the normal restart path.
  *
- * Inbound chain is `unixfdsrc ! watchdog ! queue ! queue ! mrtsdemux` on either
- * sink, with no `tsparse` (WI-P3-18): the demux re-frames (see the comment at the
- * construction site below). The decoder is
- * `decodebin3` until the TS probe reports a codec and an explicit
- * `<parser> ! <decoder>` chain takes its place (see `decoder` below); the
- * post-demux `queue leaky=2` drops oldest if the decoder falls behind so
- * latency doesn't accumulate on slow renderers.
+ * Inbound chain is `unixfdsrc ! watchdog ! mrlateness ! queue ! tee ! mrtsdemux`
+ * on either sink, the bus ingress alone before the demux (no `tsparse` since
+ * WI-P3-18, no jitter queue since B-169). The decoder is `decodebin3` until the
+ * TS probe reports a codec and an explicit `<parser> ! <decoder>` chain takes its
+ * place (see `decoder` below). It plays as soon as it can (house-clock part 4.2,
+ * B-169): the non-leaky `vp_esq` after the demux holds what a stall leaves, and
+ * `mrvideopace` releases each frame on the content's cadence to a sink that
+ * never waits.
  */
 const STREAM_STALL_TIMEOUT_MS = 5_000;
 
@@ -307,6 +270,14 @@ const PROBE_TEE_NAME = 'vp_ts';
  */
 export const VP_DEMUX_NAME = 'vpdemux';
 
+/** `name=` of the ES queue after the demux: the queue watch names it (OQ-30). */
+const VP_ES_QUEUE_NAME = 'vp_esq';
+/** Its bound, as the bus ingress's: 5 s of compressed video, byte-capped (ADR-0015). */
+const ES_QUEUE_MS = 5_000;
+
+/** `name=` of the live pipeline's `mrvideopace`: forwarded as `mrvideopace:vp_pace`. */
+export const VIDEO_PACE_NAME = 'vp_pace';
+
 export function buildLivePipeline(
     sinkElement: string,
     udpSource: { port: number; socketPath?: string },
@@ -318,19 +289,6 @@ export function buildLivePipeline(
      */
     compositorScales = false,
     /**
-     * Pre-decode buffer (ms). 200 ms is right for live SRT/RIST where latency
-     * is the dominant constraint. Bump on HLS/VOD chains (e.g. 1500 ms) where
-     * the source bursts a segment at a time and the decoder needs lookahead
-     * until the next I-frame after a mid-stream join.
-     */
-    bufferMs = 200,
-    /**
-     * True when the sink honours buffer PTS (`sync=true` — the module's `sync`
-     * config). It no longer changes the chain: the paced variant's `tsparse` went
-     * in WI-P3-18, and chapter 8's WI-P4-6 deletes the parameter with `bufferMs`.
-     */
-    sinkPaced = false,
-    /**
      * Decoder chain to put in the `decodebin3` element position, from
      * `selectDecoder`. Defaults to `decodebin3` — the bootstrap build, before
      * the TS probe has reported a codec.
@@ -338,60 +296,34 @@ export function buildLivePipeline(
     decoder: DecoderSelection = DECODEBIN_SELECTION,
     /**
      * Subtitle overlay element (subtitle-core `buildSubtitleOverlayElement`),
-     * spliced between the convert stage and the sink ONLY when a subtitle
+     * spliced between the convert stage and the pace ONLY when a subtitle
      * source is wired — with none, the string is byte-identical to before.
      * After `videoconvert` so it negotiates a system-memory format it can
      * blend into; the runner's subtitle bridge drives its `text` property.
      */
     overlay?: string,
+    /**
+     * Refresh of the output's mode in mHz (`resolveOutputRefreshHz`), when known:
+     * `mrvideopace`'s prior until it measures the display (B-175).
+     */
+    refreshMhz?: number,
 ): string {
-    // The jitter buffer scales with `bufferMs`: with a paced sender on
-    // a busy Node loop (hls-pipe runner transmuxing the next segment), the
-    // event-loop stalls for 50–100 ms and `drainLoop` catches up by bursting
-    // datagrams. Tracking `bufferMs` (up to the helper's 5 s cap) gives HLS
-    // chains a multi-second jitter buffer; SRT/RIST (`bufferMs=200`) keeps the
-    // tight latency. The queue BACK-PRESSURES rather than leaks: it carries
-    // raw TS, and a leaked chunk corrupts decode until the next IDR — the
-    // "frames lost at every segment join" this comment used to describe, and
-    // the "packet loss on movement" of 2026-09-02 (rationale and measurements
-    // on `buildTsUdpInput`).
-    //
-    // One chain on either sink since WI-P3-18: the paced variant's tsparse went, so the bus's
-    // whole-packet buffers reach the vp_ts tee and the demux as sent, and the demux re-frames.
-    // A paced sink (`sync`, the default) rides the demux's PES times (PES PTS − 1 h).
+    // The bus ingress alone before the demux: its 5 s leaky queue is the drain contract
+    // (OQ-30), and the demux re-frames the bus's buffers as sent (WI-P3-18).
     const busDemux = buildBusDemux({
         port: udpSource.port,
         socketPath: udpSource.socketPath,
         stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
-        jitterMs: bufferMs,
         tee: { name: PROBE_TEE_NAME },
         name: VP_DEMUX_NAME,
         media: 'video',
     });
-    // Post-demux ES queue: floored at 1 s regardless of `bufferMs`. This queue
-    // absorbs the decoder-side stall while an IDR burst drains (keyframe AUs at
-    // 8 Mbps span >200 ms on a Pi 4); at 200 ms it sheds the tail of nearly
-    // every GOP, which the IRAP resync gate then drops until the next keyframe
-    // (~10 fps playback).
-    //
-    // THIS QUEUE'S DEPTH IS RETAINED LATENCY, and the sentence that used to sit
-    // here — "latency is unaffected in steady state; a leaky queue only holds
-    // data while downstream is stalled" — was FALSIFIED by the time-sync
-    // contract (.42, 2026-08-13/14). It was true for the sink it was written
-    // for: `sync=false` presents on arrival, so it gulps any backlog at max
-    // speed and drains itself. A `sync=true` sink drains at exactly MEDIA rate,
-    // so whatever this queue absorbs during a hiccup it keeps — for ever, one
-    // hiccup at a time, until frames start being dropped for lateness (field:
-    // 50 fps decoded, 2.5 fps on the glass after ~16 h).
-    //
-    // The answer is NOT a smaller queue — this depth is field-measured IDR-burst
-    // absorption and shrinking it puts the picture back at ~10 fps. It is the
-    // backlog shedder (`PipelineDescription.backlogShed`, armed by the contract
-    // in pipelinePlan.ts): retention past the route's playout budget D is
-    // detected at the decoder's sink pad and the oldest data is dropped, up to
-    // the next keyframe, until the leg is back at D.
-    const esQueueMs = Math.max(bufferMs, 1_000);
-    const q = `queue leaky=2 max-size-time=${esQueueMs * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
+    // NON-LEAKY (part 4.4): an IDR burst and a stall's backlog wait here, compressed, while
+    // mrvideopace plays them on the content's cadence; nothing is dropped for lateness. Full,
+    // it holds the demux and the bus ingress sheds what comes next (OQ-30).
+    const esQueue =
+        `queue name=${VP_ES_QUEUE_NAME} leaky=0 max-size-time=${ES_QUEUE_MS * 1_000_000}` +
+        ` max-size-buffers=0 max-size-bytes=${tsQueueByteCap(ES_QUEUE_MS)}`;
     // Scaling policy — who resizes the picture, per sink:
     //
     // COMPOSITOR PATH (waylandsink under kiosk-shell): nothing here does. The
@@ -454,8 +386,8 @@ export function buildLivePipeline(
     const caps = decoder.caps ? `${decoder.caps} ! ` : '';
     // Video-info tap. The runner's report-only TS probe needs an appsink fed
     // with the muxed TS (it does its own PSI discovery + SPS parse), so the
-    // ingress is tee'd off just before `mrtsdemux`, straight off the jitter
-    // queue (no tsparse on either sink since WI-P3-18).
+    // ingress is tee'd off just before `mrtsdemux`, straight off the bus
+    // ingress queue (no tsparse since WI-P3-18, no jitter queue since B-169).
     //
     // ALIGNMENT is a BUS property, not a tsparse one — which is what makes the
     // tap correct without a re-framer. `ts_psi.iter_packets` strides a fixed
@@ -467,16 +399,20 @@ export function buildLivePipeline(
     // buffers of ANY size (ADR-0011: one access unit per buffer from a gst
     // producer, 1316 B from relay producers, 128×188 from libmrbus ingest,
     // whole-packet batches from mr-tssplit — never assume a size), and neither
-    // `watchdog` nor `queue` re-slices a buffer. Tapping off the jitter queue also puts the branch
-    // downstream of the stall watchdog, so it cannot interfere with bus_stall
+    // `watchdog` nor `queue` re-slices a buffer. Tapping off the ingress queue also puts the
+    // branch downstream of the stall watchdog, so it cannot interfere with bus_stall
     // detection. The branch is leaky and the appsink drops
     // (runner sets max-buffers/drop), so a stalled tap can never back-pressure
     // the render path through the tee.
     const probeTap =
         ` ${PROBE_TEE_NAME}. ! queue leaky=downstream max-size-buffers=64` +
         ` ! appsink name=${TS_PROBE_SINK_NAME}`;
+    // The pace after the convert stage and the overlay, right before the render lateness tap
+    // and the sink: each frame leaves on the content's cadence, never before it arrives, and a
+    // display slower than the content drops frames to keep up (B-162, B-175).
+    const pace = `mrvideopace name=${VIDEO_PACE_NAME}${refreshMhz ? ` refresh-mhz=${refreshMhz}` : ''}`;
     return (
-        `${busDemux} ! ${caps}${q} ! ` +
-        `${decoder.chain} ! ${convert} ! ${overlay ? `${overlay} ! ` : ''}${sinkElement}${probeTap}`
+        `${busDemux} ! ${caps}${esQueue} ! ${decoder.chain} ! ${convert} ! ` +
+        `${overlay ? `${overlay} ! ` : ''}${pace} ! ${sinkElement}${probeTap}`
     );
 }

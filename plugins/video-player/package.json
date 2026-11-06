@@ -55,34 +55,6 @@
                     "description": "Shown when no stream is connected; otherwise colour bars",
                     "x-widget": "imageUpload"
                 },
-                "bufferMs": {
-                    "type": "number",
-                    "default": 200,
-                    "minimum": 0,
-                    "maximum": 5000,
-                    "x-widget": "slider",
-                    "x-step": 50,
-                    "x-unit": "ms",
-                    "title": "Buffer",
-                    "description": "Keep low (200) for live SRT/RIST; raise (1500) for HLS. Adds this much latency."
-                },
-                "sync": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "On: smooth, timestamp-paced playback. Off: lowest latency, judder under jitter; fallback for broken PCR."
-                },
-                "lipSyncMs": {
-                    "type": "number",
-                    "default": 0,
-                    "minimum": -2000,
-                    "maximum": 2000,
-                    "x-widget": "slider",
-                    "x-step": 50,
-                    "x-unit": "ms",
-                    "x-live": true,
-                    "title": "Lip-Sync Trim",
-                    "description": "Trim on top of the route's playout offset for this display. Positive delays video. Needs Sync on."
-                },
                 "cpuDecodeThreading": {
                     "type": "string",
                     "enum": ["auto", "single"],

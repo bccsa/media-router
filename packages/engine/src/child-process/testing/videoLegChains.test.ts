@@ -10,13 +10,12 @@ import {
 import {
     planLivePipeline,
     planSink,
-    videoTsOffsetNs,
 } from '../../../../../plugins/video-player/engine/helpers/pipelinePlan.js';
 import type { RenderTargetReady } from '../../../../../plugins/video-player/engine/helpers/renderTarget.js';
 
 /**
- * The video player's start commands protocol case video-leg-formula runs (WI-P3-11), from its own
- * plan on a KMS connector at the default D: `fixtures/video-leg/pipelines.json`, by `vitest -u`.
+ * The video player's start commands protocol case video-leg-pace runs (WI-P3-11, B-169), from its own
+ * plan on a KMS connector driven at 50 Hz: `fixtures/video-leg/pipelines.json`, by `vitest -u`.
  */
 
 const SOCK = '@SOCK@';
@@ -33,17 +32,14 @@ const TARGET: RenderTargetReady = {
 
 /** What the engine sends for one rung, as alignerConformance.test.ts takes it. */
 function startCommand(decoder: DecoderSelection) {
-    const sink = planSink(TARGET, {}, videoTsOffsetNs(null, {}));
     const desc = planLivePipeline({
-        sinkElement: sink.sinkElement,
+        sinkElement: planSink(TARGET).sinkElement,
         udpSource: { port: 40500, socketPath: `${SOCK}/vp.sock` },
         env: TARGET.env,
         waylandFullscreen: TARGET.waylandFullscreen,
         decoder,
-        bufferMs: undefined,
         cpuDecodeThreading: undefined,
-        sinkPaced: sink.sinkPaced,
-        services: null,
+        refreshHz: 50,
     });
     const payload = (
         new GstChildProcess() as unknown as {

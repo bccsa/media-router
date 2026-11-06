@@ -30,6 +30,14 @@ const watchMock = fs.watch as unknown as ReturnType<typeof vi.fn>;
 const DEBOUNCE_SETTLE_MS = 700;
 const settle = () => new Promise((r) => setTimeout(r, DEBOUNCE_SETTLE_MS));
 
+/** A compositor restart's new socket: created before the old one goes, so its inode differs on
+ *  any filesystem (ext4 hands an unlinked inode straight to the next file). */
+function replaceSocketAt(sock: string): void {
+    const next = path.join(path.dirname(sock), 'next.sock');
+    fs.writeFileSync(next, '');
+    fs.renameSync(next, sock);
+}
+
 describe('waylandRestartWatch', () => {
     let tmp: string;
     let sock: string;
@@ -53,8 +61,7 @@ describe('waylandRestartWatch', () => {
 
     /** Replace the socket the way a compositor restart does — new inode. */
     function replaceSocket(): void {
-        fs.unlinkSync(sock);
-        fs.writeFileSync(sock, '');
+        replaceSocketAt(sock);
     }
 
     it('tracks registered targets and drops them on unregister', () => {
@@ -253,8 +260,7 @@ describe('watcher error → reinstall', () => {
         registerWaylandRestartTarget({}, handler);
         fakes[0].emit('error', new Error('EBADF'));
         // The event we would otherwise have missed: new socket, new inode.
-        fs.unlinkSync(sock);
-        fs.writeFileSync(sock, '');
+        replaceSocketAt(sock);
 
         vi.advanceTimersByTime(WATCHER_REINSTALL_DELAY_MS);
         expect(handler).toHaveBeenCalledTimes(1);

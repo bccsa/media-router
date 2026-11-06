@@ -231,12 +231,15 @@ struct LagMonitor {
 struct State {
     GstPad* pad = nullptr;      // owned
     GstElement* sink = nullptr; // owned
+    GstElement* pace = nullptr; // owned, optional: the mrvideopace before the sink
     std::atomic<long long> frames{0};
     LagMonitor mon;
     gulong probe_id = 0;
     guint timer_id = 0;
     bool has_prev = false;
     guint64 prev_rendered = 0, prev_dropped = 0;
+    bool has_prev_drops = false;
+    guint64 prev_drops = 0;
 };
 
 std::shared_ptr<State> g_state;
@@ -269,10 +272,28 @@ bool sink_stats(State& st, guint64* rendered, guint64* dropped) {
     return ok;
 }
 
+/** The pace's rate drops this window: frames a slower display takes no more of, kept up
+ *  (B-169). 0 without a pace, or with a stand-in that has no stats. */
+long long pace_drops(State& st) {
+    if (!st.pace || !g_object_class_find_property(G_OBJECT_GET_CLASS(st.pace), "stats")) return 0;
+    GstStructure* s = nullptr;
+    g_object_get(st.pace, "stats", &s, nullptr);
+    guint64 total = 0;
+    const bool ok = s && gst_structure_get_uint64(s, "rate-drops", &total);
+    if (s) gst_structure_free(s);
+    if (!ok) return 0;
+    const bool had = st.has_prev_drops;
+    const guint64 prev = st.prev_drops;
+    st.has_prev_drops = true;
+    st.prev_drops = total;
+    return had && total >= prev ? (long long)(total - prev) : 0;
+}
+
 gboolean tick(gpointer) {
     std::shared_ptr<State> st = g_state;
     if (!st) return G_SOURCE_REMOVE;
     long long arrivals = st->frames.exchange(0);
+    const long long paced = pace_drops(*st);
     long long achieved = arrivals;
     long long dropped = 0;
     guint64 rendered_now = 0, dropped_now = 0;
@@ -287,6 +308,8 @@ gboolean tick(gpointer) {
             dropped = (long long)(dropped_now - pd);
         }
     }
+    arrivals += paced;
+    achieved += paced;
     double window_s = WINDOW_MS / 1000.0;
     double expected = 0;
     bool has_expected = expected_fps(*st, &expected);
@@ -324,9 +347,18 @@ bool start(GstElement* pipe, JsonObject* cfg) {
         gst_object_unref(sink);
         return false;
     }
+    std::string pace_name = json_get_string(cfg, "pace");
+    GstElement* pace = pace_name.empty() ? nullptr : gst_bin_get_by_name(GST_BIN(pipe), pace_name.c_str());
+    if (!pace_name.empty() && !pace) {
+        emit_error("renderWatch: pace not found: '" + pace_name + "'");
+        gst_object_unref(pad);
+        gst_object_unref(sink);
+        return false;
+    }
     auto st = std::make_shared<State>();
     st->pad = pad;
     st->sink = sink;
+    st->pace = pace;
     g_state = st;
     st->probe_id = gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, on_buffer, new std::shared_ptr<State>(st),
                                      [](gpointer p) { delete static_cast<std::shared_ptr<State>*>(p); });
@@ -342,6 +374,7 @@ void stop() {
     if (st->probe_id) gst_pad_remove_probe(st->pad, st->probe_id);
     gst_object_unref(st->pad);
     gst_object_unref(st->sink);
+    if (st->pace) gst_object_unref(st->pace);
 }
 
 }  // namespace render

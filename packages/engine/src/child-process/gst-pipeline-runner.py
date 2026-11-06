@@ -79,7 +79,8 @@ bus_reports = set()
 
 # Element messages forwarded unsubscribed as `<name>:<element>`: inputs added at runtime have
 # no busReports entry. Equal to runner.cpp's kForwardedMessages.
-FORWARDED_ELEMENT_MESSAGES = ("mrlateness", "mralignwatch", "mrtsdemux", "mrasrc-stats", "mrasrc-event")
+FORWARDED_ELEMENT_MESSAGES = ("mrlateness", "mralignwatch", "mrtsdemux", "mrasrc-stats", "mrasrc-event",
+                              "mrvideopace")
 
 # VU throttle: only send when changed, heartbeat every 1s
 last_vu = None
@@ -3262,9 +3263,15 @@ def _start_render_watch(pipe, cfg):
         emit_event({"event": "error",
                     "message": f"renderWatch: no sink pad on: {cfg.get('sink')!r}"})
         return False
+    pace = pipe.get_by_name(cfg["pace"]) if cfg.get("pace") else None
+    if cfg.get("pace") and pace is None:
+        emit_event({"event": "error",
+                    "message": f"renderWatch: pace not found: {cfg.get('pace')!r}"})
+        return False
 
     st = {"pad": pad, "sink": sink, "frames": 0, "mon": RenderLagMonitor(),
-          "probe_id": None, "timer_id": None, "prev_stats": None}
+          "probe_id": None, "timer_id": None, "prev_stats": None, "pace": pace,
+          "prev_drops": None}
 
     def _on_buffer(_pad, _info):
         st["frames"] += 1
@@ -3290,9 +3297,20 @@ def _start_render_watch(pipe, cfg):
         except Exception:  # noqa: BLE001
             return None
 
+    def _pace_drops():
+        # The pace's rate drops this window: frames a slower display takes no more of, kept up
+        # (B-169). 0 without a pace, or with a stand-in that has no stats.
+        try:
+            total = st["pace"].get_property("stats").get_value("rate-drops")
+        except Exception:  # noqa: BLE001
+            return 0
+        prev, st["prev_drops"] = st["prev_drops"], total
+        return total - prev if prev is not None and total >= prev else 0
+
     def _tick():
         arrivals = st["frames"]
         st["frames"] = 0
+        paced = _pace_drops() if st["pace"] is not None else 0
         achieved = arrivals
         dropped = 0
         stats = _sink_stats()
@@ -3307,6 +3325,8 @@ def _start_render_watch(pipe, cfg):
                 if d_rendered >= 0 and d_dropped >= 0:
                     achieved = d_rendered
                     dropped = d_dropped
+        arrivals += paced
+        achieved += paced
         ev = st["mon"].tick(achieved, RENDER_WATCH_WINDOW_MS / 1000.0, _expected_fps(),
                             dropped / (RENDER_WATCH_WINDOW_MS / 1000.0))
         if ev:

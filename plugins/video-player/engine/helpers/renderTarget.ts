@@ -6,6 +6,7 @@ import {
     type ActiveDisplayChoice,
 } from '@media-router/engine';
 import { hasWaylandSession } from './wayland.js';
+import { kmsDriverFor } from './kmsDriver.js';
 import {
     buildPipelineEnv,
     DEFAULT_SURFACE,
@@ -151,10 +152,15 @@ export function resolveRenderTarget(
     // name, otherwise the surface lands on an output that isn't lit and
     // looks the same to the user as "video player won't start".
     const active = pickActiveDisplay(requestedDisplay);
+    const waylandSession = hasWaylandSession();
     const sinkEnv: SinkSelectionEnv = {
         ...sinks,
-        waylandSession: hasWaylandSession(),
+        waylandSession,
         connectorId: active.connectorId,
+        // Read only where kmssink renders (`buildSink`'s KMS forms).
+        ...(sinks.kms && !(sinks.wayland && waylandSession)
+            ? { kmsDriver: kmsDriverFor(active.name) }
+            : {}),
     };
     const renderConnector = active.name || firstConnectedDisplay() || '';
     return {

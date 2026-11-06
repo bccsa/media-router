@@ -33,6 +33,9 @@ runners:
   kms-wait    60p (refresh-mhz=60038) and 50p (none) into mrtestkmssink vblanks=2, one frame per
               two refreshes as kmssink on that DSI: 30 and 20 drops a second, lateness flat;
   properties  defaults and the stats fields;
+  clock-rule  the runners' clock rule (base time 0, start time none; B-169): a flushing seek's
+              flush and the PLAYING after it hold no frame, where a default pipeline re-bases its
+              running time and holds the frames after it by the time played before the seek;
   runners     inside mr-gst-runner and gst-pipeline-runner.py: refresh-mhz's nominal 1 in 6 into
               fakesink, the measured one into mrtestvideosink, and both shapes above with their
               rate-drops (the test library on the child's GST_PLUGIN_PATH with a private copy of
@@ -806,6 +809,83 @@ def case_properties():
                   for t in tmpls.values()))
 
 
+# --------------------------------------------------------------------------- the runners' clock rule
+def seek_holds(runners_clock):
+    """What a flushing seek does to the pace: 1 s of 50p into an async sink, then the seek's
+    flush (the sink loses its state, reset time) and 30 frames from a new segment on cadence. The
+    hold of each but the first (it prerolls the sink), release - arrival. A default pipeline
+    re-bases its running time when the preroll takes it back to PLAYING, while mrvideopace, never
+    paused by a lost state, still paces on the old base; the runners' never re-bases."""
+    pipe = Gst.Pipeline.new(None)
+    pipe.add(Gst.parse_bin_from_description("mrvideopace name=vp ! fakesink name=out sync=false", False))
+    if runners_clock:
+        house(pipe)
+    vp = pipe.get_by_name("vp")
+    feed = Gst.Pad.new("feed", Gst.PadDirection.SRC)
+    feed.link(vp.get_static_pad("sink"))
+    entered, left, segment_no = {}, {}, [0]
+
+    def stamp(into):
+        def probe(_pad, info):
+            into.setdefault((segment_no[0], info.get_buffer().pts), mono())
+            return Gst.PadProbeReturn.OK
+        return probe
+
+    vp.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, stamp(entered))
+    vp.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, stamp(left))
+    feed.set_active(True)
+    pipe.set_state(Gst.State.PLAYING)
+
+    def segment():
+        seg = Gst.Segment()
+        seg.init(Gst.Format.TIME)
+        feed.push_event(Gst.Event.new_segment(seg))
+
+    def push(pts, at):
+        wait = at - mono()
+        if wait > 0:
+            time.sleep(wait / S)
+        b = Gst.Buffer.new_wrapped(bytes(64))
+        b.pts, b.duration = pts, P50
+        feed.push(b)
+
+    def run():
+        feed.push_event(Gst.Event.new_stream_start("clock-rule"))
+        feed.push_event(Gst.Event.new_caps(Gst.Caps.from_string(CAPS50)))
+        segment()
+        t0 = mono() + 50 * MS
+        for k in range(50):
+            push(k * P50, t0 + k * P50)
+        feed.push_event(Gst.Event.new_flush_start())
+        segment_no[0] = 1
+        feed.push_event(Gst.Event.new_flush_stop(True))
+        segment()
+        t1 = mono() + 20 * MS
+        for k in range(30):
+            push(k * P50, t1 + k * P50)
+
+    feeder = threading.Thread(target=run, daemon=True)
+    feeder.start()
+    feeder.join(15)
+    deadline = mono() + 6 * S
+    after = [(1, k * P50) for k in range(1, 30)]
+    while len([p for p in after if p in left]) < len(after) and mono() < deadline:
+        time.sleep(0.05)
+    pipe.set_state(Gst.State.NULL)
+    feed.set_active(False)
+    return [left[p] - entered[p] if p in left else 6 * S for p in after]
+
+
+def case_clock_rule():
+    house_holds = seek_holds(True)
+    natural = seek_holds(False)
+    worst = max(house_holds) / 1e6
+    check(f"clock-rule: on the runners' clock a flushing seek and the PLAYING after it hold no frame "
+          f"(worst {worst:.1f} ms of {len(house_holds)})", worst <= 20.0)
+    check(f"clock-rule: a default pipeline re-bases there and holds the frame after it by the 1 s "
+          f"played before the seek (up to {max(natural) / 1e6:.0f} ms)", max(natural) >= 900 * MS)
+
+
 # --------------------------------------------------------------------------- inside the runners
 def runner_registry(tmp):
     """A private copy of the registry this process reads, for a child that adds the test library
@@ -899,7 +979,7 @@ CASES = {"pacing": case_pacing, "base-time": case_base_time, "flush": case_flush
          "ready": case_ready, "gap": case_gap, "dmabuf": case_dmabuf, "nominal": case_nominal,
          "measured": case_measured, "drift": case_drift, "kms": case_kms, "outage": case_outage,
          "capped": case_capped, "keeps-up": case_keeps_up, "kms-wait": case_kms_wait,
-         "properties": case_properties,
+         "properties": case_properties, "clock-rule": case_clock_rule,
          "runners": case_runners}
 
 

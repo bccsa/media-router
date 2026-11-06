@@ -368,17 +368,17 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
 
         it('both runners forward mrlateness unsubscribed, as mrlateness:<tap>', () => {
             // One list per runner since WI-P2-6 (the aligner's, the demux's and, since WI-P3-6,
-            // the ASRC's messages too); the twin test below and gst_native_plugins_test.py pin
-            // the two lists equal.
-            expect(runnerSource).toContain(
-                'FORWARDED_ELEMENT_MESSAGES = ("mrlateness", "mralignwatch", "mrtsdemux", "mrasrc-stats", "mrasrc-event")',
+            // the ASRC's messages too, and since B-169 the video pace's); the twin test below and
+            // gst_native_plugins_test.py pin the two lists equal.
+            expect(runnerSource).toMatch(
+                /FORWARDED_ELEMENT_MESSAGES = \("mrlateness", "mralignwatch", "mrtsdemux", "mrasrc-stats", "mrasrc-event",\s+"mrvideopace"\)/,
             );
             expect(runnerSource).toContain('elif name in FORWARDED_ELEMENT_MESSAGES and src_name:');
             expect(runnerSource).toContain(
                 'emit_plugin_event(f"{name}:{src_name}", gst_structure_to_dict(structure))',
             );
             expect(native).toMatch(
-                /kForwardedMessages\[\] = \{lateness::MESSAGE, "mralignwatch", "mrtsdemux",\s+"mrasrc-stats", "mrasrc-event"\}/,
+                /kForwardedMessages\[\] = \{lateness::MESSAGE, "mralignwatch", "mrtsdemux",\s+"mrasrc-stats", "mrasrc-event", "mrvideopace"\}/,
             );
             expect(native).toContain('} else if (src_name && forwarded_message(name)) {');
             expect(native).toContain('emit_plugin_event(std::string(name) + ":" + src_name');
@@ -401,13 +401,15 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
                     .map((x) => (x === lateness ? 'mrlateness' : x.replace(/^"|"$/g, '')));
             const both = names(cpp, 'lateness::MESSAGE');
             expect(names(py, '')).toEqual(both);
-            // A live-added branch has no busReports: its demux and its ASRC must reach the engine.
+            // A live-added branch has no busReports: its demux and its ASRC must reach the engine,
+            // and the video player's pace (B-169).
             expect(both).toEqual([
                 'mrlateness',
                 'mralignwatch',
                 'mrtsdemux',
                 'mrasrc-stats',
                 'mrasrc-event',
+                'mrvideopace',
             ]);
         });
 

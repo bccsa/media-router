@@ -15,9 +15,8 @@ import {
     planSink,
     resolveBuildHealth,
     resolveResumeSocket,
-    videoTsOffsetNs,
 } from './pipelinePlan.js';
-import { DEFAULT_SURFACE, RESUME_SINK_NAME } from './pipelines.js';
+import { DEFAULT_SURFACE, RESUME_SINK_NAME, type SinkSelectionEnv } from './pipelines.js';
 import {
     DECODEBIN_SELECTION,
     DECODER_ELEMENTS,
@@ -41,82 +40,115 @@ function readyTarget(over: Partial<RenderTargetReady> = {}): RenderTargetReady {
     };
 }
 
-/** `planSink` with the ts-offset resolved the way the module resolves it. */
-function plan(
-    config: Record<string, unknown>,
-    services?: Parameters<typeof videoTsOffsetNs>[0],
-    target: RenderTargetReady = readyTarget(),
-) {
-    return planSink(target, config, videoTsOffsetNs(services ?? null, config));
-}
-
 describe('planSink', () => {
-    it('defaults to a clock-paced, QoS-off KMS sink pinned to the connector id', () => {
-        const sink = plan({});
-        expect(sink.sinkElement).toContain('kmssink name=sink connector-id=32');
-        expect(sink.sinkElement).toContain('sync=true max-lateness=1000000000');
-        // A paced sink never carries QoS: the decoder would drop every frame of
-        // a consistently late stream (the 2026-09-08 .103 freeze).
-        expect(sink.sinkElement).toContain('qos=false');
-        expect(sink).toMatchObject({ sinkPaced: true });
-    });
-
-    it('ignores the retired qos key an old profile may still carry', () => {
-        // Removed 2026-09-08: not a setting any more. A paced sink is always
-        // qos=false; pacing follows `sync` alone.
-        expect(plan({ qos: true }).sinkElement).toContain('qos=false');
-        expect(plan({ sync: false, qos: false }).sinkElement).toContain('qos=true');
-    });
-
-    it('sync=false drops the pacing', () => {
-        const sink = plan({ sync: false });
-        expect(sink.sinkElement).toContain('sync=false');
-        expect(sink.sinkPaced).toBe(false);
-    });
-
-    it('converts D + lipSyncMs to a nanosecond ts-offset on the named sink', () => {
-        // No services: the 60 ms default D plus the trim.
-        expect(plan({ lipSyncMs: 40 }).sinkElement).toContain('ts-offset=100000000');
+    it('a sink that shows each frame as it comes: never waits, never drops late, sends no QoS (B-169)', () => {
+        expect(planSink(readyTarget()).sinkElement).toBe(
+            'kmssink name=sink connector-id=32 sync=false qos=false',
+        );
+        const wayland = planSink(
+            readyTarget({
+                sinkEnv: { wayland: true, kms: true, waylandSession: true },
+                waylandFullscreen: true,
+            }),
+        ).sinkElement;
+        expect(wayland).toBe(
+            'waylandsink name=sink sync=false qos=false present-every-frame=true fullscreen=true',
+        );
     });
 });
 
 /**
- * Playout offset D on the video leg (ADR-0005 decision 4). `lipSyncMs` stops
- * being the anchor and becomes a trim stacked on top of the ROUTE's D.
+ * The live string on every rung and every sink (house-clock part 4.2, B-169): the bus ingress,
+ * the non-leaky ES queue, the decoder, the pace, the render lateness tap, a sink that never waits.
  */
-describe('videoTsOffsetNs', () => {
-    const route = (overrideMs?: number) => ({
-        instanceId: 'video-player-1',
-        mediaRouter: { getRoutePlayoutOffsetMs: () => overrideMs },
-    });
+describe('the live string, every rung on every sink', () => {
+    const all = Object.fromEntries(DECODER_ELEMENTS.map((e) => [e, true]));
+    const RUNGS: Record<string, DecoderSelection> = {
+        v4l2h264dec: selectDecoder({ codec: 'h264', available: all }),
+        avdec_h264: selectDecoder({
+            codec: 'h264',
+            available: { h264parse: true, avdec_h264: true },
+        }),
+        v4l2slh265dec: selectDecoder({ codec: 'h265', available: all }),
+        avdec_h265: selectDecoder({
+            codec: 'h265',
+            available: { h265parse: true, avdec_h265: true },
+        }),
+        decodebin3: DECODEBIN_SELECTION,
+    };
+    const SINKS: Record<string, { sinkEnv: SinkSelectionEnv; waylandFullscreen: boolean }> = {
+        wayland: {
+            sinkEnv: { wayland: true, kms: true, waylandSession: true },
+            waylandFullscreen: true,
+        },
+        kms: {
+            sinkEnv: { wayland: false, kms: true, waylandSession: false, connectorId: 32 },
+            waylandFullscreen: false,
+        },
+        auto: {
+            sinkEnv: { wayland: false, kms: false, waylandSession: false },
+            waylandFullscreen: false,
+        },
+    };
+    const build = (sink: string, rung: string): string => {
+        const target = readyTarget(SINKS[sink]);
+        return planLivePipeline({
+            sinkElement: planSink(target).sinkElement,
+            udpSource: { port: 5500, socketPath: '/tmp/mr-bus-5500.sock' },
+            env: {},
+            waylandFullscreen: target.waylandFullscreen,
+            decoder: RUNGS[rung],
+            cpuDecodeThreading: undefined,
+            refreshHz: 50,
+        }).pipeline;
+    };
+    const cases = Object.keys(SINKS).flatMap((sink) =>
+        Object.keys(RUNGS).map((rung) => [sink, rung] as const),
+    );
 
-    it('uses the engine-wide default when the route declares no override', () => {
-        expect(videoTsOffsetNs({ ...route(undefined), playoutOffsetMs: 300 }, {})).toBe(
-            300_000_000,
+    it('tests/pipelines.json holds each (`vitest -u` rewrites it)', async () => {
+        expect(new Set(Object.values(RUNGS).map((d) => d.id)).size).toBe(5);
+        const out = Object.fromEntries(
+            cases.map(([sink, rung]) => [`${sink} ${rung}`, build(sink, rung)]),
+        );
+        await expect(`${JSON.stringify(out, null, 2)}\n`).toMatchFileSnapshot(
+            '../../tests/pipelines.json',
         );
     });
 
-    it('falls back to 60 ms when the engine reports no default', () => {
-        expect(videoTsOffsetNs(route(undefined), {})).toBe(60_000_000);
-    });
-
-    it('lets the route head override win over the engine default', () => {
-        expect(videoTsOffsetNs({ ...route(500), playoutOffsetMs: 300 }, {})).toBe(500_000_000);
-    });
-
-    it('adds lipSyncMs on top of D as a per-sink trim, both signs', () => {
-        expect(videoTsOffsetNs({ ...route(500), playoutOffsetMs: 300 }, { lipSyncMs: 40 })).toBe(
-            540_000_000,
-        );
-        expect(videoTsOffsetNs({ ...route(500), playoutOffsetMs: 300 }, { lipSyncMs: -40 })).toBe(
-            460_000_000,
-        );
-    });
-
-    it('reaches the sink element as one ts-offset', () => {
-        expect(
-            plan({ lipSyncMs: 40 }, { ...route(500), playoutOffsetMs: 300 }).sinkElement,
-        ).toContain('ts-offset=540000000');
+    it('each: the ES queue non-leaky, the pace right before the tap and the sink, nothing that waits or drops late', () => {
+        const sinks = {
+            wayland:
+                'waylandsink name=sink sync=false qos=false present-every-frame=true fullscreen=true',
+            kms: 'kmssink name=sink connector-id=32 sync=false qos=false',
+            // A bin: it takes `sync` and no `qos` (a parse error); p4-5's hook reaches its child.
+            auto: 'autovideosink sync=false',
+        } as Record<string, string>;
+        for (const [sink, rung] of cases) {
+            const p = build(sink, rung);
+            const label = `${sink} ${rung}`;
+            expect(p, label).toContain(
+                ' ! queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0' +
+                    ' max-size-bytes=40000000 ! ',
+            );
+            expect(p, label).toContain(
+                ' ! mrvideopace name=vp_pace refresh-mhz=50000 ! ' +
+                    `mrlateness name=lat_render reference=running-time ! ${sinks[sink]} vp_ts. ! `,
+            );
+            expect(p, label).toContain('mrtsdemux name=vpdemux media=video');
+            for (const gone of ['ts-offset', 'max-lateness', 'tsparse', 'sync=true', 'qos=true']) {
+                expect(p, `${label}: ${gone}`).not.toContain(gone);
+            }
+            // The one leaky=2 is the bus ingress's backstop; the probe tap's is leaky=downstream.
+            expect(p.match(/leaky=2/g), label).toHaveLength(1);
+            expect(p, label).toMatch(
+                /^unixfdsrc [^!]*! watchdog [^!]*! mrlateness [^!]*! queue leaky=2 /,
+            );
+            expect(p.match(/leaky=downstream/g), label).toHaveLength(1);
+            expect(p.match(/present-every-frame=true/g) ?? [], label).toHaveLength(
+                sink === 'wayland' ? 1 : 0,
+            );
+        }
     });
 });
 
@@ -242,9 +274,7 @@ describe('planLivePipeline', () => {
         env: {},
         waylandFullscreen: false,
         decoder: DECODEBIN_SELECTION,
-        bufferMs: undefined as unknown,
         cpuDecodeThreading: undefined as unknown,
-        sinkPaced: true,
     };
 
     it('arms the TS probe — the only way the module learns the codec', () => {
@@ -266,11 +296,11 @@ describe('planLivePipeline', () => {
                 config: { subtitlePosition: 'top', subtitleSize: 48 },
             },
         });
-        // overlay sits between the convert stage and the sink, driven by config
+        // overlay sits between the convert stage and the pace, driven by config
         expect(withSubs.pipeline).toContain(
             '! videoconvert ! videoscale ! textoverlay name=subov wait-text=false text="" valignment=top ' +
                 'halignment=center font-desc="Sans Bold 48" ypad=40 shaded-background=true shading-value=153 ! ' +
-                'mrlateness name=lat_render reference=running-time ! kmssink name=sink',
+                'mrvideopace name=vp_pace ! mrlateness name=lat_render reference=running-time ! kmssink name=sink',
         );
         // the subtitle TS comes in on its own bus edge into a named demux
         expect(withSubs.pipeline).toContain('/tmp/mr-bus-5600-edge.sock');
@@ -288,8 +318,8 @@ describe('planLivePipeline', () => {
         expect(withSubs.tsProbe).toEqual(plain.tsProbe);
     });
 
-    it('watches render keep-up only when the sink is named', () => {
-        expect(planLivePipeline(base).renderWatch).toEqual({ sink: 'sink' });
+    it("watches render keep-up only when the sink is named, the pace's rate drops kept up", () => {
+        expect(planLivePipeline(base).renderWatch).toEqual({ sink: 'sink', pace: 'vp_pace' });
         // autovideosink (dev boxes) is a bin without `name=sink` — the runner
         // would fail the element lookup.
         expect(
@@ -297,10 +327,10 @@ describe('planLivePipeline', () => {
         ).toBeUndefined();
     });
 
-    it('taps render lateness before the sink and names it for the timing section', () => {
+    it('taps render lateness after the pace, right before the sink, and names it for the timing section', () => {
         const desc = planLivePipeline(base);
         expect(desc.pipeline).toContain(
-            'mrlateness name=lat_render reference=running-time ! kmssink name=sink',
+            'mrvideopace name=vp_pace ! mrlateness name=lat_render reference=running-time ! kmssink name=sink',
         );
         expect(desc.timingSink).toEqual({ element: 'sink', kind: 'video' });
         expect(
@@ -308,17 +338,33 @@ describe('planLivePipeline', () => {
         ).toBeUndefined();
     });
 
-    it('carries the output mode refresh to the timing sink when it is known', () => {
-        expect(planLivePipeline({ ...base, refreshHz: 50 }).timingSink).toEqual({
-            element: 'sink',
-            kind: 'video',
-            refreshHz: 50,
-        });
+    it('carries the output mode refresh to the timing sink, and to the pace as its prior', () => {
+        const desc = planLivePipeline({ ...base, refreshHz: 50 });
+        expect(desc.timingSink).toEqual({ element: 'sink', kind: 'video', refreshHz: 50 });
+        expect(desc.pipeline).toContain('mrvideopace name=vp_pace refresh-mhz=50000 ! ');
+        // The Pi 5 box's DSI, 60.038 Hz to the 0.01 Hz the mode resolver gives.
+        expect(planLivePipeline({ ...base, refreshHz: 60.04 }).pipeline).toContain(
+            'mrvideopace name=vp_pace refresh-mhz=60040 ! ',
+        );
+        // Unknown: no prior, the pace measures the display itself (B-175).
+        expect(planLivePipeline(base).pipeline).toContain('mrvideopace name=vp_pace ! ');
     });
 
-    it('defaults bufferMs to 200 ms and normalises the threading value', () => {
+    it('rebuilds a failing pipeline at most every 30 s, from 1 s', () => {
+        // Each rebuild opens the decoder again; rapid opens wedged the Pi 4's VPU (DEV-P4b).
         const desc = planLivePipeline(base);
-        expect(desc.pipeline).toContain('max-size-time=200000000');
+        expect(desc.restartOnError).toBe(true);
+        expect(desc.restartBackoffMs).toEqual({ baseMs: 1_000, maxMs: 30_000 });
+    });
+
+    it("runs on the runners' clock: base time 0 and start time none, never a natural base", () => {
+        // A natural base re-bases running time at a flushing seek, and the pace then holds the
+        // frames caught across it for seconds (DEV-P4b on the Pi 5 box: 18 ms on the runners').
+        expect(planLivePipeline(base).liveCaptureClock).toBeUndefined();
+    });
+
+    it('normalises the threading value', () => {
+        const desc = planLivePipeline(base);
         // Unset = the `'auto'` default = multi-core, which is the runner's
         // `'frame'`; only `'single'` asks it to leave ffmpeg's choice alone.
         expect(desc.decoderThreadType).toBe('frame');
@@ -327,12 +373,6 @@ describe('planLivePipeline', () => {
         );
         expect(planLivePipeline({ ...base, cpuDecodeThreading: 'single' }).decoderThreadType).toBe(
             'auto',
-        );
-    });
-
-    it('carries bufferMs through as the leaky-queue window', () => {
-        expect(planLivePipeline({ ...base, bufferMs: 1500 }).pipeline).toContain(
-            'max-size-time=1500000000',
         );
     });
 
@@ -365,7 +405,7 @@ describe('planLivePipeline', () => {
             const desc = planLivePipeline({ ...base, decoder });
             const filter = decoder.caps ? `${decoder.caps} ! ` : '';
             expect(desc.pipeline, decoder.id).toContain(
-                `! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! ${filter}queue leaky=2 `,
+                `! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! ${filter}queue name=vp_esq leaky=0 `,
             );
             expect(desc.pipeline, decoder.id).not.toMatch(/\btsdemux\b/);
         }
@@ -420,99 +460,14 @@ describe('planLivePipeline', () => {
         });
     });
 
-    describe('backlog shedder', () => {
-        // The latency ratchet guard: a `sync=true` sink drains at media rate, so backlog the leaky
-        // queues absorb is never handed back (field .42: 50 fps decoded, 2.5 fps on the glass
-        // after ~16 h). Armed on the same pad and the same rungs as the keyframe gate.
-        const explicitDec: DecoderSelection = {
-            id: 'v4l2slh265dec',
-            chain: `h265parse ! v4l2slh265dec name=${VIDEO_DECODER_NAME}`,
-            caps: 'capsfilter caps="video/x-h265"',
-            hardware: true,
-            explicit: true,
-        };
-        const services = {};
-
-        it('sheds at the DECODER, measured against the sink that carries D', () => {
-            const desc = planLivePipeline({
-                ...base,
-                decoder: explicitDec,
-                services,
-            });
-            expect(desc.backlogShed).toMatchObject({
-                element: VIDEO_DECODER_NAME,
-                sink: 'sink',
-                // A delta unit whose references were dropped is the V4L2 wedge
-                // — a video shed can only ever end on an IRAP.
-                keyframeAligned: true,
-            });
-            // Both names must exist in the string the runner parses, or `start`
-            // hard-errors on the lookup.
-            expect(desc.pipeline).toContain(`name=${VIDEO_DECODER_NAME}`);
-            expect(desc.pipeline).toContain('name=sink');
-        });
-
-        // Never drop on lateness (ADR-0005 amendment 2026-10-08): with the
-        // engine's re-anchor switch on, the same pad asks to RAISE the route's
-        // D; off (MR_PLAYOUT_REANCHOR=0) the config is exactly as before.
-        it('re-anchor on: carries onLateness and the five re-anchor numbers', () => {
-            expect(
-                planLivePipeline({
-                    ...base,
-                    decoder: explicitDec,
-                    services: { playoutReanchor: true },
-                }).backlogShed,
-            ).toMatchObject({
-                element: VIDEO_DECODER_NAME,
-                sink: 'sink',
-                keyframeAligned: true,
-                onLateness: 'reanchor',
-                reanchorToleranceMs: 40,
-                reanchorHoldMs: 15000,
-                reanchorRetryMs: 30000,
-                rebaseHoldMs: 3000,
-                rebaseCooldownMs: 60000,
-            });
-        });
-
-        it('re-anchor off: none of the keys', () => {
-            expect(
-                planLivePipeline({ ...base, decoder: explicitDec, services }).backlogShed,
-            ).not.toHaveProperty('onLateness');
-        });
-
-        it('never arms on the decodebin3 rung — there is no decoder to name', () => {
-            // Same constraint as the gate: the bin plugs its own decoder. That
-            // rung only carries the stream for the second or two before the TS
-            // probe names the codec, far short of the hold window anyway.
-            expect(planLivePipeline({ ...base, services }).backlogShed).toBeUndefined();
-        });
-
-        it('never arms on an unnamed sink (autovideosink, dev)', () => {
-            // A bin, not a basesink: no `name=sink` to resolve and no
-            // `ts-offset` to measure the budget against.
-            expect(
-                planLivePipeline({
-                    ...base,
-                    sinkElement: 'autovideosink sync=true',
-                    decoder: explicitDec,
-                    services,
-                }).backlogShed,
-            ).toBeUndefined();
-        });
-
-        it('never arms it on the fallback card', () => {
-            // The card is a local videotestsrc/still: no bus, no producer
-            // stamps, nothing that can retain latency against a house clock.
-            expect(
-                planFallbackPipeline({
-                    fallbackText: 'No video',
-                    sinkElement: 'kmssink name=sink',
-                    env: {},
-                    surface: DEFAULT_SURFACE,
-                }).description.backlogShed,
-            ).toBeUndefined();
-        });
+    it('arms no backlog shedder on any rung: nothing is dropped for lateness (B-169)', () => {
+        const all = Object.fromEntries(DECODER_ELEMENTS.map((e) => [e, true]));
+        for (const decoder of [
+            DECODEBIN_SELECTION,
+            selectDecoder({ codec: 'h265', available: all }),
+        ]) {
+            expect(planLivePipeline({ ...base, decoder }).backlogShed, decoder.id).toBeUndefined();
+        }
     });
 
     it('drops the software scaler when the compositor scales for us', () => {

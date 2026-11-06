@@ -117,7 +117,8 @@ B-148 added `mrasrc-stats`' `rate-known`, the engage's `rate-known` and the lost
 B-166 replaced the custom-slaving `device-relock` and `device-resync` events and `device-resyncs` with
 the timer term's `relock-device`, `device-stalled` and `device-resumed` events and `mrasrc-stats`'
 `device-relocks`, `device-stalls` and `render-lateness-ns` (a run on `mrtestaudiosink` `sync=false`
-with a 3 s stall and a restart).
+with a 3 s stall and a restart). B-169 added the `mrvideopace` message, the Video Player's pace, held
+to its entry by the protocol case `video-leg-pace` (a generated 1080p50 into `mrtestvideosink` at 50 Hz).
 
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|

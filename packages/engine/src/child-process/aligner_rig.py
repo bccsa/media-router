@@ -320,6 +320,38 @@ def generate_ts(desc, timeout=60.0):
     return out
 
 
+_GENERATED = {}
+
+
+def generated(kind, seconds):
+    """Relative-time TS from GStreamer, cached per process: [bytes] of 7-packet buffers.
+    `h264-aac`, `opus-32k`: the conformance scenarios' (WI-P2-14); `h264-1080p50`: the video player's
+    `video-leg-pace` case (B-169), 1080p50 H.264 alone with a keyframe each second."""
+    key = (kind, seconds)
+    if key not in _GENERATED:
+        if kind == "h264-aac":
+            desc = (f"videotestsrc num-buffers={int(seconds * 25)} ! video/x-raw,width=320,height=180,"
+                    "framerate=25/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=600"
+                    " key-int-max=50 ! h264parse ! mux. "
+                    f"audiotestsrc num-buffers={int(seconds * 48000 / 1024)} samplesperbuffer=1024 ! "
+                    "audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! mux. "
+                    "mpegtsmux name=mux alignment=7 ! appsink name=ts sync=false")
+        elif kind == "opus-32k":
+            desc = (f"audiotestsrc num-buffers={int(seconds * 50)} samplesperbuffer=960 ! "
+                    "audio/x-raw,rate=48000,channels=2 ! opusenc bitrate=32000 ! opusparse ! "
+                    "mpegtsmux alignment=7 ! appsink name=ts sync=false")
+        elif kind == "h264-1080p50":
+            # I420 named: unnamed, x264enc takes 4:4:4 10-bit, which no player sees and the dev Pi
+            # decodes at 30 fps.
+            desc = (f"videotestsrc num-buffers={int(seconds * 50)} pattern=ball ! video/x-raw,format=I420,"
+                    "width=1920,height=1080,framerate=50/1 ! x264enc tune=zerolatency speed-preset=ultrafast"
+                    " bitrate=4000 key-int-max=50 ! h264parse ! mpegtsmux alignment=7 ! appsink name=ts sync=false")
+        else:
+            raise ValueError(kind)
+        _GENERATED[key] = [d for _pts, d in generate_ts(desc, timeout=180.0)]
+    return _GENERATED[key]
+
+
 def _shift_ts_field(b, at, shift):
     v = ((((b[at] >> 1) & 7) << 30) | (b[at + 1] << 22) | ((b[at + 2] >> 1) << 15)
          | (b[at + 3] << 7) | (b[at + 4] >> 1))

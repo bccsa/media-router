@@ -36,11 +36,10 @@
  * Applied: the runner's per-consumer bus edge branch, `buildBusSrc` ingress,
  * the mpegts-muxer per-pad queues, srt-output's back-pressure queue, the
  * network ingests' queue (`buildIngestQueue`, by bytes alone: B-182), the
- * audio-decoder's ES queue (`ad_esq`, B-168). Still time-only and worth
- * converting: `buildTsUdpInput`'s jitter queue, mpegts-ip-output /
- * mpegts-ip-input back-pressure queues, the video-player's compressed
- * pre-decode queue, and the literal queues in audio-transcoder and
- * n1-mixer-302m.
+ * audio-decoder's ES queue (`ad_esq`, B-168), the video-player's (`vp_esq`,
+ * B-169). Still time-only and worth converting: `buildTsUdpInput`'s jitter
+ * queue, mpegts-ip-output / mpegts-ip-input back-pressure queues, and the
+ * literal queues in audio-transcoder and n1-mixer-302m.
  */
 
 /** 64 Mbit/s expressed as bytes per millisecond. Mirrored by

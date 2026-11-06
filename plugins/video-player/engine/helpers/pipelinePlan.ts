@@ -1,19 +1,12 @@
 import * as fs from 'fs';
-import {
-    backlogShedConfig,
-    effectivePlayoutOffsetNs,
-    withLatenessTap,
-    type BacklogShedServices,
-    type PipelineDescription,
-    type PlayoutOffsetServices,
-    type TimingSink,
-} from '@media-router/engine';
+import { withLatenessTap, type PipelineDescription, type TimingSink } from '@media-router/engine';
 import {
     buildFallbackOnlyPipeline,
     buildLivePipeline,
     buildSink,
     resolveDecoderThreadType,
     TS_PROBE_SINK_NAME,
+    VIDEO_PACE_NAME,
     type SurfaceSize,
 } from './pipelines.js';
 import { decoderRankEnv, VIDEO_DECODER_NAME, type DecoderSelection } from './decoderSelection.js';
@@ -31,54 +24,14 @@ import { subtitleRenderPlan } from '@media-router/plugin-subtitle-core';
  * stays a short read.
  */
 
-/** Sink element plus the two clock decisions derived from the module config. */
+/** The sink element both shapes end in. */
 export interface SinkPlan {
     sinkElement: string;
-    /** Clock-paced sink (the `sync` config, default on): the sink rides the
-     *  demux's PES times. The input chain is the same either way (WI-P3-18). */
-    sinkPaced: boolean;
 }
 
-export function planSink(
-    target: RenderTargetReady,
-    config: Record<string, unknown>,
-    /**
-     * Sink `ts-offset` in ns, already resolved by `videoTsOffsetNs` — the
-     * playout offset D plus the deprecated `lipSyncMs` trim. Passed in
-     * rather than derived here because the SAME resolution has to serve the live
-     * update path and the audio leg of the route.
-     */
-    tsOffsetNs: number,
-): SinkPlan {
-    const sinkPaced = (config.sync as boolean | undefined) ?? true;
-    return {
-        sinkElement: buildSink(target.active.name, target.sinkEnv, {
-            sync: sinkPaced,
-            // Positive offset delays video to meet late audio (audio path has
-            // more buffering latency). Live-updatable via the named `sink`.
-            tsOffsetNs,
-        }),
-        sinkPaced,
-    };
-}
-
-/**
- * The video leg's sink `ts-offset`, in nanoseconds.
- *
- * Playout offset D for this module's ROUTE (engine default, or the route
- * head's override) plus `lipSyncMs` as a per-sink trim. The audio leg
- * resolves D through the same `effectivePlayoutOffsetMs` against the same route,
- * so both legs of one route schedule off one number — which is the whole point
- * of ADR-0005 decision 4 and what an independently-set `lipSyncMs` could never
- * guarantee.
- */
-export function videoTsOffsetNs(
-    services: PlayoutOffsetServices | null | undefined,
-    config: Record<string, unknown>,
-): number {
-    return effectivePlayoutOffsetNs(services, {
-        trimMs: Number(config.lipSyncMs ?? 0) || 0,
-    });
+/** The sink for the render target: it shows each frame as it comes (`buildSink`, B-169). */
+export function planSink(target: RenderTargetReady): SinkPlan {
+    return { sinkElement: buildSink(target.active.name, target.sinkEnv) };
 }
 
 export interface BuildHealthInput {
@@ -181,19 +134,11 @@ export interface LivePlanInput {
      * of them. Nothing else is masked — see `decoderRankEnv`.
      */
     demoted?: ReadonlySet<string>;
-    /** Raw `bufferMs` config value; normalised here. */
-    bufferMs: unknown;
     /** Raw `cpuDecodeThreading` config value; normalised here. */
     cpuDecodeThreading: unknown;
-    sinkPaced: boolean;
     /** Refresh of the output's mode (`resolveOutputRefreshHz`), when known: the timing
-     *  section's device latency is one refresh of it. */
+     *  section's device latency is one refresh of it, and `mrvideopace`'s prior. */
     refreshHz?: number;
-    /**
-     * Module services, read only for the backlog shedder's re-anchor switch
-     * (see `backlogShedConfig`).
-     */
-    services?: BacklogShedServices | null;
     /**
      * Subtitle source wired to `subtitles-in` (subtitle-core carrier) plus the
      * module config the overlay controls read. Absent → no overlay, no extra
@@ -212,40 +157,25 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
     // The sink is only addressable when it carries `name=sink` — autovideosink
     // (dev) is a bin without one, the same condition renderWatch is gated on.
     const namedSink = input.sinkElement.includes('name=sink');
-    // Backlog shedder — the latency ratchet guard. EXPLICIT rungs
-    // only, and for the same reason the keyframe gate is: it sheds on the
-    // decoder's sink pad (where the backlog actually is, and where `h26xparse`
-    // has already flagged every access unit), and the `decodebin3` bootstrap
-    // rung plugs its own decoder so there is no element to name. That rung only
-    // ever carries the stream for the second or two before the TS probe names
-    // the codec, which is far short of the hold window anyway.
-    const backlogShed =
-        input.decoder.explicit && namedSink
-            ? backlogShedConfig(input.services, {
-                  element: VIDEO_DECODER_NAME,
-                  sink: 'sink',
-                  // A delta unit whose references were dropped is the V4L2
-                  // wedge the keyframe gate exists for — a video shed can only
-                  // ever end on an IRAP.
-                  keyframeAligned: true,
-              })
-            : undefined;
     const subs = input.subtitles
         ? subtitleRenderPlan(input.subtitles, input.subtitles.config)
         : undefined;
     return {
         pipeline:
             buildLivePipeline(
-                // Render lateness is read right before the sink (§9.5).
+                // Render lateness is read right before the sink (§9.5), after the pace.
                 withLatenessTap('lat_render', input.sinkElement),
                 input.udpSource,
                 input.waylandFullscreen,
-                Number(input.bufferMs ?? 200),
-                input.sinkPaced,
                 input.decoder,
                 subs?.overlayElement,
+                input.refreshHz ? Math.round(input.refreshHz * 1000) : undefined,
             ) + (subs ? ` ${subs.inputFragment}` : ''),
         restartOnError: true,
+        // A pipeline that keeps failing is rebuilt at 1, 2, 4 … up to every 30 s, not every
+        // 5 s: each rebuild opens the hardware decoder again, and rapid opens wedged the
+        // Pi 4's VPU H.264 decoder until a reboot (DEV-P4b).
+        restartBackoffMs: { baseMs: 1_000, maxMs: 30_000 },
         // Merged, never replaced: `input.env` carries the wayland app_id
         // (MR_GLIB_PRGNAME) the compositor pins our surface by, and losing it
         // would move the picture to the wrong output. On the decodebin3 rung
@@ -263,26 +193,20 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
         // Report-only TS video-info probe feeding onPluginEvent — the tap
         // appsink is built into the live pipeline by buildLivePipeline.
         tsProbe: { appsink: TS_PROBE_SINK_NAME },
-        // Keep-up watch on the live render chain (see onPluginEvent).
-        // Only the wayland/kms sinks are named — autovideosink (dev) is a
-        // bin without `name=sink`, so the runner would fail the lookup.
-        ...(namedSink ? { renderWatch: { sink: 'sink' } } : {}),
-        // The timing section reads D (`ts-offset`) off the same named sink.
+        // Keep-up watch (see onPluginEvent), on a named sink only: autovideosink (dev) is a bin.
+        // The pace's rate drops count as kept up: a display slower than the content takes no more.
+        ...(namedSink ? { renderWatch: { sink: 'sink', pace: VIDEO_PACE_NAME } } : {}),
+        // The timing section's device latency is one refresh of the output's mode.
         ...(namedSink ? { timingSink: videoTimingSink(input.refreshHz) } : {}),
-        // See `backlogShed` above — explicit rungs with a named sink only.
-        ...(backlogShed ? { backlogShed } : {}),
         // EXPLICIT rungs only. A live TS join lands mid-GOP, and feeding a
         // stateless V4L2 decoder delta units before its first keyframe leaves
         // the kernel driver holding a decode request that never completes —
         // the next teardown then hangs in D state and takes V4L2 down
         // box-wide (Pi 4 rpivid and Pi 5 hevc_dec, kernel 6.12.87). The gate
         // drops those until the first keyframe, and RE-ARMS on any later loss:
-        // the chain's `leaky=2` jitter queues shed AUs whenever the decoder
-        // stalls (device open at startup is ~1 s of stream time), and the
-        // delta units after a shed reference frames the decoder never saw —
-        // the same missing-reference hazard, which is why the leaky queues
-        // stay leaky (they are the live latency contract) and the gate is what
-        // makes their loss safe.
+        // a DISCONT now comes only from real loss (the source's, or the bus
+        // ingress shedding at capacity, OQ-30), and the delta units after it
+        // reference frames the decoder never saw.
         //
         // The decodebin3 rung CANNOT be gated — the bin plugs its own decoder,
         // so there is no element to name. It only ever carries the stream until

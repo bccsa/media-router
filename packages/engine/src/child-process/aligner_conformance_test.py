@@ -781,7 +781,7 @@ def scn_align_bursty(tag, argv, exp):
     seconds = exp["seconds"]
     s = Session(argv, exp["pipelines"])
     for name, v in inp.items():
-        rel = generated(v["generator"], seconds + 2)
+        rel = rig.generated(v["generator"], seconds + 2)
         p0 = next((rig.ts_psi.read_pcr(pkt) // 300 for d in rel for pkt in rig.ts_psi.iter_packets(d)
                    if rig.ts_psi.read_pcr(pkt) is not None), 0)
 
@@ -801,7 +801,7 @@ def scn_align_bursty(tag, argv, exp):
     end_ns = t0 + int((seconds - 0.5) * S)
     for name, v in inp.items():
         delivered = s.producers[name].delivered
-        classes = stream_classes(generated(v["generator"], seconds + 2))
+        classes = stream_classes(rig.generated(v["generator"], seconds + 2))
         for route, media in v["routes"].items():
             pid_ = classes.get(media)
             reps = rig.aligner_reports(s.runner, f"aw_{route}")
@@ -822,9 +822,6 @@ def scn_align_bursty(tag, argv, exp):
     no_restart(tag, label, s.runner, rc)
 
 
-_GENERATED = {}
-
-
 def stream_classes(buffers):
     """{'video' | 'audio': PID} from the PMT of a generated stream."""
     pkts = [p for d in buffers[:200] for p in rig.ts_psi.iter_packets(d)]
@@ -836,27 +833,6 @@ def stream_classes(buffers):
         if media and media not in out:
             out[media] = pid_
     return out
-
-
-def generated(kind, seconds):
-    """Relative-time TS from GStreamer, cached for both runners: [bytes] of 7-packet buffers."""
-    key = (kind, seconds)
-    if key not in _GENERATED:
-        if kind == "h264-aac":
-            desc = (f"videotestsrc num-buffers={int(seconds * 25)} ! video/x-raw,width=320,height=180,"
-                    "framerate=25/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=600"
-                    " key-int-max=50 ! h264parse ! mux. "
-                    f"audiotestsrc num-buffers={int(seconds * 48000 / 1024)} samplesperbuffer=1024 ! "
-                    "audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! mux. "
-                    "mpegtsmux name=mux alignment=7 ! appsink name=ts sync=false")
-        elif kind == "opus-32k":
-            desc = (f"audiotestsrc num-buffers={int(seconds * 50)} samplesperbuffer=960 ! "
-                    "audio/x-raw,rate=48000,channels=2 ! opusenc bitrate=32000 ! opusparse ! "
-                    "mpegtsmux alignment=7 ! appsink name=ts sync=false")
-        else:
-            raise ValueError(kind)
-        _GENERATED[key] = [d for _pts, d in rig.generate_ts(desc)]
-    return _GENERATED[key]
 
 
 # --------------------------------------------------------------------------- scn-split-passthrough

@@ -64,6 +64,14 @@ import { DEFAULT_DEMOTION_TTL_MS, DEMOTION_TTL_ENV_VAR } from './helpers/decoder
 const probeUnixSocketMock = probeUnixSocket as unknown as ReturnType<typeof vi.fn>;
 const existsSyncMock = fs.existsSync as unknown as ReturnType<typeof vi.fn>;
 
+/** A compositor restart's new socket: created before the old one goes, so its inode differs on
+ *  any filesystem (ext4 hands an unlinked inode straight to the next file). */
+function replaceSocket(sockPath: string): void {
+    const next = path.join(path.dirname(sockPath), 'next.sock');
+    fs.writeFileSync(next, '');
+    fs.renameSync(next, sockPath);
+}
+
 describe('VideoPlayerModule helpers', () => {
     beforeEach(() => {
         // Reset any cached probe state so each test sets its own.
@@ -112,21 +120,22 @@ describe('VideoPlayerModule helpers', () => {
 
     describe('buildSink', () => {
         const both = { wayland: true, kms: true };
+        // Every sink shows each frame as it comes (B-169): sync=false, no QoS upstream.
+        const WAYLAND =
+            'waylandsink name=sink sync=false qos=false present-every-frame=true fullscreen=true';
         it('prefers waylandsink (fullscreen) when a compositor session is reachable', () => {
             // fullscreen=true is what makes kiosk-shell (a) raise the video
             // above an interactive cog browser on the same output, and
             // (b) apply the output's transform itself, so we don't pre-rotate.
-            expect(buildSink('', { ...both, waylandSession: true })).toBe(
-                'waylandsink name=sink sync=false fullscreen=true qos=true',
-            );
+            // present-every-frame (Yocto 0008, B-163): a frame waits for its
+            // presentation instead of being replaced by the next.
+            expect(buildSink('', { ...both, waylandSession: true })).toBe(WAYLAND);
             // ignores `display` config: compositor decides output
-            expect(buildSink('HDMI-A-1', { ...both, waylandSession: true })).toBe(
-                'waylandsink name=sink sync=false fullscreen=true qos=true',
-            );
+            expect(buildSink('HDMI-A-1', { ...both, waylandSession: true })).toBe(WAYLAND);
         });
         it('targets kmssink by numeric connector-id (older kmssink builds reject connector-name)', () => {
             expect(buildSink('HDMI-A-1', { ...both, waylandSession: false, connectorId: 32 })).toBe(
-                'kmssink name=sink connector-id=32 sync=false qos=true',
+                'kmssink name=sink connector-id=32 sync=false qos=false',
             );
         });
         it('falls back to auto-pick kmssink when the connector id can not be resolved', () => {
@@ -134,17 +143,18 @@ describe('VideoPlayerModule helpers', () => {
             // auto-pick than emit `connector-name=...` which older kmssink
             // builds reject with a parse error.
             expect(buildSink('HDMI-A-1', { ...both, waylandSession: false })).toBe(
-                'kmssink name=sink sync=false qos=true',
+                'kmssink name=sink sync=false qos=false',
             );
         });
         it('uses kmssink without a connector when display is unset', () => {
             expect(buildSink('', { ...both, waylandSession: false })).toBe(
-                'kmssink name=sink sync=false qos=true',
+                'kmssink name=sink sync=false qos=false',
             );
         });
         it('falls back to autovideosink when neither sink is installed', () => {
+            // A bin: `sync` is its own, `qos` is not (gst-launch: "no property qos").
             expect(buildSink('', { wayland: false, kms: false, waylandSession: false })).toBe(
-                'autovideosink sync=false qos=true',
+                'autovideosink sync=false',
             );
         });
         it('uses kmssink even with a compositor present when waylandsink is missing', () => {
@@ -155,89 +165,67 @@ describe('VideoPlayerModule helpers', () => {
                     waylandSession: true,
                     connectorId: 32,
                 }),
-            ).toBe('kmssink name=sink connector-id=32 sync=false qos=true');
+            ).toBe('kmssink name=sink connector-id=32 sync=false qos=false');
         });
 
         it('always returns the fullscreen waylandsink for wayland (rotation is the compositor’s job)', () => {
             // No client-side rotation any more: as a fullscreen surface the
             // compositor applies the output transform. So the sink string is
             // the same regardless of the physical output orientation.
-            expect(buildSink('DSI-2', { ...both, waylandSession: true })).toBe(
-                'waylandsink name=sink sync=false fullscreen=true qos=true',
+            expect(buildSink('DSI-2', { ...both, waylandSession: true })).toBe(WAYLAND);
+        });
+
+        it('names a DRM driver kmssink cannot reach, full screen where its plane needs it', () => {
+            // The Pi 5 box's DSI panel without Weston: kmssink's own pick opens vc4 (DEV-P4a).
+            const dsi = { name: 'drm-rp1-dsi', fullScreenOnly: true };
+            expect(
+                buildSink('DSI-2', {
+                    wayland: false,
+                    kms: true,
+                    waylandSession: false,
+                    connectorId: 41,
+                    kmsDriver: dsi,
+                }),
+            ).toBe(
+                'kmssink name=sink driver-name=drm-rp1-dsi can-scale=false connector-id=41 sync=false qos=false',
+            );
+            expect(
+                buildSink('Virtual-1', {
+                    wayland: false,
+                    kms: true,
+                    waylandSession: false,
+                    kmsDriver: { name: 'vboxvideo', fullScreenOnly: false },
+                }),
+            ).toBe('kmssink name=sink driver-name=vboxvideo sync=false qos=false');
+            // No display picked: kmssink's own pick, as before; the compositor path names none.
+            expect(
+                buildSink('', { wayland: false, kms: true, waylandSession: false, kmsDriver: dsi }),
+            ).toBe('kmssink name=sink sync=false qos=false');
+            expect(buildSink('DSI-2', { ...both, waylandSession: true, kmsDriver: dsi })).toBe(
+                WAYLAND,
             );
         });
 
-        // sync=true is the HLS branch — paired with max-lateness=1 s (1e9 ns) to
-        // sit between two failure modes: the basesink 20 ms default loses every
-        // GOP-boundary frame on Pi 5 software-decoded 1080p (low fps), and `-1`
-        // (disabled) lets sustained decode shortfall accumulate as unbounded lag.
-        // 1 s absorbs IDR-frame jitter while capping latency. The pair must
-        // appear on every sink variant or the HLS path silently regresses.
-        describe('lip-sync trim (ts-offset)', () => {
-            const env = { wayland: false, kms: true, waylandSession: false, connectorId: 32 };
-            it('adds ts-offset to the sink when sync=true and an offset is set', () => {
-                const s = buildSink('HDMI-A-1', env, { sync: true, tsOffsetNs: 1_000_000_000 });
-                expect(s).toContain('ts-offset=1000000000');
-                expect(s).toContain('sync=true');
-            });
-            it('omits ts-offset when sync is off (a non-syncing sink ignores timing)', () => {
-                const s = buildSink('HDMI-A-1', env, { sync: false, tsOffsetNs: 1_000_000_000 });
-                expect(s).not.toContain('ts-offset');
-            });
-            it('omits ts-offset when the trim is 0', () => {
-                const s = buildSink('HDMI-A-1', env, { sync: true, tsOffsetNs: 0 });
-                expect(s).not.toContain('ts-offset');
-            });
-        });
-
-        describe('with sync=true (HLS branch)', () => {
-            it('emits sync=true max-lateness=1000000000 on waylandsink', () => {
-                expect(buildSink('', { ...both, waylandSession: true }, { sync: true })).toBe(
-                    'waylandsink name=sink sync=true max-lateness=1000000000 fullscreen=true qos=false',
-                );
-            });
-            it('emits sync=true max-lateness=1000000000 on kmssink with connector-id', () => {
-                expect(
-                    buildSink(
-                        'HDMI-A-1',
-                        { ...both, waylandSession: false, connectorId: 32 },
-                        { sync: true },
-                    ),
-                ).toBe(
-                    'kmssink name=sink connector-id=32 sync=true max-lateness=1000000000 qos=false',
-                );
-            });
-            it('emits sync=true max-lateness=1000000000 on auto-pick kmssink', () => {
-                expect(buildSink('', { ...both, waylandSession: false }, { sync: true })).toBe(
-                    'kmssink name=sink sync=true max-lateness=1000000000 qos=false',
-                );
-            });
-            it('emits sync=true max-lateness=1000000000 on autovideosink', () => {
-                expect(
-                    buildSink(
-                        '',
-                        { wayland: false, kms: false, waylandSession: false },
-                        { sync: true },
-                    ),
-                ).toBe('autovideosink sync=true max-lateness=1000000000 qos=false');
-            });
-            it('never emits QoS on the paced sink (there is no setting for it)', () => {
-                // A paced sink must never emit QoS: GstVideoDecoder answers a
-                // consistently late stream by dropping every frame before
-                // `timestamp + 2 × lateness`, which froze .103 (2026-09-08) at
-                // 50 fps in / 0 fps out. max-lateness=1000000000 is the only
-                // late-frame bound a paced sink gets. The old `qos` option was
-                // removed the same day.
-                expect(buildSink('', { ...both, waylandSession: true }, { sync: true })).toBe(
-                    'waylandsink name=sink sync=true max-lateness=1000000000 fullscreen=true qos=false',
-                );
-            });
+        it('no sink waits for a timestamp, drops a frame as late or sends QoS (B-169)', () => {
+            const envs = [
+                { ...both, waylandSession: true },
+                { ...both, waylandSession: false, connectorId: 32 },
+                { ...both, waylandSession: false },
+                { wayland: false, kms: false, waylandSession: false },
+            ];
+            for (const env of envs) {
+                const s = buildSink('HDMI-A-1', env);
+                expect(s).toContain('sync=false');
+                for (const gone of ['sync=true', 'max-lateness', 'ts-offset', 'qos=true']) {
+                    expect(s).not.toContain(gone);
+                }
+            }
         });
     });
 
     describe('buildFallbackOnlyPipeline', () => {
         it('renders videotestsrc + textoverlay into the sink (no image path)', () => {
-            const s = buildFallbackOnlyPipeline('No video', 'autovideosink sync=false qos=true');
+            const s = buildFallbackOnlyPipeline('No video', 'autovideosink sync=false');
             expect(s).toContain('videotestsrc');
             expect(s).toContain('pattern=smpte');
             expect(s).toContain('textoverlay name=nov text="No video"');
@@ -251,12 +239,14 @@ describe('VideoPlayerModule helpers', () => {
             // overlay and sink chain are identical between the two variants.
             const s = buildFallbackOnlyPipeline(
                 'Standby',
-                'autovideosink sync=false qos=true',
+                'autovideosink sync=false',
                 '/data/media-router/no-signal.png',
             );
             expect(s).toContain('filesrc location="/data/media-router/no-signal.png"');
             expect(s).toContain('decodebin');
-            expect(s).toContain('imagefreeze');
+            // Live, at the card's 30 fps: the sink never waits (B-169), so a still that is not
+            // live would be repeated as fast as the sink takes it (157 fps into a fakesink).
+            expect(s).toContain('imagefreeze is-live=true ! ');
             expect(s).toContain('width=1280,height=720');
             // Aspect-preserving: `add-borders=true` letterboxes / pillarboxes
             // instead of stretching a non-16:9 image to fill the surface.
@@ -272,7 +262,7 @@ describe('VideoPlayerModule helpers', () => {
         });
 
         it('omits the bus-resume tap when no resume socket is given', () => {
-            const s = buildFallbackOnlyPipeline('No video', 'autovideosink sync=false qos=true');
+            const s = buildFallbackOnlyPipeline('No video', 'autovideosink sync=false');
             expect(s).not.toContain('unixfdsrc');
             expect(s).not.toContain(RESUME_SINK_NAME);
         });
@@ -284,7 +274,7 @@ describe('VideoPlayerModule helpers', () => {
             // the bus-native replacement for the old passive dgram probe.
             const s = buildFallbackOnlyPipeline(
                 'No video',
-                'autovideosink sync=false qos=true',
+                'autovideosink sync=false',
                 undefined,
                 '/tmp/mr-bus-5500-abc.sock',
             );
@@ -369,14 +359,19 @@ describe('VideoPlayerModule helpers', () => {
 
     describe('buildLivePipeline', () => {
         const busSource = { port: 5000, socketPath: '/tmp/mr-bus-5000-abc.sock' };
+        const KMS = 'kmssink name=sink sync=false qos=false';
+        const WAYLAND =
+            'waylandsink name=sink sync=false qos=false present-every-frame=true fullscreen=true';
+        const ES_QUEUE =
+            'queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000';
 
-        it('wires unixfdsrc → mrtsdemux (video only) → decodebin → sink off the bus edge socket', () => {
-            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+        it('wires unixfdsrc → mrtsdemux (video only) → decodebin → pace → sink off the bus edge socket', () => {
+            const s = buildLivePipeline(KMS, busSource);
             expect(s).toContain('unixfdsrc socket-path=/tmp/mr-bus-5000-abc.sock');
             expect(s).toContain('mrtsdemux name=vpdemux media=video');
             expect(s).not.toMatch(/\btsdemux\b/);
             expect(s).toContain('decodebin');
-            expect(s).toContain('kmssink name=sink');
+            expect(s).toContain(`mrvideopace name=vp_pace ! ${KMS}`);
             // No UDP ingress remains — unixfd is the only bus transport.
             expect(s).not.toContain('udpsrc');
             // No fallback branch when a source is connected.
@@ -384,29 +379,39 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).not.toContain('videotestsrc');
         });
 
-        it('has NO tsparse: the demux takes the bus buffers as sent and re-frames (WI-P3-18)', () => {
+        it('has NO tsparse and no jitter queue: the bus ingress alone before the demux (B-169)', () => {
             // tsparse cost 0.11 core at 1080p50 (measured 2026-08-01) and cleared every buffer
             // flag, a bus gap marker's GAP too; the bus carries whole packets (ADR-0011).
-            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+            const s = buildLivePipeline(KMS, busSource);
             expect(s).not.toContain('tsparse');
-            expect(s).toMatch(/ ! queue leaky=0 [^!]* ! tee name=vp_ts ! mrtsdemux /);
+            expect(s).toMatch(
+                / ! mrlateness name=lat_busin_\S+ reference=house ! queue leaky=2 max-size-time=5000000000 [^!]* ! tee name=vp_ts ! mrtsdemux /,
+            );
+            // The render branch's queues: the ingress and the ES queue (the probe tap has its own).
+            expect(s.slice(0, s.indexOf(' vp_ts. ')).match(/ ! queue /g)).toHaveLength(2);
         });
 
-        it('a clock-paced sink (sync config) builds the same chain: no tsparse comes back', () => {
-            // Pacing once brought tsparse back for packet alignment; since WI-P3-18 it changes
-            // nothing in the string: the demux re-frames, and nothing re-times the PES times.
-            const sink = 'kmssink name=sink sync=true max-lateness=1000000000 qos=false';
-            const paced = buildLivePipeline(sink, busSource, false, 200, true);
-            expect(paced).toBe(buildLivePipeline(sink, busSource, false, 200, false));
-            expect(paced).not.toContain('tsparse');
-            expect(paced).not.toContain('set-timestamps');
+        it('holds what a stall leaves in a non-leaky 5 s ES queue after the demux, byte-capped', () => {
+            // Nothing is dropped for lateness (part 4.4); full, it holds the demux and the bus
+            // ingress sheds (OQ-30). The byte cap is ADR-0015's 64 Mbit/s of its 5 s.
+            const s = buildLivePipeline(KMS, busSource);
+            expect(s).toContain(`mrtsdemux name=vpdemux media=video ! ${ES_QUEUE} ! decodebin3`);
+        });
+
+        it('paces after the convert stage and right before the sink, the mode refresh its prior', () => {
+            expect(buildLivePipeline(KMS, busSource)).toContain(
+                `videoconvert ! videoscale ! mrvideopace name=vp_pace ! ${KMS}`,
+            );
+            expect(buildLivePipeline(KMS, busSource, false, undefined, undefined, 60038)).toContain(
+                `videoscale ! mrvideopace name=vp_pace refresh-mhz=60038 ! ${KMS}`,
+            );
         });
 
         it('keeps videoscale (uncapped) on the KMS/auto path — no compositor scales for them', () => {
             // kmssink/autovideosink negotiate the size they want and there is
             // nothing downstream to resize for them, so the scaler stays.
-            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
-            expect(s).toContain('videoconvert ! videoscale ! kmssink');
+            const s = buildLivePipeline(KMS, busSource);
+            expect(s).toContain('videoconvert ! videoscale ! mrvideopace name=vp_pace ! kmssink');
             // Still uncapped: a native-res broadcast panel must not be rescaled.
             expect(s).not.toContain('width=');
         });
@@ -415,13 +420,9 @@ describe('VideoPlayerModule helpers', () => {
             // Weston (kiosk-shell fullscreen) fit-scales the surface on the GPU
             // for free, so scaling in software here would pay for it twice: the
             // frames reach waylandsink at SOURCE resolution.
-            const s = buildLivePipeline(
-                'waylandsink name=sink sync=false fullscreen=true qos=true',
-                busSource,
-                true,
-            );
+            const s = buildLivePipeline(WAYLAND, busSource, true);
             expect(s).toContain(
-                'decodebin3 ! videoconvert ! waylandsink name=sink sync=false fullscreen=true qos=true',
+                `decodebin3 ! videoconvert ! mrvideopace name=vp_pace ! ${WAYLAND}`,
             );
             expect(s).not.toContain('videoscale');
             expect(s).not.toContain('width=');
@@ -435,12 +436,9 @@ describe('VideoPlayerModule helpers', () => {
             // filter needed an explicit no-constraint DMABuf structure to let
             // those buffers past a size only the software path could satisfy;
             // with no caps filter at all they negotiate straight through
-            // videoconvert (which passes DMA_DRM untouched) to waylandsink.
-            const s = buildLivePipeline(
-                'waylandsink name=sink sync=false fullscreen=true qos=true',
-                busSource,
-                true,
-            );
+            // videoconvert (which passes DMA_DRM untouched) and mrvideopace (which
+            // proxies caps and allocation, B-162) to waylandsink.
+            const s = buildLivePipeline(WAYLAND, busSource, true);
             expect(s).not.toContain('memory:DMABuf');
             expect(s).not.toContain('video/x-raw');
         });
@@ -482,12 +480,12 @@ describe('VideoPlayerModule helpers', () => {
             // The watchdog element replaces udpsrc's `timeout` property: the
             // runner matches the `buswd` prefix on its ERROR and tags it
             // `kind: 'bus_stall'`, which the module latches into fallback.
-            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+            const s = buildLivePipeline(KMS, busSource);
             expect(s).toContain('watchdog name=buswd_5000 timeout=5000');
         });
 
         it('orders unixfdsrc → watchdog → mrtsdemux (watchdog sees raw socket delivery)', () => {
-            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+            const s = buildLivePipeline(KMS, busSource);
             const idxSrc = s.indexOf('unixfdsrc');
             const idxWd = s.indexOf('watchdog');
             const idxDemux = s.indexOf('mrtsdemux');
@@ -501,7 +499,7 @@ describe('VideoPlayerModule helpers', () => {
                 // probe wants the MUXED TS (it does its own PSI discovery), and
                 // it puts the branch downstream of the stall watchdog so it
                 // cannot interfere with bus_stall detection.
-                const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+                const s = buildLivePipeline(KMS, busSource);
                 expect(s).toContain('! tee name=vp_ts ! mrtsdemux');
                 expect(s).toContain(
                     'vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe',
@@ -509,23 +507,8 @@ describe('VideoPlayerModule helpers', () => {
                 expect(s.indexOf('watchdog')).toBeLessThan(s.indexOf('tee name=vp_ts'));
             });
 
-            it('taps the same spot on the clock-paced variant, straight off the jitter queue', () => {
-                // No tsparse ahead of the tee on either sink (WI-P3-18): the bus delivers
-                // whole-packet buffers (unixfd keeps producer buffer boundaries), as
-                // `ts_psi.iter_packets` needs: it strides a fixed 188, never resyncing on 0x47.
-                const s = buildLivePipeline(
-                    'kmssink name=sink sync=true qos=true',
-                    busSource,
-                    false,
-                    200,
-                    true,
-                );
-                expect(s).toMatch(/ ! queue leaky=0 [^!]* ! tee name=vp_ts ! mrtsdemux /);
-                expect(s).toContain('appsink name=tsprobe');
-            });
-
             it('hangs the tap off the end as a side chain, never in the render path', () => {
-                const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+                const s = buildLivePipeline(KMS, busSource);
                 expect(s.indexOf('kmssink name=sink')).toBeLessThan(s.indexOf('appsink'));
                 // Leaky + the runner's drop=true appsink: the tap can never
                 // back-pressure the render branch through the tee.
@@ -535,17 +518,14 @@ describe('VideoPlayerModule helpers', () => {
 
         describe('explicit decoder chains', () => {
             const all = Object.fromEntries(DECODER_ELEMENTS.map((e) => [e, true]));
-            const wayland = 'waylandsink name=sink sync=false fullscreen=true qos=true';
-            const kms = 'kmssink name=sink sync=false qos=true';
 
             it('bootstraps on decodebin3 with NO capsfilter when no codec is known', () => {
-                // Byte-for-byte the pipeline the player has always built (plus
+                // The pipeline the player has always built on this rung (plus
                 // the probe tap that discovers the codec in the first place).
-                const s = buildLivePipeline(wayland, busSource, true);
+                const s = buildLivePipeline(WAYLAND, busSource, true);
                 expect(s).toContain(
-                    'mrtsdemux name=vpdemux media=video ! queue leaky=2 max-size-time=1000000000 ' +
-                        'max-size-buffers=0 max-size-bytes=0 ! decodebin3 ! videoconvert ! ' +
-                        wayland,
+                    `mrtsdemux name=vpdemux media=video ! ${ES_QUEUE} ! decodebin3 ! videoconvert ! ` +
+                        `mrvideopace name=vp_pace ! ${WAYLAND}`,
                 );
                 expect(s).not.toContain('capsfilter');
                 expect(s).not.toContain('h264parse');
@@ -554,18 +534,14 @@ describe('VideoPlayerModule helpers', () => {
 
             it('builds h264parse ! v4l2h264dec on the wayland path (no videoscale)', () => {
                 const s = buildLivePipeline(
-                    wayland,
+                    WAYLAND,
                     busSource,
                     true,
-                    200,
-                    false,
                     selectDecoder({ codec: 'h264', available: all }),
                 );
                 expect(s).toContain(
-                    'mrtsdemux name=vpdemux media=video ! capsfilter caps="video/x-h264" ! ' +
-                        'queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! ' +
-                        'h264parse ! v4l2h264dec name=vpdec ! videoconvert ! ' +
-                        wayland,
+                    `mrtsdemux name=vpdemux media=video ! capsfilter caps="video/x-h264" ! ${ES_QUEUE} ! ` +
+                        `h264parse ! v4l2h264dec name=vpdec ! videoconvert ! mrvideopace name=vp_pace ! ${WAYLAND}`,
                 );
                 expect(s).not.toContain('decodebin');
                 expect(s).not.toContain('videoscale');
@@ -573,27 +549,21 @@ describe('VideoPlayerModule helpers', () => {
 
             it('builds h265parse ! v4l2slh265dec on the KMS path (videoconvert ! videoscale)', () => {
                 const s = buildLivePipeline(
-                    kms,
+                    KMS,
                     busSource,
-                    false,
-                    200,
                     false,
                     selectDecoder({ codec: 'h265', available: all }),
                 );
                 expect(s).toContain(
-                    'capsfilter caps="video/x-h265" ! ' +
-                        'queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! ' +
-                        'h265parse ! v4l2slh265dec name=vpdec ! videoconvert ! videoscale ! ' +
-                        kms,
+                    `capsfilter caps="video/x-h265" ! ${ES_QUEUE} ! h265parse ! v4l2slh265dec name=vpdec ! ` +
+                        `videoconvert ! videoscale ! mrvideopace name=vp_pace ! ${KMS}`,
                 );
             });
 
-            it('inlines avdec frame threading and honours bufferMs on the software rung', () => {
+            it('inlines avdec frame threading on the software rung', () => {
                 const s = buildLivePipeline(
-                    kms,
+                    KMS,
                     busSource,
-                    false,
-                    1500,
                     false,
                     selectDecoder({
                         codec: 'h265',
@@ -604,17 +574,12 @@ describe('VideoPlayerModule helpers', () => {
                 expect(s).toContain(
                     'h265parse ! avdec_h265 name=vpdec thread-type=frame max-threads=3 ! videoconvert',
                 );
-                // bufferMs still sizes both the jitter queue and the
-                // post-demux leaky queue — unchanged by the decoder swap.
-                expect(s).toContain('max-size-time=1500000000');
             });
 
             it('threads the software rung on the default (auto) threading', () => {
                 const s = buildLivePipeline(
-                    kms,
+                    KMS,
                     busSource,
-                    false,
-                    200,
                     false,
                     selectDecoder({
                         codec: 'h264',
@@ -628,10 +593,8 @@ describe('VideoPlayerModule helpers', () => {
 
             it('leaves the software rung bare on "single"', () => {
                 const s = buildLivePipeline(
-                    kms,
+                    KMS,
                     busSource,
-                    false,
-                    200,
                     false,
                     selectDecoder({
                         codec: 'h264',
@@ -643,34 +606,30 @@ describe('VideoPlayerModule helpers', () => {
                 expect(s).not.toContain('thread-type');
             });
 
-            it('keeps the codec filter on the demux pad, before the leaky queue', () => {
+            it('keeps the codec filter on the demux pad, before the ES queue', () => {
                 // The delayed link is made at the demux pad, so the filter there is the
                 // rung's codec guard: a pad of another codec stays unlinked.
                 const s = buildLivePipeline(
-                    kms,
+                    KMS,
                     busSource,
-                    false,
-                    200,
                     false,
                     selectDecoder({ codec: 'h264', available: all }),
                 );
-                // Slice from the demux so the queues before it (the bus ingress
-                // is leaky=2 too) can't be mistaken for the post-demux one.
+                // Slice from the demux so the bus ingress queue before it can't be mistaken
+                // for the ES queue.
                 const afterDemux = s.slice(s.indexOf('mrtsdemux'));
                 expect(afterDemux.indexOf('capsfilter')).toBeLessThan(
-                    afterDemux.indexOf('queue leaky=2'),
+                    afterDemux.indexOf('queue name=vp_esq'),
                 );
-                expect(afterDemux.indexOf('queue leaky=2')).toBeLessThan(
+                expect(afterDemux.indexOf('queue name=vp_esq')).toBeLessThan(
                     afterDemux.indexOf('h264parse'),
                 );
             });
 
-            it('keeps the probe tap and watchdog on a paced explicit chain, with no tsparse', () => {
+            it('keeps the probe tap and watchdog on an explicit chain, with no tsparse', () => {
                 const s = buildLivePipeline(
-                    wayland,
+                    WAYLAND,
                     busSource,
-                    true,
-                    200,
                     true,
                     selectDecoder({ codec: 'h265', available: all }),
                 );
@@ -882,6 +841,51 @@ describe('VideoPlayerModule helpers', () => {
             expect(desc.env).toEqual({});
         });
 
+        it('plays as soon as it can: stored Sync, Buffer and Lip-Sync Trim build the same string (B-169)', () => {
+            VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
+            const module = makeModule();
+            (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue({
+                port: 5500,
+                socketPath: '/tmp/mr-bus-5500-abc.sock',
+            });
+            const config = { fallbackText: 'No video', display: 'HDMI-A-1' };
+            const plain = module.buildPipeline(config)!;
+            for (const stored of [
+                { sync: false },
+                { sync: true },
+                { bufferMs: 1500 },
+                { bufferMs: 0 },
+                { lipSyncMs: 500 },
+                { lipSyncMs: -40 },
+                { sync: false, bufferMs: 5000, lipSyncMs: 2000 },
+            ]) {
+                const desc = module.buildPipeline({ ...config, ...stored })!;
+                expect(desc.pipeline, JSON.stringify(stored)).toBe(plain.pipeline);
+                expect(desc.renderWatch, JSON.stringify(stored)).toEqual(plain.renderWatch);
+            }
+            expect(plain.pipeline).toContain(' ! queue name=vp_esq leaky=0 ');
+            expect(plain.pipeline).toContain(' ! mrvideopace name=vp_pace ! ');
+            // The connector id is the host's, from sysfs.
+            expect(plain.pipeline).toMatch(
+                / kmssink name=sink (connector-id=\d+ )?sync=false qos=false /,
+            );
+            expect(plain.backlogShed).toBeUndefined();
+        });
+
+        it('Sync, Buffer and Lip-Sync Trim are gone from the manifest, and nothing is live but the fallback text and the subtitles', () => {
+            const manifest = JSON.parse(
+                fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'),
+            );
+            for (const key of ['sync', 'bufferMs', 'lipSyncMs']) {
+                expect(manifest.mediaRouter.configSchema.properties).not.toHaveProperty(key);
+            }
+            const module = new VideoPlayerModule();
+            expect((module as any).liveUpdatableParams).not.toContain('lipSyncMs');
+            expect((module as any).liveUpdatableParams[0]).toBe('fallbackText');
+            // No route playout offset reaches the sink either: the push and its hook are gone.
+            expect((module as any).onRoutePlayoutOffsetChanged).toBeUndefined();
+        });
+
         it('carries MR_GLIB_PRGNAME into the env on the Wayland path', () => {
             // Verifies the integration: when both waylandsink is available and
             // a compositor socket is reachable, the env field on the returned
@@ -930,15 +934,14 @@ describe('VideoPlayerModule helpers', () => {
         });
 
         it('returns a different ident after the socket file is replaced (compositor restart)', () => {
-            // Models the Weston restart sequence: unlink old socket, create
-            // new one. Inode changes even when the filename is reused. This
+            // Models the Weston restart sequence: a new socket under the old
+            // name. Inode changes even when the filename is reused. This
             // change-detection is what the watcher uses to decide whether to
             // kick a pipeline restart.
             const sockPath = path.join(tmp, 'wayland-1');
             fs.writeFileSync(sockPath, '');
             const first = currentWaylandSessionIdent(tmp);
-            fs.unlinkSync(sockPath);
-            fs.writeFileSync(sockPath, '');
+            replaceSocket(sockPath);
             const second = currentWaylandSessionIdent(tmp);
             expect(first).not.toBe('');
             expect(second).not.toBe('');
@@ -1062,8 +1065,7 @@ describe('VideoPlayerModule helpers', () => {
             expect(VideoPlayerModule._test_getRunningInstances().size).toBe(2);
 
             // Simulate compositor restart: socket replaced.
-            fs.unlinkSync(sockPath);
-            fs.writeFileSync(sockPath, '');
+            replaceSocket(sockPath);
 
             VideoPlayerModule._test_triggerWaylandCheck();
             await new Promise((r) => setTimeout(r, 700)); // > debounce window
@@ -1097,11 +1099,9 @@ describe('VideoPlayerModule helpers', () => {
             const inst = makeRunningInstance();
 
             // Two replacements; debounce + latch should still produce one cycle.
-            fs.unlinkSync(sockPath);
-            fs.writeFileSync(sockPath, '');
+            replaceSocket(sockPath);
             VideoPlayerModule._test_triggerWaylandCheck();
-            fs.unlinkSync(sockPath);
-            fs.writeFileSync(sockPath, '');
+            replaceSocket(sockPath);
             VideoPlayerModule._test_triggerWaylandCheck();
             await new Promise((r) => setTimeout(r, 700));
             await new Promise((r) => setImmediate(r));
@@ -1637,11 +1637,14 @@ describe('VideoPlayerModule helpers', () => {
                 (firstConnectedDisplay as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
                     'HDMI-A-1',
                 );
-                expect(build(makeModule()).timingSink).toEqual({
+                const desc = build(makeModule());
+                expect(desc.timingSink).toEqual({
                     element: 'sink',
                     kind: 'video',
                     refreshHz: 50,
                 });
+                // And to the pace, as its prior until it measures the display (B-175).
+                expect(desc.pipeline).toContain('mrvideopace name=vp_pace refresh-mhz=50000 ! ');
             } finally {
                 fs.rmSync(sysfs, { recursive: true, force: true });
             }
@@ -2415,32 +2418,14 @@ describe('VideoPlayerModule helpers', () => {
             expect(setProperty).toHaveBeenCalledWith('nov', 'text', 'Whats sup');
         });
 
-        /**
-         * Playout offset D on the video leg (ADR-0005 decision 4). The
-         * `lipSyncMs` live push predates D and must keep working — but what
-         * goes on the wire is the WHOLE offset (D + trim), not the raw trim,
-         * or a lip-sync nudge would silently throw the route offset away.
-         */
-        describe('playout offset', () => {
-            it('pushes D + trim, not the trim alone', async () => {
-                const { module, setProperty } = makeRunningModule({
-                    hasSource: true,
-                    playoutOffsetMs: 300,
-                    routeOffsetMs: 500,
-                });
-                await module.onLiveConfigUpdate({ lipSyncMs: 40 });
-                expect(setProperty).toHaveBeenCalledWith('sink', 'ts-offset', 540_000_000);
+        it('a change to a stored Lip-Sync Trim pushes nothing: the setting is gone (B-169)', async () => {
+            const { module, setProperty } = makeRunningModule({
+                hasSource: true,
+                playoutOffsetMs: 300,
+                routeOffsetMs: 500,
             });
-
-            it('re-pushes when the route head moves D, with no config change at all', async () => {
-                const { module, setProperty } = makeRunningModule({
-                    hasSource: true,
-                    playoutOffsetMs: 300,
-                    routeOffsetMs: 500,
-                });
-                await module.onRoutePlayoutOffsetChanged();
-                expect(setProperty).toHaveBeenCalledWith('sink', 'ts-offset', 500_000_000);
-            });
+            await module.onLiveConfigUpdate({ lipSyncMs: 40 });
+            expect(setProperty).not.toHaveBeenCalled();
         });
     });
 });
@@ -2557,6 +2542,15 @@ describe('renderWatch health messages', () => {
             'warning',
             'Video output stalled (0/50 fps) — the source is still delivering, the decode/display chain has stopped',
         );
+    });
+
+    it('a forwarded mrvideopace message changes no health and rebuilds nothing', () => {
+        // Forwarded for the timing section (p4-12); the keep-up watch counts its rate drops.
+        const module = makeModule();
+        const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+        (module as any).onPluginEvent('mrvideopace:vp_pace', { released: 100, 'rate-drops': 20 });
+        expect((module as any).setHealth).not.toHaveBeenCalled();
+        expect(restart).not.toHaveBeenCalled();
     });
 
     it('total stall while the bus-stall latch is set stays attributed to the source', () => {

@@ -164,6 +164,29 @@ describe('renderTarget', () => {
             expect(target.env).toEqual({ MR_GLIB_PRGNAME: 'local.mr.HDMI-A-1' });
         });
 
+        it('names the DSI panel driver kmssink never opens on the KMS path, and none for the compositor', () => {
+            // The Pi 5 box's panel on drm-rp1-dsi (DEV-P4a), as sysfs lays it out.
+            const card = path.join(tmp, 'drm', 'card1');
+            const conn = path.join(card, 'card1-DSI-2');
+            const dev = path.join(tmp, 'dsi-dev');
+            const drv = path.join(tmp, 'drivers', 'drm-rp1-dsi');
+            for (const d of [conn, dev, drv]) fs.mkdirSync(d, { recursive: true });
+            fs.symlinkSync(card, path.join(conn, 'device'));
+            fs.symlinkSync(dev, path.join(card, 'device'));
+            fs.symlinkSync(drv, path.join(dev, 'driver'));
+            listMock.mockReturnValue([
+                { name: 'DSI-2', label: 'DSI-2', meta: { status: 'connected', sysfsPath: conn } },
+            ]);
+            pickMock.mockReturnValue(choice('DSI-2', 41));
+            const kms = resolveRenderTarget('DSI-2', { wayland: false, kms: true });
+            if (kms.kind !== 'ready') throw new Error('expected a ready target');
+            expect(kms.sinkEnv.kmsDriver).toEqual({ name: 'drm-rp1-dsi', fullScreenOnly: true });
+            withCompositor();
+            const wl = resolveRenderTarget('DSI-2', { wayland: true, kms: true });
+            if (wl.kind !== 'ready') throw new Error('expected a ready target');
+            expect(wl.sinkEnv).not.toHaveProperty('kmsDriver');
+        });
+
         it('leaves the env empty on the KMS path — the app_id pin does not apply', () => {
             listMock.mockReturnValue([connected('HDMI-A-1')]);
             pickMock.mockReturnValue(choice('HDMI-A-1', 32));

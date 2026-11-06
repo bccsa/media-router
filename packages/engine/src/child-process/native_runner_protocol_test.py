@@ -2793,8 +2793,12 @@ def test_mrtsdemux_messages():
               seen["native"] == seen["python"])
 
 
-# --------------------------------------------------------------------------- video-leg-formula (WI-P3-11)
+# --------------------------------------------------------------------------- video-leg-pace (WI-P3-11, B-169)
+# The sink's line when it waits for a buffer's time: test_presentation_formula reads it.
 _SINK_SYNC = re.compile(r":<sink> possibly waiting for clock to reach (\d+):(\d\d):(\d\d)\.(\d{9})")
+_PACE_SECONDS = 8                                    # of generated 1080p50 H.264
+_PACE_DISPLAY = "mrtestvideosink name=sink period-ns=20000000"   # 0008's model at 50 Hz
+_TEST_VIDEO_DIR = os.path.join(_PLUGINS, "mpegts-core", "native", "mrtshouse", "tests", "mrtestvideo")
 
 
 def _pes_formula_ns(data, pid, ref_ns):
@@ -2810,27 +2814,40 @@ def _pes_formula_ns(data, pid, ref_ns):
     return out
 
 
-def _video_leg_run(argv, start, fixture, pid):
-    """One player start command, its display a fakesink with the sink's properties, on `fixture`
-    rebased to now in the srt-input's 128-packet bus buffers: the running time of each frame the
-    display takes before the stop (basesink's line), as ns after the first video PES's."""
+def _test_video_env(tmp):
+    """The test display library on the child's plugin path, with a registry of its own."""
+    return {"GST_PLUGIN_PATH": ":".join(p for p in (os.environ.get("GST_PLUGIN_PATH", ""), _TEST_VIDEO_DIR) if p),
+            "GST_REGISTRY": os.path.join(tmp, "registry.bin")}
+
+
+def _runner_prop(r, element, prop, rid):
+    r.send({"cmd": "get_property", "id": rid, "element": element, "property": prop})
+    ev = r.wait_event(lambda e: e.get("id") == rid and e.get("event") in ("property", "command_error"))
+    return ev.get("value") if ev and ev.get("event") == "property" else None
+
+
+def _video_leg_pace_run(argv, start, rel, rig):
+    """One player start command, its display mrtestvideosink at 50 Hz, fed `rel` (relative-time TS)
+    rebased to now in 128-packet bus buffers at house pace: the forwarded mrvideopace messages, the
+    display's and the pace's stats, the demux's PES count, its plan, and the run's lifecycle."""
     tmp = tempfile.mkdtemp(prefix="mrtest-")
     sock = os.path.join(tmp, "vp.sock")
     pipe = start["pipeline"].replace("@SOCK@", tmp)
-    display = pipe.replace("kmssink name=sink connector-id=32 ", "fakesink name=sink ")
+    display = re.sub(r"kmssink name=sink [^!]*?qos=false", _PACE_DISPLAY, pipe)
     clock = Gst.SystemClock.obtain()
     clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
     feeder = _bus_feeders([sock], clock)[0]
-    r = RunnerProc(argv, env={"GST_DEBUG": "basesink:5", "GST_DEBUG_NO_COLOR": "1"})
-    res, data, now0, upto = {"display": display != pipe}, b"", 0, 0
+    r = RunnerProc(argv, env=_test_video_env(tmp))
+    res = {"display": display != pipe and _PACE_DISPLAY in display}
     try:
         r.wait_event(ev_is("ready"), timeout=10)
-        # A sync=true display prerolls on its first frame: the feed starts with the pipeline.
+        # The display prerolls on its first frame: the feed starts with the pipeline.
         r.send({"cmd": "start", **start, "pipeline": display})
         now0 = clock.get_time() + 1_500_000_000
-        data = _rebased(fixture, now0, os.path.join(tmp, "in.ts"))
-        # At least 2 ms apart: unixfdsink and unixfdsrc each send under their object lock, so a
-        # burst both ways can deadlock the harness's feeder and the runner (B-133).
+        pcr0 = next(rig.ts_psi.read_pcr(p) // 300 for d in rel for p in rig.ts_psi.iter_packets(d)
+                    if rig.ts_psi.read_pcr(p) is not None)
+        data = b"".join(rig.rebase_ts(d, (now0 * 9 // 100000 + rig.MUX_BASE - pcr0) % rig.WRAP) for d in rel)
+        # At least 2 ms apart: unixfdsink and unixfdsrc each send under their object lock (B-133).
         chunks, last = [], 0
         for chunk, at in _house_chunks(data, now0, size=128 * 188):
             last = max(at, last + 2_000_000)
@@ -2841,76 +2858,127 @@ def _video_leg_run(argv, start, fixture, pid):
         while settle is None or time.monotonic() < settle:
             r.pump()
             if settle is None and not feed.is_alive():
-                settle = time.monotonic() + 2.0
+                settle = time.monotonic() + 1.0
             time.sleep(0.05)
         feed.join()
-        r.send({"cmd": "get_property", "id": "vlpes", "element": "vpdemux", "property": "pes"})
-        ev = r.wait_event(lambda e: e.get("id") == "vlpes" and e.get("event") in ("property", "command_error"))
-        res["pes"] = ev.get("value") if ev and ev.get("event") == "property" else None
-        r.pump()
-        upto = len(r.logs)  # the stop drains the decoder's tail late: the frames before it
         res["playing"] = r.has_event(ev_is("state_change", state="playing"))
+        res["display_stats"] = _runner_prop(r, "sink", "display-stats", "vpd")
+        res["pace_stats"] = _runner_prop(r, "vp_pace", "stats", "vpp")
+        res["pes"] = _runner_prop(r, "vpdemux", "pes", "vpes")
         res["error"] = r.has_event(ev_is("error"))
         res["rc"] = r.stop_and_wait()
     finally:
         feeder.set_state(Gst.State.NULL)
         r.kill()
         shutil.rmtree(tmp, ignore_errors=True)
-    pes = _pes_formula_ns(data, pid, now0) or [0]
-    res["want"] = {t - pes[0] for t in pes}
-    res["at"] = [((int(h) * 60 + int(m)) * 60 + int(s)) * 1_000_000_000 + int(ns) - pes[0]
-                 for h, m, s, ns in (x.groups() for x in map(_SINK_SYNC.search, r.logs[:upto]) if x)]
+    res["clock_rule"] = any("contract clock: monotonic, base_time=0" in line for line in r.logs)
+    res["paces"] = [e["payload"] for e in r.events if e.get("event") == "plugin_event"
+                    and e.get("channel") == "mrvideopace:vp_pace"]
+    res["lags"] = [e["payload"] for e in r.events if e.get("event") == "plugin_event"
+                   and e.get("channel") == "renderwatch:lag"]
     res["pads"] = [p.get("pads") for p in _demux_events(r, "vpdemux") if p.get("reason") == "program"]
     return res
 
 
-def test_video_leg_formula():
-    """video-leg-formula (WI-P3-11), both runners: the player's live start commands
-    (fixtures/video-leg/pipelines.json, from its own plan), the display a fakesink with the sink's
-    properties. `mrtsdemux media=video` gives the program its video pad alone and assembles video
-    PES alone; with no branch alignment each frame reaches the display at its PES PTS - 1 h, ceil
-    to the ns: the explicit H.264 rung on cap-occ-1080i-h264-aac-ttx (1080i, B frames, 23 PIDs)
-    and on bus-occ-ingest (the restamped OCC ingest off a test box's bus), the decodebin3 rung on
-    cap-vmix-h264-aac, whose PMT lists its audio first."""
-    for el in ("unixfdsink", "h264parse", "avdec_h264", "decodebin3"):
+def test_video_leg_pace():
+    """video-leg-pace (WI-P3-11, B-169), both runners: the player's live start command
+    (fixtures/video-leg/pipelines.json, its explicit H.264 rung, from its own plan) with
+    `mrtestvideosink` at 50 Hz in the KMS sink's place, fed a generated 1080p50 H.264 at house
+    pace. The demux gives the program its video pad alone; mrvideopace releases every frame on
+    the content's cadence (no rate drop, no step in its lateness after the start), the display
+    presents each one, and both runners forward `mrvideopace` in forwarded-messages.json's shape.
+    The pipeline runs on the runners' clock: base time 0, start time none."""
+    for el in ("unixfdsink", "h264parse", "avdec_h264", "x264enc", "mpegtsmux"):
         if Gst.ElementFactory.find(el) is None:
-            print(f"SKIP video-leg-formula — {el} unavailable")
+            print(f"SKIP video-leg-pace — {el} unavailable")
             return
-    if not os.path.exists(_MRTS_CLI):
-        print("SKIP video-leg-formula — mrts_cli not built")
+    if not os.path.exists(os.path.join(_TEST_VIDEO_DIR, "libgstmrtestvideo.so")):
+        print("SKIP video-leg-pace — mrtshouse/tests/mrtestvideo not built (make native-test)")
+        return
+    try:
+        import aligner_rig as rig
+    except ImportError as exc:
+        print(f"SKIP video-leg-pace — the rig does not import ({exc})")
         return
     with open(os.path.join(_FIX, "video-leg", "pipelines.json"), encoding="utf-8") as fh:
-        starts = json.load(fh)
-    # The fewest frames the display takes before the stop: the decoder holds its reorder depth and
-    # three frame threads, and the OCC trims' open-GOP leading B frames do not decode from a live
-    # start (bus-occ-ingest's 11 PES give its I frame alone).
-    cases = (("explicit", "cap-occ-1080i-h264-aac-ttx", 0x65, "video_0_0065", 5),
-             ("explicit", "bus-occ-ingest", 0x65, "video_0_0065", 1),
-             ("bootstrap", "cap-vmix-h264-aac", 0x101, "video_0_0101", 90))
+        start = json.load(fh)["explicit"]["start"]
+    rel = rig.generated("h264-1080p50", _PACE_SECONDS)
+    vpid = next(rig.ts_psi.ts_pid(p) for d in rel for p in rig.ts_psi.iter_packets(d)
+                if p[1] & 0x40 and rig.ts_psi.read_pes_pts(p) is not None)
+    frames = len(_pes_formula_ns(b"".join(rel), vpid, 0))
+    shape = _engine_shapes()["mrvideopace"]
     seen = {}
     for tag, argv in (("native", None), ("python", _DEMUX_PY)):
-        for rung, fixture, pid, pad, least in cases:
-            with open(os.path.join(_FIX, fixture + ".demux.jsonl"), encoding="utf-8") as fh:
-                units = sum(1 for line in fh if '"unit"' in line and f'"pad":"{pad}"' in line)
-            res = _video_leg_run(argv, starts[rung]["start"], fixture, pid)
-            label = f"video-leg-formula {tag} {rung} {fixture}"
-            at, want = res["at"], res["want"]
-            check(f"{label}: a fakesink with the sink's properties stands in for the display", res["display"])
-            check(f"{label}: reaches PLAYING, no error, exits 0",
-                  res["playing"] and not res["error"] and res["rc"] == 0)
-            check(f"{label}: the demux gives the program its video pad alone ({res['pads']})",
-                  res["pads"] == [pad])
-            check(f"{label}: and assembles video PES alone, the reference's {units} but the open last "
-                  f"({res['pes']})", res["pes"] == units - 1)
-            off = [t - min(want, key=lambda w: abs(w - t)) for t in at if t not in want]
-            check(f"{label}: {len(at)} frames at the display, each at its PES PTS - 1 h, ceil to the ns "
-                  f"(off by: {off[:3]})", len(at) >= least and not off)
-            check(f"{label}: in order, each once", at == sorted(set(at)))
-            seen.setdefault((rung, fixture), []).append(at)
-    for (rung, fixture), (a, b) in ((k, v) for k, v in seen.items() if len(v) == 2):
-        n = min(len(a), len(b))
-        check(f"video-leg-formula {rung} {fixture}: both runners show the same first {n} frames at the "
-              f"same times", n > 0 and a[:n] == b[:n])
+        res = _video_leg_pace_run(argv, start, rel, rig)
+        label = f"video-leg-pace {tag}"
+        paces, ds, ps = res["paces"], res["display_stats"] or {}, res["pace_stats"] or {}
+        check(f"{label}: mrtestvideosink at 50 Hz stands in for the KMS sink", res["display"])
+        check(f"{label}: reaches PLAYING, no error, exits 0",
+              res["playing"] and not res["error"] and res["rc"] == 0)
+        check(f"{label}: on the runners' clock, base time 0 and start time none", res["clock_rule"])
+        check(f"{label}: the demux gives the program its video pad alone ({res['pads']})",
+              res["pads"] == [f"video_0_{vpid:04x}"])
+        check(f"{label}: and assembles every video PES, the last one open or closed by the end "
+              f"({res['pes']} of {frames})", res["pes"] in (frames - 1, frames))
+        off = [p for p in paces if _shape(p) != _shape(shape)]
+        check(f"{label}: mrvideopace forwarded unsubscribed every 2 s, in the engine's shape "
+              f"({len(paces)} messages; off: {off[:1]})", len(paces) >= 3 and not off)
+        steady = paces[1:]
+        lateness = [p.get("present-lateness-ns", 0) for p in steady]
+        flat = (max(lateness) - min(lateness)) / 1e6 if lateness else None
+        check(f"{label}: no rate drop on a 50 Hz display, its refresh measured from the display's "
+              f"presentations ({ps.get('rate-drops')} drops, {ps.get('refresh-source')} "
+              f"{ps.get('refresh-ns')} ns)", ps.get("rate-drops") == 0
+              and ps.get("refresh-source") == "measured" and ps.get("refresh-ns") == 20_000_000)
+        # A frame the shared host or the feeder makes late steps the cadence for good (the hold,
+        # 13.6): a few such steps, never a ratchet.
+        late = [p.get("late", 0) for p in steady]
+        check(f"{label}: every frame on the content's cadence after the start: at most 3 late steps "
+              f"(late {late}), the display's lateness flat within two frames ({flat} ms)",
+              len(steady) >= 2 and late[-1] - late[0] <= 3 and flat is not None and flat <= 40.0)
+        check(f"{label}: the display presents every frame released, none replaced or timed out "
+              f"({ds.get('presented')} of {ps.get('released')}; replaced {ds.get('replaced')}, timeouts "
+              f"{ds.get('present-timeouts')}, not presented {ds.get('not-presented')})",
+              ps.get("released", 0) >= frames - 10 and ps.get("released", 0) - ds.get("presented", 0) <= 2
+              and ds.get("replaced") == 0 and ds.get("present-timeouts") == 0 and ds.get("not-presented") == 0)
+        check(f"{label}: the keep-up watch reads no lag ({res['lags'][:1]})", not res["lags"])
+        seen[tag] = (res["pads"], ps.get("rate-drops"), ps.get("refresh-ns"))
+    if len(seen) == 2:
+        check(f"video-leg-pace: both runners show the same plan, drops and refresh ({seen['native']})",
+              seen["native"] == seen["python"])
+
+
+def test_render_watch_pace():
+    """render-watch-pace (B-169), both runners: 60p into `mrvideopace refresh-mhz=50000` (a 50 Hz
+    display's prior) and a sink, as the player's keep-up watch sees it. With `pace` named, the
+    pace's 1 in 6 rate drops count as kept up and nothing lags; without it the watch reads 50 of
+    60 fps for three windows and reports lag, as it would for every 60p source on a 50 Hz display."""
+    src = ("videotestsrc is-live=true ! video/x-raw,width=64,height=36,framerate=60/1 ! "
+           "mrvideopace name=vp_pace refresh-mhz=50000 ! fakesink name=vsink sync=false")
+    lags = {}
+    for tag, argv in (("native", None), ("python", _PY_RUNNER)):
+        for named in (True, False):
+            watch = {"sink": "vsink", **({"pace": "vp_pace"} if named else {})}
+            r = RunnerProc(argv)
+            try:
+                r.wait_event(ev_is("ready"))
+                r.send({"cmd": "start", "pipeline": src, "renderWatch": watch})
+                playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+                lag = r.wait_event(lambda e: e.get("event") == "plugin_event"
+                                   and e.get("channel") == "renderwatch:lag", timeout=10)
+                drops = (_runner_prop(r, "vp_pace", "stats", "rwp") or {}).get("rate-drops", 0)
+                ok = playing and not r.has_event(ev_is("error")) and r.stop_and_wait() == 0
+            finally:
+                r.kill()
+            lags[(tag, named)] = lag
+            label = f"render-watch-pace {tag} {'with' if named else 'without'} the pace"
+            if named:
+                check(f"{label}: the rate drops count as kept up: no lag in 10 s ({drops} drops; "
+                      f"{lag and lag.get('payload')})", ok and lag is None and drops > 80)
+            else:
+                pay = (lag or {}).get("payload") or {}
+                check(f"{label}: 50 of 60 fps reads as lag ({pay})", ok and lag is not None
+                      and pay.get("expectedFps") == 60 and 45 <= pay.get("achievedFps", 0) <= 55)
 
 
 # --------------------------------------------------------------------------- mrasrc-device (WI-P3-5, B-166)
@@ -4525,7 +4593,8 @@ test_edge_stall_fds()
 test_edge_handover()
 test_mrtsdemux_pmt_change()
 test_mrtsdemux_messages()
-test_video_leg_formula()
+test_video_leg_pace()
+test_render_watch_pace()
 test_mrasrc_device()
 test_mrasrc_device_hole()
 test_decoder_hole()

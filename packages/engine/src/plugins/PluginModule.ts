@@ -538,6 +538,9 @@ export interface TsProbeRunnerConfig {
 export interface RenderWatchRunnerConfig {
     /** `name=` of the video sink element in `pipeline` to watch. */
     sink: string;
+    /** `name=` of the `mrvideopace` before it: its rate drops count as frames kept up, both
+     *  presented and arrived (a display slower than the content takes no more, B-169). */
+    pace?: string;
 }
 
 /** Keyframe gate config — see PipelineDescription.keyframeGate. */

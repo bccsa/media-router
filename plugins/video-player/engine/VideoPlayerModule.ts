@@ -51,7 +51,6 @@ import {
     planSink,
     resolveBuildHealth,
     resolveResumeSocket,
-    videoTsOffsetNs,
 } from './helpers/pipelinePlan.js';
 import {
     registerWaylandRestartTarget,
@@ -119,7 +118,7 @@ export class VideoPlayerModule extends GstPluginBase {
     // pipeline. With a source connected, a fallbackText change is silently
     // deferred to the next fallback render. See onLiveConfigUpdate for the
     // hasSource guard that enforces this.
-    protected liveUpdatableParams = ['fallbackText', 'lipSyncMs', ...SUBTITLE_OVERLAY_LIVE_KEYS];
+    protected liveUpdatableParams = ['fallbackText', ...SUBTITLE_OVERLAY_LIVE_KEYS];
 
     /** Probed once at plugin load — set by `initManifest`. */
     private static sinks: SinkAvailability = { wayland: false, kms: false };
@@ -1098,13 +1097,6 @@ export class VideoPlayerModule extends GstPluginBase {
                 );
             }
         }
-        if ('lipSyncMs' in changes) {
-            // Live lip-sync trim — push the new ts-offset to the running video
-            // `sink` (no rebuild). Only bites when the sink is sync=true. The trim rides ON TOP
-            // of the route's playout offset D, so the pushed value has to be re-resolved whole
-            // rather than sent as the raw trim.
-            await this.pushSinkTsOffset();
-        }
         // Subtitle look: live on the overlay element (present only while a
         // subtitle source is wired — a miss is logged, never fatal).
         await applySubtitleLiveUpdates(
@@ -1114,25 +1106,6 @@ export class VideoPlayerModule extends GstPluginBase {
             (err, property) => this.log.debug({ err, property }, 'Failed to update subtitle overlay'),
         );
         this.updateStatusData();
-    }
-
-    /**
-     * The route head's playout offset D moved (ADR-0005 decision 4) — re-push
-     * the sink's `ts-offset` without a rebuild, the same live path `lipSyncMs`
-     * has always used. The audio leg of the route gets the identical call at the
-     * same moment (MediaRouter.notifyPlayoutOffsetChanged), so the two legs
-     * never sit on different values.
-     */
-    async onRoutePlayoutOffsetChanged(): Promise<void> {
-        await this.pushSinkTsOffset();
-    }
-
-    /** Resolve this leg's ts-offset from current config + route and push it live. */
-    private async pushSinkTsOffset(): Promise<void> {
-        const ns = videoTsOffsetNs(this.services, this.config);
-        await this.setElementProperty('sink', 'ts-offset', ns).catch((err) =>
-            this.log.debug({ err }, 'Failed to update sink ts-offset'),
-        );
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
@@ -1157,7 +1130,9 @@ export class VideoPlayerModule extends GstPluginBase {
             this.setHealth(target.health, target.message);
             return null;
         }
-        const sink = planSink(target, config, videoTsOffsetNs(this.services, config));
+        // It plays as soon as it can (B-169): no setting times the sink, and stored Sync,
+        // Buffer and Lip-Sync Trim values are ignored.
+        const sink = planSink(target);
 
         const instanceId = this.services?.instanceId ?? '';
         const udpSource = this.videoSource();
@@ -1238,12 +1213,8 @@ export class VideoPlayerModule extends GstPluginBase {
             // auto-plugging a decoder we struck off. Nothing else is masked —
             // the bin still picks hardware by rank. See decoderRankEnv.
             demoted: VideoPlayerModule.activeDemotions(),
-            bufferMs: config.bufferMs,
             cpuDecodeThreading: config.cpuDecodeThreading,
-            sinkPaced: sink.sinkPaced,
             refreshHz: resolveOutputRefreshHz(target.renderConnector, target.waylandFullscreen),
-            // Read only for the backlog shedder's re-anchor switch.
-            services: this.services,
             subtitles: subtitleSource
                 ? { port: subtitleSource.port, socketPath: subtitleSource.socketPath, config }
                 : undefined,

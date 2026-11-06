@@ -376,6 +376,24 @@ elements" below do not start.
   no later than before. On the box's PipeWire up to about a tenth of a second
   after a gap can be lost as well, as on Audio Output (302M).
 
+**Video Player plays as soon as it can (Phase 4)**
+
+- **It shows each frame as it comes,** on the stream's own frame cadence,
+  instead of waiting for a playout offset: its input's own delay plus the
+  decoding. A route's Playout Offset no longer moves it.
+- **Video Player shows every frame the source sends:** a frame is no longer
+  replaced by the next when the display is a moment late.
+- **A display slower than the stream drops frames evenly to keep up,**
+  instead of falling behind: a 60 frames-a-second source on a 50 Hz display
+  shows five frames in six.
+- **After a stall in its input it plays on behind.** What the input sends
+  late is kept (up to 5 s) and plays that much later, until a gap in the
+  input or a restart; nothing is dropped to catch up.
+- **A pipeline that keeps failing is restarted less often:** after 1 s, then
+  backing off to every 30 s, where it was every 5 s. Each restart opens the
+  video decoder again, and in testing rapid reopening stopped a Pi 4's
+  hardware H.264 decoder until a reboot.
+
 **Removed settings (Phase 4), nothing migrated**
 
 - **Lip-Sync Trim** on Audio Output (302M): with no playout offset there is
@@ -385,6 +403,10 @@ elements" below do not start.
   holds what a stall leaves (up to 5 s) and its sink's ring is fixed at
   100 ms; Sink Buffer and Low-Latency Sync were already ignored. Stored values
   are ignored; a rollback restores them.
+- **Lip-Sync Trim**, **Sync** and **Buffer** on Video Player: with no playout
+  offset there is nothing to trim, the picture is never timed by its sink, and
+  its input queue holds what a stall leaves (up to 5 s). Stored values are
+  ignored; a rollback restores them.
 
 **Needs the image's native elements (Phase 2)**
 
@@ -404,6 +426,9 @@ elements" below do not start.
   a stream from another module now does it with the same demux, so without
   the image's timing elements it refuses to start with "Native TS module not
   loaded". A Video Player with no input still shows its fallback card.
+- From Phase 4, Video Player on a box's display needs the image's waylandsink
+  as well (its patch that presents every frame): on an older image its
+  pipeline does not start ("no property present-every-frame").
 
 **Fixed**
 
