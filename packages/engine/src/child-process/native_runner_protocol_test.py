@@ -3060,6 +3060,172 @@ def test_mrasrc_device_hole():
         check(f"mrasrc-device-hole: both runners the same ({seen['native']})", seen["native"] == seen["python"])
 
 
+# --------------------------------------------------------------------------- decoder-hole (B-168)
+_DECODER_HOLE = (3_000_000_000, 300_000_000)   # where in the stream the hole starts, and its length
+_DECODER_SECONDS = 8
+
+
+def _aac_stream(path, secs, cut_ns=0):
+    """`secs` of a 1 kHz tone as an encoder sends it: AAC (avenc_aac) in MPEG-TS (mpegtsmux). `cut_ns`: the
+    samples of that much from the hole's start never reach the encoder, the rest keeping their time."""
+    p = Gst.parse_launch(f"audiotestsrc num-buffers={secs * 48000 // 1024} samplesperbuffer=1024 wave=sine freq=1000"
+                         " ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! identity name=cut ! audioconvert"
+                         f" ! avenc_aac ! aacparse ! mpegtsmux ! filesink location={path}")
+    if cut_ns:
+        start = _DECODER_HOLE[0]
+        p.get_by_name("cut").get_static_pad("src").add_probe(
+            Gst.PadProbeType.BUFFER, lambda _pad, info: Gst.PadProbeReturn.DROP
+            if start <= info.get_buffer().pts < start + cut_ns else Gst.PadProbeReturn.OK)
+    p.set_state(Gst.State.PLAYING)
+    p.get_bus().timed_pop_filtered(60 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    p.set_state(Gst.State.NULL)
+
+
+def _rebased_path(path, to_ns, out):
+    """The stream at `path` moved by mrts_cli rebase so its first PES is house time `to_ns`."""
+    subprocess.run([_MRTS_CLI, "rebase", path, out, "--to-ns", str(to_ns)], check=True, capture_output=True)
+    with open(out, "rb") as fh:
+        return fh.read()
+
+
+def _decoder_hole_run(argv, env, desc, raw, drop, clock, tmp):
+    """The decoder's string on one runner, fed `raw` on its bus edge at the stream's house time; `drop`:
+    the packets the hole's time would send never come (then the stream that much on). Reads the ASRC's
+    stats and the sink's counters just before the hole and a second before the stream's end."""
+    feeder = _bus_feeders([os.path.join(tmp, "in0.sock")], clock)[0]
+    r = RunnerProc(argv, env=env)
+    res = {}
+    try:
+        r.wait_event(ev_is("ready"), timeout=10)
+        now0 = clock.get_time() + 1_500_000_000
+        data = _rebased_path(raw, now0, os.path.join(tmp, "in.ts"))
+        chunks, last = [], 0
+        hole0, hole1 = now0 + _DECODER_HOLE[0], now0 + _DECODER_HOLE[0] + _DECODER_HOLE[1]
+        for chunk, at in _house_chunks(data, now0, lead_ns=0, size=4 * 188):
+            if not (drop and hole0 <= at < hole1):
+                last = max(at, last + 2_000_000)   # a burst both ways can deadlock the unixfd pair (B-133)
+                chunks.append((chunk, last))
+        # The sink prerolls on the first buffer: the feed starts with the pipeline.
+        r.send({"cmd": "start", "pipeline": desc.replace("@SOCK@", tmp)})
+        feed = threading.Thread(target=_feed_paced, args=(feeder, chunks, clock))
+        feed.start()
+        res["playing"] = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+
+        def read(tag, at_ns, level=False):
+            while clock.get_time() < at_ns:
+                r.pump()
+                time.sleep(0.02)
+            r.send({"cmd": "get_stats", "id": f"st{tag}", "element": "asrc"})
+            st = r.wait_event(ev_is("stats", id=f"st{tag}"))
+            res[f"asrc{tag}"] = (st or {}).get("data") or {}
+            props = [("sink", "resyncs"), ("sink", "renders")]
+            for element, prop in props + ([("prefill", "current-level-time")] if level else []):
+                rid = f"{tag}{element}.{prop}"
+                r.send({"cmd": "get_property", "id": rid, "element": element, "property": prop})
+                ev = r.wait_event(lambda e, rid=rid: e.get("id") == rid
+                                  and e.get("event") in ("property", "command_error"))
+                res[rid] = ev.get("value") if ev and ev.get("event") == "property" else None
+
+        read("0", hole0 - 300_000_000)
+        read("1", now0 + (_DECODER_SECONDS - 1) * 1_000_000_000, level=True)
+        feed.join()
+        res["error"] = r.has_event(ev_is("error"))
+        res["rc"] = r.stop_and_wait()
+    finally:
+        feeder.set_state(Gst.State.NULL)
+        r.kill()
+    res["events"] = [ev["payload"] for ev in r.events if ev.get("event") == "plugin_event"
+                     and ev.get("channel") == "mrasrc-event:asrc"]
+    return res
+
+
+def test_decoder_hole():
+    """decoder-hole (B-168), both runners: the Audio Decoder's own string (decode-asrc's adec_aac, its sink the
+    test sink with the module's ring) on its bus edge, an AAC encode fed at its house time with a hole. B-167's
+    choice on the decoder's ring: the loss is accepted, not fed. 300 ms of packets lost on the way: the demux's
+    DISCONT, one break in asrc; the prefill and the ring drain, the sink realigns behind the hole and what follows
+    plays at once, its render lateness back to before. One AAC frame's samples lost before the encoder (under the
+    demux's two-frame jump rule): asrc's lost time (A3); what follows plays at once, never later than before. In
+    both asrc drops nothing and reads no device stall. The server's loss after an underflow (DEV-P4a case 6) is
+    pulsesink's, behind any element: measured on the image's matched install (DEV-P4c1), not here."""
+    test_dir = os.path.join(_PLUGINS, "mpegts-core", "native", "mrtshouse", "tests")
+    if not os.path.exists(os.path.join(test_dir, "libgstmrtest.so")):
+        print("SKIP decoder-hole — tests/libgstmrtest.so not built")
+        return
+    for el in ("unixfdsink", "avenc_aac", "aacparse", "avdec_aac", "mpegtsmux"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP decoder-hole — {el} unavailable")
+            return
+    if not os.path.exists(_MRTS_CLI):
+        print("SKIP decoder-hole — mrts_cli not built")
+        return
+    with open(_DECODE_ASRC, encoding="utf-8") as fh:
+        desc = json.load(fh)["adec_aac"]
+    desc = re.sub(r' stream-properties="[^"]*"', "", desc.replace("pulsesink name=sink device=MR_PW_adec ",
+                                                                  "mrtestaudiosink name=sink "))
+    check("decoder-hole: the decoder's string, its sink the test sink with the module's ring and the prefill",
+          " ! queue name=prefill leaky=0 min-threshold-time=40000000 " in desc
+          and " ! mrtestaudiosink name=sink sync=false provide-clock=false processing-deadline=100000000"
+          " buffer-time=100000" in desc and "ts-offset" not in desc)
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    env = {"GST_PLUGIN_PATH": os.environ.get("GST_PLUGIN_PATH", "") + ":" + test_dir,
+           "GST_REGISTRY": os.path.join(tmp, "registry.bin")}
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    frame_ns = 1024 * 1_000_000_000 // 48000
+    seen = {}
+    try:
+        # (shape, packets dropped on the bus, samples cut before the encoder)
+        for shape, drop, cut_ns in (("300 ms of packets", True, 0), ("a frame of samples", False, 20_000_000)):
+            raw = os.path.join(tmp, "aac.ts")
+            _aac_stream(raw, _DECODER_SECONDS, cut_ns)
+            for tag, argv in (("native", None), ("python", _DEMUX_PY)):
+                res = _decoder_hole_run(argv, env, desc, raw, drop, clock, tmp)
+                a0, a1 = res.get("asrc0", {}), res.get("asrc1", {})
+                r0, r1 = res.get("0sink.resyncs"), res.get("1sink.resyncs")
+                n0, n1 = res.get("0sink.renders"), res.get("1sink.renders")
+                # The sink takes one decoded frame a buffer: what it played between the reads, 4.3 s apart.
+                played = ((n1 or 0) - (n0 or 0)) * frame_ns / 1e9
+                due = 4.3 - (_DECODER_HOLE[1] if drop else frame_ns) / 1e9
+                level = res.get("1prefill.current-level-time")
+                late0, late1 = a0.get("render-lateness-ns") or 0, a1.get("render-lateness-ns") or 0
+                kinds = [e.get("kind") for e in res["events"]]
+                label = f"decoder-hole {tag}, {shape}"
+                check(f"{label}: PLAYING, no error, exits 0", res["playing"] and not res["error"] and res["rc"] == 0)
+                check(f"{label}: asrc drops nothing and reads no device stall (dropped {a1.get('dropped-frames')}, "
+                      f"stalls {a1.get('device-stalls')})",
+                      a1.get("dropped-frames") == 0 and a1.get("device-stalls") == 0)
+                check(f"{label}: it plays on after the hole ({played:.2f} s of the {due:.2f} s due from 0.3 s "
+                      f"before it to the end less 1 s) and the prefill holds no backlog ({(level or 0) / 1e6:.0f} ms)",
+                      None not in (n0, n1) and played >= due - 0.2 and level is not None and level <= 60_000_000)
+                if drop:
+                    check(f"{label}: the hole reaches asrc as one break, the demux's DISCONT ({kinds}; discont-in "
+                          f"{a0.get('discont-in')} -> {a1.get('discont-in')})",
+                          kinds == ["relock"] and a0.get("discont-in") == 0 and a1.get("discont-in") == 1)
+                    check(f"{label}: the hole drains the prefill and the ring and the sink's write position "
+                          f"realigns behind it ({r0} realigns before it, {r1} at the end)",
+                          isinstance(r0, int) and isinstance(r1, int) and r1 > r0)
+                    check(f"{label}: what follows plays at once, no later than before: render lateness "
+                          f"{late0 / 1e6:.1f} ms before the hole, {late1 / 1e6:.1f} ms after",
+                          late0 and late1 and abs(late1 - late0) <= 30_000_000)
+                else:
+                    lost = [e.get("lost-frames") for e in res["events"] if e.get("kind") == "gap"]
+                    check(f"{label}: the hole reaches asrc unflagged, as lost time ({kinds}; "
+                          f"{[e.get('reason') for e in res['events']]}, {lost} frames)",
+                          kinds == ["gap"] and res["events"][0].get("reason") == "lost-time" and lost == [1024]
+                          and a1.get("discont-in") == 0)
+                    check(f"{label}: what follows plays at once, never later than before, at most the frame and a "
+                          f"segment earlier: render lateness {late0 / 1e6:.1f} ms before the hole, {late1 / 1e6:.1f} "
+                          f"ms after ({r0} realigns before it, {r1} at the end)",
+                          late0 and late1 and late0 - frame_ns - 15_000_000 <= late1 <= late0 + 15_000_000)
+                seen.setdefault(shape, {})[tag] = sorted(set(kinds))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    for shape, tags in seen.items():
+        if len(tags) == 2:
+            check(f"decoder-hole, {shape}: both runners the same ({tags['native']})", tags["native"] == tags["python"])
+
+
 # --------------------------------------------------------------------------- subtitle-overlay-formula (WI-P3-7)
 _RENDER_PLAN = os.path.join(_PLUGINS, "subtitle-core", "tests", "render-plan.json")
 _SUBTITLE_PY = ["env", "PYTHONPATH=" + ":".join(os.path.join(_PLUGINS, p, "py") for p in ("mpegts-core", "subtitle-core")),
@@ -4346,6 +4512,7 @@ test_mrtsdemux_messages()
 test_video_leg_formula()
 test_mrasrc_device()
 test_mrasrc_device_hole()
+test_decoder_hole()
 test_subtitle_overlay_formula()
 test_ttx_formula()
 test_burnin_formula()

@@ -356,10 +356,32 @@ elements" below do not start.
   second after a pause can be lost as well (100 to 127 ms after a 300 ms
   pause, measured before this release).
 
+**Audio Decoder plays as soon as it can (Phase 4)**
+
+- **It plays what its input sends as it comes,** through the same 40 ms
+  buffer and 100 ms ring as Audio Output (302M), instead of waiting for a
+  playout offset: its input's own delay plus about a tenth of a second. A
+  route's Playout Offset no longer moves it.
+- **After a stall in its input it plays on behind.** What the input sends
+  late is kept (up to 5 s) and plays that much later, until a gap in the
+  input or a restart; nothing is dropped to catch up.
+- **No relaunch after a source's stale burst.** The one relaunch a source's
+  return used to cause (v2.0.0.98's fix for a burst of stale packets) is gone:
+  the output plays on. (MR-011)
+- **A gap in its input is a gap.** Packets lost on the way or missing from
+  the stream: its sink plays silence for them and what follows plays at once,
+  no later than before. On the box's PipeWire up to about a tenth of a second
+  after a gap can be lost as well, as on Audio Output (302M).
+
 **Removed settings (Phase 4), nothing migrated**
 
 - **Lip-Sync Trim** on Audio Output (302M): with no playout offset there is
   nothing to trim. Stored values are ignored; a rollback restores them.
+- **Sync Trim**, **Buffer**, **Sink Buffer** and **Low-Latency Sync** on Audio
+  Decoder: with no playout offset there is nothing to trim, its input queue
+  holds what a stall leaves (up to 5 s) and its sink's ring is fixed at
+  100 ms; Sink Buffer and Low-Latency Sync were already ignored. Stored values
+  are ignored; a rollback restores them.
 
 **Needs the image's native elements (Phase 2)**
 

@@ -2217,9 +2217,10 @@ fleet has numbers); the aligners' `input-absent` and `aligner-full` warnings
   that ASRC instead, where PTS is still content time: after the device term
   they are device-time labels (house-clock Phase 3); its Render lateness
   then leaves out the ASRC's filter delay, 0.667 ms at 48 kHz. Audio Output
-  (302M) ends in `buildOutputPrefill()` (`queue name=prefill`, non-leaky, holding
-  `OUTPUT_PREFILL_MS` 40 ms) and its `sync=false` sink at `buffer-time=OUTPUT_RING_US`
-  (100 ms; `packages/engine/src/plugins/outputSink.ts`, OQ-31, B-167). Set
+  (302M) and Audio Decoder end in `buildOutputPrefill()` (`queue name=prefill`,
+  non-leaky, holding `OUTPUT_PREFILL_MS` 40 ms) and their `sync=false` sink at
+  `buffer-time=OUTPUT_RING_US` (100 ms; `packages/engine/src/plugins/outputSink.ts`,
+  OQ-31, B-167, B-168). Set
   `timingSink: { element, kind: 'audio' | 'video', refreshHz? }` on the
   description too, so the engine reads the sink's `ts-offset` (D) and, on
   audio base sinks, `buffer-time` through `get_property`. A video sink's

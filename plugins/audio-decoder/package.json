@@ -75,46 +75,6 @@
                     "x-live": true,
                     "x-contextMenu": true
                 },
-                "bufferMs": {
-                    "type": "number",
-                    "default": 100,
-                    "minimum": 0,
-                    "maximum": 5000,
-                    "x-widget": "slider",
-                    "x-step": 50,
-                    "x-unit": "ms",
-                    "title": "Buffer",
-                    "description": "Keep low (50–100) for live inputs; raise (1500) for HLS or bursty sources."
-                },
-                "sinkBufferMs": {
-                    "type": "number",
-                    "default": 200,
-                    "minimum": 80,
-                    "maximum": 1000,
-                    "x-widget": "slider",
-                    "x-step": 10,
-                    "x-unit": "ms",
-                    "title": "Sink Buffer",
-                    "description": "200 bridges PES-burst spacing. Lower only while measuring."
-                },
-                "lowLatencySync": {
-                    "type": "boolean",
-                    "default": false,
-                    "title": "Low-Latency Sync",
-                    "description": "Render at PTS plus the sync trim instead of on arrival."
-                },
-                "syncOffsetMs": {
-                    "type": "number",
-                    "default": 0,
-                    "minimum": 0,
-                    "maximum": 2000,
-                    "x-widget": "slider",
-                    "x-step": 50,
-                    "x-unit": "ms",
-                    "x-live": true,
-                    "title": "Sync Trim",
-                    "description": "Trim on top of the route's playout offset for this output's own chain (DAC, amplifier)."
-                },
                 "lcpVisible": {
                     "type": "boolean",
                     "default": true,

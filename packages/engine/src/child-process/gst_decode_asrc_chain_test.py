@@ -13,10 +13,11 @@ testing/decodeAsrcChains.test.ts). Here each runs with its bus sources reading a
     `outasrc` follows the sink by name through the chain (mode device, the sink's clock read on its
     timer, B-166), the sink is never asked to skew, and in the mixer arm each branch's decode
     `mrasrc` passes its house-rate input;
-  - audio-decoder (WI-P3-10), each decoder branch on a recording of its codec, the same way: the
-    first audio stream plays (an input listing its video first too), the decoder's PCM (avdec_aac's
+  - audio-decoder (WI-P3-10, WI-P4-7), each decoder branch on a recording of its codec, the same way:
+    the first audio stream plays (an input listing its video first too), the decoder's PCM (avdec_aac's
     planar) reaches `asrc` interleaved through `audioconvert`, and `asrc` follows the sink (opusdec's
-    pre-skip stamping is one lost-time gap, B-148, which the sync=false sink writes on through);
+    pre-skip stamping is one lost-time gap, B-148, which the sync=false sink writes on through), the
+    40 ms prefill before it (B-168);
   - audio-transcoder (WI-P3-12), each decoder branch on a recording of its codec, its renditions
     into files: `asrc` passes a house-rate decode untouched, and each rendition's PES PTS meet S40
     (the first AU exact, Opus 0 ticks, AAC a tick under its ladder at most, 302M at its PCM's
@@ -139,7 +140,7 @@ def run(pipe, secs=None):
 def run_settled(pipe, sink, secs, start=1.5):
     """run() for `secs`, the sink's write-position jumps read at `start` s and at the end: a
     sync=false ring starts before the first write, so one realign may come with the first renders
-    (B-166; the 302M output's prefill does not prevent it, B-167); none may come after."""
+    (B-166; the outputs' prefill does not prevent it, B-167, B-168); none may come after."""
     e1, x1, eos = run(pipe, secs=start)
     first = sink.get_property("resyncs")
     e2, x2, eos2 = ([], [], eos) if eos or x1 else run(pipe, secs=secs - start)
@@ -310,13 +311,16 @@ else:
     for _key, _fx, _pid, _dec, _planar in _ADEC_CASES:
         _desc = PIPELINES[_key]
         print(f"\n--- audio-decoder, {_key}: {_fx} through its real string into mrtestaudiosink ---")
-        check(f"{_key}: the first audio stream from mrtsdemux, the decoder, audioconvert, the render tap, "
-              f"then the one ASRC on the sink (no tsdemux, no audioresample; the sink sync=false, no slave-method)",
-              " ! mrtsdemux name=addemux media=audio ! " in _desc
+        check(f"{_key}: the first audio stream from mrtsdemux, its 5 s non-leaky ES queue, the decoder, "
+              f"audioconvert, the render tap, then the one ASRC on the sink, the 40 ms prefill before it (no "
+              f"tsdemux, no audioresample; the sink sync=false, no slave-method, ts-offset or max-lateness: B-168)",
+              " ! mrtsdemux name=addemux media=audio ! queue name=ad_esq leaky=0 max-size-time=5000000000 " in _desc
               and re.search(r" ! audioconvert ! mrlateness name=lat_render \S+ ! mrasrc name=asrc "
                             r"bypass-below-ppm=0\.5 device-sink=sink ! audioconvert ! ", _desc) is not None
+              and " ! queue name=prefill leaky=0 min-threshold-time=40000000 " in _desc
               and not re.search(r"\btsdemux\b", _desc) and "audioresample" not in _desc
-              and " sync=false " in _desc and "slave-method" not in _desc)
+              and " sync=false " in _desc
+              and not any(k in _desc for k in ("slave-method", "ts-offset", "max-lateness")))
         _r = adec_run(_desc, os.path.join(_FIX, _fx))
         if "parse" in _r:
             check(f"{_key}: the string parses ({_r['parse']})", False)

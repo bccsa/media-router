@@ -61,16 +61,13 @@ function audioOutput302m(n: number): string {
     return opts.liveInputs?.length ? launchWith(opts, opts.liveInputs).pipeline : opts.pipeline;
 }
 
-/** audio-decoder at D = 300 ms on one edge, its decoder branch picked by the probed `codec`. */
+/** audio-decoder on one edge (no playout offset since B-168), its decoder branch picked by the
+ *  probed `codec`. */
 function audioDecoder(codec: string): string {
     const m = new AudioDecoderModule() as unknown as Record<string, unknown>;
     m.services = {
         instanceId: 'adec',
-        playoutOffsetMs: 300,
-        mediaRouter: {
-            getModuleBusSource: () => source('in0', 40420),
-            getRoutePlayoutOffsetMs: () => undefined,
-        },
+        mediaRouter: { getModuleBusSource: () => source('in0', 40420) },
     };
     m.probeResult = { codec, rawCaps: '' };
     m.setHealth = vi.fn();
