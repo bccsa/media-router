@@ -1421,9 +1421,13 @@ stereo, declares nothing. Consumers default to stereo when nothing is declared.
 The playback counterpart is
 [`audio-output-302m/engine/outputPlacement.ts`](audio-output-302m/engine/outputPlacement.ts):
 `buildOutputPlacement({ device, channels, firstChannel, deviceChannels })` spreads an
-N-channel mix onto device channels `firstChannel..` as a device-wide unpositioned stream
-(`mix-matrix` + `channel-mask=0x0`), or returns `fragment: null` for the default stereo
-range so the legacy pipeline string stays byte-identical. Reuse it for any other
+N-channel mix onto device channels `firstChannel..` as an unpositioned stream as wide as
+its last channel, 2 at least (`mix-matrix` + `channel-mask=0x0`). Since B-214 (ADR-0014's
+amendment of 2026-11-06) it returns `fragment: null`, the legacy pipeline string
+byte-identical, only for the default range (mono or stereo from channel 1) on a device of
+2 channels or fewer or of unknown width, and a placed mix of 2 channels or more must reach
+it pinned to GStreamer's default layout for its width (`pinnedLayout` on the 302M fan-in),
+which the fragment relabels unpositioned with `capssetter`. Reuse it for any other
 `pulsesink` presentation leg that needs to land on specific outputs of a multichannel card.
 
 ### Live Input Branches (`getLiveInputBranch`)

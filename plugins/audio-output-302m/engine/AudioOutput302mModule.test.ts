@@ -217,11 +217,13 @@ describe('AudioOutput302mModule.buildPipeline', () => {
                     channels,
                 });
                 expect(launched(one!)).toBe(direct);
-                const two = makeModule({ sources: 2, deviceChannels }).module.buildPipeline({
-                    device: 'alsa_output.usb-foo',
-                    channels,
-                });
+                const { module } = makeModule({ sources: 2, deviceChannels });
+                const two = module.buildPipeline({ device: 'alsa_output.usb-foo', channels });
                 expect(launched(two!)).toBe(mixed);
+                // A source that joins or re-links live gets that same branch (B-206's rig re-links).
+                two!.liveInputs.forEach((b: any, i: number) =>
+                    expect(module.getLiveInputBranch('audio-in', `c-${i}`)).toEqual(b),
+                );
             }
         }
     });

@@ -192,6 +192,8 @@ not reach the desk's AES50 channels 1-4 (MR-052, MR-053, MR-054, MR-056).
   fixate a positioned input into an unpositioned output of the same width,
   matrix or not ("Invalid downstream channel-mask with too few bits set"). A
   mono mix is mono whatever its mask: no pin, no relabel, no default matrix.
+  `capssetter` is gst-plugins-good's `debug` plugin (`libgstdebug.so`), no new
+  dependency: every bus producer's egress already runs one (`buildBusSink`).
 - The default map (`default302mChannelMap`, MR-053) is where an unmapped source
   played before, measured on b9c24948 and read off GStreamer's own channel
   mixer: from the wire's layout into the mix's default layout. It is GStreamer's
