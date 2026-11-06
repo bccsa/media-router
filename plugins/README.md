@@ -1166,9 +1166,9 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
   name PREFIX for the fan-in's elements (the mixer arm also names the `audiomixer`
   `<mixerName>`); give it a distinct value per input pin when a module builds more than
   one fan-in. `branchQueueMs` sizes the single-source arm's queue only. The mixer arm is
-  non-live, so a `sync=true` sink after it adds no ring latency of its own: a
-  presentation leg that cancels its sink's ring in `ts-offset` puts `identity
-  sync=true` after the continuation (audio-output-302m). Every module built on it
+  non-live, so a `sync=true` sink after it would add no ring latency of its own;
+  audio-output-302m's sink runs `sync=false` and plays the mix as it comes (B-167), with
+  nothing between the continuation and its render tap. Every module built on it
   returns `eosDrain: false`: the aligners hold each input's EOS, so the drain would wait
   out its 6 s timeout.
 - `alignedMixer({ name, caps, outName })` — `audiomixer name=<name> latency=0
@@ -2216,7 +2216,10 @@ fleet has numbers); the aligners' `input-absent` and `aligner-full` warnings
   Output (302M), Audio Decoder) puts `buildLatenessTap('lat_render')` before
   that ASRC instead, where PTS is still content time: after the device term
   they are device-time labels (house-clock Phase 3); its Render lateness
-  then leaves out the ASRC's filter delay, 0.667 ms at 48 kHz. Set
+  then leaves out the ASRC's filter delay, 0.667 ms at 48 kHz. Audio Output
+  (302M) ends in `buildOutputPrefill()` (`queue name=prefill`, non-leaky, holding
+  `OUTPUT_PREFILL_MS` 40 ms) and its `sync=false` sink at `buffer-time=OUTPUT_RING_US`
+  (100 ms; `packages/engine/src/plugins/outputSink.ts`, OQ-31, B-167). Set
   `timingSink: { element, kind: 'audio' | 'video', refreshHz? }` on the
   description too, so the engine reads the sink's `ts-offset` (D) and, on
   audio base sinks, `buffer-time` through `get_property`. A video sink's
@@ -2345,7 +2348,12 @@ there, until one does not: what an input sends at once after an outage
 (its producer's backlog) was due before the module played. Content that
 arrives about as fast as it plays (at most 1.5× over 1 s) is a stream behind
 the house clock, not a backlog, and passes after that second, for the
-re-anchor. One `catch_up` plugin event per launch, `{ inputs: [{ element,
+re-anchor. `catchUp.render` names one more element, the output's render tap: its
+sink pad drops, once, what ends before its own first buffer less the most an input's
+first kept buffer lagged and 200 ms (`RENDER_SLACK_NS`), so what a mix queued before
+it first played (a non-live mixer waiting out a connected input that sends nothing,
+for that input's silence limit) is skipped, not played that late for good (B-167).
+One `catch_up` plugin event per launch, `{ inputs: [{ element,
 skippedMs, buffers }], skippedMs }` (`readCatchUp`, `catchUpText`): the launch's
 inputs together once all delivered or 3 s after its first buffer, a later or
 live one alone. `backlogShedConfig({ watchPlayout: true })` sets
@@ -2354,8 +2362,9 @@ the budget + `reanchorToleranceMs` that long reports `playout_watch`
 `{ playing: false, lateMs, budgetMs }`, 200 ms in budget `{ playing: true }`,
 on a change only (`readPlayoutWatch`). Audio Output (302M) sets the catch-up,
 on its inputs' ingress taps (`LAT_IN_PREFIX`; `busSrcTapName` names one), so
-the stale TS goes in the thread that reads the socket, undecoded; since B-166
-its sink runs `sync=false` and it arms no shedder, so no playout watch. The
+the stale TS goes in the thread that reads the socket, undecoded, and on its
+render tap `lat_render` (named "the mix" in its INFO line); its sink runs
+`sync=false` and it arms no shedder, so no playout watch (B-166, B-167). The
 python runner ignores both.
 
 **Where stamper lines come from (debugging).** Each armed egress logs two

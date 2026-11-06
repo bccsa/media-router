@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 /** B-197: the Audio Output (302M) wires its SilentOutputWatch: a mixer that delivers no audio
  *  says so, through the relaunch's PLAYING, and is relaunched once; one source played direct is
- *  not judged on it. */
+ *  not judged on it. Since B-167 nothing else says it: the sink plays what comes. */
 
 const h = vi.hoisted(() => {
     class FakeChildProcess {
@@ -63,7 +63,6 @@ async function started(sources: number, router: Record<string, unknown> = {}) {
     const module = new AudioOutput302mModule();
     await module.onInit({ device: 'alsa_output.usb-KTMicro' }, {
         instanceId: 'aout-1',
-        playoutOffsetMs: 60,
         mediaRouter: {
             getModuleBusSources: vi.fn(() => Array.from({ length: sources }, (_, i) => source(i))),
             getModuleConnections: vi.fn(() => []),
@@ -121,23 +120,16 @@ describe('Audio Output (302M) that plays nothing (B-197)', () => {
         await module.onStop();
     });
 
-    it('B-206: every buffer past its playout time is said the moment the runner reports it, and withdrawn when it plays', async () => {
+    it('B-167: no playout watch: a late report from the runner is no reason, the output plays on', async () => {
         const { module, child } = await started(2);
         child.emit('vuData', { peak: [-18, -18] });
         child.emit('pluginEvent', {
             channel: 'playout_watch',
             payload: { element: 'sink', playing: false, lateMs: 1555.3, budgetMs: 90 },
         });
-        expect(module.getState()).toMatchObject({
-            health: 'warning',
-            error: 'Plays nothing: every buffer reaches the sink 1555 ms past its playout time',
-        });
-        expect(child.restartPipeline).not.toHaveBeenCalled();
-        child.emit('pluginEvent', {
-            channel: 'playout_watch',
-            payload: { element: 'sink', playing: true, lateMs: -12, budgetMs: 90 },
-        });
+        await vi.advanceTimersByTimeAsync(0);
         expect(module.getState().health).toBe('ok');
+        expect(child.restartPipeline).not.toHaveBeenCalled();
         await module.onStop();
     });
 
@@ -172,62 +164,23 @@ describe('Audio Output (302M) that plays nothing (B-197)', () => {
         await module.onStop();
     });
 
-    it('B-210: a raise that did not help is held: the sink plays at its pace, the held warning, not "Plays nothing"', async () => {
-        const route = {
-            getRoutePlayoutHead: vi.fn(() => ({
-                headId: 'srt',
-                label: 'SRT -> MUL',
-                declaredMs: 60,
-            })),
-            getRoutePlayoutOffsetMs: vi.fn(() => 60),
-            getRoutePlayoutRaiseMs: vi.fn(() => 140),
-            requestPlayoutRaise: vi.fn(async () => 'held'),
-        };
-        const { module, child } = await started(2, route);
-        child.emit('vuData', { peak: [-18, -18] });
+    it('B-167: what the mix queued before it first played is named as the mix, beside its inputs', async () => {
+        const { module, child, log } = await started(2);
         child.emit('pluginEvent', {
-            channel: 'playout_watch',
-            payload: { element: 'sink', playing: false, lateMs: 88, budgetMs: 200 },
-        });
-        expect(module.getState().error).toBe(
-            'Plays nothing: every buffer reaches the sink 88 ms past its playout time',
-        );
-        child.emit('pluginEvent', {
-            channel: 'playout_reanchor',
+            channel: 'catch_up',
             payload: {
-                kind: 'raise',
-                element: 'sink',
-                excessMs: 88,
-                worstMs: 95,
-                cause: 'backlog',
-                queuedMs: 400,
-                budgetMs: 200,
-                tsOffsetMs: 100,
-                latencyMs: 100,
-                holdMs: 15000,
+                inputs: [
+                    { element: busSrcTapName(source(0)), skippedMs: 7480, buffers: 360 },
+                    { element: 'lat_render', skippedMs: 1890.4, buffers: 189 },
+                ],
+                skippedMs: 7480,
             },
         });
-        await vi.advanceTimersByTimeAsync(0);
-        expect(module.getState()).toMatchObject({
-            health: 'warning',
-            error:
-                'Plays 88 ms late at its device: a larger playout offset cannot help, so route ' +
-                'head SRT -> MUL is held at 200 ms; nothing dropped.',
-        });
-        await module.onStop();
-    });
-
-    it("B-210: re-anchored on its own, its sink's ts-offset carries that offset on top of D", async () => {
-        const route = {
-            getRoutePlayoutOffsetMs: vi.fn(() => 60),
-            getRoutePlayoutRaiseMs: vi.fn(() => 0),
-            getPlayoutLegOffsetMs: vi.fn(() => 4940),
-        };
-        const { module, child } = await started(2, route);
-        const set = vi.spyOn(child, 'setProperty');
-        await module.onRoutePlayoutOffsetChanged();
-        // D 60 + its own 4940, less the ring the sink declares (100 ms).
-        expect(set).toHaveBeenCalledWith('sink', 'ts-offset', 4_900_000_000);
+        const lines = log.info.mock.calls.filter((c) => String(c[1]).startsWith('Caught up'));
+        expect(lines.map((c) => c[1])).toEqual([
+            'Caught up at the start: skipped 7.5 s of Module src-0, 1.9 s of the mix from ' +
+                'before it played, never played late',
+        ]);
         await module.onStop();
     });
 

@@ -292,7 +292,8 @@ export interface PipelineDescription {
      *  play. Name each in `getLiveInputBranch` too (the live verbs and the containment use it). */
     liveInputs?: LiveInputBranch[];
     /** A launch skips what its inputs deliver stamped before it first plays (B-206, native
-     *  runner): the outage it was down for, never let into its mix. See `CatchUpConfig`. */
+     *  runner): the outage it was down for, never let into its mix; at its `render` element, what
+     *  its mix queued meanwhile (B-167). See `CatchUpConfig`. */
     catchUp?: CatchUpConfig;
     /**
      * Rules for linking sometimes-pads (tsdemux, decodebin, …) to dynamically
@@ -583,6 +584,10 @@ export interface CatchUpConfig {
     /** Name prefix of the elements whose SINK pad carries one input's content time into the
      *  mix (live branches added later included); the launch's first buffer there is its start. */
     prefix: string;
+    /** The element whose SINK pad carries the output's content time where it first plays: there
+     *  the launch also skips what queued before that first buffer, beyond its inputs' own lag
+     *  (an absent input's wait, B-167). */
+    render?: string;
 }
 
 /** librist runner config — see PipelineDescription.rist. */

@@ -143,8 +143,6 @@ const edge = (src: string, sink: string) => ({
 export interface Rig {
     /** The output's virtual sink. */
     sink: string;
-    /** The SRT leg's route declares this D (its head's `playoutOffsetMs`). */
-    srtOffsetMs?: number;
     relay?: { delayMs?: number; chunkMs?: number };
     /** The mics' channels come this late at the start (their edge to the Mixer waits). */
     micsLateMs?: number;
@@ -153,7 +151,7 @@ export interface Rig {
 }
 
 /** The .108 rig: Mic A and B (997, 1499 Hz) into the Mixer, SRT in (440 Hz) into its transcoder,
- *  both into the Audio Output (302M); engine D 60 ms, re-anchor on, as the engine starts them. */
+ *  both into the Audio Output (302M), which plays them as they come (no playout offset, B-167). */
 export function engine(rig: Rig) {
     AudioMixerModule.setS302mSupported(true);
     const mod = (pluginId: string, displayName: string, settings: Record<string, unknown>) => ({
@@ -168,11 +166,7 @@ export function engine(rig: Rig) {
             micA: mod('tone', 'Mic A', { freq: 997, lateMs: late }),
             micB: mod('tone', 'Mic B', { freq: 1499, lateMs: late }),
             mix: mod('audio-mixer', 'Mixer', { channels: 2 }),
-            srtin: mod('tone', 'SRT in', {
-                freq: 440,
-                right: true,
-                ...(rig.srtOffsetMs ? { playoutOffsetMs: rig.srtOffsetMs } : {}),
-            }),
+            srtin: mod('tone', 'SRT in', { freq: 440, right: true }),
             srtxc: mod('relay', 'SRT transcoder', { ...rig.relay }),
             out: mod('audio-output-302m', 'Audio Output', { device: rig.sink, channels: 2 }),
         },
@@ -190,16 +184,7 @@ export function engine(rig: Rig) {
     const pipeWire = new PipeWireManager();
     const processManager = { releaseAll: async () => {} } as any;
     const router = new MediaRouter();
-    router.setPlayoutReanchor(true, 60);
-    const modules = new ModuleManager(
-        loader,
-        pipeWire,
-        router,
-        processManager,
-        {} as any,
-        60,
-        true,
-    );
+    const modules = new ModuleManager(loader, pipeWire, router, processManager, {} as any);
     router.setDependencies(
         pipeWire,
         (id) => modules.get(id),
@@ -218,6 +203,5 @@ export function engine(rig: Rig) {
         out: () => plugin<AudioOutput302mModule>('out'),
         /** The output's pipeline launch: it changes with every relaunch. */
         outLaunch: () => plugin<AudioOutput302mModule>('out').getChildProcess()?.pipelineLaunchedAt,
-        head: () => router.getRoutePlayoutHead('out')?.headId,
     };
 }

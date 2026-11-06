@@ -36,6 +36,18 @@ export function realPipeWireSkip(elements: string[], registry: string): string |
     return absent.length ? `GStreamer elements missing: ${absent.join(', ')}` : null;
 }
 
+/** Why a `sync=false` pulsesink here never plays again after an underrun (null: it does): one
+ *  older than the GStreamer core (the dev Pi's 1.22 under 1.28) sets a ring position the base
+ *  class no longer reads, so its writes stay behind the server's (B-167; p4-1's case 6). */
+export function pulsesinkUnmatched(registry: string): string | null {
+    const env = { ...process.env, GST_REGISTRY: registry };
+    const minor = (args: string[], re: RegExp): string | undefined =>
+        re.exec(spawnSync('gst-inspect-1.0', args, { env, encoding: 'utf8' }).stdout ?? '')?.[1];
+    const sink = minor(['pulsesink'], /Version\s+(\d+\.\d+)/);
+    const core = minor(['--version'], /GStreamer (\d+\.\d+)/);
+    return sink === core ? null : `pulsesink ${sink ?? '?'} under GStreamer ${core ?? '?'}`;
+}
+
 /** The virtual 2-channel devices the daemon creates, listed by pactl as real ones are. */
 export interface PrivatePipeWireDevices {
     sources?: string[];

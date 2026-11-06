@@ -139,7 +139,7 @@ def run(pipe, secs=None):
 def run_settled(pipe, sink, secs, start=1.5):
     """run() for `secs`, the sink's write-position jumps read at `start` s and at the end: a
     sync=false ring starts before the first write, so one realign may come with the first renders
-    (no prefill until p4-8 and p4-7, B-166); none may come after."""
+    (B-166; the 302M output's prefill does not prevent it, B-167); none may come after."""
     e1, x1, eos = run(pipe, secs=start)
     first = sink.get_property("resyncs")
     e2, x2, eos2 = ([], [], eos) if eos or x1 else run(pipe, secs=secs - start)

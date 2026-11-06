@@ -186,6 +186,11 @@ describe('start payload', () => {
         const catchUp = { prefix: 'lat_busin' };
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink', catchUp }).catchUp).toEqual(catchUp);
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).catchUp).toBeUndefined();
+        // ... and its render element, where the mix's own start wait is skipped (B-167).
+        const rendered = { prefix: 'lat_busin', render: 'lat_render' };
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink', catchUp: rendered }).catchUp).toEqual(
+            rendered,
+        );
     });
 
     it('forwards liveCaptureClock — dropping it puts a live capture head back on the pinned timeline', () => {

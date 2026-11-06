@@ -15,6 +15,7 @@ import {
     MonitorRecorder,
     PrivatePipeWire,
     linkPlaybackStreams,
+    pulsesinkUnmatched,
     realPipeWireSkip,
     sleep,
     until,
@@ -43,6 +44,9 @@ const registry = process.env.GST_REGISTRY ?? join(tmpdir(), `mr-b197-registry-${
 const skip = existsSync(TIMING_PLUGIN)
     ? realPipeWireSkip(ELEMENTS, registry)
     : 'the timing plugin is not built (libgstmrtshouse.so)';
+/** A late leg's join slews the mix (B-80) and underruns the output once: only a pulsesink of the
+ *  core's version plays on after that (B-167), so that drill runs on such an install alone. */
+const unmatched = skip === null ? pulsesinkUnmatched(registry) : null;
 
 /** The .108 rig on this test's sink (`mixRig.ts`). */
 const engine = (rig: Omit<Rig, 'sink'> = {}) => rigEngine({ sink: SINK, ...rig });
@@ -64,6 +68,7 @@ describe.skipIf(skip !== null)(
         const soundsWithin = (ch: 0 | 1, budgetMs: number) => until(() => sounds(ch), budgetMs);
 
         beforeAll(async () => {
+            if (unmatched) console.warn(`[B-167] late-leg drill skipped — ${unmatched}`);
             pw = new PrivatePipeWire({ sinks: [SINK] });
             pw.enter(registry);
             savedBusDir = process.env.MR_BUS_SOCKET_DIR;
@@ -102,7 +107,7 @@ describe.skipIf(skip !== null)(
             return e;
         }
 
-        it(".108's drill: restarted while the SRT leg is dark and down, re-linked with its last transient: the mics play within 3 s and on, the leg joins when it delivers, no relaunch", async () => {
+        it(".108's drill: restarted while the SRT leg is dark and down, re-linked with its last transient: the mics play within 2 s and on, the leg joins within 2 s of delivering, no relaunch", async () => {
             const e = await start();
             expect(await soundsWithin(L, 20_000)).toBe(true);
             expect(await soundsWithin(R, 10_000)).toBe(true);
@@ -116,9 +121,10 @@ describe.skipIf(skip !== null)(
             await e.srtxc().runner()!.restartPipeline('its input went away');
             await e.lifecycle.restart('out');
             const restarted = rec.at();
-            expect(await soundsWithin(L, 3000)).toBe(true);
+            expect(await soundsWithin(L, 2000)).toBe(true);
+            const from = rec.at();
             console.log(
-                `[B-197] mics back ${Math.round((rec.at() - restarted) * 1000)} ms after the restart`,
+                `[B-197] mics back ${Math.round((from - restarted) * 1000)} ms after the restart`,
             );
             // The input comes back dark, the transcoder after it, and the output takes it in live.
             const joined = await until(
@@ -132,27 +138,37 @@ describe.skipIf(skip !== null)(
             await sleep(3000);
             expect(rec.presence(L, rec.at() - 2.5, rec.at())).toBeGreaterThan(0.95);
             const launch = e.outLaunch();
+            const lit = rec.at();
             await e.srtin().setDark(false);
-            expect(await soundsWithin(R, 5000)).toBe(true);
-            expect(sounds(L, 1000)).toBe(true);
+            expect(await soundsWithin(R, 2000)).toBe(true);
+            const heard = rec.at();
+            await sleep(2000);
+            // B-167: no silence over 40 ms on the mics from when they played, the leg's join included.
+            const gap = rec.longestGapMs(L, from, rec.at());
+            console.log(
+                `[B-167] the leg plays ${Math.round((heard - lit) * 1000)} ms after it delivers; mics' longest silence ${gap} ms`,
+            );
+            expect(gap).toBeLessThanOrEqual(40);
             expect(e.outLaunch()).toBe(launch);
         });
 
-        it('a restart keeps the playout offset of every route the output mixes: the late leg joins and both play', async () => {
-            // The SRT leg is 500 ms late and its route says D 800. The mics' channels come late, so
-            // the leg's edge is the output's first; the restart re-applies the Mixer's first.
-            const e = await start({ srtOffsetMs: 800, relay: { delayMs: 500 }, micsLateMs: 2500 });
-            expect(await soundsWithin(L, 25_000)).toBe(true);
-            expect(await soundsWithin(R, 10_000)).toBe(true);
-            await e.srtin().setDark(true);
-            await sleep(1000);
-            await e.lifecycle.restart('out');
-            expect(await soundsWithin(L, 4000)).toBe(true);
-            await e.srtin().setDark(false);
-            expect(await soundsWithin(R, 6000)).toBe(true);
-            expect(sounds(L, 1000)).toBe(true);
-            expect(e.head()).toBe('srtin');
-        });
+        it.skipIf(unmatched !== null)(
+            'a restart with a leg 500 ms late: the late leg joins and both play',
+            async () => {
+                // The SRT leg is 500 ms late. The mics' channels come late, so the leg's edge is the
+                // output's first; the restart re-applies the Mixer's first.
+                const e = await start({ relay: { delayMs: 500 }, micsLateMs: 2500 });
+                expect(await soundsWithin(L, 25_000)).toBe(true);
+                expect(await soundsWithin(R, 10_000)).toBe(true);
+                await e.srtin().setDark(true);
+                await sleep(1000);
+                await e.lifecycle.restart('out');
+                expect(await soundsWithin(L, 4000)).toBe(true);
+                await e.srtin().setDark(false);
+                expect(await soundsWithin(R, 6000)).toBe(true);
+                expect(sounds(L, 1000)).toBe(true);
+            },
+        );
 
         it('a source going dark while the output plays costs the others under 100 ms (a steady 302M leg)', async () => {
             const e = await start();
@@ -193,16 +209,14 @@ describe.skipIf(skip !== null)(
             expect(sounds(L, 1000)).toBe(true);
         });
 
-        it('an output whose mix arrives past its D plays it as it comes (B-166: the sink runs sync=false): no warning, no raise', async () => {
-            // The leg is 500 ms late on a route left at D 60. The sink no longer waits for D and
-            // nothing reads lateness past it (no shedder), so the mix plays on arrival.
+        it('an output whose mix arrives 500 ms late plays it as it comes (B-167: no playout offset): no warning', async () => {
+            // The sink waits for no stamp and nothing reads lateness at it, so the mix plays on arrival.
             const e = await start({ relay: { delayMs: 500 } });
             expect(await soundsWithin(L, 12_000)).toBe(true);
             expect(await soundsWithin(R, 6000)).toBe(true);
             await sleep(3000);
             expect(sounds(L, 2000)).toBe(true);
             expect(e.out().getState().error ?? '').not.toMatch(/^Plays nothing/);
-            expect(e.router.getRoutePlayoutRaiseMs('out')).toBe(0);
         });
     },
 );

@@ -28,6 +28,7 @@ struct Launch {
     std::string prefix;
     gulong added_id = 0;
     std::atomic<gint64> start_rt{-1};
+    std::atomic<gint64> kept_late{0};   // the most an input's first kept buffer came after its end
     std::mutex m;                 // the fields below
     int pending = 0;              // launch inputs that have not delivered yet
     bool reported = false;        // the launch's report went out
@@ -40,6 +41,8 @@ struct Input {
     std::shared_ptr<Launch> launch;
     std::string element;
     bool at_launch = false;
+    bool render = false;   // the render point: its own line, set at its first buffer
+    gint64 line = -1;
     guint64 buffers = 0;   // buffers and GAPs skipped
     gint64 first_ns = -1;
     gint64 end_ns = -1;
@@ -204,17 +207,30 @@ GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
     const GstClockTime now = el ? gst_element_get_current_running_time(el) : GST_CLOCK_TIME_NONE;
     if (el) gst_object_unref(el);
     if (!GST_CLOCK_TIME_IS_VALID(now)) return GST_PAD_PROBE_OK;   // not PLAYING yet
-    gint64 none = -1;
-    if (in.launch->start_rt.compare_exchange_strong(none, (gint64)now))
-        g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, arm_idle, new std::shared_ptr<Launch>(in.launch),
-                        delete_launch_ref);
-    // Content that ends before the launch's first buffer was due while this output was not
-    // playing: its outage, skipped whole.
-    if (end <= in.launch->start_rt.load() && !streams(in, (gint64)now, end)) {
+    gint64 line;
+    if (in.render) {
+        // What came this much later than the inputs did was queued here, before it first played.
+        if (in.line < 0) in.line = (gint64)now - in.launch->kept_late.load() - RENDER_SLACK_NS;
+        line = in.line;
+    } else {
+        gint64 none = -1;
+        if (in.launch->start_rt.compare_exchange_strong(none, (gint64)now))
+            g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, arm_idle, new std::shared_ptr<Launch>(in.launch),
+                            delete_launch_ref);
+        line = in.launch->start_rt.load();
+    }
+    // Content that ends before the line was due while this output was not playing: its outage
+    // (or, at the render point, its own wait), skipped whole.
+    if (end <= line && !streams(in, (gint64)now, end)) {
         if (in.first_ns < 0) in.first_ns = start;
         in.end_ns = end;
         in.buffers++;
         return GST_PAD_PROBE_DROP;
+    }
+    if (!in.render) {
+        gint64 late = (gint64)now - end, was = in.launch->kept_late.load();
+        while (late > was && !in.launch->kept_late.compare_exchange_weak(was, late)) {
+        }
     }
     resolved(in);
     return GST_PAD_PROBE_REMOVE;
@@ -222,18 +238,24 @@ GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
 
 void delete_input(gpointer p) { delete static_cast<Input*>(p); }
 
-void watch(const std::shared_ptr<Launch>& launch, GstElement* el, bool at_launch) {
-    const gchar* name = GST_OBJECT_NAME(el);
-    if (!name || !g_str_has_prefix(name, launch->prefix.c_str())) return;
+void probe(GstElement* el, Input* in) {
     GstPad* pad = gst_element_get_static_pad(el, "sink");
-    if (!pad) return;
-    if (at_launch) launch->pending++;   // install() runs before any data, on the main loop
-    auto* in = new Input{launch, name, at_launch};
+    if (!pad) {
+        delete in;
+        return;
+    }
+    if (in->at_launch) in->launch->pending++;   // install() runs before any data, on the main loop
     gst_pad_add_probe(pad,
                       (GstPadProbeType)(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST |
                                         GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
                       probe_cb, in, delete_input);
     gst_object_unref(pad);
+}
+
+void watch(const std::shared_ptr<Launch>& launch, GstElement* el, bool at_launch) {
+    const gchar* name = GST_OBJECT_NAME(el);
+    if (!name || !g_str_has_prefix(name, launch->prefix.c_str())) return;
+    probe(el, new Input{launch, name, at_launch});
 }
 
 void deep_added_cb(GstBin*, GstBin*, GstElement* el, gpointer user) {
@@ -265,6 +287,13 @@ void install(GstElement* pipe, JsonObject* cfg) {
     }
     g_value_unset(&item);
     gst_iterator_free(it);
+    const std::string render = json_get_string(cfg, "render");
+    if (GstElement* el = render.empty() ? nullptr : gst_bin_get_by_name(GST_BIN(pipe), render.c_str())) {
+        Input* in = new Input{launch, render, true};
+        in->render = true;
+        probe(el, in);
+        gst_object_unref(el);
+    }
     // A branch added live (a join, a re-link) catches up against the same launch.
     launch->added_id = g_signal_connect_data(pipe, "deep-element-added", G_CALLBACK(deep_added_cb),
                                              new std::shared_ptr<Launch>(launch), delete_closure_ref,

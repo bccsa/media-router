@@ -267,6 +267,12 @@ export {
     readPlayoutWatch,
 } from './plugins/backlogShed.js';
 export type { BacklogShedOptions, BacklogShedServices } from './plugins/backlogShed.js';
+export {
+    OUTPUT_PREFILL_MS,
+    OUTPUT_PREFILL_NAME,
+    OUTPUT_RING_US,
+    buildOutputPrefill,
+} from './plugins/outputSink.js';
 export { CATCH_UP_EVENT, catchUpText, readCatchUp } from './plugins/catchUp.js';
 export type { CaughtUpInput } from './plugins/catchUp.js';
 export { GstPluginBase } from './plugins/GstPluginBase.js';

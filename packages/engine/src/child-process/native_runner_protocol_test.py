@@ -2912,9 +2912,11 @@ def _pulse_null_sink():
     return next((n for n in names if "null" in n), None) if out.returncode == 0 else None
 
 
-def _mrasrc_device_run(tag, argv, env, pipeline, seconds, actions=()):
+def _mrasrc_device_run(tag, argv, env, pipeline, seconds, actions=(), reads=()):
     """One runner on `pipeline` for `seconds`: its mrasrc stats and events (forwarded unsubscribed), the
-    snapshot, whether it played without an error and exited 0, and its log lines."""
+    snapshot (with each (element, property) of `reads` under "element.property", and the value each
+    get_property among `actions` answered under its id), whether it played without an error and exited
+    0, and its log lines."""
     r = RunnerProc(argv, env=env)
     try:
         r.wait_event(ev_is("ready"))
@@ -2922,7 +2924,7 @@ def _mrasrc_device_run(tag, argv, env, pipeline, seconds, actions=()):
                 "decoderThreadType": "auto"})
         playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
         t0 = time.monotonic()
-        todo = sorted(actions)
+        todo = sorted(actions, key=lambda a: a[0])
         while time.monotonic() - t0 < seconds:
             while todo and time.monotonic() - t0 >= todo[0][0]:
                 r.send(todo.pop(0)[1])
@@ -2930,7 +2932,14 @@ def _mrasrc_device_run(tag, argv, env, pipeline, seconds, actions=()):
             time.sleep(0.1)
         r.send({"cmd": "get_stats", "id": "as1", "element": "asrc"})
         st = r.wait_event(ev_is("stats", id="as1"))
-        snap = (st or {}).get("data") or {}
+        snap = dict((st or {}).get("data") or {})
+        for i, (element, prop) in enumerate(reads):
+            rid = f"rd{i}"
+            r.send({"cmd": "get_property", "id": rid, "element": element, "property": prop})
+            ev = r.wait_event(lambda e: e.get("id") == rid and e.get("event") in ("property", "command_error"))
+            snap[f"{element}.{prop}"] = ev.get("value") if ev and ev.get("event") == "property" else None
+        asked = {a[1].get("id") for a in actions if a[1].get("cmd") == "get_property"}
+        snap.update({e["id"]: e.get("value") for e in r.events if e.get("event") == "property" and e.get("id") in asked})
         error = r.has_event(ev_is("error"))
         code = r.stop_and_wait()
     finally:
@@ -2998,6 +3007,57 @@ def test_mrasrc_device():
     if len(seen) == 2:
         check(f"mrasrc-device: both runners forward the same modes and events ({seen['native']})",
               seen["native"] == seen["python"])
+
+
+def test_mrasrc_device_hole():
+    """mrasrc-device-hole (B-167), both runners: the audio outputs' tail (`mrasrc device-sink=sink`, the
+    40 ms prefill, a sync=false sink on its 100 ms ring) across a 300 ms hole in a live input. The loss is
+    accepted, not fed (B-167): the device plays the hole as silence from its own ring, the sink's write
+    position realigns as the input returns (its ring then holds about a segment, so it may realign again),
+    nothing is dropped by mrasrc, the input after it plays on with no backlog, and no device stall is read
+    (the device never stopped). The server-side loss after an underflow (DEV-P4a case 6) is pulsesink's,
+    behind any element: measured on the image's matched install (DEV-P4c1), not here."""
+    test_dir = os.path.join(_PLUGINS, "mpegts-core", "native", "mrtshouse", "tests")
+    if not os.path.exists(os.path.join(test_dir, "libgstmrtest.so")):
+        print("SKIP mrasrc-device-hole — tests/libgstmrtest.so not built")
+        return
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    env = {"GST_PLUGIN_PATH": os.environ.get("GST_PLUGIN_PATH", "") + ":" + test_dir,
+           "GST_REGISTRY": os.path.join(tmp, "registry.bin")}
+    pipe = ("audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,format=S16LE,rate=48000,channels=2"
+            " ! valve name=hole drop=false ! mrasrc name=asrc device-sink=sink"
+            " ! queue name=prefill leaky=0 min-threshold-time=40000000 max-size-time=1000000000"
+            " max-size-buffers=0 max-size-bytes=0"
+            " ! mrtestaudiosink name=sink sync=false buffer-time=100000 latency-time=10000")
+    hole = lambda drop: {"cmd": "set_property", "id": f"h{int(drop)}", "element": "hole",  # noqa: E731
+                         "property": "drop", "value": drop}
+    ask = lambda rid, prop: {"cmd": "get_property", "id": rid, "element": "sink", "property": prop}  # noqa: E731
+    actions = ((2.9, ask("r0", "resyncs")), (2.95, ask("n0", "renders")), (3.0, hole(True)),
+               (3.3, hole(False)))
+    reads = [("sink", "resyncs"), ("sink", "renders"), ("prefill", "current-level-time")]
+    seen = {}
+    try:
+        for tag, argv in (("native", None), ("python", _PY_RUNNER)):
+            _stats, events, snap, ok, _logs = _mrasrc_device_run(tag, argv, env, pipe, 7.0, actions, reads)
+            kinds = [e.get("kind") for e in events]
+            start, resyncs = snap.get("r0"), snap.get("sink.resyncs")
+            renders = (snap.get("sink.renders") or 0) - (snap.get("n0") or 0)
+            level = snap.get("prefill.current-level-time")
+            check(f"mrasrc-device-hole {tag}: plays, no error, exits 0", ok)
+            check(f"mrasrc-device-hole {tag}: no device stall read across an input hole ({kinds})",
+                  "device-stalled" not in kinds and (snap.get("device-stalls") or 0) == 0)
+            check(f"mrasrc-device-hole {tag}: the sink's write position realigns behind the hole, mrasrc drops "
+                  f"nothing ({start} realigns before it, {resyncs} at the end; dropped {snap.get('dropped-frames')})",
+                  isinstance(start, int) and isinstance(resyncs, int) and resyncs > start
+                  and snap.get("dropped-frames") == 0)
+            check(f"mrasrc-device-hole {tag}: it plays on after the hole ({renders} renders in its 4 s) with no "
+                  f"backlog (the prefill holds {(level or 0) / 1e6:.0f} ms)",
+                  renders >= 300 and level is not None and level <= 60_000_000)
+            seen[tag] = sorted(set(kinds))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if len(seen) == 2:
+        check(f"mrasrc-device-hole: both runners the same ({seen['native']})", seen["native"] == seen["python"])
 
 
 # --------------------------------------------------------------------------- subtitle-overlay-formula (WI-P3-7)
@@ -4042,6 +4102,54 @@ def test_catch_up_backlog():
             r.kill()
 
 
+def test_catch_up_render():
+    """CR (B-167): `catchUp` {render} skips, at the render element's sink pad, what queued before
+    its first buffer there beyond its inputs' own lag: a queue that holds everything from the
+    launch and lets 3 s go at once (an aggregator that waited out an absent input's silence limit)
+    loses that wait less the 200 ms slack, then plays live. A launch with nothing queued, and an
+    input 1.5 s late as a stream (the tap passes it after its second), lose nothing there."""
+    src = "audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,format=S16LE,rate=48000,channels=2"
+    hold = ("queue name=hold min-threshold-time=10000000000 max-size-time=20000000000 max-size-buffers=0"
+            " max-size-bytes=0")
+    late = ("queue min-threshold-time=1500000000 max-size-time=5000000000 max-size-buffers=0"
+            " max-size-bytes=0")
+    tail = "identity name=rd ! fakesink name=s sync=false async=false"
+    for tag, pipe, release in (
+            ("held", f"{src} ! identity name=cu_in ! {hold} ! {tail}", True),
+            ("none", f"{src} ! identity name=cu_in ! {tail}", False),
+            ("late", f"{src} ! {late} ! identity name=cu_in ! {tail}", False)):
+        r = RunnerProc()
+        try:
+            r.send({"cmd": "start", "eosDrain": False, "pipeline": pipe,
+                    "catchUp": {"prefix": "cu_", "render": "rd"}})
+            check(f"CR {tag} PLAYING", r.wait_event(ev_is("state_change", state="playing"), timeout=8) is not None)
+            if release:
+                time.sleep(3.0)
+                r.send({"cmd": "set_property", "id": "rel", "element": "hold",
+                        "property": "min-threshold-time", "value": 0})
+            ev = r.wait_event(lambda e: e.get("channel") == "catch_up", timeout=8)
+            time.sleep(0.5)
+            r.pump()
+            inputs = [i for e in r.events if e.get("channel") == "catch_up" for i in e["payload"]["inputs"]]
+            rd = next((i for i in inputs if i.get("element") == "rd"), None)
+            tap = next((i for i in inputs if i.get("element") == "cu_in"), {})
+            if tag == "held":
+                check(f"CR held: the 3 s queued before the first render skipped there but the slack "
+                      f"({rd}; the tap {tap})",
+                      ev is not None and rd is not None and 2500 <= rd.get("skippedMs", 0) <= 3100
+                      and rd.get("buffers", 0) > 200 and tap.get("skippedMs", 0) < 100)
+            elif tag == "none":
+                check(f"CR none: nothing skipped at the render point ({inputs})", rd is None)
+            else:
+                check(f"CR late: the tap passed the late stream after its second, the render point kept "
+                      f"it all ({inputs})",
+                      rd is None and 800 <= tap.get("skippedMs", 0) <= 1500)
+            check(f"CR {tag} no lifecycle error", not r.has_event(ev_is("error")))
+            check(f"CR {tag} exits 0", r.stop_and_wait() == 0)
+        finally:
+            r.kill()
+
+
 # --------------------------------------------------------------------------- PW: playout watch (B-206)
 def test_playout_watch():
     """PW (B-206): `missWatchMs` on the backlog shed reports the sink missing its playout once
@@ -4237,6 +4345,7 @@ test_mrtsdemux_pmt_change()
 test_mrtsdemux_messages()
 test_video_leg_formula()
 test_mrasrc_device()
+test_mrasrc_device_hole()
 test_subtitle_overlay_formula()
 test_ttx_formula()
 test_burnin_formula()
@@ -4246,6 +4355,7 @@ test_transcode_rate()
 test_stop_while_starting()
 test_catch_up()
 test_catch_up_backlog()
+test_catch_up_render()
 test_playout_watch()
 test_reanchor_sink_paced()
 

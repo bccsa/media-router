@@ -13,10 +13,12 @@ constexpr const char* EVENT = "catch_up";
 /** The launch's inputs report together once all of them delivered, or this long after its first
  *  buffer with those that did; one that delivers later reports alone. */
 constexpr int REPORT_MS = 3000;
+/** The render point keeps what is this much later than its inputs were when they first kept. */
+constexpr gint64 RENDER_SLACK_NS = 200 * GST_MSECOND;
 
-/** `cfg` = {"prefix": name prefix} or nullptr. The SINK pad of every element whose name starts
- *  with the prefix, the launch's and any added later, drops the buffers and GAPs that end before
- *  the launch's first buffer there, until one does not or they come as a live stream. */
+/** `cfg` = {"prefix", "render"?} or nullptr. Each prefixed element's SINK pad (any added later too)
+ *  drops what ends before the launch's first buffer there, until one does not or it streams; the
+ *  render element's, once, before its own first less the inputs' most lag and RENDER_SLACK_NS. */
 void install(GstElement* pipe, JsonObject* cfg);
 /** Forget the launch (main loop; the pipeline is in NULL). */
 void clear();

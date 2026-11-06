@@ -44,18 +44,14 @@ function aes67(): string {
     return built!.pipeline;
 }
 
-/** audio-output-302m with `n` sources at D = 300 ms: the single-source arm or the mixer arm, its
- *  live inputs (B-192) linked in as the runner host launches it with every one there. */
+/** audio-output-302m with `n` sources (no playout offset since B-167): the single-source arm or
+ *  the mixer arm, its live inputs (B-192) linked in as the runner host launches it with every one there. */
 function audioOutput302m(n: number): string {
     const m = new AudioOutput302mModule() as unknown as Record<string, unknown>;
     const sources = Array.from({ length: n }, (_, i) => source(`in${i}`, 40410 + i));
     m.services = {
         instanceId: `aout${n}`,
-        playoutOffsetMs: 300,
-        mediaRouter: {
-            getModuleBusSources: () => sources,
-            getRoutePlayoutOffsetMs: () => undefined,
-        },
+        mediaRouter: { getModuleBusSources: () => sources },
     };
     m.setHealth = vi.fn();
     m.setStatusData = vi.fn();

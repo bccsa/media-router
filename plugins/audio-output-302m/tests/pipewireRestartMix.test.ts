@@ -6,8 +6,9 @@ import { join } from 'node:path';
 /** B-206 (MR-029, .108 3 Nov) on a real PipeWire, the .108 rig of `mixRig.ts`. PipeWire restarts
  *  and takes the mic captures with it, so the Audio Mixer runs with no input and then sends the
  *  seconds it missed at once, stamped in the past, its hole as GAPs. An output whose rebuild meets
- *  that burst used to take it as its first data: its aligner's queue filled, the pace latched the
- *  held arrivals for minutes, every buffer missed the sink, and the route was raised for good.
+ *  that burst used to take it as its first data: its aligner's queue filled and the pace latched
+ *  the held arrivals for minutes. Since B-167 the output plays what comes (no playout offset), so
+ *  each drill passes on: plays within 2 s of its re-link, no silence over 40 ms after that.
  *  Skipped, saying why, without PipeWire, an element, the plugin or the runner. */
 
 import { setLogTap } from '../../../packages/shared-types/src/index.js';
@@ -112,16 +113,16 @@ describe.skipIf(skip !== null)(
             return e;
         }
 
-        /** 18 s from now, past the re-anchor's 15 s hold: the route never raised, never 'Plays
-         *  nothing', and neither channel silent for a second (a loaded Pi drops a few blocks). */
-        async function expectPlaysOn(e: ReturnType<typeof engine>) {
+        /** 18 s from now: never 'Plays nothing', and neither channel silent over 40 ms. */
+        async function expectPlaysOn() {
             const from = rec.at();
             await sleep(18_000);
-            expect(e.router.getRoutePlayoutRaiseMs('out')).toBe(0);
             expect(said(/^Plays nothing/)).toBe(false);
             const gaps = [rec.longestGapMs(L, from, rec.at()), rec.longestGapMs(R, from, rec.at())];
-            console.log(`[B-206] longest silences after it played: L ${gaps[0]} ms, R ${gaps[1]} ms`);
-            expect(Math.max(...gaps)).toBeLessThan(1000);
+            console.log(
+                `[B-167] longest silences after it played: L ${gaps[0]} ms, R ${gaps[1]} ms`,
+            );
+            expect(Math.max(...gaps)).toBeLessThanOrEqual(40);
         }
 
         /** PipeWire down `ms` with the mics' captures (their runners stop with it). */
@@ -132,7 +133,7 @@ describe.skipIf(skip !== null)(
             await sleep(ms);
         }
 
-        it('the mics back as it rebuilds: plays at its own D within 2 s, never raised, the burst skipped in one line', async () => {
+        it('the mics back as it rebuilds: plays within 2 s, no silence over 40 ms after, the burst skipped in one line', async () => {
             const e = await started();
             await pipeWireDown(e, 6000);
             await pw.start();
@@ -141,18 +142,17 @@ describe.skipIf(skip !== null)(
             // The Mixer's burst (about 7 s of the past) is the rebuilt output's first data.
             await Promise.all([e.mic('micA').up(), e.mic('micB').up()]);
             const rebuilt = Date.now();
-            expect(await soundsWithin(L, 2500)).toBe(true);
-            expect(await soundsWithin(R, 1000)).toBe(true);
+            expect(await soundsWithin(L, 2000)).toBe(true);
+            expect(await soundsWithin(R, 2000 - (Date.now() - rebuilt))).toBe(true);
             console.log(`[B-206] the mix plays ${Date.now() - rebuilt} ms after the rebuild`);
-            // Past the re-anchor's 15 s hold: never raised, never 'Plays nothing', no silence.
-            await expectPlaysOn(e);
+            await expectPlaysOn();
             expect(e.out().getState().health).toBe('ok');
             const caught = lines.filter((l) => /^Caught up at the start: skipped/.test(l.msg));
             expect(caught).toHaveLength(1);
             expect(caught[0].msg).toMatch(/skipped \d+\.\d s of Mixer/);
         });
 
-        it('rebuilt seconds after the burst (the Mixer\'s egress still reads it): its seed holds to the ts-offset, it plays at its own D', async () => {
+        it("rebuilt seconds after the burst (the Mixer's egress still reads it): its launch seeds no pace past 0, it plays within 2 s", async () => {
             const e = await started();
             await pipeWireDown(e, 6000);
             // The Mixer sends its burst while the output is down: its egress window reads seconds.
@@ -161,11 +161,11 @@ describe.skipIf(skip !== null)(
             await pw.start();
             await record();
             expect(await until(() => said(/^PipeWire stream rebuilt$/), 15_000)).toBe(true);
-            expect(await soundsWithin(L, 2500)).toBe(true);
-            await expectPlaysOn(e);
+            expect(await soundsWithin(L, 2000)).toBe(true);
+            await expectPlaysOn();
         });
 
-        it('the mics back 5 s after it rebuilt: the burst and the stale GAPs over its hole skipped, it plays at its own D', async () => {
+        it("the mics back 5 s after it rebuilt: the burst, the stale GAPs over its hole and the mix's own wait skipped, the mix plays within 2 s", async () => {
             const e = await started();
             await pipeWireDown(e, 6000);
             await pw.start();
@@ -178,12 +178,16 @@ describe.skipIf(skip !== null)(
             await sleep(Math.max(0, 5000 - (Date.now() - rebuilt)));
             await Promise.all([e.mic('micA').up(), e.mic('micB').up()]);
             const up = Date.now();
-            expect(await soundsWithin(L, 2500)).toBe(true);
-            expect(await soundsWithin(R, 1000)).toBe(true);
+            expect(await soundsWithin(L, 2000)).toBe(true);
+            expect(await soundsWithin(R, 2000 - (Date.now() - up))).toBe(true);
             console.log(`[B-206] the mix plays ${Date.now() - up} ms after the mics are back`);
-            await expectPlaysOn(e);
+            await expectPlaysOn();
             expect(e.out().getState().health).toBe('ok');
             expect(lines.some((l) => /^Caught up at the start: skipped .* of Mixer/.test(l.msg))).toBe(true);
+            // The SRT leg queued while the absent Mixer input held the mix: skipped as the mix (B-167).
+            expect(
+                lines.some((l) => /^Caught up at the start: skipped .*\bof the mix\b/.test(l.msg)),
+            ).toBe(true);
         });
     },
 );

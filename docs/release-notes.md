@@ -337,6 +337,30 @@ elements" below do not start.
   values are ignored (the OCC gate's burn-in transcoders ran 1,400 ms); a
   rollback restores them.
 
+**Audio Output (302M) plays as soon as it can (Phase 4)**
+
+- **It plays what its sources send as it comes,** through a 40 ms buffer and
+  the sound card's 100 ms ring, instead of waiting for a playout offset. Its
+  delay is its sources' own plus about 140 ms and the card's. A route's
+  Playout Offset no longer moves it.
+- **A start skips what its mix held back before it played.** When it mixes
+  two or more sources and one is connected but sends nothing yet, the mix waits
+  up to 2 s for it; the output now starts live after that wait instead of
+  playing that much behind for good. The start's INFO line names it: "Caught up
+  at the start: skipped 2.0 s of the mix, …".
+- **No relaunch after a source's stale burst.** The one relaunch a source's
+  return used to cause (v2.0.0.98's fix for a burst of stale packets) is gone:
+  the output plays on. (MR-011)
+- **A pause in its sources is a pause.** The card plays silence for it and
+  what follows plays at once. On the box's PipeWire up to about a tenth of a
+  second after a pause can be lost as well (100 to 127 ms after a 300 ms
+  pause, measured before this release).
+
+**Removed settings (Phase 4), nothing migrated**
+
+- **Lip-Sync Trim** on Audio Output (302M): with no playout offset there is
+  nothing to trim. Stored values are ignored; a rollback restores them.
+
 **Needs the image's native elements (Phase 2)**
 
 - Without the timing elements of this image, Audio Mixer, N-1 Audio Mixer
