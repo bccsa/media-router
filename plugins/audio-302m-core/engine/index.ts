@@ -26,5 +26,11 @@ export type {
     Audio302mEncodeOpts,
 } from './audio302mHelpers.js';
 export { mixMatrixClause } from './channelMapMatrix.js';
-export { POSITIONED_302M_MASK, channelRange, positionedChannelsClause } from './channelLayout.js';
+export { default302mChannelMap } from './defaultChannelMap.js';
+export {
+    DEFAULT_LAYOUT_MASK,
+    POSITIONED_302M_MASK,
+    channelRange,
+    positionedChannelsClause,
+} from './channelLayout.js';
 export { DEFAULT_302M_BIT_DEPTH, s302mFormatFor, type S302mFormat } from './pcmBitDepth.js';

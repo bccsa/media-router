@@ -19,8 +19,9 @@ import {
     normalize302mChannels,
     type AudioMixSource,
 } from './audio302mHelpers.js';
-import { positionedChannelsClause } from './channelLayout.js';
+import { DEFAULT_LAYOUT_MASK, positionedChannelsClause } from './channelLayout.js';
 import { mixMatrixClause } from './channelMapMatrix.js';
+import { default302mChannelMap } from './defaultChannelMap.js';
 import * as core from './index.js';
 
 const SRC = { port: 40001, connectionId: 'c1' };
@@ -141,16 +142,26 @@ describe('helper strings carry none of the replaced mechanisms', () => {
         for (let n = 0; n <= SOURCES.length; n++) {
             for (const liveInputs of [false, true]) {
                 for (const channels of [1, 2, 8]) {
-                    const sources = SOURCES.slice(0, n);
-                    out.push(buildAudioMixInput({ sources, liveInputs, channels }).fragment);
+                    for (const pinnedLayout of [false, true]) {
+                        const sources = SOURCES.slice(0, n);
+                        const opts = { sources, liveInputs, channels, pinnedLayout };
+                        out.push(buildAudioMixInput(opts).fragment);
+                    }
                 }
             }
-            const apart = buildLiveMixInput({ sources: SOURCES.slice(0, n), channels: 8 });
-            out.push(apart.fragment, ...apart.inputs.map((b) => b.description!));
+            for (const pinnedLayout of [false, true]) {
+                const apart = buildLiveMixInput({
+                    sources: SOURCES.slice(0, n),
+                    channels: 8,
+                    pinnedLayout,
+                });
+                out.push(apart.fragment, ...apart.inputs.map((b) => b.description!));
+            }
         }
         for (const s of SOURCES) {
             out.push(build302mMixBranch(s, { mixerName: 'm', demuxName: 'd' }));
             out.push(liveMixInputBranch('m', s, { channels: 8 }).description!);
+            out.push(liveMixInputBranch('m', s, { channels: 4, pinnedLayout: true }).description!);
             out.push(liveInputBranchFor('m', s.connectionId, s).description!);
         }
         return out;
@@ -202,6 +213,7 @@ describe('helper strings carry none of the replaced mechanisms', () => {
     it('exports no paced mixer; a new builder must join the test above', () => {
         expect(Object.keys(core).sort()).toEqual([
             'DEFAULT_302M_BIT_DEPTH',
+            'DEFAULT_LAYOUT_MASK',
             'POSITIONED_302M_MASK',
             'alignedMixer',
             'build302mEncodeBranch',
@@ -209,6 +221,7 @@ describe('helper strings carry none of the replaced mechanisms', () => {
             'buildAudioMixInput',
             'buildLiveMixInput',
             'channelRange',
+            'default302mChannelMap',
             'liveDemuxName',
             'liveInputBranchFor',
             'liveMixInputBranch',
@@ -395,6 +408,90 @@ describe('buildAudioMixInput — mixer arm', () => {
         expect(continuationName).toBe('progmix_out');
         expect(fragment).toContain('capsfilter name=progmix_out ');
         expect(fragment).toContain('audiomixer name=progmix ');
+    });
+});
+
+describe('pinnedLayout — a placed mix keeps one layout (MR-056, B-214)', () => {
+    const MAPPED = { ...SRC2, channelMap: [{ srcChannel: 1, dstChannel: 2 }] };
+
+    it("pins GStreamer's default layout for the width on the mix, every branch and the direct arm; mono none", () => {
+        for (let channels = 1; channels <= 8; channels++) {
+            const caps =
+                `audio/x-raw,rate=48000,channels=${channels}` +
+                (channels > 1 ? `,channel-mask=(bitmask)${DEFAULT_LAYOUT_MASK[channels]}` : '');
+            for (const liveInputs of [false, true]) {
+                const { fragment } = buildAudioMixInput({
+                    sources: [SRC, SRC2],
+                    channels,
+                    liveInputs,
+                    pinnedLayout: true,
+                });
+                expect(fragment).toContain(`capsfilter name=mixin_out caps="${caps}"`);
+                expect(
+                    fragment.match(
+                        new RegExp(`! ${caps.replace(/[()]/g, '\\$&')} ! mralignwatch `, 'g'),
+                    ),
+                ).toHaveLength(2);
+            }
+            const direct = buildAudioMixInput({ sources: [SRC], channels, pinnedLayout: true });
+            expect(direct.fragment).toContain(`capsfilter name=mixin_out caps="${caps}"`);
+            const apart = buildLiveMixInput({ sources: [SRC], channels, pinnedLayout: true });
+            expect(apart.fragment).toContain(`caps="${caps}"`);
+            expect(apart.inputs[0].description).toContain(`! ${caps} ! mralignwatch`);
+        }
+        expect(DEFAULT_LAYOUT_MASK).toEqual({
+            2: '0x3',
+            3: '0xb',
+            4: '0x33',
+            5: '0x37',
+            6: '0x3f',
+            7: '0x13f',
+            8: '0xc3f',
+        });
+    });
+
+    it('brings every input to it by a matrix: its map, or the default of its wire width (MR-053)', () => {
+        const wide = { port: 40003, connectionId: 'c3', sourceChannels: 8 };
+        const { fragment } = buildAudioMixInput({
+            sources: [SRC, MAPPED, wide],
+            channels: 4,
+            pinnedLayout: true,
+        });
+        const quad = 'audio/x-raw,rate=48000,channels=4,channel-mask=(bitmask)0x33';
+        expect(fragment).toContain(
+            `audioconvert${mixMatrixClause(default302mChannelMap(2, 4), 2, 4)} ! audioresample ! ${quad}`,
+        );
+        expect(fragment).toContain(
+            `audioconvert${mixMatrixClause(MAPPED.channelMap, 2, 4)} ! audioresample ! ${quad}`,
+        );
+        expect(fragment).toContain(
+            `audioconvert${mixMatrixClause(default302mChannelMap(8, 4), 8, 4)} ! audioresample ! ${quad}`,
+        );
+        expect(fragment).not.toMatch(/audioconvert ! /);
+        // A mono mix needs no pin: an unmapped source keeps GStreamer's own (L+R)/2.
+        const mono = buildAudioMixInput({ sources: [SRC, SRC2], channels: 1, pinnedLayout: true });
+        expect(
+            mono.fragment.match(
+                /avdec_s302m ! audioconvert ! audioresample ! audio\/x-raw,rate=48000,channels=1 ! /g,
+            ),
+        ).toHaveLength(2);
+    });
+
+    it('off by default: every other caller keeps its strings', () => {
+        for (const channels of [1, 2, 4, 8]) {
+            for (const liveInputs of [false, true]) {
+                for (const sources of [[SRC], [SRC, MAPPED]]) {
+                    const opts = { sources, channels, liveInputs };
+                    expect(buildAudioMixInput({ ...opts, pinnedLayout: false })).toEqual(
+                        buildAudioMixInput(opts),
+                    );
+                    expect(buildAudioMixInput(opts).fragment).not.toContain('channel-mask');
+                }
+            }
+        }
+        expect(liveInputBranchFor('m', 'c2', MAPPED, { channels: 4 })).toEqual(
+            liveInputBranchFor('m', 'c2', MAPPED, { channels: 4, pinnedLayout: false }),
+        );
     });
 });
 

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { GstPluginBase, ModuleInstance, liveInputLaunchText } from '@media-router/engine';
+import { default302mChannelMap, mixMatrixClause } from '@media-router/plugin-audio-302m-core';
 import { AudioOutput302mModule } from './AudioOutput302mModule.js';
 
 /** The pipeline the runner launches when every source runs: the mixer, its inputs linked in. */
@@ -152,16 +153,115 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-40100-x.sock');
     });
 
-    it('default stereo range keeps the string byte-for-byte, even on a 32-channel card', () => {
-        const narrow = makeModule({ sources: 1 }).module.buildPipeline({
+    it('the default range on a stereo device, or one of unknown width, keeps the string byte-for-byte (B-214)', () => {
+        // v2.0.0.101's strings (5fb8ca03): every translation station's SSL 2 output.
+        const tail =
+            ' ! capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=2" mixin_out.' +
+            ' ! identity name=live_upstream sync=true ! audioconvert ! audioresample' +
+            ' ! volume name=vol volume=1.00' +
+            ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
+            ' ! mrlateness name=lat_render reference=running-time' +
+            ' ! pulsesink name=sink device=alsa_output.usb-foo sync=true provide-clock=false slave-method=1' +
+            ' max-lateness=-1 buffer-time=100000 ts-offset=0' +
+            ' stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true"';
+        const ingress = (i: number, hash: string) =>
+            `unixfdsrc socket-path=/tmp/mr-bus-${40100 + i}-x.sock` +
+            ` ! mrlateness name=lat_busin_${40100 + i}_${hash} reference=house` +
+            ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000';
+        const direct =
+            `${ingress(0, 'ee74db')} ! mrtsdemux name=mixin_demux0 select=audio/x-smpte-302m` +
+            ' ! avdec_s302m ! audioconvert ! audioresample' +
+            ' ! queue leaky=0 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0' +
+            tail;
+        const branch = (i: number, hash: string, bin: string) =>
+            `( name=mixin_in_${bin} ${ingress(i, hash)}` +
+            ` ! mrtsdemux name=mixin_demux_${bin} select=audio/x-smpte-302m ! avdec_s302m` +
+            ' ! audioconvert ! audioresample' +
+            ` ! audio/x-raw,rate=48000,channels=2 ! mralignwatch name=mixin_aw_${bin} aligner=mixin` +
+            ` input="c-${i}" hold-on-eos=true ) ! mixin.sink_${i}`;
+        const mixed =
+            'audiomixer name=mixin latency=0 start-time-selection=first' +
+            tail +
+            ` ${branch(0, 'ee74db', '30ace7')} ${branch(1, '1f270a', '30ab54')}`;
+        for (const deviceChannels of [2, null]) {
+            for (const channels of [2, undefined]) {
+                const one = makeModule({ sources: 1, deviceChannels }).module.buildPipeline({
+                    device: 'alsa_output.usb-foo',
+                    channels,
+                });
+                expect(launched(one!)).toBe(direct);
+                const { module } = makeModule({ sources: 2, deviceChannels });
+                const two = module.buildPipeline({ device: 'alsa_output.usb-foo', channels });
+                expect(launched(two!)).toBe(mixed);
+                // A source that joins or re-links live gets that same branch (B-206's rig re-links).
+                two!.liveInputs.forEach((b: any, i: number) =>
+                    expect(module.getLiveInputBranch('audio-in', `c-${i}`)).toEqual(b),
+                );
+            }
+        }
+    });
+
+    it('MR-052: mono or stereo on channel 1 of a wider card is placed, mono as channel 1 of a 2-wide stream', () => {
+        const mono = makeModule({ sources: 1, deviceChannels: 4 }).module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+            channels: 1,
+        });
+        expect(mono!.pipeline).toContain(
+            'interval=100000000 ! audioconvert mix-matrix="<<(float)1.0000>, <(float)0.0000>>"' +
+                ' ! audio/x-raw,channels=2,channel-mask=(bitmask)0x0' +
+                ' ! mrlateness name=lat_render reference=running-time ! pulsesink',
+        );
+        // One channel is mono whatever its mask: the mix is not pinned, the source not matrixed.
+        expect(mono!.pipeline).toContain('caps="audio/x-raw,rate=48000,channels=1"');
+        expect(mono!.pipeline).toContain('avdec_s302m ! audioconvert ! audioresample ! queue');
+        const stereo = makeModule({ sources: 2, deviceChannels: 32 }).module.buildPipeline({
             device: 'alsa_output.usb-foo',
         });
-        const wide = makeModule({ sources: 1, deviceChannels: 32 }).module.buildPipeline({
-            device: 'alsa_output.usb-foo',
+        expect(stereo!.pipeline).toContain(
+            'caps="audio/x-raw,rate=48000,channels=2,channel-mask=(bitmask)0x3"',
+        );
+        expect(stereo!.pipeline).toContain(
+            'interval=100000000 ! capssetter caps="audio/x-raw,channel-mask=(bitmask)0x0"' +
+                ' ! audioconvert mix-matrix="<<(float)1.0000, (float)0.0000>, <(float)0.0000, (float)1.0000>>"' +
+                ' ! audio/x-raw,channels=2,channel-mask=(bitmask)0x0' +
+                ' ! mrlateness name=lat_render reference=running-time ! pulsesink',
+        );
+    });
+
+    it('MR-056: a placed mix pins its layout on the mixer and every input, each brought to it by its map or the default (MR-053)', () => {
+        const { module } = makeModule({ sources: 4, deviceChannels: 32 });
+        const bus = module.services.mediaRouter.getModuleBusSources;
+        const four = bus().map((s: any, i: number) =>
+            i < 2 ? s : { ...s, channelMap: [{ srcChannel: 0, dstChannel: i }] },
+        );
+        bus.mockReturnValue(four);
+        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo', channels: 4 });
+        const quad = 'audio/x-raw,rate=48000,channels=4,channel-mask=(bitmask)0x33';
+        expect(desc.pipeline).toContain(`capsfilter name=mixin_out caps="${quad}"`);
+        const unmapped = mixMatrixClause(default302mChannelMap(2, 4), 2, 4);
+        desc.liveInputs.forEach((b: any, i: number) => {
+            const matrix =
+                i < 2 ? unmapped : mixMatrixClause([{ srcChannel: 0, dstChannel: i }], 2, 4);
+            expect(b.description).toContain(
+                `! audioconvert${matrix} ! audioresample ! ${quad} ! mralignwatch`,
+            );
+            // A source that joins later is built to the launched layout.
+            expect(module.getLiveInputBranch('audio-in', `c-${i}`)).toEqual(b);
         });
-        expect(wide!.pipeline).toBe(narrow!.pipeline);
-        expect(wide!.pipeline).not.toContain('mix-matrix');
-        expect(wide!.pipeline).not.toContain('channel-mask');
+        // The default reaches channels 3 and 4 at half level: what the editor shows (MR-053).
+        expect(default302mChannelMap(2, 4)).toEqual([
+            { srcChannel: 0, dstChannel: 0 },
+            { srcChannel: 1, dstChannel: 1 },
+            { srcChannel: 0, dstChannel: 2, gain: 0.5 },
+            { srcChannel: 1, dstChannel: 3, gain: 0.5 },
+        ]);
+        // One source: the direct arm is held to the same layout.
+        bus.mockReturnValue(four.slice(0, 1));
+        const one = module.buildPipeline({ device: 'alsa_output.usb-foo', channels: 4 });
+        expect(one.pipeline).toContain(
+            `avdec_s302m ! audioconvert${unmapped} ! audioresample ! queue leaky=0 max-size-time=100000000` +
+                ` max-size-buffers=0 max-size-bytes=0 ! capsfilter name=mixin_out caps="${quad}"`,
+        );
     });
 
     it('places an 8-channel mix on outputs 9–16 of a 32-channel card as a 16-wide stream, upstream of an untouched sink', () => {
@@ -173,14 +273,16 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         });
         expect(desc).not.toBeNull();
         const p: string = desc!.pipeline;
-        // The mix is 8 wide; VU reads it before the spread.
-        expect(p).toContain('capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=8"');
+        // The mix is 8 wide, its layout pinned; VU reads it before the spread.
+        expect(p).toContain(
+            'capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=8,channel-mask=(bitmask)0xc3f"',
+        );
         expect(p).toMatch(
-            /level post-messages=true[^!]*! audioconvert mix-matrix="<.*>" ! audio\/x-raw,channels=16,channel-mask=\(bitmask\)0x0 ! mrlateness name=lat_render reference=running-time ! pulsesink name=sink device=alsa_output\.usb-foo sync=true [^!]*stream-properties="[^"]*"$/,
+            /level post-messages=true[^!]*! capssetter caps="audio\/x-raw,channel-mask=\(bitmask\)0x0" ! audioconvert mix-matrix="<[^"]*>" ! audio\/x-raw,channels=16,channel-mask=\(bitmask\)0x0 ! mrlateness name=lat_render reference=running-time ! pulsesink name=sink device=alsa_output\.usb-foo sync=true [^!]*stream-properties="[^"]*"$/,
         );
         // 16 wide — up to the last channel used, never the card's 32.
         // Row 8 (device channel 9) carries mix channel 0: the first lit cell.
-        const matrix = /mix-matrix="<(.*)>"/.exec(p)![1];
+        const matrix = /capssetter [^!]*! audioconvert mix-matrix="<([^"]*)>"/.exec(p)![1];
         const rows = matrix.split('>, <');
         expect(rows).toHaveLength(16);
         expect(rows[8].replace(/[<>]/g, '').split(', ')[0]).toBe('(float)1.0000');
