@@ -162,7 +162,7 @@ describe('classifyDecoderFailure', () => {
         });
 
         it('keeps the decoder when the SINK failed — the field regression', () => {
-            // Pi 4 10.9.1.165: a compositor/cog flap took waylandsink down
+            // A Pi 4 in the field: a compositor/cog flap took waylandsink down
             // mid-session and the healthy hardware decoder was demoted for the
             // rest of the engine session. Same decoder choice comes back on the
             // runner's replay.
@@ -214,7 +214,7 @@ describe('classifyDecoderFailure', () => {
             // that doesn't name the decoder is not evidence about the decoder,
             // and repetition doesn't make it evidence. A compositor/cog flap
             // stranded a healthy hardware decoder on software decode for the
-            // rest of the session (field, Pi 4 10.9.1.165, 2026-08-03).
+            // rest of the session (field, a Pi 4, 2026-08-03).
             for (let i = 0; i < 5; i++) {
                 expect(classifyDecoderFailure(unattributed)).toEqual({ kind: 'rebuild-same' });
             }

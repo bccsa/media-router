@@ -2008,6 +2008,17 @@ void test_outage() {
         d.feed(a.b.data(), a.b.size(), false, ceil_ns(t0 + 60 * TICKS_20MS), out);
         CHECK("17 the same stale PES twice in a row: both dropped, one not-house-time",
               of(out, K::unit).size() == 58 && of(out, K::not_house_time).size() == 1 && of(out, K::gap).empty());
+        // What the element reports: the stale drops counted, the pads whose last PES is off house time.
+        std::vector<std::pair<std::vector<int>, uint64_t>> offs;
+        for (bool select : {false, true}) {
+            DemuxCore core(select ? sel_cfg() : DemuxCore::Config());
+            paced(core, stream(t0, 100, nullptr, [&](int k) { return t0 + k * TICKS_20MS + H2; }));
+            offs.push_back({core.off_house_pids(), core.counters().pes_dropped_stale});
+        }
+        CHECK("17 two stale PES dropped count 2 (pesDroppedStale) and leave their pad on house time (no PID "
+              "off it); a stream 2 h off house time lists its PID off it (demux and select)",
+              d.counters().pes_dropped_stale == 2 && d.off_house_pids().empty() &&
+                  offs == std::vector<std::pair<std::vector<int>, uint64_t>>{{{PID_A}, 0}, {{PID_A}, 0}});
     }
     {
         // Episodes: two stale PES 5 s apart warn once, 15 s apart twice (10 s quiet closes one).
@@ -2110,6 +2121,20 @@ void test_outage() {
               "units continuous",
               us.size() == 100 && steady(us) && nh.size() == 1 && std::get<0>(nh[0]) == PID_A &&
                   !std::get<2>(nh[0]));
+    }
+    {
+        // Off house time for 20 s: each PES off it keeps the episode open, so its steps warn no more.
+        const int64_t M2 = 2 * 60 * 90000LL;
+        DemuxCore d;
+        const auto steps = [&](int k) { return t0 + k * TICKS_20MS + BASE + M2 * ((k >= 300) + (k >= 600)); };
+        const auto out = paced(d, stream(t0, 1000, steps, [&](int k) { return t0 + k * TICKS_20MS + H2; }));
+        const NotHouse nh = nothouse_of(out);
+        const auto gaps = of(out, K::gap);
+        CHECK("17 a stream that stays 2 h off house time, its offset stepping 2 min at 6 s and 12 s: one "
+              "not-house-time (its PES hold the episode open), every unit placed, a jump GAP at each step",
+              of(out, K::unit).size() == 1000 && nh.size() == 1 && std::get<0>(nh[0]) == PID_A &&
+                  !std::get<2>(nh[0]) && gaps.size() == 2 && std::string(gaps[0]->reason) == "jump" &&
+                  std::string(gaps[1]->reason) == "jump");
     }
     {
         const int64_t behind = 10 * 3600 * 90000LL;

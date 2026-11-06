@@ -67,8 +67,8 @@ check("unwrap_near identity", t.unwrap_near(900000, 900900) == 900000)
 
 
 # --- TimelineStamper (the contract's producer side) -------------------------
-# Same cases as the C++ port (native/mrts/tests/ts_timeline_test.cpp) and the
-# runner's gst_bus_stamper_test.py: one contract, three implementations.
+# Same cases as the C++ port had until P2-2b deleted it (tests/ts_timeline_test.cpp went in
+# B-143) and the runner's gst_bus_stamper_test.py: one contract, three implementations.
 STEP, STEP_NS = 3600, 40_000_000       # 40 ms
 FIRST, HOUSE = 8_100_000, 1_000_000_000_000
 
@@ -307,7 +307,7 @@ check("and no zero floor trips the net", len(fresh) == 0)
 # still falling, with the sink dropping late frames. The fixture below is that
 # producer, and it is the reason this loop has no setpoint.
 #
-# The same numbers run in the C++ port (native/mrts/tests/ts_timeline_test.cpp).
+# The same numbers ran in the C++ port until P2-2b deleted it (tests/ts_timeline_test.cpp).
 D_STEP, D_STEP_NS = 18000, 200_000_000          # 200 ms of media per buffer
 D_RATE = 3600 * 5                               # buffers per simulated hour
 BUILD_NS, BUILD_S = 2_000_000_000, 30           # the player's 2 s lead, over 30 s
@@ -549,8 +549,8 @@ check("A/V hold the source's skew through the whole slew (to within ns)",
 # it, and every buffer after it arrives early against an anchor taken off it.
 # On .46 a vMix SRT feed came back with ~1.8 s queued, its stamps sat 1.8 s
 # later than its sibling feeds' for the same picture, and every mux mixing the
-# two shipped that as lipsync. The same numbers run in the C++ port
-# (native/mrts/tests/ts_timeline_test.cpp) — pinned literal for literal.
+# two shipped that as lipsync. The same numbers ran in the C++ port
+# until P2-2b deleted it (tests/ts_timeline_test.cpp) — pinned literal for literal.
 BACKLOG = 45                          # 1.8 s of 40 ms buffers queued at the sender
 BURST_NS = 4_000_000                  # ... flushed at one buffer per 4 ms
 # What the un-repaired anchor is wrong by: the backlog's media minus the wall
@@ -1176,7 +1176,7 @@ check("an anchored stamper still stamps a private-only leg at arrival, never fro
       k1 == HOUSE + STEP_NS and k2 == HOUSE + 40 * STEP_NS and k3 == HOUSE + 90 * STEP_NS)
 print("all timing-eligibility checks passed")
 
-# --- program-wide steps vs lone steps (2026-09-17; C++ twin in ts_timeline_test.cpp) --
+# --- program-wide steps vs lone steps (2026-09-17; its C++ twin deleted in P2-2b) --
 _S, _SN = 3600, 40_000_000
 _fold = t.TimelineStamper._fold
 V, R, K = 0x100, 0x110, 0x10a
@@ -1220,8 +1220,8 @@ print("all conditioner program/lone-step checks passed")
 # --- house-timeline egress (ADR-0005 amendment 2026-10-08) ---------------------
 # A transform producer's mpegtsmux writes PES PTS = house running time + 1 h;
 # the identity stamp reads it back. Exact, anchor-free, no re-anchor, no
-# conditioning — the same integers out of the C++ twin (ts_timeline_test.cpp
-# "house-timeline egress").
+# conditioning — the same integers out of the C++ twin (ts_house_test.cpp's
+# "the bus formula", moved from ts_timeline_test.cpp in B-143).
 HOUSE_H = 10_000_000_000                    # 10 s of house time
 MUX = t.MUX_CLOCK_BASE_90K
 check("house_from_mux_pts inverts the mux's 1 h offset exactly",

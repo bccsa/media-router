@@ -22,7 +22,7 @@
 ### 2.1 Current state of the tree / fleet
 
 - **teletextdec is NOT on the fleet image.** `gst-inspect-1.0 teletextdec` on
-  10.9.16.103 (gst 1.28): missing. The July 2026 zvbi recipe + `teletext`
+  the Pi 5 test box (gst 1.28): missing. The July 2026 zvbi recipe + `teletext`
   PACKAGECONFIG never landed in git (the backup README records an *empty*
   `recipes-multimedia/zvbi/` dir). Must be redone — details are known:
   custom `zvbi_0.2.44.bb` (git fetcher, `--without-x`, DEPENDS libpng zlib),
@@ -77,7 +77,7 @@
 
 ### 2.1a Field sample: NO-OCC-Gate01 (2026-09-09)
 
-Engine `NO-BR-Gate01` (fleet manager 10.9.16.20, profile `import`) takes
+Engine `NO-BR-Gate01` (the fleet manager box, profile `import`) takes
 multicast `239.255.0.191:5500` on eth0 into a TS Splitter, which lists
 `Data (private, PID 0x20)` beside H.264 video and 23 AAC languages. A 15 s
 capture on the box (`ttx_probe.py`, read-only multicast join) shows:
@@ -115,7 +115,7 @@ entry — answers open question 1.
   in the image list are in the dev tree (uncommitted). Built for raspberrypi5
   on the build server through a scratch layer (`scratch-ttx/`, CI checkout
   untouched): `zvbi_0.2.44` and `gstreamer1.0-plugins-bad-teletext_1.28.2`
-  ipks. Hot-loaded on 10.9.16.103 from `/tmp/ttx` (GST_PLUGIN_PATH +
+  ipks. Hot-loaded on the Pi 5 test box from `/tmp/ttx` (GST_PLUGIN_PATH +
   LD_LIBRARY_PATH), no rootfs change.
 - **Synthetic teletext generator** (`ttx_gen.py`, scratch tool, also on
   .103:/tmp): a real DVB teletext subtitle stream over UDP, verified against

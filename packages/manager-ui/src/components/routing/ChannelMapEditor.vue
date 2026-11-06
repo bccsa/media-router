@@ -4,6 +4,7 @@ import MrButton from '@/components/common/MrButton.vue';
 import { useEngineStore, type ChannelMapEntry } from '@/stores/engines';
 import { patch } from '@/composables/usePatch';
 import { wire302mChannels } from '@/utils/channelWidth';
+import { default302mMap, gainDb } from '@/utils/channelMapDefault';
 
 const props = defineProps<{
     engineId: string;
@@ -75,6 +76,9 @@ function generateDefaultMap(): Array<{ srcChannel: number; dstChannel: number; g
     return Array.from({ length: minCh }, (_, i) => ({ srcChannel: i, dstChannel: i, gain: 1.0 }));
 }
 
+// A 302M edge with no map plays the engine's default map (MR-053): shown as such until edited.
+const isDefault = ref(false);
+
 // Load existing channel map on mount, or generate default
 onMounted(() => {
     if (connection.value?.channelMap?.length) {
@@ -83,6 +87,9 @@ onMounted(() => {
             dstChannel: m.dstChannel,
             gain: m.gain ?? 1.0,
         }));
+    } else if (srcIs302m.value) {
+        mappings.value = default302mMap(srcChannels.value, dstChannels.value);
+        isDefault.value = true;
     } else {
         mappings.value = generateDefaultMap();
     }
@@ -174,10 +181,12 @@ function addMapping(src: number, dst: number) {
     // Don't add duplicate
     if (mappings.value.some((m) => m.srcChannel === src && m.dstChannel === dst)) return;
     mappings.value = [...mappings.value, { srcChannel: src, dstChannel: dst, gain: 1.0 }];
+    isDefault.value = false;
 }
 
 function removeMapping(index: number) {
     mappings.value = mappings.value.filter((_, i) => i !== index);
+    isDefault.value = false;
 }
 
 // --- Context-aware presets ---
@@ -220,6 +229,7 @@ function applyPreset(preset: string) {
     const s = srcChannels.value;
     const d = dstChannels.value;
     const minCh = Math.min(s, d);
+    isDefault.value = false;
 
     switch (preset) {
         case '1:1':
@@ -294,11 +304,12 @@ function save() {
         dstChannel: m.dstChannel,
         ...(m.gain !== 1.0 ? { gain: m.gain } : {}),
     }));
+    // The default left as it is stays no map: the engine keeps playing its default.
     patch.connectionField(
         props.engineId,
         props.connectionId,
         'channelMap',
-        map.length > 0 ? map : undefined,
+        map.length > 0 && !isDefault.value ? map : undefined,
     );
     emit('close');
 }
@@ -414,6 +425,7 @@ function save() {
                         stroke="var(--accent)"
                         stroke-width="2"
                         stroke-opacity="0.7"
+                        :stroke-dasharray="isDefault ? '6,4' : undefined"
                         class="cursor-pointer"
                         @click="removeMapping(i)"
                     />
@@ -483,6 +495,13 @@ function save() {
             >
                 <div class="text-[10px] font-semibold uppercase tracking-wider py-1 text-muted">
                     Mappings ({{ mappings.length }})
+                    <span
+                        v-if="isDefault"
+                        data-testid="default-map"
+                        class="ml-1 normal-case tracking-normal font-normal text-accent"
+                    >
+                        Default — no map set; the engine plays this
+                    </span>
                 </div>
                 <div
                     v-for="(m, i) in mappings"
@@ -491,7 +510,10 @@ function save() {
                 >
                     <span class="w-12 shrink-0">{{ srcLabels[m.srcChannel] }}</span>
                     <span class="opacity-40">→</span>
-                    <span class="flex-1">{{ dstLabels[m.dstChannel] }}</span>
+                    <span class="flex-1">
+                        {{ dstLabels[m.dstChannel] }}
+                        <span v-if="m.gain !== 1" class="opacity-60">{{ gainDb(m.gain) }}</span>
+                    </span>
                     <button
                         @click="removeMapping(i)"
                         class="p-0.5 rounded opacity-50 hover:opacity-100 text-error"

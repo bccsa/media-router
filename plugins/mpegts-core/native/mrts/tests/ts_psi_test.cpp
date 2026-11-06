@@ -8,6 +8,7 @@
 
 #include "../ts_psi.h"
 #include "check.h"
+#include "pes_pts_oracle.h"
 
 using namespace mrts;
 
@@ -165,26 +166,6 @@ bool stuffed(const uint8_t* from, const uint8_t* to) {
     return std::all_of(from, to, [](uint8_t b) { return b == 0xFF; });
 }
 
-// read_pes_pts as it was before it forwarded to parse_pes_header (WI-S0-6; the
-// forwarder went in B-143): the oracle pes_pts must match.
-int64_t old_read_pes_pts(const uint8_t* pkt) {
-    if (!ts_pusi(pkt) || !ts_has_payload(pkt)) return -1;
-    int off = payload_offset(pkt);
-    if (off + 14 > PKT) return -1;
-    const uint8_t* p = pkt + off;
-    if (p[0] != 0x00 || p[1] != 0x00 || p[2] != 0x01) return -1;
-    switch (p[3]) {
-        case 0xBC: case 0xBE: case 0xBF: case 0xF0:
-        case 0xF1: case 0xF2: case 0xF8: case 0xFF:
-            return -1;
-        default:
-            break;
-    }
-    if ((p[6] & 0xC0) != 0x80) return -1;
-    if (!(p[7] & 0x80)) return -1;
-    return ((int64_t)((p[9] >> 1) & 0x07) << 30) | ((int64_t)p[10] << 22) |
-           ((int64_t)(p[11] >> 1) << 15) | ((int64_t)p[12] << 7) | (p[13] >> 1);
-}
 
 // The PTS of the PES header starting in `pkt`, or -1, read as the mrts callers read
 // it: the packet view, then parse_pes_header.

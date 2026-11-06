@@ -310,7 +310,7 @@ describe('pickActiveDisplay', () => {
     });
 
     it('skips Writeback connectors when picking a substitute', () => {
-        // Hit on 10.9.1.166: Writeback-1/2 show as `connected` in sysfs
+        // Hit on a field box: Writeback-1/2 show as `connected` in sysfs
         // alongside an unplugged HDMI-A-*. Without this filter the surface
         // would land on the virtual writeback sink — invisible to the
         // operator and looks identical to "video player won't start".

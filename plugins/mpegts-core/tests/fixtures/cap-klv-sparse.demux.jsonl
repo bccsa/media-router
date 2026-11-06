@@ -248,4 +248,4 @@
 {"unit":{"pad":"private_0_0180","pts":31273569000000,"dts":31273569000000,"dur":null,"len":104,"crc32":"64ede8b8","discont":false}}
 {"unit":{"pad":"private_0_0180","pts":31273569000000,"dts":31273569000000,"dur":null,"len":104,"crc32":"64ede8b8","discont":false}}
 {"unit":{"pad":"private_0_0180","pts":31274569000000,"dts":31274569000000,"dur":null,"len":104,"crc32":"64ede8b8","discont":false}}
-{"counters":{"pes":247,"gaps":0,"markers":0,"markersDropped":0,"pesNoPts":0,"desyncBytes":0,"ccLost":0,"pesOversize":0,"pesDroppedCc":0,"psiUnsupported":0,"dtsDiscarded":0,"unknownStreams":0,"generation":0}}
+{"counters":{"pes":247,"gaps":0,"markers":0,"markersDropped":0,"pesNoPts":0,"desyncBytes":0,"ccLost":0,"pesOversize":0,"pesDroppedCc":0,"pesDroppedStale":0,"psiUnsupported":0,"dtsDiscarded":0,"unknownStreams":0,"generation":0}}

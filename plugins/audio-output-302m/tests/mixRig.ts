@@ -132,13 +132,6 @@ const LOADER: Record<string, { ModuleClass: new () => PluginModule; manifest: ob
         manifest: { ports: [port('audio-in', 'input')] },
     },
 };
-const edge = (src: string, sink: string) => ({
-    id: `${src}:audio-out-${sink}:audio-in`,
-    sourceModuleId: src,
-    sourcePortId: 'audio-out',
-    sinkModuleId: sink,
-    sinkPortId: 'audio-in',
-});
 
 export interface Rig {
     /** The output's virtual sink. */
@@ -180,6 +173,22 @@ export function engine(rig: Rig) {
                 : [edge('mix', 'out'), edge('srtxc', 'out')]),
         ],
     };
+    const e = engineOf(config);
+    const plugin = <T>(id: string) => e.modules.get(id)!.getPlugin() as unknown as T;
+    return {
+        ...e,
+        mic: (id: 'micA' | 'micB') => plugin<TonePlugin>(id),
+        srtin: () => plugin<TonePlugin>('srtin'),
+        srtxc: () => plugin<RelayPlugin>('srtxc'),
+        out: () => plugin<AudioOutput302mModule>('out'),
+        /** The output's pipeline launch: it changes with every relaunch. */
+        outLaunch: () => plugin<AudioOutput302mModule>('out').getChildProcess()?.pipelineLaunchedAt,
+    };
+}
+
+/** The engine's router, modules and lifecycle over `config` (`modules`, `connections`) of this
+ *  rig's plugins, as the engine starts them. */
+export function engineOf(config: Record<string, unknown>) {
     const loader = { get: (id: string) => LOADER[id], settle: async () => {} } as any;
     const pipeWire = new PipeWireManager();
     const processManager = { releaseAll: async () => {} } as any;
@@ -192,16 +201,14 @@ export function engine(rig: Rig) {
     );
     router.setStoredConnectionsProvider(() => config.connections as any);
     const lifecycle = new ModuleLifecycle(modules, router, pipeWire, () => config, loader);
-    const plugin = <T>(id: string) => modules.get(id)!.getPlugin() as unknown as T;
-    return {
-        router,
-        lifecycle,
-        modules,
-        mic: (id: 'micA' | 'micB') => plugin<TonePlugin>(id),
-        srtin: () => plugin<TonePlugin>('srtin'),
-        srtxc: () => plugin<RelayPlugin>('srtxc'),
-        out: () => plugin<AudioOutput302mModule>('out'),
-        /** The output's pipeline launch: it changes with every relaunch. */
-        outLaunch: () => plugin<AudioOutput302mModule>('out').getChildProcess()?.pipelineLaunchedAt,
-    };
+    return { router, lifecycle, modules };
 }
+
+/** A connection of this rig, `src`'s audio out into `sink`'s audio in. */
+export const edge = (src: string, sink: string) => ({
+    id: `${src}:audio-out-${sink}:audio-in`,
+    sourceModuleId: src,
+    sourcePortId: 'audio-out',
+    sinkModuleId: sink,
+    sinkPortId: 'audio-in',
+});

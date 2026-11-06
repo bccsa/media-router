@@ -23,9 +23,10 @@ offset — the runner's post-latch watch handles those by restarting the
 pipeline (fresh latch).
 
 FILE SIZE, deliberately over the repo's ~250-line guideline (CLAUDE.md): this
-file is ONE cohesive domain — the contract's timeline maths — and it is
-maintained in LINE-FOR-LINE parity with `native/mrts/ts_timeline.cpp`, which is
-what lets one fixture assert the same integers out of both languages. Splitting
+file is ONE cohesive domain — the contract's timeline maths — and it was
+maintained in LINE-FOR-LINE parity with `native/mrts/ts_timeline.cpp` (deleted in
+B-143; its `timing_pes` is in `ts_house.cpp`, those cases in `tests/ts_house_test.cpp`),
+which is what let one fixture assert the same integers out of both languages. Splitting
 it would mean splitting the C++ side identically to keep that parity readable,
 so the cost is paid twice and the parity surface that guards against timeline
 bugs multiplies. Keep it one file per language.

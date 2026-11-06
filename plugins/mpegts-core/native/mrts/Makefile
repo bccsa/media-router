@@ -34,7 +34,7 @@ libmrts.a: $(OBJS)
 mrts_cli: mrts_cli.cpp libmrts.a
 	$(CXX) $(CXXFLAGS) $< libmrts.a -o $@
 
-tests/%: tests/%.cpp tests/check.h tests/trace_gen.h tests/ts_gen.h libmrts.a
+tests/%: tests/%.cpp tests/check.h tests/trace_gen.h tests/ts_gen.h tests/pes_pts_oracle.h libmrts.a
 	$(CXX) $(CXXFLAGS) $< libmrts.a -o $@
 
 test: $(TESTS) $(BENCH) $(GEN) mrts_cli

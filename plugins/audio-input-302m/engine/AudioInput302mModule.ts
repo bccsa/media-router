@@ -54,7 +54,7 @@ import {
  * first cut answered that by capturing the WHOLE device unpositioned and
  * matrixing the range out, which on an X32 made every stereo module a
  * 32-port stream (288 daemon links, ~2 MB of PipeWire scratch per port,
- * 30 MB per runner; measured 10.9.16.50, 2026-09-15). Explicit links cost
+ * 30 MB per runner; measured on ZA-SCC-AES50, 2026-09-15). Explicit links cost
  * nothing per unused channel. `pulsesrc` remains a dead end past stereo
  * (pipewire-pulse refuses an 8-channel record stream).
  *

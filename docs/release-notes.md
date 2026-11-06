@@ -228,8 +228,9 @@ elements" below do not start.
   not demuxed". An input that carries none of the streams the module takes
   says so too ("Input <name> carries no 302M audio stream" on the 302M
   modules). None of these drops anything but a stale PES (below); each goes
-  at the input's next program change or a restart, and the last also once
-  the stream is there. 302M inputs now give the house-time warning too.
+  at the input's next program change or a restart, the house-time warning
+  also once the input is back on house time, and the last once the stream
+  is there. 302M inputs now give the house-time warning too.
 - **An input back from an outage of any length plays at its own time.**
   Whatever an input sends on house time after an outage or a source
   restart lands on the box's timeline at its own time, with a gap over the
@@ -238,9 +239,11 @@ elements" below do not start.
 - **A stale packet far off house time is dropped.** One PES far off house
   time among an input's current ones, such as a copy from before an outage
   (the gate's 'vMix 720 -> 2001' input sent one on 2 November), is dropped
-  with the warning above instead of moving that input's timing 4 h 22 min
-  ahead. A stream that moves off house time as a whole loses its first
-  packet there and plays on, with the warning.
+  instead of moving that input's timing 4 h 22 min ahead; the module says
+  "Input <name>: a PES <n> s off house time was dropped as stale" for 10 s.
+  A stream that moves off house time as a whole loses its first packet
+  there (on video usually the key frame after its source restarted, so up
+  to a group of pictures) and plays on, with the house-time warning.
 
 **Audio follows its clocks (Phase 3)**
 
@@ -705,6 +708,20 @@ elements" below do not start.
   when it sends again. An output that plays nothing now shows
   "Plays nothing: …" within 8 seconds instead of ok, and the Audio Mixer and
   N-1 Audio Mixer (302M) also start with the sources that run.
+- **An Audio Output (302M) plays each source on its own channels of a
+  multichannel card.** Up to v2.0.0.101 an output of 3 to 8 channels from
+  channel 1 (a desk's channels 1-4, say) played pure silence while it showed
+  ok, and a mono output on channel 1 of a card with more than two channels
+  also played on channel 2. Fixed: every range plays on exactly its channels,
+  and each source where its channel map puts it. A source with no channel map
+  plays where an unmapped source always played in the outputs that worked,
+  which in an output wider than stereo is not channel for channel: a stereo
+  source in a 4-channel output plays on channels 1 and 2, and at half level
+  (-6 dB) on 3 and 4. The connection's Channel Map
+  now shows that default, marked as such, with each line's level. Give every
+  source of a multichannel output its own map (Input 1 to Output 1, say) to
+  have it play on that one channel. A mono or stereo output on a device of two
+  channels (an SSL 2) is unchanged.
 - **Audio inputs capture again by themselves after PipeWire restarts.** Up to
   v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
   buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and
@@ -721,6 +738,13 @@ elements" below do not start.
   PTP's offset from its master ("error ±812 ns (PTP offset from master, path
   delay 41.2 µs)") or "error n/a (PTP)", as do the engine's epoch log lines.
   Chrony boxes are unchanged; the Device Manager's Time page still shows 16 s.
+- **A PTP box that has lost its grandmaster says so in the manager.** With
+  this release's image a box set to "Never become grandmaster" runs on
+  internet time (NTP) after 2 minutes without a PTP master, and goes back to
+  PTP once a grandmaster's lock has held for 30 s. The manager showed such a
+  box as "source chrony", like any NTP box; its clock help text now reads
+  "No PTP master: on internet time (NTP)", as the Device Manager's PTP page
+  does. Every other box shows its source as before.
 - **No stray PulseAudio takes the sound cards while PipeWire is down.** Up to
   v2.0.0.100 the engine could start a PulseAudio of its own while PipeWire was
   stopped; it took the sound cards (outputs played through it, a mic failed,

@@ -7,7 +7,7 @@
  * WebVTT carrier of ADR-0016, subtitle = DVB / teletext) onto its input's
  * PID (a multi-stream input's further classes on the next free PIDs),
  * anything unrouted sunk into a fakesink so a KLV-only source can no longer
- * kill the demuxer with NOT_LINKED (the 2026-09-15 .103 restart loop). The
+ * kill the demuxer with NOT_LINKED (the Pi 5 test box's restart loop, 2026-09-15). The
  * engine carries no muxer knowledge (ADR-0002).
  *
  * THE MUX IS AN ALIGNER (house-clock plan part 4.6): each routed stream enters through its

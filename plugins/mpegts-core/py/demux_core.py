@@ -919,7 +919,8 @@ class DemuxCore:
         if self._select:
             self._one = _Pad("src", -1, 0x06, EsPlan("audio", CAPS_302M, False, "none", "", REG_BSSD,
                                                      b"", b""))
-        self._k = dict(pes=0, gaps=0, markers=0, markersDropped=0, pesNoPts=0, unknownStreams=0)
+        self._k = dict(pes=0, gaps=0, markers=0, markersDropped=0, pesNoPts=0, unknownStreams=0,
+                       pesDroppedStale=0)
         self._dts_discarded_before = 0
 
     # --- the API ---
@@ -1017,6 +1018,7 @@ class DemuxCore:
                     markersDropped=self._k["markersDropped"], pesNoPts=self._k["pesNoPts"],
                     desyncBytes=self._walker.desync_bytes, ccLost=self._cc_lost_before + self._cc.lost,
                     pesOversize=self._pes.oversize, pesDroppedCc=self._pes.dropped_cc,
+                    pesDroppedStale=self._k["pesDroppedStale"],
                     psiUnsupported=self._psi.unsupported, dtsDiscarded=dts,
                     unknownStreams=self._k["unknownStreams"],
                     generation=self._program.gen if self._program else -1)
@@ -1039,6 +1041,10 @@ class DemuxCore:
 
     def pads(self):
         return [p.name for p in self._live_pads()]
+
+    def off_house_pids(self):
+        """The pads whose last placed PES was off house time, plan order."""
+        return [p.pid for p in self._live_pads() if p.house == "off"]
 
     def selected_pids(self):
         return self._pes.selected()
@@ -1274,6 +1280,7 @@ class DemuxCore:
             if self._now >= 0:
                 pts_u = self._on_house(pad, u.hdr.pts, pts_u, out)
                 if pts_u is None:
+                    self._k["pesDroppedStale"] += 1
                     return                        # a stale PES: dropped
             dts_u = pad.uw.feed_dts(u.hdr.dts, pts_u)
             pts = pts90k_to_ns_ceil(pts_u - MUX_CLOCK_BASE_90K)

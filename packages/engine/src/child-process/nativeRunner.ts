@@ -8,7 +8,7 @@ import { installedRoot, pluginsRoot } from './nativeBinaries.js';
  * or the native `mr-gst-runner` binary. The two speak the same protocol; the
  * native one implements the subset of the start payload every audio-matrix
  * and wire-facing module uses and costs the GStreamer graph alone instead of
- * ~19 MB of interpreter + PyGObject per module (10.9.16.50, 2026-09-16).
+ * ~19 MB of interpreter + PyGObject per module (ZA-SCC-AES50, 2026-09-16).
  *
  * Selection is per pipeline, from three inputs, in this order:
  *  1. `PipelineDescription.runner` — `'python'` pins python (a module that

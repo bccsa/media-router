@@ -1,6 +1,6 @@
 # Clock fixtures
 
-Raw `mr-clockstate` stdout, unedited, captured on 10.9.16.50 (hostname `mr`, a chrony box,
+Raw `mr-clockstate` stdout, unedited, captured on ZA-SCC-AES50 (hostname `mr`, a chrony box,
 image v2.0.0.97, engine 1a4c87c) on 2026-10-14, running as root. `../HouseClock.test.ts`
 replays each file through the sidecar's stdout path.
 

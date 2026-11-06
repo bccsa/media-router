@@ -380,7 +380,7 @@ export class VideoPlayerModule extends GstPluginBase {
         // an engine that boots before labwc/Weston picks the KMS fallback
         // and stays there for the lifetime of the pyProcess — even when the
         // compositor appears 2s later. Seen in production after a power
-        // outage on 10.9.1.166: kmssink then either parse-errors (older
+        // outage on a field box: kmssink then either parse-errors (older
         // builds without `connector-name`) or loses the DRM master fight
         // with the compositor. 10s is plenty of headroom for a normal boot
         // and bounded enough that genuinely-headless hosts still fall

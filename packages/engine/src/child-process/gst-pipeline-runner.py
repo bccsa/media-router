@@ -564,7 +564,7 @@ def on_bus_message(bus, message):
 # Command handlers
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Dynamic pad linking (tsdemux → branches with sometimes-pads)
+# Dynamic pad linking (a demux's sometimes-pads → branches)
 # ---------------------------------------------------------------------------
 # Per-rule counter of how many pads we've already linked, so `maxPads` works.
 _pad_link_counts = {}
@@ -583,7 +583,7 @@ def _pad_caps_media(pad):
 
 
 def _stream_media_from_caps_name(caps_name):
-    """Classify a tsdemux pad's media type from its caps structure name.
+    """Classify a demux pad's media type from its caps structure name.
 
     Covers the elementary-stream pads (video/audio) plus the private metadata
     pad (`meta/x-klv`) the in-band name channel rides on (Phase 2) and DVB
@@ -632,7 +632,7 @@ def _attach_klv_reader(pipe, pad, source_name):
     """Attach `queue ! appsink` to a `meta/x-klv` demux pad and forward payloads.
 
     The `queue` is mandatory (Phase 0 finding): an appsink linked straight onto
-    a tsdemux pad back-pressures the streaming loop and stalls the whole TS.
+    a demux pad back-pressures the streaming loop and stalls the whole TS.
     Per plan D6 this path is report-only — a parse/link failure is swallowed so
     the name channel can never disturb the media pipeline. The appsink hands
     the raw bytes up on the `stream:names` plugin-event channel with a
@@ -692,7 +692,7 @@ def _attach_klv_reader(pipe, pad, source_name):
 
 
 def _install_stream_discovery(element, source_name, read_klv_names=False):
-    """Report every pad tsdemux exposes on the `stream:discovered` channel.
+    """Report every pad the demux exposes on the `stream:discovered` channel.
 
     Separate from the pad-link rules: link rules filter by media and only fire
     for the streams a module routes, whereas the stream inspector wants *all*
@@ -724,7 +724,7 @@ def _install_stream_discovery(element, source_name, read_klv_names=False):
     element.connect("pad-added", on_pad)
 
 
-# Caps-name → parser element used between `tsdemux` and a downstream `mpegtsmux`.
+# Caps-name → parser element used between the demux and a downstream `mpegtsmux`.
 # `mpegtsmux` rejects unparsed sink caps for AAC / AC-3 / MPEG-audio (no
 # `codec_data`, framed=false) and surfaces upstream as `udpsrc` emitting
 # "Internal data stream error". A per-pad parser is the load-bearing fix.
@@ -743,7 +743,7 @@ _PARSER_FOR_CAPS_NAME = {
     'audio/x-ac3':  'ac3parse',
     'audio/x-eac3': 'ac3parse',
     'audio/mpeg':   None,  # disambiguated by mpegversion below
-    'audio/x-opus': None,  # tsdemux already emits muxer-ready caps
+    'audio/x-opus': None,  # the demux already emits muxer-ready caps
 }
 # One-shot warning suppression so unknown-codec messages don't spam the log
 # at the runner's pad-rate.
@@ -876,7 +876,7 @@ def _install_decoder_thread_hook(pipe, thread_type="auto"):
 
 
 # `parser: "none"` on a pad-link rule: skip the codec parser and instead DECLARE
-# the framing tsdemux already delivers. tsdemux emits one whole PES payload per
+# the framing the demux already delivers. mrtsdemux emits one whole PES payload per
 # buffer, and on this bus one PES is one access unit (ADR-0011), so the only
 # thing the parser adds on such a branch is one frame of latency: h264parse
 # closes an AU only when it sees the start of the NEXT one (measured 41 ms at
@@ -1490,15 +1490,15 @@ def handle_start(data):
     for rule in pad_link_rules:
         _install_pad_link_rule(pipeline, rule)
 
-    # The bus egress stamp, spliced here, before PLAYING, for the same reason as
-    # above: an attach can land the moment the pipeline starts and the element must
-    # own that edge's first buffer. It arms per tee as consumers attach.
+    # The bus egress stamp, spliced before PLAYING so an attach landing the moment
+    # the pipeline starts owns that edge's first buffer. It arms per tee as
+    # consumers attach.
     gst_bus_stamper.enable(pipeline)
 
     # Install stream discovery on every distinct demux element the rules
     # reference, so the owning module sees an unfiltered `stream:discovered`
     # report per pad (PID + caps + media type) regardless of what's routed.
-    # Connected once per element even when a tsdemux has both a video and an
+    # Connected once per element even when a demux has both a video and an
     # audio rule.
     for src_name in {rule.get("from") for rule in pad_link_rules if rule.get("from")}:
         el = pipeline.get_by_name(src_name)
@@ -1507,7 +1507,7 @@ def handle_start(data):
     # Plugin-owned runner hooks (`runnerHooks`): a plugin ships python in its
     # own `py/` dir (on our PYTHONPATH) and names it here; we import it and
     # hand it the pipeline before PLAYING. The runner learns nothing about the
-    # plugin's domain (ADR-0002 — the same seam the stamper's ts_timeline uses).
+    # plugin's domain (ADR-0002).
     _install_runner_hooks(pipeline, data.get("runnerHooks"))
 
     # Set software-decoder threading. `max-threads` is always the core count;
@@ -3809,7 +3809,7 @@ def _start_backlog_shedder(pipe, cfg):
         against `rt + ts-offset` alone, a leg whose ts-offset is clamped to 0
         (D smaller than the latencies it was meant to cancel — every mixer arm
         at the 300 ms default D) reads its own structural latency as retained
-        backlog: field, 10.9.16.105 2026-09-05, "retained 411 ms against a 0 ms
+        backlog: field, a 2 GB Pi 4 2026-09-05, "retained 411 ms against a 0 ms
         budget", every buffer dropped after the 5 s hold, silence on the SSL 2
         while the VU kept moving. Where ts-offset is NOT clamped the two terms
         still sum to D, so unclamped legs read exactly as before. 0 until the

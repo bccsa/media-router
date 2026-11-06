@@ -1,33 +1,19 @@
 #!/usr/bin/env python3
-"""Test fixture: the bus input of a TRANSFORM PRODUCER (transcoder,
-audio-transcoder) as the OCC gate's transcoder saw it on 2026-10-08 — an SPTS
-whose video PES PTS lead the PCR by ~1.1 s, stamped by the contract — and the
-identity egress such a producer writes, with cues.
+"""Test fixture: the identity egress of a TRANSFORM PRODUCER (transcoder,
+audio-transcoder), PES = content time + 1 h and stamp = PES − 1 h, its video
+alone (`house_egress`) or with KLV, teletext and DVB cues (`cue_egress`,
+`go_dark`): the input an mpegts-muxer or an aligner sees from such a producer.
 
 Shared by native_runner_protocol_test.py and aligner_conformance_test.py; not
-shipped (the engine build copies only the runner's own modules).
+shipped (the engine build copies only the runner's own modules). The anchored
+input of the OCC gate's transcoder (2026-10-08) and its runners went with branch
+alignment (B-142, the rest in p3-21).
 
 Stream: H.264-typed video PID, IBBP in decode order (PTS+DTS on I/P, PTS only
-on B), DTS `dts_lead_ms` ahead of the PCR — swinging up by `lead_swing_ms` over
-`swing_period_s`, a VBR encoder's buffer; AAC-typed audio PID `audio_lead_ms`
-ahead; PCR on the first PID every 20 ms; PAT/PMT every 100 ms. Every PES
+on B); PCR on the video PID every 20 ms; PAT/PMT every 100 ms. Every PES
 payload opens with `MRAU` + pid + serial, so an access unit is identified
 wherever it comes out — a demuxer pad or another mux's PES.
-
-`house_egress` builds the other input an mpegts-muxer sees: a transform
-producer's identity egress (PES = content time + 1 h, stamp = PES − 1 h).
-
-Stamps: the producer model — `content(pts) = A + ns(pts − ref)` (anchor A at
-the first PES's arrival, ref that PES), a bus buffer stamped by its first
-timing-PID PES (else its first PES), never below the last stamp. It is what
-the anchored stamper of `py/ts_timeline.py`, kept as the reference, writes once
-its conditioner has learned the PCR PID (no runtime path stamps that way
-since Phase 2). `skew_ppm` runs the source clock fast against house with the
-producer's drift slew assumed ideal; a jump steps PES and PCR back `jump_s`
-with the producer re-anchored, so stamps and content time stay continuous. An
-access unit's TARGET is its content time.
 """
-import math
 import os
 import sys
 
@@ -37,11 +23,10 @@ sys.path.insert(0, os.path.normpath(
 import ts_psi  # noqa: E402
 import ts_timeline  # noqa: E402
 
-VIDEO_PID, AUDIO_PID, PMT_PID, PROGRAM = 0x100, 0x101, 0x1000, 1
+VIDEO_PID, PMT_PID, PROGRAM = 0x100, 0x1000, 1
 FRAME = 3600            # 40 ms @ 90 kHz (25 fps)
-AAC_TICKS = 1920        # 21.33 ms
 GOP = 12
-DTS0 = 500 * 90000      # source epoch, far enough from 0 for a 427 s rewind
+DTS0 = 500 * 90000      # the video's first DTS: 500 s
 TS_CAPS = "video/mpegts,systemstream=(boolean)true,packetsize=(int)188"
 
 
@@ -93,90 +78,6 @@ def video_aus(seconds):
         out.append((d, DTS0 + (disp + 1) * FRAME, DTS0 + d * FRAME, kind != "B",
                     {"I": 8, "P": 3, "B": 2}[kind]))
     return out
-
-
-def build_packets(seconds, dts_lead_ms=1000.0, audio_lead_ms=60.0, jump_at_s=None,
-                  jump_s=427.0, pids=(VIDEO_PID, AUDIO_PID), lead_swing_ms=0.0,
-                  swing_period_s=20.0, swing_audio=False):
-    """Wire-ordered [(wire90k, packet, au)]: `au` = (pid, serial, content PTS,
-    content DTS or None) on a PES's first packet, else None. Content ignores the
-    jump. `swing_audio` swings the audio lead too (a passthrough AAC leg)."""
-    def lead(dts):
-        t = (dts - DTS0) / 90000.0
-        return dts_lead_ms + lead_swing_ms * 0.5 * (1 - math.cos(2 * math.pi * t / swing_period_s))
-
-    def audio_lead(pts):
-        return audio_lead_ms + (lead(pts) - dts_lead_ms if swing_audio else 0.0)
-
-    ev = []
-    if VIDEO_PID in pids:
-        for d, pts, dts, has_dts, npk in video_aus(seconds):
-            ev.append((dts - int(lead(dts) * 90), 2, (VIDEO_PID, 0xE0, pts,
-                       dts if has_dts else None, d, npk, False)))
-    if AUDIO_PID in pids:
-        for m in range(int(seconds * 48000 / 1024) + 50):
-            pts = DTS0 + FRAME + m * AAC_TICKS
-            ev.append((pts - int(audio_lead(pts) * 90), 3, (AUDIO_PID, 0xC0, pts, None, m, 1, True)))
-    w0, w_end = min(e[0] for e in ev), max(e[0] for e in ev)
-    ev += [(w, 1, None) for w in range(w0, w_end + 1, 1800)]          # PCR, 20 ms
-    ev += [(w, 0, None) for w in range(w0, w_end + 1, 9000)]          # PSI, 100 ms
-    ev.sort(key=lambda e: (e[0], e[1]))
-    jump_at = None if jump_at_s is None else w0 + int(jump_at_s * 90000)
-    pcr_pid = pids[0]
-    cc = {VIDEO_PID: 0, AUDIO_PID: 0, 0: 0, PMT_PID: 0}
-    out = []
-    for wire, kind, info in ev:
-        sh = int(jump_s * 90000) if jump_at is not None and wire >= jump_at else 0
-        if kind == 0:
-            out.append((wire, ts_psi.build_pat(1, {PROGRAM: PMT_PID}, cc=cc[0]), None))
-            out.append((wire, ts_psi.build_pmt(PMT_PID, PROGRAM, pcr_pid, [
-                (p, 0x1B if p == VIDEO_PID else 0x0F) for p in pids], cc=cc[PMT_PID]), None))
-            cc[0], cc[PMT_PID] = (cc[0] + 1) & 0x0F, (cc[PMT_PID] + 1) & 0x0F
-        elif kind == 1:
-            out.append((wire, ts_psi.build_pcr_packet(pcr_pid, (wire - sh) * 300,
-                                                      cc=(cc[pcr_pid] - 1) & 0x0F), None))
-        else:
-            pid, sid, pts, dts, serial, npk, bounded = info
-            pk = _pes(pid, sid, pts - sh, None if dts is None else dts - sh, serial, npk, cc, bounded)
-            out += [(wire, p, (pid, serial, pts, dts) if i == 0 else None) for i, p in enumerate(pk)]
-    return out
-
-
-def stamp(packets, start_s, house0_ns, skew_ppm=0.0, per_buf=7, net_ms=5.0, dts_targets=None,
-          arrivals=None):
-    """Bus buffers from `start_s` on as [(bytes, stamp_ns)], and every access
-    unit's target {(pid, serial): content ns}. `house0_ns` = house time of the
-    first packet on the wire. `dts_targets` (a dict) gets each AU's content DTS
-    (its PTS where the PES carries none); `arrivals` (a list) each returned
-    buffer's house arrival time."""
-    w0, rate = packets[0][0], 1.0 + skew_ppm / 1e6
-    # The timing PID is the PCR carrier; the anchor is its first PES.
-    timing_pid = next(ts_psi.ts_pid(p) for _, p, _ in packets if ts_psi.read_pcr(p) is not None)
-    anchor = floor = None
-    bufs, targets = [], {}
-    for i in range(0, len(packets), per_buf):
-        group = packets[i:i + per_buf]
-        aus = [au for _, _, au in group if au]
-        house = house0_ns + int(ns(group[-1][0] - w0) / rate) + int(net_ms * 1e6)
-        st = floor if floor is not None else house
-        timing = [au for au in aus if au[0] == timing_pid]
-        if anchor is None and timing:
-            anchor = (house, timing[0][2])
-        if aus and anchor is not None:
-            first = (timing or aus)[0]
-            st = max(st, anchor[0] + int(ns(first[2] - anchor[1]) / rate))
-        floor = st
-        for pid, serial, pts, dts in aus:
-            if anchor is not None:
-                targets[(pid, serial)] = anchor[0] + int(ns(pts - anchor[1]) / rate)
-                if dts_targets is not None:
-                    dts_targets[(pid, serial)] = anchor[0] + int(ns((pts if dts is None else dts)
-                                                                    - anchor[1]) / rate)
-        if (group[-1][0] - w0) / 90000.0 >= start_s:
-            bufs.append((b"".join(p for _, p, _ in group), st))
-            if arrivals is not None:
-                arrivals.append(house)
-    return bufs, targets
 
 
 MUX_BASE = 3600 * 90000     # mpegtsmux writes running time + 1 h (ts_timeline.MUX_CLOCK_BASE_90K)
@@ -323,51 +224,3 @@ def go_dark(bufs, t_from, t_back, pids=CUE_PIDS):
         floor = st if floor is None else max(floor, st)
         out.append((bytes(b), floor, arr))
     return out, arrival
-
-
-def step_back(bufs, t_at, ticks):
-    """The source stepped back `ticks` from arrival `t_at` on: every PES PTS/DTS and PCR after it
-    moved, the stamps kept (a producer that re-anchored on content time: K moves by ns(ticks))."""
-    out = []
-    for data, st, arr in bufs:
-        b = bytearray(data)
-        for j in range(0, len(b) if arr >= t_at else 0, 188):
-            if b[j + 3] & 0x20 and b[j + 4] >= 7 and b[j + 5] & 0x10:
-                base = ((b[j + 6] << 25) | (b[j + 7] << 17) | (b[j + 8] << 9) | (b[j + 9] << 1) | (b[j + 10] >> 7))
-                base = (base - ticks) % (1 << 33)
-                b[j + 6:j + 10] = bytes([(base >> 25) & 0xFF, (base >> 17) & 0xFF, (base >> 9) & 0xFF, (base >> 1) & 0xFF])
-                b[j + 10] = (b[j + 10] & 0x7F) | ((base & 1) << 7)
-            pts = ts_psi.read_pes_pts(bytes(b[j:j + 188]))
-            if pts is not None:
-                p = j + ts_psi.payload_offset(b[j:j + 188])
-                has_dts = (b[p + 7] & 0xC0) == 0xC0
-                b[p + 9:p + 14] = _ts_field(0x31 if has_dts else 0x21, pts - ticks)
-                if has_dts:
-                    q = b[p + 14:p + 19]
-                    dts = (((q[0] >> 1) & 7) << 30) | (q[1] << 22) | ((q[2] >> 1) << 15) | (q[3] << 7) | (q[4] >> 1)
-                    b[p + 14:p + 19] = _ts_field(0x11, dts - ticks)
-        out.append((bytes(b), st, arr))
-    return out
-
-
-def mux_inputs(seconds=70, jump_at_s=40.0, house0_ns=50_000 * 10**9, skew_ppm=-40.0):
-    """An mpegts-muxer's two inputs as at the OCC gate: input 0 a splitter's
-    passthrough AAC leg (anchored stamps, PCR on the AAC PID, the lead swinging
-    0.25–0.75 s, a 427 s rewind, the source `skew_ppm` off), input 1 a
-    transcoder's identity egress of the same source's video (`house_egress`;
-    house time + 1 h under 2^33 ticks, so K = −3600 s exactly). The splitter
-    stamps every leg off ONE anchor and the transcoder carried that content time,
-    so both share one content timeline. Returns the feed [(arrival ns, input,
-    bytes, stamp ns)] in arrival order, every AU's target {(pid, serial): content
-    ns} and the splitter's K at its anchor."""
-    rate, arrivals = 1.0 + skew_ppm / 1e6, []
-    bufs_a, targets = stamp(build_packets(seconds, pids=(AUDIO_PID,), audio_lead_ms=250.0,
-                                          lead_swing_ms=500.0, swing_audio=True, jump_at_s=jump_at_s),
-                            2.2, house0_ns, skew_ppm, arrivals=arrivals)
-    a_house, a_pts = targets[(AUDIO_PID, 0)], DTS0 + FRAME
-    bufs_b, targets_b = house_egress(seconds, lambda p: a_house + int(ns(p - a_pts) / rate), start_s=2.2)
-    targets.update(targets_b)
-    feed = sorted([(t, 0, d, s) for (d, s), t in zip(bufs_a, arrivals)]
-                  + [(t, 1, d, s) for d, s, t in bufs_b], key=lambda e: (e[0], e[1]))
-    return feed, targets, a_house - ns(a_pts)
-

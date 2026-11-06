@@ -1,5 +1,5 @@
 {
-  "about": "The mrtsdemux and mrasrc messages as both runners forward them, unsubscribed, as `<structure>:<element>` plugin events (plan ch. 7 WI-P3-6, register B-126): one payload per reason or kind. The engine's demuxWatches and asrcWatches tests read these; native_runner_protocol_test.py's mrtsdemux-messages and mrasrc-device cases hold every payload the runners forward to its entry's fields and their types. Recorded 2026-10-27 on the dev Pi from those two cases (both runners gave the same payloads); no-stream and the servo's mrasrc events are as gstmrtsdemux.cpp and gstmrasrc.cpp post them, with values of a real run's kind; mrasrc-stats' gaps and lost-frames (B-180) were added when the capture fix line was carried in, as a run without cycle-input posts them (0). B-148 added mrasrc-stats' rate-known, the engaged event's rate-known and the decode lost-time gap event (a device-only run's rate-known is false: it has no source lock). B-166 replaced the custom-slaving device-relock and device-resync events and device-resyncs with the timer term's relock-device, device-stalled and device-resumed events and mrasrc-stats' device-relocks, device-stalls and render-lateness-ns, as gstmrasrc.cpp posts them (values from a run on mrtestaudiosink sync=false with a 3 s stall and a restart).",
+  "about": "The mrtsdemux and mrasrc messages as both runners forward them, unsubscribed, as `<structure>:<element>` plugin events (plan ch. 7 WI-P3-6, register B-126): one payload per reason or kind. The engine's demuxWatches and asrcWatches tests read these; native_runner_protocol_test.py's mrtsdemux-messages and mrasrc-device cases hold every payload the runners forward to its entry's fields and their types. Recorded 2026-10-27 on the dev Pi from those two cases (both runners gave the same payloads); no-stream and the servo's mrasrc events are as gstmrtsdemux.cpp and gstmrasrc.cpp post them, with values of a real run's kind; mrasrc-stats' gaps and lost-frames (B-180) were added when the capture fix line was carried in, as a run without cycle-input posts them (0). B-148 added mrasrc-stats' rate-known, the engaged event's rate-known and the decode lost-time gap event (a device-only run's rate-known is false: it has no source lock). p3-21 added the interval report's off-house (the PIDs whose last placed PES is off house time: that run's video, 2 h behind) and pes-dropped-stale, and not-house-time's stale, as gstmrtsdemux.cpp posts them. B-166 replaced the custom-slaving device-relock and device-resync events and device-resyncs with the timer term's relock-device, device-stalled and device-resumed events and mrasrc-stats' device-relocks, device-stalls and render-lateness-ns, as gstmrasrc.cpp posts them (values from a run on mrtestaudiosink sync=false with a 3 s stall and a restart).",
   "mrtsdemux": {
     "interval": {
       "cc-lost": 0,
@@ -9,9 +9,11 @@
       "generation": 0,
       "markers": 0,
       "markers-dropped": 0,
+      "off-house": "256",
       "pads": "video_0_0100",
       "pes": 26,
       "pes-dropped-cc": 0,
+      "pes-dropped-stale": 0,
       "pes-no-pts": 0,
       "pid": -1,
       "program": 1,
@@ -46,6 +48,7 @@
       "program": 1,
       "reason": "not-house-time",
       "select": "",
+      "stale": false,
       "stream": "found"
     },
     "no-stream": {

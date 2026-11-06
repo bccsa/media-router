@@ -968,4 +968,4 @@
 {"unit":{"pad":"audio_0_0100","pts":31053933088889,"dts":31053933088889,"dur":null,"len":648,"crc32":"6296d3bb","discont":false}}
 {"unit":{"pad":"audio_0_0108","pts":31053952944445,"dts":31053952944445,"dur":null,"len":335,"crc32":"f3a0f47c","discont":false}}
 {"unit":{"pad":"audio_0_0100","pts":31053954377778,"dts":31053954377778,"dur":null,"len":671,"crc32":"f12ca4f0","discont":false}}
-{"counters":{"pes":965,"gaps":2,"markers":0,"markersDropped":0,"pesNoPts":0,"desyncBytes":0,"ccLost":0,"pesOversize":0,"pesDroppedCc":0,"psiUnsupported":0,"dtsDiscarded":0,"unknownStreams":0,"generation":0}}
+{"counters":{"pes":965,"gaps":2,"markers":0,"markersDropped":0,"pesNoPts":0,"desyncBytes":0,"ccLost":0,"pesOversize":0,"pesDroppedCc":0,"pesDroppedStale":0,"psiUnsupported":0,"dtsDiscarded":0,"unknownStreams":0,"generation":0}}

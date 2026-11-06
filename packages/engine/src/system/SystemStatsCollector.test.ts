@@ -26,7 +26,7 @@ describe('readCoretempAverage', () => {
     afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
     it('averages the per-core sensors and ignores "Package id 0"', () => {
-        // Mirrors coretemp on the x86 box 10.9.1.160
+        // Mirrors coretemp on an x86 test box
         hwmon(2, 'coretemp', [
             ['temp1', 'Package id 0', 72000], // hottest-core peak — must be excluded
             ['temp2', 'Core 0', 60000],
@@ -104,7 +104,7 @@ describe('readCpuTemp', () => {
     });
 
     it('ignores the phantom acpitz zone and picks the real CPU sensor (no coretemp)', () => {
-        // Mirrors the x86 box 10.9.1.160 where thermal_zone0 = acpitz = -273300
+        // Mirrors that x86 test box, where thermal_zone0 = acpitz = -273300
         zone(0, 'acpitz', -273300);
         zone(1, 'acpitz', 27800);
         zone(2, 'iwlwifi_1', 37000);

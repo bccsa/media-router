@@ -452,6 +452,17 @@ std::vector<std::string> DemuxCore::pads() const {
     return names;
 }
 
+std::vector<int> DemuxCore::off_house_pids() const {
+    std::vector<int> pids;
+    if (select_) {
+        if (one_.pid >= 0 && one_.house == Pad::House::off) pids.push_back(one_.pid);
+    } else {
+        for (const Pad& p : pads_)
+            if (p.house == Pad::House::off) pids.push_back(p.pid);
+    }
+    return pids;
+}
+
 DemuxCore::Pad* DemuxCore::pad_of(int pid) {
     if (pid < 0 || pid > PID_NULL) return nullptr;
     if (select_) return one_.pid >= 0 && pid == one_.pid ? &one_ : nullptr;
@@ -794,7 +805,10 @@ void DemuxCore::on_unit(Pad& pad, PesUnit& u, std::vector<DemuxEvent>& out) {
     int64_t pts = -1, dts = -1, pts_u = Unwrapper::NO_DTS, dts_u = Unwrapper::NO_DTS;
     if (u.hdr.pts >= 0) {
         pts_u = pad.uw.feed(u.hdr.pts, seed(u.hdr.pts));
-        if (now_ >= 0 && !on_house(pad, u.hdr.pts, &pts_u, out)) return;   // a stale PES: dropped
+        if (now_ >= 0 && !on_house(pad, u.hdr.pts, &pts_u, out)) {   // a stale PES: dropped
+            k_.pes_dropped_stale++;
+            return;
+        }
         dts_u = pad.uw.feed_dts(u.hdr.dts, pts_u);
         pts = pts90k_to_ns_ceil(pts_u - MUX_CLOCK_BASE_90K);
         dts = dts_u == Unwrapper::NO_DTS ? pts : pts90k_to_ns_ceil(dts_u - MUX_CLOCK_BASE_90K);
@@ -997,9 +1011,10 @@ std::string demux_jsonl(const DemuxCore::Counters& c) {
     return "{\"counters\":{\"pes\":" + u(c.pes) + ",\"gaps\":" + u(c.gaps) + ",\"markers\":" + u(c.markers) +
            ",\"markersDropped\":" + u(c.markers_dropped) + ",\"pesNoPts\":" + u(c.pes_no_pts) +
            ",\"desyncBytes\":" + u(c.desync_bytes) + ",\"ccLost\":" + u(c.cc_lost) + ",\"pesOversize\":" +
-           u(c.pes_oversize) + ",\"pesDroppedCc\":" + u(c.pes_dropped_cc) + ",\"psiUnsupported\":" +
-           u(c.psi_unsupported_sections) + ",\"dtsDiscarded\":" + u(c.dts_discarded) + ",\"unknownStreams\":" +
-           u(c.unknown_streams) + ",\"generation\":" + std::to_string(c.generation) + "}}";
+           u(c.pes_oversize) + ",\"pesDroppedCc\":" + u(c.pes_dropped_cc) + ",\"pesDroppedStale\":" +
+           u(c.pes_dropped_stale) + ",\"psiUnsupported\":" + u(c.psi_unsupported_sections) +
+           ",\"dtsDiscarded\":" + u(c.dts_discarded) + ",\"unknownStreams\":" + u(c.unknown_streams) +
+           ",\"generation\":" + std::to_string(c.generation) + "}}";
 }
 
 int64_t first_pes_house_ns(const uint8_t* d, size_t n) {

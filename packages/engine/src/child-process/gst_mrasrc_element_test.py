@@ -162,6 +162,7 @@ class Harness:
         self.sink = Gst.Pad.new("h_sink", Gst.PadDirection.SINK)
         self.sink_caps = Gst.Caps.from_string(sink_caps) if sink_caps else Gst.Caps.new_any()
         self.out, self.msgs, self.events, self.out_caps, self.in_mem, self.in_pts = [], [], [], None, [], []
+        self.event_at = []   # per event, how many outputs came before it
         self.sink.set_chain_function_full(self._chain)
         self.sink.set_event_function_full(self._event)
         self.sink.set_query_function_full(self._sink_query)
@@ -192,6 +193,7 @@ class Harness:
 
     def _event(self, pad, parent, event):
         self.events.append(event.type)
+        self.event_at.append(len(self.out))
         if event.type == Gst.EventType.CAPS:
             self.out_caps = event.parse_caps().get_structure(0)
         return True
@@ -1024,6 +1026,34 @@ check(f"bypassed (no clock correction, mode {_fin['mode']}) yet resampled at the
       and abs(_n - 40 * 48000) <= 64 and on_formula(h.out, 48000) and contiguous(h.out)
       and max(map(abs, _e)) * US < FRAME_NS and not [e for e in h.messages("mrasrc-event") if e["kind"] == "engaged"]
       and _fin["ratio-ppb"] == 0)
+h.stop()
+
+print("\n--- decode mode, engaged at +40 ppm, a GAP at 30 s: the tail before it, then a relock (gap) ---")
+cap = Capture(num=1000040, den=1000000, formula=True)
+_all = cap.buffers(40)
+h = Harness(cap.caps(), bypass_below_ppm=0.5)
+h.drive([b for b in _all if b[0] - H0 < 30 * S], eos=False)
+_n0, _last = len(h.out), h.out[-1]
+_eng = next((i for i, o in enumerate(h.out) if o["mem"] != h.in_mem[i]), len(h.out))
+_g0 = h.in_pts[-1] + BUF * S // FS
+h.src.push_event(Gst.Event.new_gap(_g0, 100 * MS))
+_tail = h.out[_n0:]
+_gap_at = next((a for t, a in zip(h.events, h.event_at) if t == Gst.EventType.GAP), -1)
+check(f"engaged before the GAP ({[e['reason'] for e in h.messages('mrasrc-event') if e['kind'] == 'engaged']}); "
+      f"the resampler's tail leaves before it on the old counter ({sum(o['offset_end'] - o['offset'] for o in _tail)} "
+      f"frames: contiguous with the output before, one counter from the engage)",
+      [e["kind"] for e in h.messages("mrasrc-event")] == ["engaged"] and len(_tail) == 1
+      and 0 < _tail[0]["offset_end"] - _tail[0]["offset"] < 100 and _gap_at == len(h.out)
+      and _tail[0]["pts"] == _last["pts"] + _last["dur"] and on_formula(h.out[_eng:])
+      and contiguous(h.out[_eng:]))
+_n1 = len(h.out)
+_after = [b for b in _all if b[0] - H0 >= 30 * S + 100 * MS]
+h.drive(_after, eos=False)
+_rl = [e for e in h.messages("mrasrc-event") if e["kind"] == "relock"]
+check(f"the next buffer opens an epoch at its PTS: one relock, reason gap ({[e['reason'] for e in _rl]}), "
+      f"its first output that buffer itself (bypassed until the lock engages again)",
+      [e["reason"] for e in _rl] == ["gap"] and _rl[0]["house-ns"] == _after[0][0]
+      and h.out[_n1]["mem"] == h.in_mem[len(h.in_mem) - len(_after)] and h.out[_n1]["pts"] == _after[0][0])
 h.stop()
 
 # --- WI-P3-5: real decoders --------------------------------------------------------------------

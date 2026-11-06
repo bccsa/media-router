@@ -2,15 +2,18 @@
 # pes_formula.sh <stem>: the formula on the box (V1, V2, V10). Joins each buffer of
 # record-bus.py --demux's <stem>.pads.jsonl with its PES in mrts_cli dump of the same bytes
 # (<stem>.ts): its pad's PID (select mode's `src`: any PID), the next PES in stream order with
-# its crc32 and length. Its PTS must be Phase 3's formula of the PES PTS (S12):
+# its crc32 and length; a demux pad's buffer shorter than its PES (an Opus packet, a 0x15
+# metadata cell: a piece) the PES nearest its PTS within half the PID's spacing, and the pieces
+# after it without a PTS with it. Its PTS must be Phase 3's formula of the PES PTS (S12):
 #   ceil((PTS - 1 h, unwrapped to the buffer's 2^33 period) x 100000 / 9) ns,
 # its DTS the same of the PES DTS (a PES without one: no DTS, or the PTS). Prints a JSON line per
-# pad (buffers, joined, exact: the ceil, floor: Phase 2's rounding, maxDevNs against the ceil)
-# and a summary. Exit 0 when every buffer joined and is exact; 1 otherwise; 2 usage. Needs gawk.
+# pad (buffers, joined, byPts and pieces of them, exact: the ceil, floor: Phase 2's rounding,
+# maxDevNs against the ceil) and a summary. Exit 0 when every buffer joined and every stamped
+# one is exact; 1 otherwise; 2 usage. Needs gawk.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 CLI=${MRTS_CLI:-$here/../../plugins/mpegts-core/native/mrts/mrts_cli}
-[ $# -eq 1 ] || { sed -n '2,10p' "$0" >&2; exit 2; }
+[ $# -eq 1 ] || { sed -n '2,13p' "$0" >&2; exit 2; }
 stem=$1
 [ -e "$stem.ts" ] && [ -e "$stem.pads.jsonl" ] || { echo "pes_formula.sh: no $stem.ts or $stem.pads.jsonl" >&2; exit 2; }
 T=$(mktemp -d "${TMPDIR:-/tmp}/pes_formula.XXXXXX")
@@ -33,7 +36,15 @@ BEGIN {
         if (l !~ /^\{"pid"/ || num(l, "pts") == "null") continue
         p = num(l, "pid") + 0; n = ++cnt[p]
         key[p, n] = num(l, "crc32") ":" num(l, "len"); pts[p, n] = num(l, "pts") + 0; dts[p, n] = num(l, "dts")
+        plen[p, n] = num(l, "len") + 0
         order[++all] = p SUBSEP n
+    }
+    # Half of each PID'"'"'s PES spacing (the median), in ns: how far a piece may sit from its PES.
+    for (p in cnt) {
+        m = 0; delete ds
+        for (n = 2; n <= cnt[p]; n++) { d = (pts[p, n] - pts[p, n - 1]) % W; if (d < 0) d += W; if (d > 0) ds[++m] = d }
+        half[p] = -1
+        if (m) { asort(ds); half[p] = int(ds[int((m + 1) / 2)] * 100000 / 18) }
     }
     bad = 0
 }
@@ -41,12 +52,24 @@ BEGIN {
     pad = num($0, "pad"); bp = num($0, "pts"); bd = num($0, "dts"); c = num($0, "crc32") ":" num($0, "len")
     bufs[pad]++
     if (!(pad in pads)) { pads[pad] = ++npads; names[npads] = pad }
-    if (bp == "null") { bad++; next }
+    # A piece without a PTS after a piece joined by PTS is that PES'"'"'s; any other is unjoined.
+    if (bp == "null") { if (piece[pad]) { joined[pad]++; pieces[pad]++ } else bad++; next }
+    piece[pad] = 0
     # demux pads are <media>_<generation>_<pid, 4 hex>; select mode'"'"'s pad carries any PID.
     want = pad ~ /_[0-9a-f]+_[0-9a-f][0-9a-f][0-9a-f][0-9a-f]$/ ? strtonum("0x" substr(pad, length(pad) - 3)) : -1
     hit = ""
     if (want >= 0) {
         for (q = (want in nx) ? nx[want] : 1; q <= cnt[want]; q++) if (key[want, q] == c) { hit = want SUBSEP q; nx[want] = q + 1; break }
+        if (hit == "" && half[want] >= 0) {
+            best = 0
+            for (q = (want in nx) ? nx[want] : 1; q <= cnt[want]; q++) {
+                formula(pts[want, q], bp); dist = bp - CE; if (dist < 0) dist = -dist
+                if (!best || dist < bdist) { best = q; bdist = dist } else break
+            }
+            if (best && bdist <= half[want] && num($0, "len") + 0 < plen[want, best]) {
+                hit = want SUBSEP best; nx[want] = best + 1; piece[pad] = 1; bypts[pad]++
+            }
+        }
     } else {
         for (q = (pad in gx) ? gx[pad] : 1; q <= all; q++) { split(order[q], o, SUBSEP); if (key[o[1], o[2]] == c) { hit = order[q]; gx[pad] = q + 1; break } }
     }
@@ -65,7 +88,7 @@ BEGIN {
 END {
     for (i = 1; i <= npads; i++) {
         p = names[i]
-        printf "{\"pad\":\"%s\",\"buffers\":%d,\"joined\":%d,\"exact\":%d,\"floor\":%d,\"maxDevNs\":%s}\n", p, bufs[p], joined[p] + 0, ex[p] + 0, fl[p] + 0, (p in mx) ? mx[p] : "null"
+        printf "{\"pad\":\"%s\",\"buffers\":%d,\"joined\":%d,\"byPts\":%d,\"pieces\":%d,\"exact\":%d,\"floor\":%d,\"maxDevNs\":%s}\n", p, bufs[p], joined[p] + 0, bypts[p] + 0, pieces[p] + 0, ex[p] + 0, fl[p] + 0, (p in mx) ? mx[p] : "null"
         total += bufs[p]
     }
     printf "{\"msg\":\"pes_formula\",\"pads\":%d,\"buffers\":%d,\"pass\":%s}\n", npads, total, bad || !total ? "false" : "true"

@@ -116,8 +116,10 @@ from house now: `t0src=now`). The chunk-stamp join, the producer's
 `sourceDemux` retime, `mrpeshouse`, `subtitle_stamp_model` and
 `subtitle_ts`'s `PesStamper` and `StampIndex` are deleted, every page from
 the first is on its PES time, and the transcoder's `subtitleDelayMs` gave
-way to a burn-in that waits for late cues in a pace group. The decision
-below is the record of 2026-10-09.
+way to a burn-in that waits for late cues in a pace group. The pack's
+padding to 7 packets, there for the consumers' `tsparse` and `tsdemux` of
+the time, now serves no bus consumer (`mrtsdemux` completes a bounded PES
+at its length) and stays. The decision below is the record of 2026-10-09.
 
 Burned-in teletext on NO-OCC-Gate01 ran 1–6 s late. Measured causes: (1) video
 PES lead the PCR by 0.9–1.5 s, teletext by 52 ms, so a frame's teletext arrives

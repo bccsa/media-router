@@ -9,6 +9,7 @@
 #include "../ts_packet.h"
 #include "../ts_pes.h"
 #include "check.h"
+#include "pes_pts_oracle.h"
 
 using namespace mrts;
 
@@ -19,27 +20,8 @@ using Units = std::vector<PesUnit>;
 
 constexpr int64_t W33 = 1LL << 33;
 
-// The readers parse_pes_header replaced (WI-S0-6), verbatim: the module is pinned
-// to them. read_pes_pts's body before it forwarded here (the forwarder went in B-143).
-int64_t today_read_pes_pts(const uint8_t* pkt) {
-    if (!ts_pusi(pkt) || !ts_has_payload(pkt)) return -1;
-    int off = payload_offset(pkt);
-    if (off + 14 > PKT) return -1;
-    const uint8_t* p = pkt + off;
-    if (p[0] != 0x00 || p[1] != 0x00 || p[2] != 0x01) return -1;
-    switch (p[3]) {
-        case 0xBC: case 0xBE: case 0xBF: case 0xF0:
-        case 0xF1: case 0xF2: case 0xF8: case 0xFF:
-            return -1;
-        default:
-            break;
-    }
-    if ((p[6] & 0xC0) != 0x80) return -1;
-    if (!(p[7] & 0x80)) return -1;
-    return ((int64_t)((p[9] >> 1) & 0x07) << 30) | ((int64_t)p[10] << 22) |
-           ((int64_t)(p[11] >> 1) << 15) | ((int64_t)p[12] << 7) | (p[13] >> 1);
-}
-// ts_timeline.cpp's private DTS reader and field writer, as WI-S0-6 found them.
+// The readers parse_pes_header replaced (WI-S0-6), verbatim, the module pinned to them: read_pes_pts's
+// body in pes_pts_oracle.h; here ts_timeline.cpp's private DTS reader and field writer as WI-S0-6 found them.
 int64_t today_read_pes_dts(const uint8_t* pkt) {
     int off = payload_offset(pkt);
     if (off + 19 > PKT) return -1;
@@ -373,7 +355,7 @@ int main() {
                         if (fault == 1) body[1] = 0x01;
                         if (fault == 2) body[6] = 0x40;
                         Bytes pkt = one_packet(0x100, af, body, fault != 3);
-                        const int64_t want = today_read_pes_pts(pkt.data());
+                        const int64_t want = old_read_pes_pts(pkt.data());
                         PesHeader h;
                         const bool ok = parse_pkt(pkt, &h);
                         agree &= (ok ? h.pts : -1) == want;

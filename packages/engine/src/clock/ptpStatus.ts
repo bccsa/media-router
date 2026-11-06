@@ -1,5 +1,6 @@
 // ptp4l's own view of the clock while linuxptp steers it (B-198): the kernel's esterror is
-// never PTP's (linuxptp does not set it), so the offset from the master comes from ptp4l.
+// never PTP's (linuxptp does not set it), so the offset from the master comes from ptp4l. And
+// status.env, what ptp4l's last start applied: its domain, a slave-only box's NTP fallback.
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +12,8 @@ export type ReadText = (path: string) => Promise<string>;
 
 const readText: ReadText = (path) => readFile(path, 'utf8');
 
-/** Written (0644) by media-router-ptp-setup.sh before every ptp4l start: the domain in force. */
+/** Written (0644) by media-router-ptp-setup.sh at every ptp4l start: what that start applied.
+ *  The engine only reads it. */
 export const PTP_STATUS_ENV = '/run/media-router-ptp/status.env';
 /** ptp4l's read-only management socket: GETs only, mode 0666 (linuxptp 4.4's defaults). */
 export const PTP4L_RO_SOCKET = '/var/run/ptp4lro';
@@ -25,6 +27,34 @@ export function ptpDomain(env: string): number {
     const m = /^PTP_DOMAIN=(\d{1,3})\s*$/m.exec(env);
     const domain = m ? Number(m[1]) : 0;
     return domain <= 255 ? domain : 0;
+}
+
+/** What the engine takes from status.env. */
+export interface PtpStatusEnv {
+    domain: number;
+    /** PTP_SLAVE_ONLY=1 and PTP_NTP_FALLBACK=1: no PTP master, chrony holds the clock (MR-048b).
+     *  A key that is missing (a setup older than the fallback) reads 0, as the setup's default. */
+    ntpFallback: boolean;
+}
+
+const SLAVE_ONLY = /^PTP_SLAVE_ONLY=1\s*$/m;
+const NTP_FALLBACK = /^PTP_NTP_FALLBACK=1\s*$/m;
+
+/** The keys the engine uses; the Device Manager reads the fallback the same way. */
+export function parsePtpStatusEnv(env: string): PtpStatusEnv {
+    return {
+        domain: ptpDomain(env),
+        ntpFallback: SLAVE_ONLY.test(env) && NTP_FALLBACK.test(env),
+    };
+}
+
+/** status.env once, or null without it: a box without PTP, or before ptp4l's first start. */
+export async function readPtpStatusEnv(read: ReadText = readText): Promise<PtpStatusEnv | null> {
+    try {
+        return parsePtpStatusEnv(await read(PTP_STATUS_ENV));
+    } catch {
+        return null;
+    }
 }
 
 /** pmc's argv. `-i` is its reply socket, which defaults to root's /var/run; each request is one
@@ -100,19 +130,14 @@ export function parsePtpClock(text: string): PtpClockState | null {
     };
 }
 
-/** ptp4l's view now, or null when it gives none. Never blocks the loop: pmc is a child that exits
- *  100 ms after its last reply, and the engine's user may use only the read-only socket. */
+/** ptp4l's view now in `domain` (status.env's), or null when it gives none. Never blocks the loop:
+ *  pmc is a child that exits 100 ms after its last reply, and the engine's user may use only the
+ *  read-only socket. */
 export async function readPtpClock(
     exec: ExecStdout,
-    read: ReadText = readText,
+    domain: number,
 ): Promise<PtpClockState | null> {
-    let env = '';
-    try {
-        env = await read(PTP_STATUS_ENV);
-    } catch {
-        // Not written yet: pmc's and ptp4l's default domain.
-    }
     const dir = process.env.XDG_RUNTIME_DIR || tmpdir();
     const reply = join(dir, `mr-pmc-${process.pid}-${++pmcRuns}`);
-    return parsePtpClock(await exec(PMC, pmcArgs(ptpDomain(env), reply)));
+    return parsePtpClock(await exec(PMC, pmcArgs(domain, reply)));
 }

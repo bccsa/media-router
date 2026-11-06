@@ -21,12 +21,14 @@ const interval = (pes: number, o: Record<string, unknown> = {}) => ({
     markers: 0,
     'markers-dropped': 0,
     'pes-dropped-cc': 0,
+    'pes-dropped-stale': 0,
     'pes-no-pts': 0,
     'desync-bytes': 0,
     'unknown-streams': 0,
     'frame-ns': 40_000_000,
     generation: 0,
     pads: 'video_0_0100',
+    'off-house': '',
     ...o,
 });
 const program = (generation: number, pads = `video_${generation}_0100`) => ({
@@ -44,11 +46,12 @@ const unknown = (pid: number, generation: number, streamType = 0x06, registratio
     registration,
     generation,
 });
-const offHouse = (pid: number, offsetMs: number) => ({
+const offHouse = (pid: number, offsetMs: number, stale = false) => ({
     ...base,
     reason: 'not-house-time',
     pid,
     'offset-ms': offsetMs,
+    stale,
 });
 const noStream = (select = '') => ({ ...base, select, stream: 'missing', reason: 'no-stream' });
 
@@ -66,6 +69,13 @@ describe('parseDemuxPayload', () => {
             stream: 'found',
         });
         expect(parseDemuxPayload(offHouse(256, 1))!.generation).toBeUndefined();
+        expect(parseDemuxPayload(offHouse(256, 1, true))!.stale).toBe(true);
+        expect(parseDemuxPayload(interval(1, { 'off-house': '256,257' }))!.offHouse).toEqual([
+            256, 257,
+        ]);
+        expect(parseDemuxPayload(interval(1))!.offHouse).toEqual([]);
+        const { 'off-house': _, ...older } = interval(1);
+        expect(parseDemuxPayload(older)!.offHouse).toBeUndefined();
         expect(parseDemuxPayload({ reason: 'x', stream: 'bogus' })!.stream).toBe('waiting');
     });
 });
@@ -129,17 +139,54 @@ describe('DemuxWatches: the warnings', () => {
         expect(kinds(d)).toEqual([]);
     });
 
-    it('not-house-time: raised once per pad, kept on its program, cleared at the next', () => {
+    it('not-house-time: raised once per pad, kept while reported off house time, cleared at the next program', () => {
         const d = new DemuxWatches();
         d.take('dm', program(0), 0);
         d.take('dm', offHouse(0x100, -7_200_000), 1);
         d.take('dm', offHouse(0x101, 61_000), 1);
-        d.take('dm', interval(10), 2);
+        d.take('dm', interval(10, { 'off-house': '256,257' }), 2);
         expect(d.list()[0].warnings).toEqual([
             { kind: 'input-not-house-time', pid: 0x100, offsetMs: -7_200_000 },
         ]);
         expect(d.take('dm', program(1), 3)!.changed).toBe(true);
         expect(kinds(d)).toEqual([]);
+    });
+
+    it('not-house-time: cleared once a report has its PID back on house time; an older report leaves it', () => {
+        const d = new DemuxWatches();
+        d.take('dm', program(0), 0);
+        d.take('dm', offHouse(0x100, -7_200_000), 1);
+        const { 'off-house': _, ...older } = interval(10);
+        expect(d.take('dm', older, 2)!.changed).toBe(false);
+        expect(d.take('dm', interval(20, { 'off-house': '256' }), 3)!.changed).toBe(false);
+        expect(kinds(d)).toEqual(['input-not-house-time']);
+        expect(d.take('dm', interval(30), 4)!.changed).toBe(true);
+        expect(kinds(d)).toEqual([]);
+    });
+
+    it('a stale PES: its own words, held 10 s and then cleared on a stream on house time', () => {
+        const d = new DemuxWatches();
+        d.take('dm', program(0), 0);
+        expect(d.take('dm', offHouse(0x100, 15_739_712, true), 1000)!.changed).toBe(true);
+        expect(d.list()[0].warnings).toEqual([
+            { kind: 'input-not-house-time', pid: 0x100, offsetMs: 15_739_712, stale: true },
+        ]);
+        expect(d.take('dm', interval(10), 2000)!.changed).toBe(false);
+        expect(d.take('dm', interval(20), 10_999)!.changed).toBe(false);
+        expect(d.take('dm', interval(30), 11_000)!.changed).toBe(true);
+        expect(kinds(d)).toEqual([]);
+    });
+
+    it("a stale PES whose stream stays off house time: the producer's warning from the first report listing it", () => {
+        const d = new DemuxWatches();
+        d.take('dm', program(0), 0);
+        d.take('dm', offHouse(0x100, 10_800_000, true), 1000);
+        expect(d.take('dm', interval(10, { 'off-house': '256' }), 1500)!.changed).toBe(true);
+        expect(d.list()[0].warnings).toEqual([
+            { kind: 'input-not-house-time', pid: 0x100, offsetMs: 10_800_000 },
+        ]);
+        expect(d.take('dm', interval(500, { 'off-house': '256' }), 60_000)!.changed).toBe(false);
+        expect(kinds(d)).toEqual(['input-not-house-time']);
     });
 
     it('no-stream: cleared when a report finds the stream, and at the next generation', () => {
@@ -216,6 +263,9 @@ describe('the warning texts', () => {
         expect(t({ kind: 'input-not-house-time', pid: 0x100, offsetMs: 61_500 })).toContain(
             'is 62 s off',
         );
+        expect(
+            t({ kind: 'input-not-house-time', pid: 0x100, offsetMs: 15_739_712, stale: true }),
+        ).toBe('Input enc-1 (out): a PES 15740 s off house time was dropped as stale');
         expect(t({ kind: 'input-no-stream', select: 'audio/x-smpte-302m' })).toBe(
             'Input enc-1 (out) carries no 302M audio stream',
         );

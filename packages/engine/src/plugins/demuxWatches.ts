@@ -18,6 +18,9 @@ export type DemuxInputRef =
 
 /** PES/s is counted over this much of the latest interval reports. */
 const RATE_WINDOW_MS = 10_000;
+/** A stale PES's warning stands this long unless its stream stays off house time (the element's
+ *  episode quiet, EPISODE_QUIET_NS). */
+const STALE_HOLD_MS = 10_000;
 /** `media`'s default: every pad class (gstmrtsdemux.cpp MEDIA_ALL). */
 const MEDIA_ALL = 'video,audio,private,subpicture';
 const MEDIA_WORDS: Record<string, string> = {
@@ -46,6 +49,10 @@ export interface DemuxReport {
     streamType: number;
     registration: string;
     offsetMs: number;
+    /** not-house-time: that PES was dropped as stale (B-149). */
+    stale: boolean;
+    /** interval: the PIDs whose last placed PES is off house time; absent where not reported. */
+    offHouse?: number[];
 }
 
 const STREAMS: ReadonlySet<string> = new Set(['waiting', 'found', 'missing']);
@@ -73,13 +80,17 @@ export function parseDemuxPayload(payload: unknown): DemuxReport | null {
         streamType: num('stream-type'),
         registration: str('registration'),
         offsetMs: num('offset-ms'),
+        stale: p.stale === true,
+        ...(typeof p['off-house'] === 'string'
+            ? { offHouse: p['off-house'].split(',').filter(Boolean).map(Number) }
+            : {}),
     };
 }
 
 /** A warning standing on one demux, for the module's health text. */
 export type DemuxWarning =
     | { kind: 'demux-unknown-stream'; pid: number; streamType: number; registration: string }
-    | { kind: 'input-not-house-time'; pid: number; offsetMs: number }
+    | { kind: 'input-not-house-time'; pid: number; offsetMs: number; stale?: true }
     | { kind: 'input-no-stream'; select: string };
 
 /** A demux mode's new program (generation > 0): a line in the module's log. */
@@ -108,7 +119,9 @@ interface Entry {
     gaps: number;
     ccLost: number;
     unknown: Map<number, { streamType: number; registration: string; generation: number }>;
-    offHouse: Map<number, { offsetMs: number; generation: number }>;
+    /** Per PID: the not-house-time message's offset; `stale` until a report lists the PID off
+     *  house time (then its stream left house time), `at` its arrival. */
+    offHouse: Map<number, { offsetMs: number; generation: number; stale: boolean; at: number }>;
     noStream?: { select: string };
 }
 
@@ -142,6 +155,7 @@ export function demuxWarningText(w: DemuxWarning, label: string, media?: string)
     if (w.kind === 'input-not-house-time') {
         const s = Math.abs(w.offsetMs) / 1000;
         const off = s >= 10 ? String(Math.round(s)) : s.toFixed(1);
+        if (w.stale) return `Input ${label}: a PES ${off} s off house time was dropped as stale`;
         return `Input ${label} is ${off} s off house time — its producer does not stamp house time`;
     }
     const kind = streamKind(w.select, media);
@@ -203,6 +217,7 @@ export class DemuxWatches {
                 while (e.samples.length > 2 && now - e.samples[0].at > RATE_WINDOW_MS) {
                     e.samples.shift();
                 }
+                if (r.offHouse) settleOffHouse(e, r.offHouse, now);
                 break;
             case 'unknown-stream':
                 e.unknown.set(r.pid, {
@@ -212,7 +227,12 @@ export class DemuxWatches {
                 });
                 break;
             case 'not-house-time':
-                e.offHouse.set(r.pid, { offsetMs: r.offsetMs, generation: e.generation });
+                e.offHouse.set(r.pid, {
+                    offsetMs: r.offsetMs,
+                    generation: e.generation,
+                    stale: r.stale,
+                    at: now,
+                });
                 break;
             case 'no-stream':
                 e.noStream = { select: r.select };
@@ -245,6 +265,15 @@ export class DemuxWatches {
     }
 }
 
+/** A PID the report lists stays (a stale drop's stream left house time); any other is back on
+ *  house time, a stale drop's after its hold. */
+function settleOffHouse(e: Entry, offHouse: number[], now: number): void {
+    for (const [pid, o] of e.offHouse) {
+        if (offHouse.includes(pid)) o.stale = false;
+        else if (!o.stale || now - o.at >= STALE_HOLD_MS) e.offHouse.delete(pid);
+    }
+}
+
 function counters(e: Entry): DemuxCounters {
     const first = e.samples[0];
     const last = e.samples[e.samples.length - 1];
@@ -265,8 +294,15 @@ function warnings(e: Entry): DemuxWarning[] {
     }
     // One input, one producer: the furthest PID speaks for it.
     const off = [...e.offHouse].sort(([, a], [, b]) => Math.abs(b.offsetMs) - Math.abs(a.offsetMs));
-    if (off.length)
-        out.push({ kind: 'input-not-house-time', pid: off[0][0], offsetMs: off[0][1].offsetMs });
+    if (off.length) {
+        const [pid, o] = off[0];
+        out.push({
+            kind: 'input-not-house-time',
+            pid,
+            offsetMs: o.offsetMs,
+            ...(o.stale ? { stale: true as const } : {}),
+        });
+    }
     if (e.noStream) out.push({ kind: 'input-no-stream', select: e.noStream.select });
     return out;
 }

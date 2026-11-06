@@ -9,16 +9,29 @@ export const POSITIONED_302M_MASK: Record<number, string> = {
     8: '0x63f',
 };
 
+/** GStreamer's default layout per width (`gst_audio_channel_get_fallback_mask`): the layout a mix
+ *  of that width negotiates by itself, pinned on a placed one (B-214). Mono has none. */
+export const DEFAULT_LAYOUT_MASK: Record<number, string> = {
+    2: '0x3',
+    3: '0xb',
+    4: '0x33',
+    5: '0x37',
+    6: '0x3f',
+    7: '0x13f',
+    8: '0xc3f',
+};
+
 /**
  * `audioconvert <identity mix-matrix> ! audio/x-raw,channels=N,channel-mask=<layout>`
  * — gives an unpositioned N-wide stream a channel layout before `avenc_s302m`,
  * which refuses a layout-less stream. Both halves are needed: audioconvert
  * neither invents positions for an unpositioned input without a mix-matrix nor
  * adds them when an equal-count identity leaves the layout untouched (bare
- * pipelines on gst 1.28.2, 2026-09-15). Unpositioned inputs are the norm for
- * wide 302M: `pipewiresrc` whole-device capture and `avdec_s302m` of any
- * 4/6/8-channel stream both come out `channel-mask=0x0`. 302M carries plain
- * PCM pairs, so the positions mean nothing downstream.
+ * pipelines on gst 1.28.2, 2026-09-15). Unpositioned inputs are common for
+ * wide 302M: `pipewiresrc` whole-device capture comes out `channel-mask=0x0`,
+ * and so does `avdec_s302m` of an 8-channel stream (4 and 6 come out quad and
+ * 5.1, B-214). 302M carries plain PCM pairs, so the positions mean nothing
+ * downstream.
  */
 export function positionedChannelsClause(channels: number): string {
     const identity: ChannelMapEntry[] = Array.from({ length: channels }, (_, i) => ({

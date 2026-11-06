@@ -10,7 +10,7 @@ process per module. The fork is kept as a rollback only, behind
 
 ## Why
 
-Measured on a 2 GB Pi 4 (10.9.16.108, node 20.19, GStreamer 1.28.2,
+Measured on a 2 GB Pi 4 (the Pi 4 test box, node 20.19, GStreamer 1.28.2,
 2026-09-03), every module cost two processes:
 
 | Process | RSS | PSS |
@@ -20,7 +20,7 @@ Measured on a 2 GB Pi 4 (10.9.16.108, node 20.19, GStreamer 1.28.2,
 
 A bare `node -e ""` on that box is 51 MB RSS: the shim was a whole node
 runtime carrying 1,600 lines of state machine. On a 1.5 GB Pi running 15
-modules (10.9.16.105) the shims alone were ~255 MB PSS and the box sat at
+modules (a 2 GB Pi 4) the shims alone were ~255 MB PSS and the box sat at
 110 MB available. A 16-module 302M profile (ZA-SCC-FRA01) did not fit a 2 GB
 Pi at all.
 

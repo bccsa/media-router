@@ -1,6 +1,6 @@
-/* mrasrc (plan ch. 5 WI-P1-8; ch. 7 WI-P3-5; ch. 8 WI-P4-4): mrts::AsrcServo commands GstAudioResampler so the
- * output is a house-rate counter, PTS_out(m) = T0 + m / out_rate, in capture, decode or device mode (S17,
- * ADR-0029); device mode follows its sink's clock read on a timer (B-166). */
+/* mrasrc (WI-P1-8, WI-P3-5, WI-P4-4): mrts::AsrcServo commands GstAudioResampler's ratio, a house-rate counter
+ * PTS_out(m) = T0 + m / out_rate; modes capture (cycle-input: B-180, B-181), decode (`bypass-below-ppm`), device
+ * (`device-sink`: its sink's clock read on a timer, B-166) and both (S17), B-148's breaks; ADR-0029, plugins/README.md. */
 #include <gst/audio/gstaudiobasesink.h>
 #include <gst/audio/gstaudioclock.h>
 #include <gst/base/gstbasetransform.h>

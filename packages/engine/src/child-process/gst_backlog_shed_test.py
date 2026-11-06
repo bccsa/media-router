@@ -278,7 +278,7 @@ check("the audio event carries the same before/after pair",
 teardown(pipe)
 
 # --- nothing queued: a late TIMELINE is reported, never shed -----------------
-# 10.9.16.103, 2026-09-08: a gateway mux rewound ~1 s; every buffer reached the
+# The Pi 5 test box, 2026-09-08: a gateway mux rewound ~1 s; every buffer reached the
 # decoder ~500 ms over budget with the queues EMPTY, and the shedder dropped
 # 1072 frames over 21.9 s waiting for a keyframe that could not make the next
 # buffer arrive any earlier. Dropping returns nothing when nothing is queued.

@@ -510,10 +510,9 @@ describe('VideoPlayerModule helpers', () => {
             });
 
             it('taps the same spot on the clock-paced variant, straight off the jitter queue', () => {
-                // No tsparse ahead of the tee on either sink (WI-P3-18): the tap needs no
-                // re-framer for 188-byte alignment — the bus delivers whole-packet buffers
-                // (unixfd preserves producer buffer boundaries), which is what
-                // `ts_psi.iter_packets` needs since it strides a fixed 188 and never resyncs on 0x47.
+                // No tsparse ahead of the tee on either sink (WI-P3-18): the bus delivers
+                // whole-packet buffers (unixfd keeps producer buffer boundaries), as
+                // `ts_psi.iter_packets` needs: it strides a fixed 188, never resyncing on 0x47.
                 const s = buildLivePipeline(
                     'kmssink name=sink sync=true qos=true',
                     busSource,
@@ -2050,7 +2049,7 @@ describe('VideoPlayerModule helpers', () => {
                 (module as any).clearBusStallState();
             });
 
-            describe('demotion is attributable — the 10.9.1.165 regression', () => {
+            describe('demotion is attributable — the Pi 4 field regression', () => {
                 /** Set up a live h265 pipeline on the hardware rung. */
                 function liveOnHardware() {
                     const module = makeModule();

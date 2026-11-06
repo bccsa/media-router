@@ -1,8 +1,8 @@
 // The engine's house epoch E and time-sync state (house-clock design §4.2, §10.3).
 
-/** Who disciplines the clock: `chrony`, also on a PTP grandmaster (chronyd disciplines the clock
- *  it serves); `ptp`, linuxptp steers (slave-only boxes, and a master-capable box while it
- *  follows a better grandmaster); `none`, neither daemon runs. */
+/** Who disciplines the clock: `chrony`, also on a PTP grandmaster (it keeps the time served) and
+ *  on a slave-only box on the NTP fallback (`TimeSyncState.ntpFallback`); `ptp`, linuxptp steers
+ *  (slave-only boxes, a master-capable box following a better master); `none`, neither runs. */
 export type TimeSyncSource = 'chrony' | 'ptp' | 'none';
 
 /** Why E was latched (`start`/`timeout`) or re-latched (`sync`/`step`/`divergence`). */
@@ -94,4 +94,7 @@ export interface TimeSyncState {
     /** While source is `ptp` and ptp4l answered the last poll; a step drops it until the next
      *  periodic poll, since ptp4l's figure then measured the clock before the step. */
     ptp?: PtpClockState;
+    /** A slave-only PTP box with no PTP master: chrony holds its clock until a master's lock has
+     *  held 30 s (MR-048b). From ptp4l's status.env at each source poll; absent without it. */
+    ntpFallback?: boolean;
 }

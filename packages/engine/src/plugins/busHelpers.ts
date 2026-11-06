@@ -24,9 +24,9 @@
 
 /**
  * The caps EVERY bus producer publishes — identity, not a hint. unixfd carries
- * caps across the socket and `tsdemux` rejects caps-less buffers, so both
- * producer paths must publish exactly this and nothing more: the GStreamer
- * egress (`buildBusSink`) and the `mr-bus-fanout` sidecar (`--caps`).
+ * caps across the socket and the demux (`mrtsdemux`) rejects caps-less
+ * buffers, so both producer paths must publish exactly this and nothing more:
+ * the GStreamer egress (`buildBusSink`) and the `mr-bus-fanout` sidecar (`--caps`).
  *
  * "Nothing more" is load-bearing — see the `capssetter` note in `buildBusSink`.
  */
@@ -332,7 +332,7 @@ export function buildBusDemux(opts: BusDemuxOpts): string {
  * The `capssetter … replace=true` DROPS incoming caps fields, and exists for
  * exactly one of them: `mpegtsmux` publishes the PAT/PMT it generated FIRST
  * into a `streamheader` caps field. That snapshot is taken before the
- * dynamically-linked media pads exist (mux pads are requested at tsdemux
+ * dynamically-linked media pads exist (mux pads are requested at the demux's
  * pad-added), so it can name the wrong PCR PID and omit whole streams — and it
  * is never refreshed when the live PMT is corrected. unixfd carries caps
  * verbatim across the socket, so the stale header reaches consumers, and

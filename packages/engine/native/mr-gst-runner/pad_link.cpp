@@ -15,7 +15,7 @@ namespace mr::padlink {
 
 namespace {
 
-// Caps-name → parser between `tsdemux` and a downstream muxer/decoder.
+// Caps-name → parser between the demux and a downstream muxer/decoder.
 // config-interval=-1 re-emits parameter sets before every IDR (see the python).
 const std::map<std::string, std::string> PARSER_FOR_CAPS_NAME = {
     {"video/x-h264", "h264parse config-interval=-1"},
@@ -23,7 +23,7 @@ const std::map<std::string, std::string> PARSER_FOR_CAPS_NAME = {
     {"video/x-av1", "av1parse"},
     {"audio/x-ac3", "ac3parse"},
     {"audio/x-eac3", "ac3parse"},
-    {"audio/x-opus", ""},   // tsdemux already emits muxer-ready caps
+    {"audio/x-opus", ""},   // the demux already emits muxer-ready caps
 };
 const std::map<std::string, std::string> AU_ALIGNED_CAPS = {
     {"video/x-h264", "video/x-h264,stream-format=byte-stream,alignment=au"},

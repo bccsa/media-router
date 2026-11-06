@@ -8,10 +8,9 @@ import { launchWith } from '../busSocketGate.js';
 import type { RunnerStartOptions } from '../PythonProcess.js';
 
 /**
- * The consumer strings gst_decode_asrc_chain_test.py runs (house-clock WI-P3-9 + WI-P3-15,
- * WI-P3-10, WI-P3-12), made by the real modules: `fixtures/decode-asrc/pipelines.json`, rewritten
- * by `vitest -u`. `@SOCK@` stands for the harness's socket directory. Modules are handled as plain
- * objects, as in alignerConformance.test.ts.
+ * The strings gst_decode_asrc_chain_test.py runs (WI-P3-9/-15, -10, -12), made by the real modules
+ * into `fixtures/decode-asrc/pipelines.json` (`vitest -u`); `@SOCK@` is the harness's socket dir.
+ * Modules are handled as plain objects, as in alignerConformance.test.ts.
  */
 
 const SOCK = '@SOCK@';

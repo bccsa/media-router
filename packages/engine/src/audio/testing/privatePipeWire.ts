@@ -52,6 +52,8 @@ export function pulsesinkUnmatched(registry: string): string | null {
 export interface PrivatePipeWireDevices {
     sources?: string[];
     sinks?: string[];
+    /** Sinks of that many AUX-named ports, as a desk's USB card (B-214). */
+    auxSinks?: Record<string, number>;
 }
 
 /** No D-Bus, nothing locked in memory, errors only; `extra` joins these properties. */
@@ -63,17 +65,24 @@ context.spa-libs = {
     support.* = support/libspa-support
 }`;
 
-const device = (name: string, mediaClass: string, priority: number) => `
+const device = (name: string, mediaClass: string, priority: number, positions = 'FL FR') => `
     { factory = adapter
       args = { factory.name = support.null-audio-sink node.name = ${name}
-               media.class = ${mediaClass} audio.position = [ FL FR ]
+               media.class = ${mediaClass} audio.position = [ ${positions} ]
                node.driver = true priority.driver = ${priority} object.linger = true
                adapter.auto-port-config = { mode = dsp monitor = true position = preserve } } }`;
+
+/** `AUX0 AUX1 …`: the positions of a card whose ports are AUX-named. */
+export const auxPositions = (channels: number): string[] =>
+    Array.from({ length: channels }, (_, i) => `AUX${i}`);
 
 const devicesConf = (devices: PrivatePipeWireDevices) =>
     [
         ...(devices.sources ?? []).map((n, i) => device(n, 'Audio/Source/Virtual', 30000 - i)),
         ...(devices.sinks ?? []).map((n, i) => device(n, 'Audio/Sink', 29000 - i)),
+        ...Object.entries(devices.auxSinks ?? {}).map(([n, ch], i) =>
+            device(n, 'Audio/Sink', 28000 - i, auxPositions(ch).join(' ')),
+        ),
     ].join('');
 
 /** The daemon: what a client needs, a driver, and the virtual devices. */
@@ -145,7 +154,11 @@ export class PrivatePipeWire {
     };
 
     constructor(devices: PrivatePipeWireDevices) {
-        this.devices = [...(devices.sources ?? []), ...(devices.sinks ?? [])];
+        this.devices = [
+            ...(devices.sources ?? []),
+            ...(devices.sinks ?? []),
+            ...Object.keys(devices.auxSinks ?? {}),
+        ];
         for (const d of [
             this.conf,
             join(this.run, 'pulse'),
@@ -254,16 +267,17 @@ export class PrivatePipeWire {
 
 /**
  * WirePlumber's part for playback streams, which this PipeWire runs without: every `periodMs`,
- * each stream node's output ports are linked in order to `sink`'s playback ports. Returns the
- * stop, which resolves once the loop has ended.
+ * each stream node's output ports are linked in order to `sink`'s playback ports (`positions`,
+ * FL FR by default). Returns the stop, which resolves once the loop has ended.
  */
 export function linkPlaybackStreams(
     pw: PrivatePipeWire,
     sink: string,
     periodMs = 250,
+    positions = ['FL', 'FR'],
 ): () => Promise<void> {
     let running = true;
-    const playback = [`${sink}:playback_FL`, `${sink}:playback_FR`];
+    const playback = positions.map((p) => `${sink}:playback_${p}`);
     const loop = (async () => {
         while (running) {
             const outputs = (await pw.tool('pw-link', ['-o'])).split('\n').filter(Boolean);

@@ -19,6 +19,9 @@ const COLOR: Record<ClockLevel, string> = {
     error: 'text-error',
 };
 
+/** The Device Manager's words for a slave-only PTP box whose clock went to chrony (MR-048b). */
+const NTP_FALLBACK_TEXT = 'No PTP master: on internet time (NTP)';
+
 function errorText(us: number): string {
     return us >= 1000 ? `±${(us / 1000).toFixed(1)} ms` : `±${us} µs`;
 }
@@ -47,7 +50,7 @@ export function engineClockIndicator(engine: EngineState): ClockIndicator | null
     const [level, label] = levelAndLabel(t);
     const parts = [
         label,
-        `source ${t.source}`,
+        t.ntpFallback ? NTP_FALLBACK_TEXT : `source ${t.source}`,
         `error ${errorPart(t)}`,
         `TAI−UTC ${t.taiOffsetS} s`,
     ];

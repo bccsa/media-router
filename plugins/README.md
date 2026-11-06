@@ -929,11 +929,11 @@ Return `null` to run the module without a GStreamer pipeline (idle state). The m
 
 #### Dynamic pad linking (`linkOnPadAdded`)
 
-`gst_parse_launch` does not link sometimes-pads from elements like `tsdemux` or `decodebin` when there is more than one downstream branch per media type. To fan out N outputs, return a `linkOnPadAdded` rule per media type. Each rule lists one parse_launch fragment per matched pad, in pad-added order:
+`gst_parse_launch` does not link sometimes-pads from elements like `mrtsdemux` or `decodebin` when there is more than one downstream branch per media type. To fan out N outputs, return a `linkOnPadAdded` rule per media type. Each rule lists one parse_launch fragment per matched pad, in pad-added order:
 
 ```typescript
 return {
-    pipeline: 'udpsrc ! tsparse ! tsdemux name=demux',
+    pipeline: buildBusDemux({ port, socketPath, name: 'demux' }),
     linkOnPadAdded: [
         {
             from: 'demux',
@@ -963,8 +963,9 @@ Each branch's first element's sink pad is auto-ghosted, so the rule only needs t
 **Bridging branches into an outer named muxer (`linkTo`).** When several dynamic branches need to fan into one shared muxer at the top of the pipeline, the branch can't reference that outer element by name (parse_bin scope is local to the branch). Add `linkTo: '<outer element name>'` and the runner will request a fresh sink pad on that element and link the branch's auto-ghosted src pad to it:
 
 ```typescript
+const demux = (i: number) => buildBusDemux({ port: ports[i], name: `demux_${i}` });
 return {
-    pipeline: 'mpegtsmux name=mux ! udpsink ... udpsrc ! tsdemux name=demux_0 udpsrc ! tsdemux name=demux_1',
+    pipeline: `mpegtsmux name=mux ! udpsink ... ${demux(0)} ${demux(1)}`,
     linkOnPadAdded: [
         { from: 'demux_0', media: 'video', branches: ['queue ! h264parse config-interval=1'], linkTo: 'mux' },
         { from: 'demux_0', media: 'audio', branches: ['queue'], linkTo: 'mux' },
@@ -995,7 +996,7 @@ or pipeline health:
   `stateChange → playing` handler so the first payload appears immediately.
 - **Reader.** Set `readKlvNames: true` on the `PipelineDescription`. The runner
   attaches a `queue ! appsink` (the queue is mandatory — an appsink straight on
-  a tsdemux pad stalls the whole TS) to every `meta/x-klv` pad and reports the
+  the demux's pad stalls the whole TS) to every `meta/x-klv` pad and reports the
   raw payload string plus a `malformed` hint on the `stream:names` plugin-event
   channel — handle it in `onPluginEvent` (the demuxer also receives every
   discovered pad on `stream:discovered`). Parsing must be total — a malformed
@@ -1420,9 +1421,13 @@ stereo, declares nothing. Consumers default to stereo when nothing is declared.
 The playback counterpart is
 [`audio-output-302m/engine/outputPlacement.ts`](audio-output-302m/engine/outputPlacement.ts):
 `buildOutputPlacement({ device, channels, firstChannel, deviceChannels })` spreads an
-N-channel mix onto device channels `firstChannel..` as a device-wide unpositioned stream
-(`mix-matrix` + `channel-mask=0x0`), or returns `fragment: null` for the default stereo
-range so the legacy pipeline string stays byte-identical. Reuse it for any other
+N-channel mix onto device channels `firstChannel..` as an unpositioned stream as wide as
+its last channel, 2 at least (`mix-matrix` + `channel-mask=0x0`). Since B-214 (ADR-0014's
+amendment of 2026-11-06) it returns `fragment: null`, the legacy pipeline string
+byte-identical, only for the default range (mono or stereo from channel 1) on a device of
+2 channels or fewer or of unknown width, and a placed mix of 2 channels or more must reach
+it pinned to GStreamer's default layout for its width (`pinnedLayout` on the 302M fan-in),
+which the fragment relabels unpositioned with `capssetter`. Reuse it for any other
 `pulsesink` presentation leg that needs to land on specific outputs of a multichannel card.
 
 ### Live Input Branches (`getLiveInputBranch`)
@@ -2281,10 +2286,15 @@ fleet has numbers); the aligners' `input-absent` and `aligner-full` warnings
   the module owns, taken only over ok or its own (ADR-0010 rule 2):
   `demux-unknown-stream` (`Input <n>: PID 0x0123: stream type 0x06 with no
   known descriptor is not demuxed`), `input-not-house-time` (`Input <n> is
-  <x> s off house time — its producer does not stamp house time`) and
-  `input-no-stream` (`Input <n> carries no audio stream`, the kind from the
-  demux's `select` or `media`), each gone at the demux's next program, a
-  start or a respawn, the last also once a report finds the stream; and
+  <x> s off house time — its producer does not stamp house time`; for a PES
+  the demux dropped as stale, `Input <n>: a PES <x> s off house time was
+  dropped as stale`) and `input-no-stream` (`Input <n> carries no audio
+  stream`, the kind from the demux's `select` or `media`), each gone at the
+  demux's next program, a start or a respawn; `not-house-time` also once
+  the demux's report no longer lists its PID off house time (a stale drop's
+  after 10 s, or it takes the producer's words while the report lists its
+  PID: the stream left house time; p3-21), `no-stream` once a report finds
+  the stream; and
   `asrc-out-of-bounds` (a consumer ASRC's `ratio-out-of-bounds`) until its
   locked source is back below 900 ppm, the element's own hysteresis.
 
@@ -2565,11 +2575,18 @@ counts at (0: the input's rate, or what the caps downstream ask for);
 `quality` is the Kaiser quality, 0–10, default 4; both apply at start or on
 a caps change. Formats S16LE, S32LE, F32LE interleaved; above two channels
 the caps need a channel mask. Keep the base transform's `qos` off (its
-default): a dropped input buffer would read as an xrun. Messages:
+default): a dropped input buffer would read as an xrun. With `cycle-input`
+(a `pipewiresrc` capture, one buffer per graph cycle stamped with the
+cycle's time; B-180, B-181) whole cycles missing at a steady size, or a
+rise of the stamps past the lock's step (50 ms: a driver restarted after a
+loss), are a gap of their length, the output jumping those frames, and a
+cycle-size change moves only the stamps; neither relocks. Messages:
 `mrasrc-stats` every 2 s of output (`state`, `ratio-ppb`, `phase-err-ns`,
-`relocks`, `in-frames`, `out-frames`, `discont-in`, `dropped-frames`) and
-`mrasrc-event` (`relock` with `reason` discont / envelope-step, `house-ns`,
-`jump-ns`, `dropped-ns`; `ratio-out-of-bounds` with `fit-ppb`).
+`relocks`, `in-frames`, `out-frames`, `discont-in`, `dropped-frames`,
+`gaps`, `lost-frames`) and `mrasrc-event` (`relock` with `reason` discont /
+envelope-step, `house-ns`, `jump-ns`, `dropped-ns`; `gap` with `reason`
+lost-cycle / lost-time / reverted and `lost-frames`; `shift` with `reason`
+cycle-size; `ratio-out-of-bounds` with `fit-ppb`).
 
 **`mrasrc`'s decode and device modes** (house-clock Phase 3, WI-P3-5). With
 `bypass-below-ppm` above 0 it sits after a decoder, through `audioconvert`

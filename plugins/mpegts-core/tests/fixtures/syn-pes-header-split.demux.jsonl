@@ -145,4 +145,4 @@
 {"unit":{"pad":"video_0_0100","pts":91847557688889,"dts":91847517688889,"dur":null,"len":1790,"crc32":"cd42b6c6","discont":false}}
 {"unit":{"pad":"audio_0_0101","pts":91847567688889,"dts":91847567688889,"dur":null,"len":191,"crc32":"88efd328","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":91847597688889,"dts":91847557688889,"dur":null,"len":1807,"crc32":"23f762e6","discont":false}}
-{"counters":{"pes":144,"gaps":0,"markers":0,"markersDropped":0,"pesNoPts":0,"desyncBytes":0,"ccLost":0,"pesOversize":0,"pesDroppedCc":0,"psiUnsupported":0,"dtsDiscarded":0,"unknownStreams":0,"generation":0}}
+{"counters":{"pes":144,"gaps":0,"markers":0,"markersDropped":0,"pesNoPts":0,"desyncBytes":0,"ccLost":0,"pesOversize":0,"pesDroppedCc":0,"pesDroppedStale":0,"psiUnsupported":0,"dtsDiscarded":0,"unknownStreams":0,"generation":0}}

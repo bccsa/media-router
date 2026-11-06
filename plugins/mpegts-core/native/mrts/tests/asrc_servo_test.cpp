@@ -1,6 +1,6 @@
-// asrc_servo: the ASRC phase servo (WI-P1-8; WI-P3-5 and B-148 as py/asrc_bypass_ref_test.py holds them) through a
-// model of GstAudioResampler's frame accounting, and the device term on its timer (WI-P4-4, B-166) as
-// py/asrc_device_ref_test.py holds it. Integer-only servo checksums; `--sweep N` prints seed statistics.
+// asrc_servo: the ASRC phase servo (WI-P1-8; WI-P3-5 and B-148 as py/asrc_bypass_ref_test.py holds them), synthetic
+// captures and decodes through a model of GstAudioResampler's frame accounting, and the device term on its timer
+// (WI-P4-4, B-166) as py/asrc_device_ref_test.py holds it. Integer-only servo checksums; `--sweep N`: seed statistics.
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -805,6 +805,27 @@ void test_cycle_basics() {
         f.push(H0 + 11 * Q2048 + 60 * MS, 2048);
         CHECK("... then on: contiguous labels, no event, the phase within a frame",
               f.label == next && f.sv.take_events().empty() && iabs(f.sv.stats().phase_err_ns) <= FRAME_NS);
+        // At 44.1 kHz in, 48 kHz out the output moves by the time lost, its frames at the output rate.
+        AsrcServo sv(44100, 48000, Feed::cfg(true));
+        const int64_t q = 2048 * S / 44100;
+        int64_t in = 0, out = 0, label = 0;
+        auto push = [&](int64_t pts) {
+            sv.push(pts, 2048, false, 0, q);
+            label = sv.next_pts();
+            in += 2048;
+            const int64_t k = in * 48000 / 44100 - out;   // what a resampler makes of them
+            sv.produced((uint32_t)k);
+            out += k;
+        };
+        for (int i = 0; i < 10; i++) push(H0 + i * q);
+        const int64_t end441 = sv.next_pts();
+        push(H0 + 10 * q + 60 * MS);
+        const std::vector<AsrcEvent> ev441 = sv.take_events();
+        CHECK("44.1 kHz in, 48 kHz out: +60 ms is one gap (lost-time) of 2646 input frames, the output jumping the"
+              " time lost (2880 frames, 60 ms) to a frame",
+              ev441.size() == 1 && ev441[0].kind == AsrcEvent::Kind::gap &&
+                  !std::strcmp(ev441[0].reason, "lost-time") && ev441[0].lost_frames == 2646 &&
+                  iabs(label - end441 - 60 * MS) <= FRAME_NS);
         Feed g(true);
         for (int i = 0; i < 10; i++) g.push(H0 + i * Q2048, 2048);
         const AsrcServo::Command d = g.push(H0 + 10 * Q2048 + 49 * MS, 2048);

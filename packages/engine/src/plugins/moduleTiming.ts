@@ -4,7 +4,7 @@
 import type { ModuleTimingSummary } from '@media-router/shared-types';
 import type { PipelineDescription, TimingInputRef, TimingSink } from './PluginModule.js';
 import { readNodeLatency } from '../audio/pipeWireLatency.js';
-import { latInName, shortHash } from './busHelpers.js';
+import { busSrcTapName, shortHash } from './busHelpers.js';
 import { reanchorEventText, type AlignerInputRef, type AlignerWatchRef } from './alignerWatches.js';
 import { DEMUX_EVENT, type DemuxInputRef } from './demuxWatches.js';
 import { signedPpm } from './asrcWatches.js';
@@ -36,7 +36,7 @@ export interface BusSourceRef {
 
 /** The ingress tap of an edge-keyed bus source (`buildBusSrc` with no `name`). */
 export function edgeTapName(s: Pick<BusSourceRef, 'port' | 'socketPath'>): string {
-    return latInName(`${s.port}_${shortHash(s.socketPath)}`);
+    return busSrcTapName({ port: s.port, socketPath: s.socketPath });
 }
 
 /** A bus input's label: the module feeding it, and the port it arrives on. */

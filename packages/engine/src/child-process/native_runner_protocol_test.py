@@ -61,8 +61,17 @@ class RunnerProc:
         self._buf = ""
 
     def send(self, cmd):
-        self.proc.stdin.write(json.dumps(cmd) + "\n")
-        self.proc.stdin.flush()
+        """False when the runner is gone: the case's own checks then FAIL, no traceback."""
+        try:
+            self.proc.stdin.write(json.dumps(cmd) + "\n")
+            self.proc.stdin.flush()
+            return True
+        except (BrokenPipeError, OSError, ValueError):
+            try:
+                self.proc.stdin.close()
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+            return False
 
     def pump(self):
         try:
@@ -110,10 +119,7 @@ class RunnerProc:
         return any(pred(ev) for ev in self.events)
 
     def stop_and_wait(self, timeout=10.0):
-        try:
-            self.send({"cmd": "stop"})
-        except (BrokenPipeError, OSError):
-            pass
+        self.send({"cmd": "stop"})
         try:
             self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -134,6 +140,18 @@ def ev_is(name, **fields):
             return False
         return all(ev.get(k) == v for k, v in fields.items())
     return pred
+
+
+# --------------------------------------------------------------------------- the harness itself
+def test_runner_gone():
+    """A command to a runner that has exited is refused (send returns False), not raised: a case
+    whose runner dies mid-feed prints its FAILs and the run goes on (p3-21)."""
+    r = RunnerProc(["true"])
+    r.proc.wait()
+    sent = [r.send({"cmd": "get_property", "id": "gp", "element": "e", "property": "p"}) for _ in range(2)]
+    check(f"harness: a command to an exited runner is refused, not raised ({sent}), and waits on it end",
+          sent == [False, False] and r.wait_event(ev_is("property"), timeout=0.5) is None
+          and r.stop_and_wait() == 0)
 
 
 # --------------------------------------------------------------------------- A: plain pipeline
@@ -1661,7 +1679,7 @@ def _aligned_mux_run(argv, tag, fx, ts_psi, case="M3", seconds=_M3_SECONDS, cues
     """The muxer's start command for two generic inputs (pipelines.json muxKlv: each input's
     `mrtsdemux`, the hook, `mralignwatch aligner=mux` per route, no branch alignment) at real time:
     input 0 video and `cues`, silent over `dark` (content s, `fx.go_dark`), input 1 video as 0x105.
-    Returns PES in, targets, output, pace, aligner and demux stats, the runner's retime lines."""
+    Returns PES in, targets, output, pace, aligner and demux stats."""
     with open(_MUX_STARTS, encoding="utf-8") as fh:
         start = dict(json.load(fh)["muxKlv"]["start"])
     tmp = tempfile.mkdtemp(prefix="mrtest-")
@@ -1765,8 +1783,7 @@ def _aligned_mux_run(argv, tag, fx, ts_psi, case="M3", seconds=_M3_SECONDS, cues
         for f in os.listdir(tmp):
             os.unlink(os.path.join(tmp, f))
         os.rmdir(tmp)
-    return (pes_in, targets, rows, paces, {"full": full, "absences": absences, "gaps": gaps, "back": back},
-            [line.split("branchAlign: ", 1)[1] for line in r.logs if "branchAlign: " in line])
+    return pes_in, targets, rows, paces, {"full": full, "absences": absences, "gaps": gaps, "back": back}
 
 
 def test_mux_aligners_sparse():
@@ -1790,7 +1807,7 @@ def test_mux_aligners_sparse():
     wrap = 1 << 33
     pause = _M3_CUES[2] - 1.0                   # the first cue after the pause is on the wire ~0.7 s early
     for tag, argv in (("native", None), ("python", py)):
-        pes_in, targets, rows, paces, stats, lines = _aligned_mux_run(argv, tag, fx, ts_psi)
+        pes_in, targets, rows, paces, stats = _aligned_mux_run(argv, tag, fx, ts_psi)
         full = stats["full"]
         written = {}
         for pid, s, pts, arr in rows:
@@ -1819,10 +1836,8 @@ def test_mux_aligners_sparse():
         check(f"M3 {tag}: the video does not slow after the pause (output delay, median ms: "
               f"{ {f'0x{p:x} {h}': round(v) for (p, h), v in sorted(med.items())} })",
               len(med) == 4 and all(med[(p, "after")] - med[(p, "before")] <= 500 for p in (fx.VIDEO_PID, 0x105)))
-        check(f"M3 {tag}: no video aligner filled ({full}), the cue pause no demux gap ({stats['gaps']}), "
-              f"no branch alignment run ({len(lines)} lines)",
-              full == {"0_video": 0, "1_video": 0} and stats["gaps"] == {"demux_0": 0, "demux_1": 0}
-              and not lines)
+        check(f"M3 {tag}: no video aligner filled ({full}), the cue pause no demux gap ({stats['gaps']})",
+              full == {"0_video": 0, "1_video": 0} and stats["gaps"] == {"demux_0": 0, "demux_1": 0})
 
 
 # --------------------------------------------------------------------------- M4: the muxer's aligners over a dark input (WI-P2-12)
@@ -1853,7 +1868,7 @@ def test_mux_aligners_dark():
           sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")]
     wrap, (dark_from, _) = 1 << 33, _M4_DARK
     for tag, argv in (("native", None), ("python", py)):
-        pes_in, targets, rows, paces, stats, lines = _aligned_mux_run(
+        pes_in, targets, rows, paces, stats = _aligned_mux_run(
             argv, tag, fx, ts_psi, "M4", _M4_SECONDS, [float(c) for c in range(1, _M4_SECONDS - 1)], _M4_DARK)
         now0, back = targets[(fx.VIDEO_PID, 0)] - fx.ns(fx.FRAME), stats["back"]
         written = {}
@@ -1897,9 +1912,8 @@ def test_mux_aligners_dark():
         check(f"M4 {tag}: input 0 absent once more than input 1, no video aligner filled ({stats})",
               stats["full"] == {"0_video": 0, "1_video": 0}
               and stats["absences"]["0_video"] == stats["absences"]["1_video"] + 1)
-        check(f"M4 {tag}: input 0's silence one demux gap, on its video, input 1's none ({stats['gaps']}); no "
-              f"branch alignment run ({len(lines)} lines)",
-              stats["gaps"] == {"demux_0": 1, "demux_1": 0} and not lines)
+        check(f"M4 {tag}: input 0's silence one demux gap, on its video, input 1's none ({stats['gaps']})",
+              stats["gaps"] == {"demux_0": 1, "demux_1": 0})
 
 
 # --------------------------------------------------------------------------- P: mux-formula (WI-P3-16)
@@ -2758,15 +2772,18 @@ def test_mrtsdemux_messages():
         unk = [(m.get("pid"), m.get("stream-type"), m.get("registration"), m.get("generation"))
                for m in by.get("unknown-stream", [])]
         nh = [(m.get("pid"), m.get("offset-ms")) for m in by.get("not-house-time", [])]
+        stale = [m.get("stale") for m in by.get("not-house-time", [])]
         iv = by.get("interval", [])
         check(f"mrtsdemux-messages {tag}: program at the plan ({prog})", prog == [(0, "video_0_0100", 256)])
         check(f"mrtsdemux-messages {tag}: unknown-stream once for the DTS PID ({unk})", unk == [(257, 130, "", 0)])
-        check(f"mrtsdemux-messages {tag}: not-house-time once, 2 h behind ({nh})",
-              len(nh) == 1 and nh[0][0] == 256 and abs(nh[0][1] + 7_200_000) < 60_000)
-        check(f"mrtsdemux-messages {tag}: the interval report each second, its counters, generation and "
-              f"pads ({len(iv)})", len(iv) >= 1 and all(m.get("pads") == "video_0_0100" and m.get("generation") == 0
-                                                       and m.get("unknown-streams") == 1 and m.get("pes", 0) > 0
-                                                       for m in iv))
+        check(f"mrtsdemux-messages {tag}: not-house-time once, 2 h behind, not stale ({nh}, {stale})",
+              len(nh) == 1 and nh[0][0] == 256 and abs(nh[0][1] + 7_200_000) < 60_000 and stale == [False])
+        check(f"mrtsdemux-messages {tag}: the interval report each second, its counters, generation, "
+              f"pads and the PID off house time ({len(iv)})",
+              len(iv) >= 1 and all(m.get("pads") == "video_0_0100" and m.get("generation") == 0
+                                   and m.get("unknown-streams") == 1 and m.get("pes", 0) > 0
+                                   and m.get("off-house") == "256" and m.get("pes-dropped-stale") == 0
+                                   for m in iv))
         off = _off_shape(got, _engine_shapes()["mrtsdemux"], "reason")
         check(f"mrtsdemux-messages {tag}: every message in the engine's shape, its fields and their types "
               f"({len(got)} messages; off: {off[:1]})", bool(got) and not off)
@@ -2844,7 +2861,6 @@ def _video_leg_run(argv, start, fixture, pid):
     res["at"] = [((int(h) * 60 + int(m)) * 60 + int(s)) * 1_000_000_000 + int(ns) - pes[0]
                  for h, m, s, ns in (x.groups() for x in map(_SINK_SYNC.search, r.logs[:upto]) if x)]
     res["pads"] = [p.get("pads") for p in _demux_events(r, "vpdemux") if p.get("reason") == "program"]
-    res["align"] = any("branchAlign" in line for line in r.logs)
     return res
 
 
@@ -2890,7 +2906,6 @@ def test_video_leg_formula():
             check(f"{label}: {len(at)} frames at the display, each at its PES PTS - 1 h, ceil to the ns "
                   f"(off by: {off[:3]})", len(at) >= least and not off)
             check(f"{label}: in order, each once", at == sorted(set(at)))
-            check(f"{label}: no branch alignment run", not res["align"])
             seen.setdefault((rung, fixture), []).append(at)
     for (rung, fixture), (a, b) in ((k, v) for k, v in seen.items() if len(v) == 2):
         n = min(len(a), len(b))
@@ -4475,6 +4490,7 @@ def test_reanchor_sink_paced():
             r.kill()
 
 
+test_runner_gone()
 test_plain_pipeline()
 test_identity_egress()
 test_stamper_missing()

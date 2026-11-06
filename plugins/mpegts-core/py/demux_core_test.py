@@ -1453,6 +1453,18 @@ def test_outage():
     out = dc.DemuxCore().feed(bytes(a.b), False, ceil_ns(t0 + 60 * TICKS_20MS))
     check("17 the same stale PES twice in a row: both dropped, one not-house-time",
           len(of(out, "unit")) == 58 and len(of(out, "nothouse")) == 1 and not of(out, "gap"))
+    # What the element reports: the stale drops counted, the pads whose last PES is off house time.
+    d = dc.DemuxCore()
+    d.feed(bytes(a.b), False, ceil_ns(t0 + 60 * TICKS_20MS))
+    offs = []
+    for select in (False, True):
+        core = sel() if select else dc.DemuxCore()
+        _paced(core, _stream(t0, 100, late=lambda k: t0 + k * TICKS_20MS + 2 * 3600 * 90000))
+        offs.append((core.off_house_pids(), core.counters()["pesDroppedStale"]))
+    check("17 two stale PES dropped count 2 (pesDroppedStale) and leave their pad on house time (no PID "
+          "off it); a stream 2 h off house time lists its PID off it (demux and select)",
+          d.counters()["pesDroppedStale"] == 2 and d.off_house_pids() == [] and
+          offs == [([PID_A], 0), ([PID_A], 0)])
     # Episodes: two stale PES 5 s apart warn once, 15 s apart twice (10 s quiet closes one).
     counts = []
     for second in (300, 800):
@@ -1521,6 +1533,14 @@ def test_outage():
     check("17 a stream 2 h off house time across a bus DISCONT: one not-house-time (not stale), its "
           "units continuous", len(us) == 100 and _steady(us) and
           [(p, s) for p, _, s in _nothouse(out)] == [(PID_A, False)])
+    # Off house time for 20 s: each PES off it keeps the episode open, so its steps warn no more.
+    out = _paced(dc.DemuxCore(), _stream(t0, 1000, pts=lambda k: t0 + k * TICKS_20MS + BASE +
+                                         2 * 60 * 90000 * ((k >= 300) + (k >= 600)),
+                                         late=lambda k: t0 + k * TICKS_20MS + 2 * 3600 * 90000))
+    check("17 a stream that stays 2 h off house time, its offset stepping 2 min at 6 s and 12 s: one "
+          "not-house-time (its PES hold the episode open), every unit placed, a jump GAP at each step",
+          len(of(out, "unit")) == 1000 and [(p, s) for p, _, s in _nothouse(out)] == [(PID_A, False)]
+          and [g["reason"] for g in of(out, "gap")] == ["jump", "jump"])
     behind = 10 * 3600 * 90000
     pieces = _stream(t0, 100, late=lambda k: t0 + k * TICKS_20MS + behind + (H20 if k >= 50 else 0),
                      pts=lambda k: t0 + k * TICKS_20MS + BASE + (H20 if k >= 50 else 0), pcr=True)

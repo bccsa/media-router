@@ -4,7 +4,7 @@
 // line-delimited JSON commands on stdin, `GST_JSON:`-prefixed events on
 // stderr, exit 0 after `stop` / SIGTERM / a closed command pipe. The reason it
 // exists is memory: the python runner's fixed cost is ~19 MB of interpreter
-// and PyGObject per module (measured 10.9.16.50, 2026-09-16), this one's is
+// and PyGObject per module (measured on ZA-SCC-AES50, 2026-09-16), this one's is
 // the GStreamer graph alone.
 #include <glib-unix.h>
 #include <gst/gst.h>

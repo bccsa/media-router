@@ -6,7 +6,8 @@ committed fixtures, no box:
     40 ppm re-spacing (within 36 ticks), a copy with packets lost (PES gone), a re-encode's
     stand-in (payloads changed: crc32 joins nothing, --by pts pairs every PES), --map;
   - pes_formula.sh on demux logs made from a dump: Phase 3's ceil exact, Phase 2's floor and a
-    one-tick error refused, a DTS checked on its own, 33-bit wraps and house times past 2^53 ns;
+    one-tick error refused, a DTS checked on its own, 33-bit wraps and house times past 2^53 ns,
+    Opus pads as mrtsdemux pushes them (a packet a buffer, joined by PTS, p3-21);
   - pcm_align.py on the 302M fixture: against itself, its PES moved 8 samples, PES silenced.
 
 Skips (exit 0) without a built mrts_cli, gawk or numpy."""
@@ -184,6 +185,57 @@ def test_pes_formula(tmp):
     bad = [dict(p, dts=p["dts"] + 11111) if p["dts"] is not None and p["dts"] != p["pts"] else p for p in pads]
     rc, out = formula(tmp, wrap, bad, "dts")
     check("pes_formula: a DTS a tick off fails on its own", rc == 1)
+    test_pes_formula_opus(tmp)
+
+
+def opus_pieces(pads, pid, n, err=None):
+    """`pads` with each PES of `pid` as mrtsdemux pushes an Opus unit: n packets, control headers
+    stripped (shorter than the PES, other bytes), the first stamped; err: that PES's a tick late."""
+    out, k = [], 0
+    for p in pads:
+        if not p["pad"].endswith(f"_{pid:04x}"):
+            out.append(p)
+            continue
+        size = (p["len"] - 2) // n
+        pts = p["pts"] + (11111 if k == err else 0)
+        out.append(dict(p, pts=pts, dts=pts, len=size, crc32="ffffffff"))
+        out += [dict(p, pts=None, dts=None, len=size, crc32="ffffffff") for _ in range(n - 1)]
+        k += 1
+    return out
+
+
+def test_pes_formula_opus(tmp):
+    by = lambda out: {p["pad"][-4:]: p for p in out[:-1]}   # noqa: E731
+    a7 = os.path.join(FIX, "cap-mux-align7-aac-opus.ts")
+    pads = opus_pieces(pads_from(a7, "demux"), 0x108, 1)
+    rc, out = formula(tmp, a7, pads, "opus")
+    o, a = by(out).get("0108", {}), by(out).get("0100", {})
+    check(f"pes_formula: an Opus pad as mrtsdemux pushes it (a packet a buffer, its control header "
+          f"stripped) joins each by its PTS, exact; the AAC pad by its bytes ({o}, {a})",
+          rc == 0 and o.get("buffers") == o.get("byPts") == o.get("exact") > 400 and o.get("pieces") == 0
+          and a.get("joined") == a.get("exact") == a.get("buffers") and a.get("byPts") == 0)
+    rc, out = formula(tmp, a7, opus_pieces(pads_from(a7, "demux"), 0x108, 1, err=40), "opus-late")
+    o = by(out).get("0108", {})
+    check("pes_formula: an Opus packet a tick late fails, its deviation named",
+          rc == 1 and o.get("exact") == o.get("buffers", 0) - 1 and o.get("maxDevNs") == 11111)
+    t51 = os.path.join(FIX, "tp-opus-51.ts")
+    pads = opus_pieces(pads_from(t51, "demux"), 0x101, 2)
+    rc, out = formula(tmp, t51, pads, "opus2")
+    o = by(out).get("0101", {})
+    check(f"pes_formula: two packets a PES (third-party Opus): the first joined by its PTS, the second "
+          f"without a PTS with it, the stamped ones exact ({o})",
+          rc == 0 and o.get("byPts") == o.get("pieces") == o.get("exact") > 100
+          and o.get("joined") == o.get("buffers") == 2 * o.get("exact"))
+    first = next(i for i, p in enumerate(pads) if p["pad"].endswith("_0101"))
+    rc, out = formula(tmp, t51, pads[:first] + pads[first + 1:], "opus2-cut")
+    o = by(out).get("0101", {})
+    check("pes_formula: a piece without a PTS and no joined piece before it is unjoined",
+          rc == 1 and o.get("joined") == o.get("buffers", 0) - 1)
+    pads = pads_from(a7, "demux")
+    k = next(i for i, p in enumerate(pads) if p["pad"].endswith("_0100"))
+    rc, out = formula(tmp, a7, pads[:k] + [dict(pads[k], crc32="ffffffff")] + pads[k + 1:], "whole")
+    check("pes_formula: a buffer as long as its PES joins by its bytes only (other bytes: unjoined)",
+          rc == 1 and by(out).get("0100", {}).get("joined") == by(out).get("0100", {}).get("buffers", 0) - 1)
 
 
 def shift_pes(src, dst, ticks):

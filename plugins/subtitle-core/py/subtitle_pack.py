@@ -1,8 +1,9 @@
 """TS for one KLV subtitle stream, packed by the bridge (no mpegtsmux in the
 pay tail): per cue one chunk laid out as mpegtsmux wrote it — PAT, PMT (PCR on
 the KLV PID, KLVA registration), PES 0xBD at cue start + 1 h with the PCR when
-it advances — null-padded to 7 packets so a restarting tsdemux sees the first
-cue at once. ADR-0016 amendment 2026-10-09. Pure stdlib.
+it advances — null-padded to 7 packets, a whole group for a 7-packet reader
+(the consumers' tsparse before B-144); mrtsdemux completes the bounded PES at
+its length. ADR-0016 amendment 2026-10-09. Pure stdlib.
 """
 import struct
 

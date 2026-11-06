@@ -3,7 +3,7 @@
 | Field    | Value |
 |----------|-------|
 | Date     | 2026-09-02 12:46 UTC |
-| Box      | 10.9.16.108, Raspberry Pi 4 (4 cores), Media-Router 1.0 (wrynose) |
+| Box      | the Pi 4 test box, Raspberry Pi 4 (4 cores), Media-Router 1.0 (wrynose) |
 | Software | media-router 2.0.0 working tree of `feat/hw-encoder-vbr-ts-jitter-fix`, hot-deployed to `/opt/media-router` at 11:50 UTC |
 | Tool     | `tools/runner-cpu-profile.sh -t 10` (this document is its first recorded run) |
 | Status   | Baseline recorded. Nothing changed yet. |
@@ -110,15 +110,15 @@ fleet-wide, not moved downstream.
 ## How to re-run
 
 ```
-mrscp tools/runner-cpu-profile.sh 10.9.16.108:/tmp/
-mrssh 10.9.16.108 'sh /tmp/runner-cpu-profile.sh -t 10'
-mrssh 10.9.16.108 'sh /tmp/runner-cpu-profile.sh -t 10 -m mpegts-muxer'   # muxer only
+mrscp tools/runner-cpu-profile.sh <box>:/tmp/
+mrssh <box> 'sh /tmp/runner-cpu-profile.sh -t 10'
+mrssh <box> 'sh /tmp/runner-cpu-profile.sh -t 10 -m mpegts-muxer'   # muxer only
 ```
 
 Append a new dated row block to this file rather than overwriting the
 baseline.
 
-## Stage 1 — runner quick wins (deployed to 10.9.16.108 2026-09-02 13:55 UTC)
+## Stage 1 — runner quick wins (deployed to the Pi 4 test box 2026-09-02 13:55 UTC)
 
 Changes (all in the working tree, uncommitted):
 
@@ -138,7 +138,7 @@ Changes (all in the working tree, uncommitted):
   updated; `gst_branch_align_test.py` still passes end to end.
 
 Deploy: `/tmp/stage1-dist.tar`, `/tmp/deploy.sh` and the profiler are staged
-on 10.9.16.108. Run `sh /tmp/deploy.sh` on the box (sudo prompts once), wait
+on the Pi 4 test box. Run `sh /tmp/deploy.sh` on the box (sudo prompts once), wait
 ~60 s, then `sh /tmp/runner-cpu-profile.sh -t 10` twice and record the muxer
 block below. Expected: the `watchdog` thread disappears from the muxer's top
 list, `busin_1:src` wakeups unchanged (~750/s), total down 40–60 ticks/10 s.

@@ -44,7 +44,7 @@ What one input does at pad-added time:
     class, an ignored PID — is sunk into a `fakesink` so the demuxer keeps
     flowing: it combines its pads' flow returns (mrtsdemux as tsdemux), a TS
     whose ONLY pad is left unlinked returns NOT_LINKED and the source
-    restart-loops (the 2026-09-15 .103 muxer);
+    restart-loops (the Pi 5 test box's muxer, 2026-09-15);
   * with `pcr`, `prog-map`'s `PCR_<program>` is pointed at the first VIDEO
     pad's request pad before it is linked (first audio until a video shows
     up) — mpegtsmux reads prog-map per pad at stream creation, so the builder

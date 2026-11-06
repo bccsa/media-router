@@ -918,6 +918,40 @@ describe('demuxes and consumer ASRCs (WI-P3-6)', () => {
         vi.useRealTimers();
     });
 
+    it("a stopped producer's demux leaves its input's row when the edge is gone from the graph (B-93)", () => {
+        vi.useFakeTimers();
+        let sources = [A, B];
+        const host = {
+            emit: vi.fn(),
+            getProperty: async () => undefined,
+            busSources: vi.fn(() => sources),
+            streamWarnings: vi.fn(),
+            log: vi.fn(),
+            wired: vi.fn(() => false),
+        };
+        const t = new ModuleTiming(host);
+        t.start({ pipeline: 'unixfdsrc ! fakesink' });
+        const demuxB = `mixin_demux_${shortHash(B.connectionId)}`;
+        for (const pes of [0, 48]) {
+            t.onEvent(`mrtsdemux:${demuxB}`, iv(pes));
+            vi.advanceTimersByTime(1000);
+        }
+        t.onEvent(`mrlateness:${edgeTapName(A)}`, win(10));
+        t.onEvent(`mrlateness:${edgeTapName(B)}`, win(10));
+        // The operator removed enc-b's input: listed no more, and gone from the module's graph.
+        sources = [A];
+        t.tick();
+        expect(host.wired).toHaveBeenCalled();
+        const rows = demuxRows(t);
+        expect(rows.find(([label]) => label === 'enc-b (audio-in)')).toEqual([
+            'enc-b (audio-in)',
+            null,
+        ]);
+        expect(rows.filter(([, pes]) => pes !== null)).toEqual([[demuxB, 48]]);
+        t.stop(false);
+        vi.useRealTimers();
+    });
+
     it("a module's answer: a connection or a sink port, resolved to its edge", () => {
         vi.useFakeTimers();
         const SUB = edge('ttx:out:subtitles-in', 41002, 'subtitles-in');
