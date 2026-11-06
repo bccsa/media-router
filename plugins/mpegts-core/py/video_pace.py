@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""The Python reference of mrts::VideoPace (plan ch. 8 part 4.2 and WI-P4-3, ch. 15.4 B-161): when
-each decoded frame leaves `mrvideopace`, and which frames go so that a display slower than the
-content keeps up. Built first here (p4-3a); p4-3b ports it to ../native/mrts/video_pace.{h,cpp}
-with output parity, decision for decision. A reference only: nothing loads it at runtime
-(ADR-0029 choice 1, plan OQ-1). video_pace_test.py is its suite, the list p4-3b ports.
+"""The Python reference of mrts::VideoPace (plan ch. 8 part 4.2 and WI-P4-3, ch. 15.4 B-161, B-175):
+when each decoded frame leaves `mrvideopace`, and which frames go so that a display slower than the
+content keeps up. Built first here (p4-3a; p4-3c the sink's pace); p4-3b ports it to
+../native/mrts/video_pace.{h,cpp} with output parity, decision for decision. A reference only:
+nothing loads it at runtime (ADR-0029 choice 1, plan OQ-1). video_pace_test.py is its suite, the
+list the C++ ports.
 
 Arrivals and releases are the element clock's ns (house time, base time 0): the arrival is
 the clock when the frame enters. PTS are only differenced, in ns as Phase 3's formula demux
@@ -22,6 +23,14 @@ A frame is never released before it arrives nor faster than the content's own ca
 cadence hold, plan ch. 13.6: after a stall the backlog plays at content rate and lateness stays
 raised until a gap). A frame not collapsed with a_k > r_(k-1) + Δ_k counts `late`: its lateness
 stepped up there. A collapsed frame released at its arrival is a fall, not a step, so it is not.
+
+The sink's back-pressure (p4-3c, B-175). The element passes `held` when a frame waited for its
+own previous push to return: its arrival is then the sink's, not the input's. A held frame past
+its slot leaves at once but does not move the cadence (r_k stays its slot for the next one) and
+is not `late`: the cadence hold is the input's. kmssink holds a push a refresh past its flip, so
+a frame behind it comes up to that much late with the display not behind at all; taken as
+lateness, each such wait would raise the cadence for good (DEV-P4b on the Pi 5 box's DSI: 50p
+decimated to kmssink's 30 fps there still fell 0.25 s behind every second).
 
 Content period. T_c is the median (index n // 2 of the sorted values) of the last 120 clean
 deltas, 0 before the first; T_c at frame k is that of the deltas before it. It is reported, it is
@@ -43,16 +52,23 @@ either side, measured by n_k, lets PTS jittered by up to half a frame drop nothi
 deficit, and a display faster than the content banks no more than a frame (B-161). It reads
 content time only, never a release: a blocking sink feeds its own slowness into the releases.
 A dropped frame keeps its slot in the cadence (r_k advances through it), so a drop never moves a
-kept release.
+kept release. While decimating, a held frame past its slot by h, more than a display period
+max(T_d, w_k), shows the display h - grid behind its own pace (grid = max(T_d - w_k, 0), kmssink's
+own wait): L takes that lag, so it and the frames after it drop until the display is back within
+a period (`behind` counts the drops L had not foreseen). A display slower than T_d says stays
+live (Q2: skip, resume live).
 
 API:
     pace = VideoPace(gap_threshold_ns=250 ms)
-    pace.on_frame(pts_ns, dur_ns, arrival_ns, discont) -> (release_ns, rate_drop)
+    pace.on_frame(pts_ns, dur_ns, arrival_ns, discont, held=False) -> (release_ns, rate_drop)
     pace.on_gap()                         a GAP event: the next frame's delta collapses
     pace.set_display(period_ns, source)   source in SOURCES; period <= 0 reads as `none`
     pace.take() -> Summary                counters since construction, mean hold since the last take
 The element waits until release_ns and pushes the frame, or drops a rate_drop frame at once
 (release_ns is then its slot). Untimed buffers are the element's to pass through unpaced.
+
+The display period (p4-3c, B-175): DisplayRate below gives set_display the period the sink
+achieves while it sets the pace, else S12's refresh, else the mode's (the prior).
 
 Display period helpers (plan S12): display_period_from_feedback(pairs) from
 wp_presentation_feedback.presented samples (presented ns, MSC seq), and
@@ -60,16 +76,19 @@ display_period_from_returns(times, prior_ns) for a blocking sink without stats (
 show_frame returns at the vblank). Both return (period_ns, short); short while the steps used
 span under 60 s.
 
-Run as a script it replays a recorded sequence (the format p4-3b's `mrts_cli pace` reads):
+Run as a script it replays a recorded sequence (the format `mrts_cli pace` reads):
     video_pace.py seq.jsonl|-
-one JSON object per line: {"op":"config","gap_threshold":ns} starts a new pace (other keys,
-such as the suite's "case", are labels), {"op":"display","period":ns,"source":s}, {"op":"gap"},
-{"op":"frame","pts":ns,"dur":ns,"arrival":ns,"discont":0|1}, {"op":"take"},
-{"op":"feedback","pairs":[[ns,seq],...]}, {"op":"returns","times":[ns,...],"prior":ns}.
-Out, one compact line per frame, take, feedback and returns (keys in this order):
-{"release":ns,"drop":0|1}; {"released":n,"late":n,"rate_drops":n,"gaps_collapsed":n,
+one JSON object per line: {"op":"config","gap_threshold":ns} starts a new pace and display rate
+(other keys, such as the suite's "case", are labels), {"op":"display","period":ns,"source":s},
+{"op":"gap"}, {"op":"frame","pts":ns,"dur":ns,"arrival":ns,"discont":0|1,"held":0|1} ("held"
+may be left out: 0), {"op":"take"}, {"op":"feedback","pairs":[[ns,seq],...]},
+{"op":"returns","times":[ns,...],"prior":ns}, and the display rate's {"op":"rate_prior",
+"period":ns}, {"op":"rate_refresh","period":ns}, {"op":"rate_push","returned":ns,"pressed":0|1},
+{"op":"rate_restart"} and {"op":"rate"}.
+Out, one compact line per frame, take, feedback, returns and rate (keys in this order):
+{"release":ns,"drop":0|1}; {"released":n,"late":n,"rate_drops":n,"gaps_collapsed":n,"behind":n,
 "content_period":ns,"display_period":ns,"display_source":s,"mean_hold":ns};
-{"period":ns,"short":0|1}.
+{"period":ns,"short":0|1}; {"rate":ns,"source":s,"achieved":ns}.
 """
 import bisect
 import json
@@ -84,8 +103,13 @@ NOMINAL_BAND_DEN = 2000               # the 0.05 % band on a nominal refresh
 MIN_SPAN_NS = 60 * SEC                # a display period from less is flagged short
 STEP_TOLERANCE_DEN = 10               # 10 %: a step or interval near its refresh multiple
 SOURCES = ("none", "nominal", "measured")
+ACHIEVED_WINDOW_NS = 10 * SEC         # a window of the sink's own pace spans at least this
+ACHIEVED_WINDOWS = 5                  # the last windows kept
+ACHIEVED_NEED = 3                     # windows before the achieved period counts
+HICCUP_DEN = 200                      # a window 0.5 % over the windows' median is a hiccup
+RESTART_DEN = 100                     # the refresh or the prior moving 1 % measures again
 
-Summary = namedtuple("Summary", "released late rate_drops gaps_collapsed content_period "
+Summary = namedtuple("Summary", "released late rate_drops gaps_collapsed behind content_period "
                                 "display_period display_source mean_hold")
 
 
@@ -100,7 +124,7 @@ class VideoPace:
         self.display_period = 0
         self.display_source = "none"
         self.lag = 0                          # L: the display's lag behind the content, ns
-        self.released = self.late = self.rate_drops = self.gaps_collapsed = 0
+        self.released = self.late = self.rate_drops = self.gaps_collapsed = self.behind = 0
         self.hold_sum = self.hold_count = 0
 
     def set_display(self, period_ns, source):
@@ -128,14 +152,14 @@ class VideoPace:
             return True
         return self.display_source == "nominal" and tc > 0 and (td - tc) * NOMINAL_BAND_DEN > tc
 
-    def on_frame(self, pts_ns, dur_ns, arrival_ns, discont):
+    def on_frame(self, pts_ns, dur_ns, arrival_ns, discont, held=False):
         tc = self.content_period()
         nominal = dur_ns if dur_ns > 0 else tc
         threshold = min(self.gap_threshold_ns, 4 * nominal) if nominal > 0 else self.gap_threshold_ns
-        collapsed = False
+        collapsed = sink_late = False
         if self.prev_pts is None:
             delta = 0
-            release = arrival_ns
+            slot = arrival_ns
         else:
             d = pts_ns - self.prev_pts
             collapsed = self.gap_pending or discont or d < 0 or d > threshold
@@ -148,23 +172,32 @@ class VideoPace:
                 delta = d
                 self._add_clean(d)
             slot = self.prev_release + delta
-            release = max(arrival_ns, slot)
-            if arrival_ns > slot and not collapsed:
+            # Past its slot behind the sink's own push: the sink's wait, not the input's lateness.
+            sink_late = held and not collapsed and arrival_ns > slot
+            if arrival_ns > slot and not collapsed and not sink_late:
                 self.late += 1
-        drop = False
+        release = max(arrival_ns, slot)
+        drop = behind = False
         if not self._decimating(tc):
             self.lag = 0
         else:
             whole = nominal if nominal > 0 else delta
             self.lag = max(self.lag - delta, 0 if collapsed else -whole)
+            foreseen = whole > 0 and self.lag >= whole
+            grid = max(self.display_period - whole, 0)     # the sink's own wait past a frame
+            if sink_late and arrival_ns - slot > grid + whole:
+                # A display period behind: the lag is what the sink shows, drop until within one.
+                self.lag = max(self.lag, arrival_ns - slot - grid)
+                behind = not foreseen
             drop = whole > 0 and self.lag >= whole
             if not drop:
                 self.lag += self.display_period
         self.prev_pts = pts_ns
-        self.prev_release = release
+        self.prev_release = slot if sink_late else release   # the cadence the next frame follows
         self.gap_pending = False
         if drop:
             self.rate_drops += 1
+            self.behind += behind
         else:
             self.released += 1
             self.hold_sum += release - arrival_ns
@@ -174,8 +207,100 @@ class VideoPace:
     def take(self):
         mean_hold = self.hold_sum // self.hold_count if self.hold_count else 0
         self.hold_sum = self.hold_count = 0
-        return Summary(self.released, self.late, self.rate_drops, self.gaps_collapsed,
+        return Summary(self.released, self.late, self.rate_drops, self.gaps_collapsed, self.behind,
                        self.content_period(), self.display_period, self.display_source, mean_hold)
+
+
+def _moved(old, new):
+    """`new` more than 1 % off `old`, a period already known."""
+    return old > 0 and abs(new - old) * RESTART_DEN > old
+
+
+class DisplayRate:
+    """The display period the decimation uses (p4-3c, B-175): the period of the presentations the
+    sink achieves while it sets the pace; until that is measured, S12's refresh (presentation
+    feedback, or a blocking sink's returns), else the mode's refresh (the prior, nominal), else
+    none. A measurement always wins over the prior.
+
+    The sink sets the pace when a kept frame left at once on the return of the kept push before it
+    (`pressed`: it waited for that push, past its slot). The interval between those returns is
+    then one presentation of a display that had a frame waiting: 0008's push returns at the
+    previous frame's presentation, kmssink's a refresh after its own flip. A display that keeps up,
+    or one paced below what it can take, shows the content's own period instead, and every drop
+    would lengthen it (the decimation confirming itself): those intervals are not counted.
+
+    A window is a run of consecutive pressed pushes spanning at least 10 s, read as its span over
+    its pushes. With 3 of the last 5 windows, the period is the span over the pushes of those within
+    0.5 % of the windows' median: one window lengthened by a hiccup does not move the rate, and the
+    pooled span averages out one window's quantisation to whole presentations. A caps change
+    (restart()), or the refresh or the prior moving more than 1 % (a mode change), measures again."""
+
+    def __init__(self):
+        self.prior = 0
+        self.refresh = 0
+        self.prev_return = None
+        self.run_from = 0
+        self.run_pushes = 0
+        self.windows = deque()                # (span, pushes) of the last ACHIEVED_WINDOWS windows
+
+    def set_prior(self, period_ns):
+        period_ns = max(period_ns, 0)
+        if _moved(self.prior, period_ns):
+            self.restart()
+        self.prior = period_ns
+
+    def set_refresh(self, period_ns):
+        """S12's measured refresh; 0 (not measured now) leaves the last one."""
+        if period_ns <= 0:
+            return
+        if _moved(self.refresh, period_ns):
+            self.restart()
+        self.refresh = period_ns
+
+    def restart(self):
+        self.windows.clear()
+        self.prev_return = None
+        self.run_pushes = 0
+
+    def on_push(self, returned_ns, pressed):
+        """A kept push returned at returned_ns; pressed: it left at once on the last one's return."""
+        if pressed and self.prev_return is not None and returned_ns > self.prev_return:
+            if self.run_pushes == 0:
+                self.run_from = self.prev_return
+            self.run_pushes += 1
+            span = returned_ns - self.run_from
+            if span >= ACHIEVED_WINDOW_NS:
+                self.windows.append((span, self.run_pushes))
+                if len(self.windows) > ACHIEVED_WINDOWS:
+                    self.windows.popleft()
+                self.run_pushes = 0
+        else:
+            self.run_pushes = 0
+        self.prev_return = returned_ns
+
+    def achieved(self):
+        """The achieved period, 0 before ACHIEVED_NEED windows."""
+        if len(self.windows) < ACHIEVED_NEED:
+            return 0
+        readings = sorted(_round_div(s, n) for s, n in self.windows)
+        median = readings[len(readings) // 2]
+        span = pushes = 0
+        for s, n in self.windows:
+            if _round_div(s, n) * HICCUP_DEN <= median * (HICCUP_DEN + 1):
+                span += s
+                pushes += n
+        return _round_div(span, pushes)
+
+    def period(self):
+        """(period_ns, source) for VideoPace.set_display."""
+        achieved = self.achieved()
+        if achieved:
+            return achieved, "measured"
+        if self.refresh:
+            return self.refresh, "measured"
+        if self.prior:
+            return self.prior, "nominal"
+        return 0, "none"
 
 
 def _round_div(num, den):
@@ -247,18 +372,24 @@ def frame_line(release, drop):
 
 def summary_line(s):
     return line({"released": s.released, "late": s.late, "rate_drops": s.rate_drops,
-                 "gaps_collapsed": s.gaps_collapsed, "content_period": s.content_period,
-                 "display_period": s.display_period, "display_source": s.display_source,
-                 "mean_hold": s.mean_hold})
+                 "gaps_collapsed": s.gaps_collapsed, "behind": s.behind,
+                 "content_period": s.content_period, "display_period": s.display_period,
+                 "display_source": s.display_source, "mean_hold": s.mean_hold})
 
 
 def period_line(period, short):
     return line({"period": period, "short": int(short)})
 
 
+def rate_line(rate):
+    period, source = rate.period()
+    return line({"rate": period, "source": source, "achieved": rate.achieved()})
+
+
 def replay(lines, out):
-    """The script's replay: each op of `lines` (JSON text) through a pace, outputs to `out`."""
-    pace = VideoPace()
+    """The script's replay: each op of `lines` (JSON text) through a pace and a display rate,
+    outputs to `out`."""
+    pace, rate = VideoPace(), DisplayRate()
     for text in lines:
         text = text.strip()
         if not text:
@@ -266,13 +397,14 @@ def replay(lines, out):
         op = json.loads(text)
         kind = op["op"]
         if kind == "config":
-            pace = VideoPace(op.get("gap_threshold", GAP_THRESHOLD_NS))
+            pace, rate = VideoPace(op.get("gap_threshold", GAP_THRESHOLD_NS)), DisplayRate()
         elif kind == "display":
             pace.set_display(op["period"], op["source"])
         elif kind == "gap":
             pace.on_gap()
         elif kind == "frame":
-            release, drop = pace.on_frame(op["pts"], op["dur"], op["arrival"], bool(op["discont"]))
+            release, drop = pace.on_frame(op["pts"], op["dur"], op["arrival"], bool(op["discont"]),
+                                          bool(op.get("held", 0)))
             out.write(frame_line(release, drop) + "\n")
         elif kind == "take":
             out.write(summary_line(pace.take()) + "\n")
@@ -282,6 +414,16 @@ def replay(lines, out):
         elif kind == "returns":
             period = display_period_from_returns(op["times"], op.get("prior", 0))
             out.write(period_line(*period) + "\n")
+        elif kind == "rate_prior":
+            rate.set_prior(op["period"])
+        elif kind == "rate_refresh":
+            rate.set_refresh(op["period"])
+        elif kind == "rate_push":
+            rate.on_push(op["returned"], bool(op["pressed"]))
+        elif kind == "rate_restart":
+            rate.restart()
+        elif kind == "rate":
+            out.write(rate_line(rate) + "\n")
         else:
             raise ValueError("unknown op %r" % kind)
 

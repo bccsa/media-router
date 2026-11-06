@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""mrts::VideoPace against its reference (plan ch. 15.4 B-162; WI-P4-3): `mrts_cli pace` replays a
-call sequence in video_pace.py's line format, and every decision, summary and display period it
-prints must equal video_pace.py's, line for line, on
+"""mrts::VideoPace and mrts::DisplayRate against their reference (plan ch. 15.4 B-162, B-175;
+WI-P4-3): `mrts_cli pace` replays a call sequence in video_pace.py's line format, and every
+decision, summary, display period and display rate it prints must equal video_pace.py's, line for
+line, on
 
-  - p4-3a's sequences: video_pace_test.py's cases as VIDEO_PACE_TRACE records them, case 11's
+  - the suite's sequences: video_pace_test.py's cases as VIDEO_PACE_TRACE records them, case 11's
     feedback and returns and the replay case's runs, rebuilt with the suite's own helpers;
   - 120 random ones (seeded): cadences from 24 to 60 fps on a source clock within +-100 ppm,
     arrival stalls, decode spikes, content gaps and steps (flagged or not), GAPs, DISCONTs, held
     PTS, steps back and stamp jitter, missing durations, displays within +-1,000 ppm of the
     content or at another rate, measured, nominal or none and changed mid-run, through the suite's
-    sink models; with their feedback (output off, MSC still or reset) and returns (jitter, a prior
-    right or off).
+    sink models; or, in about 4 of 10, through the display rate into a sink with a presentation
+    cap (50 to 99 % of its refreshes) or kmssink's wait, a prior right, off or none, and the
+    rate restarted mid-run; with their feedback (output off, MSC still or reset) and returns
+    (jitter, a prior right or off).
 
-Then each of the reference's 15 mutants (video_pace_test.MUTANTS) replays the same sequences, and
+Then each of the reference's 22 mutants (video_pace_test.MUTANTS) replays the same sequences, and
 parity must tell every one from mrts_cli. Skips (exit 0) without the built mrts_cli (make native).
 
 Run:  python3 video_pace_parity_test.py
@@ -84,6 +87,13 @@ def replay_case_ops(out):
     pace.set_display(vt.P50, "nominal")
     pts = [k * vt.P50 + (SEC if k >= 30 else 0) for k in range(60)]
     vt.drive(pace, [(p, 0, p + vt.LATENCY, i == 30, i == 30) for i, p in enumerate(pts)])
+    pace.take()
+    pace = vt.Recorded(out, None, "replay-rate")
+    rate = vt.RecordedRate(out, None)
+    vt.drive_rate(pace, rate, vt.live(vt.cadence(2100, 60, 1), vt.P60), vt.KmsWait(vt.DSI, 0),
+                  prior=vt.DSI)
+    rate.restart()
+    rate.period()
     pace.take()
     out.write(feedback_op(vt._presented(16666667, 0, vt.P50, 2)))
     out.write(returns_op([vt.Kms(16666667, 0).refresh_after(j * vt.P50) for j in range(100)], 16666667))
@@ -221,6 +231,19 @@ def random_returns(r, period, frame_ns):
     return times, prior
 
 
+def random_rate_display(r, period):
+    """(a sink model the display rate measures, its refresh): a presentation cap or kmssink's
+    wait, on a refresh near the content's or another."""
+    true = (period if r.chance(50) else r.pick(REFRESHES)) * (1000000 + r.int(-1000, 1000)) // 1000000
+    phase = r.int(0, true - 1)
+    kind = r.int(0, 3)
+    if kind == 0:
+        return vt.KmsWait(true, phase), true
+    if kind == 1:
+        return vt.Wayland(true, phase), true
+    return vt.Capped(true, phase, 10 ** 12 // true * r.int(50, 99) // 100), true
+
+
 def random_ops(out):
     for i in range(RANDOM_RUNS):
         r = Rnd(1000 + i)
@@ -229,6 +252,23 @@ def random_ops(out):
         gap_threshold = r.pick((vp.GAP_THRESHOLD_NS, 100 * MS, 60 * MS, SEC))
         pace = vt.Recorded(out, None, "random-%d" % i, gap_threshold)
         frames = random_frames(r, r.int(1500, 5000), num, den)
+        if r.chance(40):
+            rate = vt.RecordedRate(out, None)
+            display, true = random_rate_display(r, period)
+            prior = r.pick((0, true, r.pick(REFRESHES)))
+            at = 0
+            while at < len(frames):
+                chunk = frames[at:at + r.int(200, len(frames))]
+                vt.drive_rate(pace, rate, chunk, display, prior)
+                at += len(chunk)
+                pace.take()
+                if r.chance(20):
+                    rate.restart()
+            rate.period()
+            out.write(feedback_op(random_feedback(r, r.pick(REFRESHES))))
+            times, prior = random_returns(r, r.pick(REFRESHES), period)
+            out.write(returns_op(times, prior))
+            continue
         given, source, true = random_display(r, period)
         sink = r.pick((None, "wayland", "wayland", "kms"))
         display = None if sink is None else (vt.Wayland if sink == "wayland" else vt.Kms)(
@@ -282,7 +322,8 @@ def first_difference(script, paths, expected):
 
 
 def count(path):
-    frames = drops = takes = periods = 0
+    """(frames, drops, takes, periods, rates) among the lines of `path`."""
+    frames = drops = takes = periods = rates = 0
     with open(path) as f:
         for line in f:
             if line.startswith('{"release"'):
@@ -290,9 +331,11 @@ def count(path):
                 drops += line.endswith('"drop":1}\n')
             elif line.startswith('{"released"'):
                 takes += 1
+            elif line.startswith('{"rate"'):
+                rates += 1
             else:
                 periods += 1
-    return frames, drops, takes, periods
+    return frames, drops, takes, periods, rates
 
 
 def main():
@@ -320,15 +363,15 @@ def main():
         for name, path, out in zip(("the random runs", "case 11 and the replay case", "the cases"),
                                    paths, outs):
             rc, err = cpp(path, out)
-            frames, drops, takes, periods = count(out)
-            check("mrts_cli pace replays %s: %d frames (%d dropped), %d takes, %d periods%s"
-                  % (name, frames, drops, takes, periods,
+            frames, drops, takes, periods, rates = count(out)
+            check("mrts_cli pace replays %s: %d frames (%d dropped), %d takes, %d periods, %d rates%s"
+                  % (name, frames, drops, takes, periods, rates,
                      "" if rc == 0 else " (exit %d: %s)" % (rc, err)),
-                  rc == 0 and frames + takes + periods > 0)
+                  rc == 0 and frames + takes + periods + rates > 0)
             n, at, lines = first_difference(os.path.join(HERE, "video_pace.py"), [path], [out])
             check("every line of %s equals video_pace.py's (%d compared%s)"
                   % (name, n, "" if at is None else "; line %d: %s vs %s" % (at, lines[0], lines[1])),
-                  at is None and n == frames + takes + periods)
+                  at is None and n == frames + takes + periods + rates)
         with open(os.path.join(HERE, "video_pace.py")) as f:
             src = f.read()
         caught = 0

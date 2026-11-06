@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""video_pace.py's suite (plan ch. 15.4 B-161): the cases p4-3b ports one for one to
+"""video_pace.py's suite (plan ch. 15.4 B-161, B-175): the cases the C++ ports one for one to
 ../native/mrts/tests/video_pace_test.cpp, same names, same order (the last, the replay format,
 is the reference's own). The sequences are built here, deterministically; no fixture file. The
-element's streaming thread and the sink are modelled (`drive`, `Wayland`, `Kms`), since a
-display slower than the content shows only through its back-pressure on the releases.
+element's streaming thread and the sink are modelled (`drive`, `drive_rate`, `Wayland`, `Kms`,
+`Capped`, `KmsWait`), since a display slower than the content shows only through its
+back-pressure on the releases.
 
 With VIDEO_PACE_TRACE=<file> every call of every case is recorded there in video_pace.py's
 replay format, a config line per case, for p4-3b's parity test.
@@ -25,8 +26,10 @@ SEC = vp.SEC
 MS = vp.MS
 US = 1000
 P50 = 20 * MS                                    # 50p
+P60 = 16666667                                   # 60p
 LATENCY = 100 * MS                               # the input's lateness at the element
 SLOW = 20000800                                  # a 50 Hz display 40 ppm slow
+DSI = 16656184                                   # the Pi 5 box's DSI panel, 60.038 Hz (DEV-P4b)
 WRAP_NS = (1 << 33) * 100000 // 9                # the 33-bit point in house ns
 
 _failures = 0
@@ -57,10 +60,10 @@ class Recorded(vp.VideoPace):
         self.sink.write('{"op":"gap"}\n')
         super().on_gap()
 
-    def on_frame(self, pts_ns, dur_ns, arrival_ns, discont):
+    def on_frame(self, pts_ns, dur_ns, arrival_ns, discont, held=False):
         self.sink.write(vp.line({"op": "frame", "pts": pts_ns, "dur": dur_ns, "arrival": arrival_ns,
-                                  "discont": int(discont)}) + "\n")
-        release, drop = super().on_frame(pts_ns, dur_ns, arrival_ns, discont)
+                                  "discont": int(discont), "held": int(held)}) + "\n")
+        release, drop = super().on_frame(pts_ns, dur_ns, arrival_ns, discont, held)
         if self.outputs is not None:
             self.outputs.append(vp.frame_line(release, drop))
         return release, drop
@@ -81,6 +84,46 @@ def new_pace(case, gap_threshold_ns=vp.GAP_THRESHOLD_NS):
     if _trace is None:
         _trace = open(path, "w")
     return Recorded(_trace, None, case, gap_threshold_ns)
+
+
+class RecordedRate(vp.DisplayRate):
+    """A display rate that writes each call to `sink` after its pace's config line (which starts
+    a new rate too), and each period it gives to `outputs`."""
+
+    def __init__(self, sink, outputs):
+        super().__init__()
+        self.sink, self.outputs = sink, outputs
+
+    def set_prior(self, period_ns):
+        self.sink.write(vp.line({"op": "rate_prior", "period": period_ns}) + "\n")
+        super().set_prior(period_ns)
+
+    def set_refresh(self, period_ns):
+        self.sink.write(vp.line({"op": "rate_refresh", "period": period_ns}) + "\n")
+        super().set_refresh(period_ns)
+
+    def restart(self):
+        self.sink.write('{"op":"rate_restart"}\n')
+        super().restart()
+
+    def on_push(self, returned_ns, pressed):
+        self.sink.write(vp.line({"op": "rate_push", "returned": returned_ns,
+                                  "pressed": int(pressed)}) + "\n")
+        super().on_push(returned_ns, pressed)
+
+    def period(self):
+        self.sink.write('{"op":"rate"}\n')
+        if self.outputs is not None:
+            self.outputs.append(vp.line({"rate": super().period()[0], "source": super().period()[1],
+                                         "achieved": self.achieved()}))
+        return super().period()
+
+
+def new_rate(pace):
+    """The display rate beside `pace`, recorded into the same trace when the pace is."""
+    if isinstance(pace, Recorded):
+        return RecordedRate(pace.sink, pace.outputs)
+    return vp.DisplayRate()
 
 
 class Wayland:
@@ -109,25 +152,100 @@ class Kms(Wayland):
         return shown, shown
 
 
+class Capped(Wayland):
+    """Wayland on a compositor that presents at most `cap_mhz` frames a second (in mHz): refresh n
+    can show a new frame only when the count floor(n x period x cap / 10^12) steps there, so a
+    frame committed before a refresh that cannot waits for the next one (Weston on the Pi 5 box's
+    DSI with HEVC 1080p60: about 56.6 fps on a 60.038 Hz panel, DEV-P4b)."""
+
+    def __init__(self, period, phase, cap_mhz):
+        super().__init__(period, phase)
+        self.cap = cap_mhz
+
+    def usable(self, n):
+        k = self.period * self.cap
+        return (n + 1) * k // 10 ** 12 > n * k // 10 ** 12
+
+    def refresh_after(self, t):
+        n = (t - self.phase) // self.period + 1
+        while not self.usable(n):
+            n += 1
+        return self.phase + n * self.period
+
+
+class KmsWait(Kms):
+    """kmssink as DEV-P4a and DEV-P4b measured it on both boxes: the flip at the first vblank after
+    the push, and the return at the vblank after that (drmWaitVBlank), so it shows at most one
+    frame per two refreshes."""
+
+    def push(self, t):
+        shown = self.refresh_after(t)
+        return shown + self.period, shown
+
+
 def drive(pace, frames, display=None):
     """mrvideopace's streaming thread over `frames`, [(pts, dur, ready, discont, gap)]: a frame
-    enters when it is ready (out of the decoder) and the previous push has returned; a kept frame
-    is pushed at its release, a dropped one frees the thread at once. Returns
-    [(pts, arrival, release, drop, shown)]: shown is the presentation, the push's return without
-    a display (a fakesink), None for a dropped frame."""
+    enters when it is ready (out of the decoder) and the previous push has returned, `held` when
+    it waited for that push; a kept frame is pushed at its release, a dropped one frees the thread
+    at once. Returns [(pts, arrival, release, drop, shown)]: shown is the presentation, the push's
+    return without a display (a fakesink), None for a dropped frame."""
     out = []
     free = None
     for pts, dur, ready, discont, gap in frames:
         if gap:
             pace.on_gap()
-        arrival = ready if free is None or ready >= free else free
-        release, drop = pace.on_frame(pts, dur, arrival, discont)
+        held = free is not None and ready < free
+        arrival = free if held else ready
+        release, drop = pace.on_frame(pts, dur, arrival, discont, held)
         if drop:
             free, shown = arrival, None
         elif display is None:
             free = shown = release
         else:
             free, shown = display.push(release)
+        out.append((pts, arrival, release, drop, shown))
+    return out
+
+
+def s12_refresh(display, returns, prior):
+    """S12's refresh as the element reads it once a second (B-162): 0008's from its presentation
+    feedback (the model's refresh, once a frame has gone), else the last 4,096 returns counted in
+    the prior or, without one, in their 25th-percentile interval (F2); 0 before that."""
+    if not returns:
+        return 0
+    if not isinstance(display, Kms):
+        return display.period
+    times = returns[-4096:]
+    ivs = sorted(b - a for a, b in zip(times, times[1:]) if b > a)
+    if not ivs:
+        return 0
+    return vp.display_period_from_returns(times, prior if prior > 0 else ivs[len(ivs) // 4])[0]
+
+
+def drive_rate(pace, rate, frames, display, prior=0):
+    """drive with mrvideopace's display rate (p4-3c): at the first frame and then once a second of
+    arrivals the rate takes the prior (refresh-mhz) and S12's refresh and the pace the rate's
+    period; every kept push's return goes to the rate, pressed when the frame left at once on the
+    last push's return. Returns drive's records."""
+    out, returns = [], []
+    free = update = None
+    for pts, dur, ready, discont, gap in frames:
+        if gap:
+            pace.on_gap()
+        held = free is not None and ready < free
+        arrival = free if held else ready
+        if update is None or arrival >= update:
+            rate.set_prior(prior)
+            rate.set_refresh(s12_refresh(display, returns, prior))
+            pace.set_display(*rate.period())
+            update = arrival + SEC
+        release, drop = pace.on_frame(pts, dur, arrival, discont, held)
+        if drop:
+            free, shown = arrival, None
+        else:
+            free, shown = display.push(release)
+            returns.append(free)
+            rate.on_push(free, held and release == arrival)
         out.append((pts, arrival, release, drop, shown))
     return out
 
@@ -458,6 +576,122 @@ def test_stamp_jitter():
               % label, spread(late[3000:]) <= P50)
 
 
+# --- 16 to 20: the rate the sink achieves (p4-3c, B-175) --------------------------------------
+
+def test_slow_presenting_display():
+    # Weston on the Pi 5 box's 60.038 Hz DSI presents HEVC 1080p60 at about 56.6 fps (DEV-P4b).
+    pace = new_pace("slow-presenting")
+    rate = new_rate(pace)
+    achieved = 10 ** 12 // 56600
+    rec = drive_rate(pace, rate, live(cadence(36000, 60, 1), P60), Capped(DSI, 3700 * US, 56600),
+                     prior=DSI)
+    s = pace.take()
+    want = expected_drops(rec, achieved)
+    got = len(drop_indices(rec))
+    late = release_lateness(rec[3600:])
+    check("16 60p on a 60.038 Hz display presenting at most 56.6 fps: drops = the presentation "
+          "deficit +- 1 %% over 10 min, %d (want %.1f)" % (got, want), abs(got - want) * 100 <= want)
+    check("16 the decimation runs on the achieved period, not the refresh (%d ns, %.3f %% off)"
+          % (s.display_period, 100 * (s.display_period - achieved) / achieved),
+          s.display_source == "measured" and abs(s.display_period - achieved) * 200 <= achieved)
+    check("16 release lateness flat within one of the display's frames after the first minute "
+          "(%.2f ms)" % (spread(late) / MS), spread(late) <= s.display_period)
+    check("16 the rate foresaw the drops: %d of %d were the sink's a period behind" % (s.behind, got),
+          s.behind * 10 <= got)
+
+
+def test_kms_every_other_refresh():
+    # kmssink on that DSI shows one frame per two refreshes (DEV-P4a, DEV-P4b).
+    for num, per_second in ((50, 20), (60, 30)):
+        pace = new_pace("kms-wait-%dp" % num)
+        rate = new_rate(pace)
+        rec = drive_rate(pace, rate, live(cadence(600 * num, num, 1), SEC // num),
+                         KmsWait(DSI, 3700 * US), prior=DSI)
+        s = pace.take()
+        got = len(drop_indices(rec)) / 600
+        late = release_lateness(rec[60 * num:])
+        check("17 %dp into kmssink presenting every second refresh at 60.038 Hz: %d drops a "
+              "second +- 1 %% (%.3f)" % (num, per_second, got), abs(got - per_second) * 100 <= per_second)
+        check("17 %dp into that kmssink: release lateness flat within a frame after the first "
+              "minute (%.2f ms), the period two refreshes" % (num, spread(late) / MS),
+              spread(late) <= SEC // num and s.display_period == 2 * DSI)
+        check("17 %dp into that kmssink: the rate foresaw the drops once measured (%d of %d the "
+              "sink's)" % (num, s.behind, len(drop_indices(rec))), s.behind * 10 <= len(drop_indices(rec)))
+
+
+def test_display_rate():
+    rate = vp.DisplayRate()
+    rate.set_prior(DSI)
+    rate.set_refresh(DSI)
+    for k in range(2001):                                # 40 s of a sink taking 50 a second
+        rate.on_push(k * P50, k > 0)
+    check("18 the prior given and the measurement slower: the measurement rules",
+          rate.period() == (P50, "measured") and rate.achieved() == P50)
+    paced = vp.DisplayRate()
+    paced.set_refresh(DSI)
+    for k in range(2001):
+        paced.on_push(k * P50, False)
+    check("18 pushes the element paced (none left at once on the last return): the refresh stays",
+          paced.period() == (DSI, "measured") and paced.achieved() == 0)
+    early = vp.DisplayRate()
+    for k in range(1001):                                # two windows only
+        early.on_push(k * P50, k > 0)
+    check("18 two windows do not make a rate yet", early.achieved() == 0 and early.period() == (0, "none"))
+    for k in range(1, 501):                              # a fifth window, each presentation 1 % long
+        rate.on_push(2000 * P50 + k * (P50 + P50 // 100), True)
+    check("18 a window 1 %% long among five does not move the rate (%d)" % rate.achieved(),
+          len(rate.windows) == 5 and rate.achieved() == P50)
+    rate.set_refresh(DSI * 101 // 100 + 1)
+    check("18 the refresh moving more than 1 %: measured again", rate.achieved() == 0 and not rate.windows)
+    for k in range(1501):
+        rate.on_push(k * 2 * DSI, k > 0)
+    rate.restart()
+    check("18 a restart (new caps): measured again", rate.achieved() == 0 and not rate.windows)
+
+
+def test_keeps_up_as_before():
+    pace = new_pace("keeps-up")
+    rate = new_rate(pace)
+    rec = drive_rate(pace, rate, live(cadence(6000, 50, 1), P50), Wayland(DSI, 3700 * US), prior=DSI)
+    s = pace.take()
+    check("19 50p on a 60.038 Hz display that presents every frame: no drop, nothing measured, the "
+          "refresh kept", not drop_indices(rec) and rate.achieved() == 0 and s.display_period == DSI
+          and set(release_lateness(rec)) == {LATENCY})
+    pace = new_pace("every-refresh")
+    rate = new_rate(pace)
+    rec = drive_rate(pace, rate, live(cadence(36000, 60, 1), P60), Wayland(P50, 3700 * US))
+    s = pace.take()
+    idx = drop_indices(rec)
+    check("19 60p on a 50 Hz display, no prior: its every refresh is its achieved period, 1 in 6 "
+          "after the first second (%d drops)" % len(idx),
+          s.display_period == P50 and set(spacings([i for i in idx if i > 120])) == {6}
+          and abs(len(idx) - expected_drops(rec, P50)) <= 2)
+
+
+def test_hiccup_window():
+    class Hiccup(Capped):
+        """Capped, frozen 300 ms from 35 s: inside the third window, the one that makes the rate."""
+
+        def refresh_after(self, t):
+            v = super().refresh_after(t)
+            while 35 * SEC <= v < 35 * SEC + 300 * MS:
+                v = super().refresh_after(v)
+            return v
+
+    pace = new_pace("hiccup")
+    rate = new_rate(pace)
+    achieved = 10 ** 12 // 56600
+    rec = drive_rate(pace, rate, live(cadence(18000, 60, 1), P60), Hiccup(DSI, 3700 * US, 56600),
+                     prior=DSI)
+    s = pace.take()
+    want = expected_drops(rec, achieved) + 300 * MS / achieved      # and the frozen 300 ms
+    check("20 a 300 ms freeze inside a window of the measurement does not move the rate (%d ns), "
+          "drops the deficit and the freeze +- 1 %% (%d, want %.1f)"
+          % (s.display_period, len(drop_indices(rec)), want),
+          abs(s.display_period - achieved) * 200 <= achieved
+          and abs(len(drop_indices(rec)) - want) * 100 <= want)
+
+
 # --- the replay format (the reference's own) ------------------------------------------------
 
 def test_replay_format():
@@ -470,6 +704,12 @@ def test_replay_format():
     pace.set_display(P50, "nominal")
     pts = [k * P50 + (SEC if k >= 30 else 0) for k in range(60)]
     drive(pace, [(p, 0, p + LATENCY, i == 30, i == 30) for i, p in enumerate(pts)])
+    pace.take()
+    pace = Recorded(calls, outputs, "replay-rate")              # held frames and the display rate
+    rate = RecordedRate(calls, outputs)
+    drive_rate(pace, rate, live(cadence(2100, 60, 1), P60), KmsWait(DSI, 0), prior=DSI)
+    rate.restart()
+    rate.period()
     pace.take()
     fb = _presented(16666667, 0, P50, 2)
     calls.write(vp.line({"op": "feedback", "pairs": [list(x) for x in fb]}) + "\n")
@@ -488,11 +728,13 @@ CASES = (test_50p_on_60hz, test_60p_on_50hz, test_60_on_5994, test_50p_on_slow_d
          test_50p_on_matched_display, test_slow_display_nominal, test_stall_then_gap,
          test_discont_and_gap_collapse, test_idr_spikes, test_wrap_point, test_display_period,
          test_60p_on_slow_50hz, test_foreign_clock_source, test_faster_display_banks_one_frame,
-         test_stamp_jitter, test_replay_format)
+         test_stamp_jitter, test_slow_presenting_display, test_kms_every_other_refresh,
+         test_display_rate, test_keeps_up_as_before, test_hiccup_window, test_replay_format)
 
 # (name, the case it must fail, video_pace.py text, its replacement). The first six are the
-# brief's (p4-3a), the rest B-161's.
+# brief's (p4-3a), the next nine B-161's, the last seven p4-3c's (B-175).
 LAG_LINE = "self.lag = max(self.lag - delta, 0 if collapsed else -whole)"
+ACHIEVED_FIRST = '        achieved = self.achieved()\n        if achieved:\n            return achieved, "measured"\n'
 MUTANTS = (
     ("a dead band on measured", 4,
      'if self.display_source == "measured":\n            return True',
@@ -518,11 +760,26 @@ MUTANTS = (
     ("a whole frame by the frame's own delta", 15, "whole = nominal if nominal > 0 else delta",
      "whole = delta"),
     ("the credit kept across a collapse", 14, "0 if collapsed else -whole)", "-whole)"),
-    ("late counts a collapsed frame", 7, "if arrival_ns > slot and not collapsed:",
-     "if arrival_ns > slot:"),
+    ("late counts a collapsed frame", 7, "if arrival_ns > slot and not collapsed and not sink_late:",
+     "if arrival_ns > slot and not sink_late:"),
     ("a held PTS collapses", 8, "or d < 0 or d > threshold", "or d <= 0 or d > threshold"),
     ("the lag on release intervals", 2, LAG_LINE,
      "self.lag = max(self.lag - (release - self.prev_release), 0 if collapsed else -whole)"),
+    ("pace to the mode's refresh", 16, ACHIEVED_FIRST, "        achieved = self.achieved()\n"),
+    ("the prior overriding a measurement", 17, ACHIEVED_FIRST,
+     '        achieved = self.achieved()\n        if self.prior:\n            return self.prior, "nominal"\n'
+     '        if achieved:\n            return achieved, "measured"\n'),
+    ("one hiccup window taken as the rate", 20, "        return _round_div(span, pushes)",
+     "        return _round_div(*self.windows[-1])"),
+    ("the sink's wait moves the cadence", 17, "self.prev_release = slot if sink_late else release",
+     "self.prev_release = release"),
+    ("no skip a display period behind", 17, "if sink_late and arrival_ns - slot > grid + whole:",
+     "if False:"),
+    ("the skip leaves the lag", 16, "self.lag = max(self.lag, arrival_ns - slot - grid)",
+     "self.lag = max(self.lag, whole)"),
+    ("every push read as the sink's pace", 19,
+     "if pressed and self.prev_return is not None and returned_ns > self.prev_return:",
+     "if self.prev_return is not None and returned_ns > self.prev_return:"),
 )
 
 

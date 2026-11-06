@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""mrvideopace (house-clock plan chapter 8 part 4.2, WI-P4-3; register B-162): mrts::VideoPace as
-an element. The dataflow cases run in the Python runner's interpreter on the clock both runners
-give every pipeline (the monotonic system clock, base time 0), fed from a test pad by a thread
-of their own; the runner cases read `stats` over get_property inside both runners:
+"""mrvideopace (house-clock plan chapter 8 part 4.2, WI-P4-3; register B-162, B-175):
+mrts::VideoPace as an element. The dataflow cases run in the Python runner's interpreter on the
+clock both runners give every pipeline (the monotonic system clock, base time 0), fed from a test
+pad by a thread of their own; the runner cases read `stats` over get_property inside both
+runners:
 
   pacing      a live 50p feed with a 1 s arrival stall and a 1 s content gap into fakesink
               sync=false: every frame leaves within 2 ms of what video_pace.py decides for the
@@ -24,10 +25,18 @@ of their own; the runner cases read `stats` over get_property inside both runner
               without (B-161 D6); skip-vsync=true measures nothing;
   outage      an output switched off 3 s (stall-ms, 0008's timeout rule): frames pass unpaced,
               then a new cadence, and the display's lateness comes back to what it was;
+  capped      60p into mrtestvideosink presenting at most 56.6 fps of 60.038 Hz (present-max-mhz,
+              Weston on the Pi 5 box's DSI) with refresh-mhz=60038: the achieved period measured
+              and paced to, rate-drops the presentation deficit, release lateness flat (B-175);
+  keeps-up    50p into mrtestvideosink at 60.038 Hz, 36 s: a display that presents every frame
+              keeps its refresh, nothing measured, no drop;
+  kms-wait    60p (refresh-mhz=60038) and 50p (none) into mrtestkmssink vblanks=2, one frame per
+              two refreshes as kmssink on that DSI: 30 and 20 drops a second, lateness flat;
   properties  defaults and the stats fields;
   runners     inside mr-gst-runner and gst-pipeline-runner.py: refresh-mhz's nominal 1 in 6 into
-              fakesink, and the measured one into mrtestvideosink (the test library on the
-              child's GST_PLUGIN_PATH with a private copy of the registry).
+              fakesink, the measured one into mrtestvideosink, and both shapes above with their
+              rate-drops (the test library on the child's GST_PLUGIN_PATH with a private copy of
+              the registry).
 
 `python3 gst_mrvideopace_element_test.py [case ...]` runs those cases only. Skips (exit 0)
 without GStreamer or the built plugin; the test-sink cases skip with a line without
@@ -68,6 +77,8 @@ TESTVIDEO = os.path.join(TESTVIDEO_DIR, "libgstmrtestvideo.so")
 sys.path.insert(0, os.path.join(REPO, "plugins", "mpegts-core", "py"))
 import video_pace as vp  # noqa: E402  (the Python reference, p4-3a)
 
+DSI = 16656184                    # the Pi 5 box's DSI panel, 60.038 Hz (DEV-P4b)
+CAPPED_MHZ = 56600                # Weston's HEVC 1080p60 on it: about 56.6 fps
 CAPS50 = "video/x-raw,format=I420,width=16,height=16,framerate=50/1"
 CAPS60 = "video/x-raw,format=I420,width=16,height=16,framerate=60/1"
 CAPS25 = "video/x-raw,format=I420,width=16,height=16,framerate=25/1"
@@ -337,10 +348,11 @@ def case_pacing():
     rig = pacing()
     fields = set(rig.messages[-1][1]) if rig.messages else set()
     want = {"released", "late", "rate-drops", "gaps-collapsed", "unpaced", "content-fps-x100",
-            "refresh-ns", "refresh-source", "mean-hold-ns", "present-lateness-ns",
-            "display-presenting"}
+            "refresh-ns", "refresh-source", "achieved-ns", "display-behind", "mean-hold-ns",
+            "present-lateness-ns", "display-presenting"}
     last = rig.messages[-1][1] if rig.messages else {}
-    check("pacing: the message carries the plan's fields and display-presenting, unpaced",
+    check("pacing: the message carries the plan's fields, display-presenting, unpaced, achieved-ns "
+          "and display-behind",
           fields == want and last.get("content-fps-x100") == 5000
           and last.get("present-lateness-ns", 0) > 0, f"{sorted(fields)}")
     check("pacing: no error", not rig.errors, "; ".join(rig.errors))
@@ -661,6 +673,121 @@ def case_outage():
           f"{st['unpaced']}")
 
 
+# --------------------------------------------------------------------------- the rate achieved
+def measured_at(samples):
+    """The first sample with the achieved period measured, or None."""
+    return next((s for s in samples if s[1]["achieved-ns"] > 0), None)
+
+
+def drops_since(at, last):
+    """(frames, rate drops) between two stats samples."""
+    return (last["released"] + last["rate-drops"] - at["released"] - at["rate-drops"],
+            last["rate-drops"] - at["rate-drops"])
+
+
+def shape(rig, seconds, num):
+    """`seconds` of num/1 fps into `rig` (started) with its stats polled: (samples, stats, the
+    sink's display-stats or None)."""
+    t0 = rig.now() + 50 * MS
+    feeder = rig.play([tuple(p) for p in live(seconds * num, num, 1, t0 - LATENCY)])
+    samples = poll(rig, seconds + 0.3, every=0.25)
+    feeder.join(5)
+    time.sleep(0.1)
+    st = rig.stats()
+    disp = sdict(rig.out.get_property("display-stats")) if rig.out.find_property("display-stats") else None
+    rig.stop()
+    return samples, st, disp
+
+
+def flat_after(rig, t):
+    """Release lateness of the frames that left from clock - base `t` on."""
+    return [w - p for p, w in rig.left if w >= t]
+
+
+def case_capped():
+    if not HAVE_SINKS:
+        skip("capped", f"{TESTVIDEO} not built (make native-test)")
+        return
+    rig = Rig(sink=f"mrtestvideosink name=out period-ns={DSI} present-max-mhz={CAPPED_MHZ} async=false",
+              props="refresh-mhz=60038", caps=CAPS60).start()
+    samples, st, disp = shape(rig, 52, 60)
+    achieved = 10 ** 12 // CAPPED_MHZ
+    at = measured_at(samples)
+    if at is None:
+        check("capped: the achieved period measured", False, f"{st}")
+        return
+    frames, drops = drops_since(at[1], st)
+    want = frames * (achieved - P60) / achieved
+    check(f"capped: 60p into a display presenting at most 56.6 of 60.038 Hz, refresh-mhz=60038: the "
+          f"achieved period measured within 0.5 % ({st['achieved-ns']} ns {(at[0] - samples[0][0]) / 1e9:.1f} s in), the "
+          f"refresh kept, and the drops after it the presentation deficit ({drops} of {frames}, want "
+          f"{want:.1f} +- 5 %)", abs(st["achieved-ns"] - achieved) * 200 <= achieved
+          and st["refresh-source"] == "measured" and abs(st["refresh-ns"] - DSI) * 1000 <= DSI
+          and abs(drops - want) <= max(3, want / 20))
+    late = flat_after(rig, at[0])
+    check("capped: release lateness after the measurement flat within one of the display's frames",
+          late and spread(late) <= achieved + 5 * MS, f"spread {spread(late) / 1e6:.1f} ms")
+    behind = st["display-behind"] - at[1]["display-behind"]
+    check(f"capped: the measured rate drops them, not the skip ({behind} of {drops} after it the "
+          f"display's a period behind, {st['display-behind']} in all)", behind * 3 <= max(drops, 10))
+    check("capped: the display presented every frame kept, none replaced or timed out",
+          disp["replaced"] == 0 and disp["present-timeouts"] == 0 and disp["not-presented"] == 0
+          and disp["presented"] >= st["released"] - 2, f"{disp}")
+
+
+def case_keeps_up():
+    if not HAVE_SINKS:
+        skip("keeps-up", f"{TESTVIDEO} not built (make native-test)")
+        return
+    # Past three windows' time: a display that keeps up must not read the content's own period.
+    rig = Rig(sink=f"mrtestvideosink name=out period-ns={DSI} async=false", props="refresh-mhz=60038",
+              caps=CAPS50).start()
+    samples, st, disp = shape(rig, 36, 50)
+    late = lateness(rig)
+    check(f"keeps-up: 50p into a 60.038 Hz display that presents every frame, 36 s: nothing measured, "
+          f"no drop, the refresh kept ({st['refresh-ns']} ns {st['refresh-source']}, achieved-ns "
+          f"{st['achieved-ns']}, {st['rate-drops']} drops)", st["achieved-ns"] == 0 and st["rate-drops"] == 0
+          and st["refresh-source"] == "measured" and abs(st["refresh-ns"] - DSI) * 1000 <= DSI
+          and disp["presented"] >= st["released"] - 2)
+    check("keeps-up: release lateness flat within a frame", late and spread(late) <= P50,
+          f"spread {spread(late) / 1e6:.1f} ms")
+
+
+def case_kms_wait():
+    if not HAVE_SINKS:
+        skip("kms-wait", f"{TESTVIDEO} not built (make native-test)")
+        return
+    # 60p with the mode's refresh, which the achieved period must overrule; 50p without one,
+    # which the returns read as two refreshes at once.
+    for num, props, seconds, caps in ((60, "refresh-mhz=60038", 45, CAPS60), (50, "", 15, CAPS50)):
+        rig = Rig(sink=f"mrtestkmssink name=out period-ns={DSI} vblanks=2 async=false", props=props,
+                  caps=caps).start()
+        samples, st, _disp = shape(rig, seconds, num)
+        if props:
+            at = measured_at(samples)
+            ok = at is not None and abs(st["achieved-ns"] - 2 * DSI) * 200 <= 2 * DSI
+            what = f"the achieved period {st['achieved-ns']} ns"
+        else:
+            at = next((s for s in samples if s[0] > 2 * S and s[1]["refresh-source"] == "measured"), None)
+            ok = at is not None and abs(st["refresh-ns"] - 2 * DSI) * 200 <= 2 * DSI
+            what = f"the returns' {st['refresh-ns']} ns"
+        if at is None:
+            check(f"kms-wait {num}p: measured", False, f"{st}")
+            continue
+        frames, drops = drops_since(at[1], st)
+        want = frames * (1 - 1e9 / (2 * DSI) / num)
+        late = flat_after(rig, at[0] + 500 * MS)
+        check(f"kms-wait: {num}p into mrtestkmssink vblanks=2 at 60.038 Hz ({props or 'no refresh-mhz'}): "
+              f"two refreshes a frame ({what}), {drops} of {frames} dropped after it (want {want:.1f} "
+              f"+- 5 %, {drops / max(frames, 1) * num:.1f} a second)",
+              ok and abs(drops - want) <= max(3, want / 20))
+        check(f"kms-wait: {num}p release lateness after it flat within a frame",
+              late and spread(late) <= S // num + 5 * MS, f"spread {spread(late) / 1e6:.1f} ms")
+        behind = st["display-behind"] - at[1]["display-behind"]
+        check(f"kms-wait: {num}p: the measured rate drops them, not the skip ({behind} of {drops} after "
+              f"it the display's a period behind, {st['display-behind']} in all)", behind * 3 <= max(drops, 10))
+
+
 def case_properties():
     el = Gst.ElementFactory.make("mrvideopace", None)
     specs = {p.name: p for p in el.list_properties()}
@@ -737,12 +864,43 @@ def case_runners():
                           f"{len(reads)} reads, {r.errors()[:1]}")
                 finally:
                     r.stop()
+        if not HAVE_SINKS:
+            return
+        # B-175's two shapes, the sink setting the pace, with the mode's refresh given: the drops
+        # from the fourth second on are what the display cannot take.
+        shapes = (("a display presenting at most 56.6 fps", f"{src} refresh-mhz=60038 ! mrtestvideosink "
+                   f"period-ns={DSI} present-max-mhz={CAPPED_MHZ}", 1 - CAPPED_MHZ / 60000),
+                  ("kmssink's two refreshes a frame", f"{src} refresh-mhz=60038 ! mrtestkmssink "
+                   f"period-ns={DSI} vblanks=2", 1 - 1e9 / (2 * DSI) / 60))
+        for kind, argv in kinds:
+            for name, desc, share in shapes:
+                r = rig.Runner(argv, env)
+                try:
+                    playing = r.start({"pipeline": desc, "useStdioForData": False, "linkOnPadAdded": [],
+                                       "busReports": [], "decoderThreadType": "auto"}, timeout=30)
+                    reads = []
+                    for _ in range(14):
+                        time.sleep(1.0)
+                        got = r.request({"cmd": "get_property", "element": "vp", "property": "stats"},
+                                        "property")
+                        if got and got[1].get("event") == "property":
+                            reads.append(got[1]["value"])
+                    frames, drops = drops_since(reads[3], reads[-1]) if len(reads) > 8 else (0, 0)
+                    want = frames * share
+                    check(f"runners: inside {kind}, 60p into {name}: rate-drops the deficit ({drops} of "
+                          f"{frames}, want {want:.1f} +- 10 %) over get_property", playing is not None
+                          and frames > 400 and abs(drops - want) <= max(3, want / 10),
+                          f"{len(reads)} reads, {r.errors()[:1]}")
+                finally:
+                    r.stop()
 
 
 CASES = {"pacing": case_pacing, "base-time": case_base_time, "flush": case_flush,
          "ready": case_ready, "gap": case_gap, "dmabuf": case_dmabuf, "nominal": case_nominal,
          "measured": case_measured, "drift": case_drift, "kms": case_kms, "outage": case_outage,
-         "properties": case_properties, "runners": case_runners}
+         "capped": case_capped, "keeps-up": case_keeps_up, "kms-wait": case_kms_wait,
+         "properties": case_properties,
+         "runners": case_runners}
 
 
 if __name__ == "__main__":

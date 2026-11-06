@@ -1,10 +1,9 @@
-/* mrvideopace (plan ch. 8 part 4.2, WI-P4-3; ch. 15.4 B-162): mrts::VideoPace as an element. Each
- * decoded frame leaves at its release on the element clock (the runners' monotonic clock, base
- * time 0), a rate drop at once; caps, allocation and scheduling are the neighbours' (dmabuf and
- * DMA_DRM pass untouched). The display period comes from the first GstBaseSink downstream:
- * 0008's `display-stats` (presented time over MSC), else a vsync sink's returns (kmssink), else
- * `refresh-mhz` (nominal), else none. While that sink reports frames it could not present (an
- * output switched off) frames pass unpaced, and the cadence restarts once it presents again. */
+/* mrvideopace (ch. 8 part 4.2, WI-P4-3; ch. 15.4 B-162, B-175): mrts::VideoPace as an element. Each
+ * frame leaves at its release on the element clock (base time 0), a rate drop at once; caps,
+ * allocation and scheduling are the neighbours'. The display period is mrts::DisplayRate's, from the
+ * first GstBaseSink downstream: what it achieves while it sets the pace, else its refresh (0008's
+ * `display-stats` or a vsync sink's returns), else `refresh-mhz`. A frame that waited for the last
+ * push is `held`, the sink's wait. Frames pass unpaced while that sink presents nothing. */
 #include <algorithm>
 #include <atomic>
 #include <new>
@@ -17,6 +16,7 @@
 #define GST_CAT_DEFAULT mrtshouse_debug
 
 using mrts::DisplayPeriod;
+using mrts::DisplayRate;
 using mrts::DisplaySource;
 using mrts::PaceDecision;
 using mrts::PaceSummary;
@@ -39,6 +39,8 @@ static const gint64 LONG_PUSH_NS = GST_SECOND / 2;
 static const size_t SAMPLES = 64;
 /* A blocking sink's returns: 60 s of frames at up to 68 fps. */
 static const size_t RETURNS = 4096;
+/* A frame that enters this soon after the last push returned waited for it: `held`. */
+static const gint64 HELD_NS = 2 * GST_MSECOND;
 
 namespace {
 
@@ -78,10 +80,11 @@ struct Display {
     }
 };
 
-/* What `stats` reads and the message carries. */
+/* What `stats` reads and the message carries: the display's refresh (S12's, else the prior) and
+ * what it achieves, the period the pace takes once that is measured. */
 struct Snapshot {
-    guint64 released = 0, late = 0, rate_drops = 0, gaps_collapsed = 0, unpaced = 0;
-    gint64 content_period = 0, display_period = 0;
+    guint64 released = 0, late = 0, rate_drops = 0, gaps_collapsed = 0, unpaced = 0, behind = 0;
+    gint64 content_period = 0, refresh = 0, achieved = 0;
     DisplaySource source = DisplaySource::none;
     gint64 mean_hold = 0, present_lateness = 0;
     bool presenting = true;
@@ -112,12 +115,16 @@ struct _GstMrVideoPace {
     /* Streaming state: chain and serialized events; a state change resets it while nothing
      * flows. A flush or an output's return starts a new pace, its counters folded in. */
     VideoPace* pace;
+    DisplayRate* rate;                // the period the pace takes, kept across a new pace
     Snapshot* folded;
     GstSegment segment;
     gint64 frame_dur;                 // the caps' frame period, 0 unknown
+    GstCaps* caps;                    // the last caps: new ones measure the display again
     Display* display;
     gboolean have_kept;
     gint64 last_lateness;             // the last kept frame's release - its running time
+    gboolean have_free;
+    gint64 free_at;                   // when the last chain call that paced a frame returned
     gboolean have_post;
     gint64 next_post;
     guint64 unpaced;
@@ -198,9 +205,11 @@ static void vp_fold(Snapshot* into, const PaceSummary& s) {
     into->late += s.late;
     into->rate_drops += s.rate_drops;
     into->gaps_collapsed += s.gaps_collapsed;
+    into->behind += s.behind;
 }
 
-/* A new cadence (a flush, an output presenting again): the next frame leaves at its arrival. */
+/* A new cadence (a flush, an output presenting again): the next frame leaves at its arrival and
+ * did not wait for a push. The display rate's measurement goes on. */
 static void vp_restart_pace(GstMrVideoPace* self) {
     if (!self->pace) return;
     const PaceSummary was = self->pace->peek();
@@ -211,6 +220,7 @@ static void vp_restart_pace(GstMrVideoPace* self) {
     *self->pace = VideoPace(gap_ns);
     self->pace->set_display(was.display_period, was.display_source);
     self->have_kept = FALSE;
+    self->have_free = FALSE;
 }
 
 static gint64 vp_prior_ns(GstMrVideoPace* self) {
@@ -366,8 +376,8 @@ static void vp_note_return(GstMrVideoPace* self, gint64 t) {
     }
 }
 
-/* Once a second of arrivals (at once after a long push): the display period the pace uses,
- * measured when the sink gives one, else the mode's refresh, else none. */
+/* Once a second of arrivals (at once after a long push): the display period the pace uses, the
+ * display rate's from the prior, S12's refresh the sink gives and what it achieved. */
 static void vp_update_display(GstMrVideoPace* self, gint64 now) {
     Display& d = *self->display;
     if (d.updated && !d.force && now - d.last_update < UPDATE_NS) return;
@@ -378,10 +388,11 @@ static void vp_update_display(GstMrVideoPace* self, gint64 now) {
     DisplayPeriod p;
     if (d.kind == Display::Kind::stats) p = vp_read_feedback(self);
     else if (d.kind == Display::Kind::vsync) p = vp_read_returns(self);
-    const gint64 prior = vp_prior_ns(self);
-    if (p.period_ns > 0) self->pace->set_display(p.period_ns, DisplaySource::measured);
-    else if (prior > 0) self->pace->set_display(prior, DisplaySource::nominal);
-    else self->pace->set_display(0, DisplaySource::none);
+    self->rate->set_prior(vp_prior_ns(self));
+    self->rate->set_refresh(p.period_ns);
+    DisplaySource source = DisplaySource::none;
+    const gint64 period = self->rate->period(&source);
+    self->pace->set_display(period, source);
 }
 
 /* --- reporting ------------------------------------------------------------------------ */
@@ -397,17 +408,21 @@ static void vp_publish(GstMrVideoPace* self, gint64 base) {
         const PaceSummary p = self->pace->peek();
         vp_fold(&s, p);
         s.content_period = p.content_period;
-        s.display_period = p.display_period;
-        s.source = p.display_source;
     }
+    const DisplayRate& r = *self->rate;
+    s.refresh = r.refresh() ? r.refresh() : r.prior();
+    s.source = r.refresh() ? DisplaySource::measured
+               : r.prior() ? DisplaySource::nominal
+                           : DisplaySource::none;
+    s.achieved = r.achieved();
     s.unpaced = self->unpaced;
     const Display& d = *self->display;
     s.presenting = !d.outage;
     if (d.have_presented) {
         s.present_lateness = d.last_presented - (d.last_running + base);
     } else if (self->have_kept) {
-        s.present_lateness =
-            self->last_lateness + (s.display_period ? s.display_period : s.content_period);
+        const gint64 period = s.achieved ? s.achieved : s.refresh;
+        s.present_lateness = self->last_lateness + (period ? period : s.content_period);
     }
     g_mutex_lock(&self->snap_lock);
     s.mean_hold = self->snap->mean_hold;
@@ -421,10 +436,11 @@ static GstStructure* vp_structure(const Snapshot& s) {
         "rate-drops", G_TYPE_UINT64, s.rate_drops, "gaps-collapsed", G_TYPE_UINT64,
         s.gaps_collapsed, "unpaced", G_TYPE_UINT64, s.unpaced, "content-fps-x100", G_TYPE_UINT,
         content_fps_x100(s.content_period), "refresh-ns", G_TYPE_UINT64,
-        (guint64)std::max<gint64>(s.display_period, 0), "refresh-source", G_TYPE_STRING,
-        mrts::display_source_name(s.source), "mean-hold-ns", G_TYPE_INT64, s.mean_hold,
-        "present-lateness-ns", G_TYPE_INT64, s.present_lateness, "display-presenting",
-        G_TYPE_BOOLEAN, (gboolean)s.presenting, NULL);
+        (guint64)std::max<gint64>(s.refresh, 0), "refresh-source", G_TYPE_STRING,
+        mrts::display_source_name(s.source), "achieved-ns", G_TYPE_UINT64,
+        (guint64)std::max<gint64>(s.achieved, 0), "display-behind", G_TYPE_UINT64, s.behind,
+        "mean-hold-ns", G_TYPE_INT64, s.mean_hold, "present-lateness-ns", G_TYPE_INT64,
+        s.present_lateness, "display-presenting", G_TYPE_BOOLEAN, (gboolean)s.presenting, NULL);
 }
 
 /* The `mrvideopace` message: at the first frame, then every 2 s of arrivals; the mean hold
@@ -446,6 +462,7 @@ static void vp_report(GstMrVideoPace* self, gint64 now) {
 
 static GstFlowReturn vp_push_unpaced(GstMrVideoPace* self, GstBuffer* buf, gint64 base) {
     self->unpaced++;
+    self->have_free = FALSE;
     vp_publish(self, base);
     return gst_pad_push(self->srcpad, buf);
 }
@@ -468,19 +485,24 @@ static GstFlowReturn vp_chain(GstPad*, GstObject* parent, GstBuffer* buf) {
     const GstClockTime bdur = GST_BUFFER_DURATION(buf);
     const bool timed = GST_CLOCK_TIME_IS_VALID(bdur) && bdur <= (guint64)G_MAXINT64;
     const gint64 dur = timed ? (gint64)bdur : self->frame_dur;
+    /* Entered as the last push returned: it waited for the sink, not for the input. */
+    const bool held = self->have_free && now - self->free_at <= HELD_NS;
     const PaceDecision d =
-        self->pace->on_frame((gint64)running, dur, now, GST_BUFFER_IS_DISCONT(buf));
+        self->pace->on_frame((gint64)running, dur, now, GST_BUFFER_IS_DISCONT(buf), held);
     GST_LOG_OBJECT(self, "pts %" GST_TIME_FORMAT " arrival %" G_GINT64_FORMAT " release %"
-                   G_GINT64_FORMAT "%s", GST_TIME_ARGS(pts), now, d.release_ns,
-                   d.rate_drop ? " (rate drop)" : "");
+                   G_GINT64_FORMAT "%s%s", GST_TIME_ARGS(pts), now, d.release_ns,
+                   held ? " (held)" : "", d.rate_drop ? " (rate drop)" : "");
     if (d.rate_drop) {
         gst_buffer_unref(buf);
+        self->have_free = TRUE;
+        self->free_at = now;
         vp_publish(self, base);
         vp_report(self, now);
         return GST_FLOW_OK;
     }
     if (!vp_wait(self, d.release_ns, base)) {
         gst_buffer_unref(buf);
+        self->have_free = FALSE;
         return GST_FLOW_FLUSHING;
     }
     self->have_kept = TRUE;
@@ -489,7 +511,11 @@ static GstFlowReturn vp_chain(GstPad*, GstObject* parent, GstBuffer* buf) {
     vp_report(self, now);
     const GstFlowReturn ret = gst_pad_push(self->srcpad, buf);
     gint64 back = 0, base2 = 0;
-    if (ret == GST_FLOW_OK && vp_now(self, &back, &base2)) {
+    self->have_free = ret == GST_FLOW_OK && vp_now(self, &back, &base2);
+    if (self->have_free) {
+        self->free_at = back;
+        /* Left at once on the last push's return: the sink set this presentation's pace. */
+        self->rate->on_push(back, held && d.release_ns <= now);
         if (self->display->kind == Display::Kind::vsync) vp_note_return(self, back);
         if (back - std::max(now, d.release_ns) >= LONG_PUSH_NS) self->display->force = true;
     }
@@ -522,6 +548,9 @@ static gboolean vp_sink_event(GstPad* pad, GstObject* parent, GstEvent* event) {
             self->frame_dur = rate && num > 0 && den > 0
                                   ? (gint64)gst_util_uint64_scale_int_round(GST_SECOND, den, num)
                                   : 0;
+            /* Other content: what the display achieves is measured again. */
+            if (self->caps && caps && !gst_caps_is_equal(self->caps, caps)) self->rate->restart();
+            gst_caps_replace(&self->caps, caps);
             break;
         }
         case GST_EVENT_GAP:
@@ -542,12 +571,16 @@ static void vp_start(GstMrVideoPace* self) {
     GST_OBJECT_UNLOCK(self);
     delete self->pace;
     self->pace = new VideoPace(gap_ns);
+    *self->rate = DisplayRate();
     *self->folded = Snapshot();
     gst_segment_init(&self->segment, GST_FORMAT_UNDEFINED);
     self->frame_dur = 0;
+    gst_caps_replace(&self->caps, NULL);
     self->display->reset();
     self->have_kept = FALSE;
     self->last_lateness = 0;
+    self->have_free = FALSE;
+    self->free_at = 0;
     self->have_post = FALSE;
     self->next_post = 0;
     self->unpaced = 0;
@@ -667,6 +700,8 @@ static void vp_finalize(GObject* object) {
     delete[] self->display->intervals;
     delete self->display;
     delete self->pace;
+    delete self->rate;
+    gst_caps_replace(&self->caps, NULL);
     delete self->folded;
     delete self->snap;
     g_mutex_clear(&self->lock);
@@ -695,6 +730,8 @@ static void gst_mrvideopace_init(GstMrVideoPace* self) {
     self->id_clock = NULL;
     self->waiting = self->flushing = FALSE;
     self->pace = NULL;
+    self->rate = new DisplayRate();
+    self->caps = NULL;
     self->folded = new Snapshot();
     self->display = new Display();
     self->display->returns = new gint64[RETURNS];
@@ -704,8 +741,8 @@ static void gst_mrvideopace_init(GstMrVideoPace* self) {
     self->snap = new Snapshot();
     gst_segment_init(&self->segment, GST_FORMAT_UNDEFINED);
     self->frame_dur = 0;
-    self->have_kept = self->have_post = FALSE;
-    self->last_lateness = self->next_post = 0;
+    self->have_kept = self->have_post = self->have_free = FALSE;
+    self->last_lateness = self->next_post = self->free_at = 0;
     self->unpaced = 0;
 
     self->sinkpad = vp_new_pad(self, &vp_sink_tmpl, "sink");
@@ -731,9 +768,10 @@ static void gst_mrvideopace_class_init(GstMrVideoPaceClass* klass) {
     g_object_class_install_property(
         gobject_class, PROP_REFRESH_MHZ,
         g_param_spec_uint("refresh-mhz", "Refresh (mHz)",
-                          "The output mode's refresh in mHz, 0 unknown: the period used until the "
-                          "sink measures one (no decimation inside 0.05 % of it), and the base a "
-                          "blocking sink's returns are counted in. Live, from the next second.",
+                          "The output mode's refresh in mHz, 0 unknown: only a prior, the period "
+                          "used until the sink's refresh or what it achieves is measured (no "
+                          "decimation inside 0.05 % of it), and the base a blocking sink's "
+                          "returns are counted in. Live, from the next second.",
                           0, 1000000, 0, live));
     g_object_class_install_property(
         gobject_class, PROP_GAP_THRESHOLD_MS,
@@ -746,8 +784,11 @@ static void gst_mrvideopace_class_init(GstMrVideoPaceClass* klass) {
         g_param_spec_boxed("stats", "Stats",
                            "The `mrvideopace` message's fields now: released, late, rate-drops, "
                            "gaps-collapsed and unpaced since the start, content-fps-x100, "
-                           "refresh-ns and refresh-source (measured, nominal, none), mean-hold-ns "
-                           "(the last message's), present-lateness-ns and display-presenting.",
+                           "refresh-ns and refresh-source (measured, nominal, none), achieved-ns "
+                           "(the presentation period the sink achieves, which the pace takes "
+                           "once measured; 0 before), display-behind (frames dropped as the "
+                           "display fell a period behind), mean-hold-ns (the last message's), "
+                           "present-lateness-ns and display-presenting.",
                            GST_TYPE_STRUCTURE,
                            (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */

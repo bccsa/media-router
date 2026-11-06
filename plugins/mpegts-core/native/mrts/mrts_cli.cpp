@@ -1750,7 +1750,7 @@ int asrc_main(int argc, char** argv) {
     return 0;
 }
 
-// --- pace: a call sequence through mrts::VideoPace (WI-P4-3), video_pace.py's replay format --
+// --- pace: a call sequence through VideoPace and DisplayRate (WI-P4-3, B-175), video_pace.py lines
 
 bool op_i64(const Json& op, const char* key, int64_t* v, std::string* err) {
     const Json* j = op.get(key);
@@ -1779,8 +1779,8 @@ void print_period(const DisplayPeriod& p) {
 }
 
 // One op of the sequence; the lines it prints are video_pace.py's, byte for byte.
-bool pace_op(const Json& op, VideoPace* pace, std::vector<PresentedSample>* samples,
-             std::vector<int64_t>* times, std::string* err) {
+bool pace_op(const Json& op, VideoPace* pace, DisplayRate* rate,
+             std::vector<PresentedSample>* samples, std::vector<int64_t>* times, std::string* err) {
     const Json* kind = op.get("op");
     if (!kind || kind->type != Json::Type::string) {
         *err = "no \"op\"";
@@ -1791,6 +1791,7 @@ bool pace_op(const Json& op, VideoPace* pace, std::vector<PresentedSample>* samp
         int64_t gap = VideoPace::GAP_THRESHOLD_NS;
         if (op.get("gap_threshold") && !op_i64(op, "gap_threshold", &gap, err)) return false;
         *pace = VideoPace(gap);
+        *rate = DisplayRate();
     } else if (k == "display") {
         int64_t period = 0;
         DisplaySource source = DisplaySource::none;
@@ -1805,21 +1806,41 @@ bool pace_op(const Json& op, VideoPace* pace, std::vector<PresentedSample>* samp
         pace->on_gap();
     } else if (k == "frame") {
         int64_t pts = 0, dur = 0, arrival = 0;
-        bool discont = false;
+        bool discont = false, held = false;
         if (!op_i64(op, "pts", &pts, err) || !op_i64(op, "dur", &dur, err) ||
-            !op_i64(op, "arrival", &arrival, err) || !op_flag(op, "discont", &discont, err))
+            !op_i64(op, "arrival", &arrival, err) || !op_flag(op, "discont", &discont, err) ||
+            (op.get("held") && !op_flag(op, "held", &held, err)))
             return false;
-        const PaceDecision d = pace->on_frame(pts, dur, arrival, discont);
+        const PaceDecision d = pace->on_frame(pts, dur, arrival, discont, held);
         std::printf("{\"release\":%lld,\"drop\":%d}\n", (long long)d.release_ns, d.rate_drop ? 1 : 0);
     } else if (k == "take") {
         const PaceSummary s = pace->take();
         std::printf("{\"released\":%llu,\"late\":%llu,\"rate_drops\":%llu,\"gaps_collapsed\":%llu,"
-                    "\"content_period\":%lld,\"display_period\":%lld,\"display_source\":\"%s\","
-                    "\"mean_hold\":%lld}\n",
+                    "\"behind\":%llu,\"content_period\":%lld,\"display_period\":%lld,"
+                    "\"display_source\":\"%s\",\"mean_hold\":%lld}\n",
                     (unsigned long long)s.released, (unsigned long long)s.late,
                     (unsigned long long)s.rate_drops, (unsigned long long)s.gaps_collapsed,
-                    (long long)s.content_period, (long long)s.display_period,
-                    display_source_name(s.display_source), (long long)s.mean_hold);
+                    (unsigned long long)s.behind, (long long)s.content_period,
+                    (long long)s.display_period, display_source_name(s.display_source),
+                    (long long)s.mean_hold);
+    } else if (k == "rate_prior" || k == "rate_refresh") {
+        int64_t period = 0;
+        if (!op_i64(op, "period", &period, err)) return false;
+        if (k == "rate_prior") rate->set_prior(period);
+        else rate->set_refresh(period);
+    } else if (k == "rate_push") {
+        int64_t returned = 0;
+        bool pressed = false;
+        if (!op_i64(op, "returned", &returned, err) || !op_flag(op, "pressed", &pressed, err))
+            return false;
+        rate->on_push(returned, pressed);
+    } else if (k == "rate_restart") {
+        rate->restart();
+    } else if (k == "rate") {
+        DisplaySource source = DisplaySource::none;
+        const int64_t period = rate->period(&source);
+        std::printf("{\"rate\":%lld,\"source\":\"%s\",\"achieved\":%lld}\n", (long long)period,
+                    display_source_name(source), (long long)rate->achieved());
     } else if (k == "feedback") {
         const Json* pairs = op.get("pairs");
         if (!pairs || pairs->type != Json::Type::array) return *err = "\"pairs\" must be an array", false;
@@ -1865,6 +1886,7 @@ int pace_main(int argc, char** argv) {
     static char out[1 << 16];
     std::setvbuf(stdout, out, _IOFBF, sizeof out);
     VideoPace pace;
+    DisplayRate rate;
     std::vector<PresentedSample> samples;
     std::vector<int64_t> times;
     std::string line, err;
@@ -1883,7 +1905,7 @@ int pace_main(int argc, char** argv) {
         lineno++;
         if (line.find_first_not_of(" \t\r\n") == std::string::npos) continue;
         Json op;
-        if (!parse_json(line, &op, &err) || !pace_op(op, &pace, &samples, &times, &err)) {
+        if (!parse_json(line, &op, &err) || !pace_op(op, &pace, &rate, &samples, &times, &err)) {
             std::fflush(stdout);
             std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", argv[1], lineno, err.c_str());
             rc = 1;

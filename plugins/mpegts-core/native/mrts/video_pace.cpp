@@ -75,14 +75,16 @@ bool VideoPace::decimating(int64_t tc) const {
            ((__int128)display_period_ - tc) * NOMINAL_BAND_DEN > tc;
 }
 
-PaceDecision VideoPace::on_frame(int64_t pts_ns, int64_t dur_ns, int64_t arrival_ns, bool discont) {
+PaceDecision VideoPace::on_frame(int64_t pts_ns, int64_t dur_ns, int64_t arrival_ns, bool discont,
+                                 bool held) {
     const int64_t tc = content_period();
     const int64_t nominal = dur_ns > 0 ? dur_ns : tc;
     // min(gap threshold, 4 x nominal) without forming a product past the threshold.
     const int64_t threshold =
         nominal > 0 && nominal <= gap_threshold_ns_ / 4 ? 4 * nominal : gap_threshold_ns_;
-    bool collapsed = false;
-    int64_t delta = 0, release = arrival_ns;
+    bool collapsed = false, sink_late = false;
+    int64_t delta = 0;
+    __int128 slot = arrival_ns;
     if (have_prev_) {
         const __int128 d = (__int128)pts_ns - prev_pts_;
         collapsed = gap_pending_ || discont || d < 0 || d > threshold;
@@ -95,26 +97,37 @@ PaceDecision VideoPace::on_frame(int64_t pts_ns, int64_t dur_ns, int64_t arrival
             delta = (int64_t)d;
             add_clean(delta);
         }
-        const __int128 slot = (__int128)prev_release_ + delta;
-        release = clamp64(std::max<__int128>(arrival_ns, slot));
-        if (arrival_ns > slot && !collapsed) late_++;
+        slot = (__int128)prev_release_ + delta;
+        // Past its slot behind the sink's own push: the sink's wait, not the input's lateness.
+        sink_late = held && !collapsed && arrival_ns > slot;
+        if (arrival_ns > slot && !collapsed && !sink_late) late_++;
     }
-    bool drop = false;
+    const int64_t release = clamp64(std::max<__int128>(arrival_ns, slot));
+    bool drop = false, behind = false;
     if (!decimating(tc)) {
         lag_ = 0;
     } else {
         const int64_t whole = nominal > 0 ? nominal : delta;
         __int128 lag = std::max<__int128>((__int128)lag_ - delta, collapsed ? 0 : -(__int128)whole);
+        const bool foreseen = whole > 0 && lag >= whole;
+        // The sink's own wait past a frame; a display period behind, the lag is what it shows.
+        const __int128 grid = std::max<__int128>((__int128)display_period_ - whole, 0);
+        const __int128 waited = (__int128)arrival_ns - slot;
+        if (sink_late && waited > grid + whole) {
+            lag = std::max<__int128>(lag, waited - grid);
+            behind = !foreseen;
+        }
         drop = whole > 0 && lag >= whole;
         if (!drop) lag += display_period_;
         lag_ = clamp64(lag);
     }
     prev_pts_ = pts_ns;
-    prev_release_ = release;
+    prev_release_ = sink_late ? clamp64(slot) : release;
     have_prev_ = true;
     gap_pending_ = false;
     if (drop) {
         rate_drops_++;
+        if (behind) behind_++;
     } else {
         released_++;
         hold_sum_ += (__int128)release - arrival_ns;
@@ -129,6 +142,7 @@ PaceSummary VideoPace::peek() const {
     s.late = late_;
     s.rate_drops = rate_drops_;
     s.gaps_collapsed = gaps_collapsed_;
+    s.behind = behind_;
     s.content_period = content_period();
     s.display_period = display_period_;
     s.display_source = display_source_;
@@ -141,6 +155,91 @@ PaceSummary VideoPace::take() {
     hold_sum_ = 0;
     hold_count_ = 0;
     return s;
+}
+
+namespace {
+
+// `now` more than 1 % off `old`, a period already known.
+bool moved(int64_t old, int64_t now) {
+    return old > 0 && abs128((__int128)now - old) * DisplayRate::RESTART_DEN > old;
+}
+
+}  // namespace
+
+void DisplayRate::set_prior(int64_t period_ns) {
+    period_ns = std::max<int64_t>(period_ns, 0);
+    if (moved(prior_, period_ns)) restart();
+    prior_ = period_ns;
+}
+
+void DisplayRate::set_refresh(int64_t period_ns) {
+    if (period_ns <= 0) return;
+    if (moved(refresh_, period_ns)) restart();
+    refresh_ = period_ns;
+}
+
+void DisplayRate::restart() {
+    windows_n_ = 0;
+    windows_head_ = 0;
+    have_prev_ = false;
+    run_pushes_ = 0;
+}
+
+void DisplayRate::on_push(int64_t returned_ns, bool pressed) {
+    if (pressed && have_prev_ && returned_ns > prev_return_) {
+        if (run_pushes_ == 0) run_from_ = prev_return_;
+        run_pushes_++;
+        const __int128 span = (__int128)returned_ns - run_from_;
+        if (span >= WINDOW_NS) {
+            const Window w{span, run_pushes_};
+            if (windows_n_ == WINDOWS) {
+                windows_[windows_head_] = w;
+                windows_head_ = (windows_head_ + 1) % WINDOWS;
+            } else {
+                windows_[(windows_head_ + windows_n_++) % WINDOWS] = w;
+            }
+            run_pushes_ = 0;
+        }
+    } else {
+        run_pushes_ = 0;
+    }
+    prev_return_ = returned_ns;
+    have_prev_ = true;
+}
+
+int64_t DisplayRate::achieved() const {
+    if (windows_n_ < NEED) return 0;
+    __int128 readings[WINDOWS];
+    for (int i = 0; i < windows_n_; i++) readings[i] = round_div(windows_[i].span, windows_[i].pushes);
+    __int128 sorted[WINDOWS];
+    std::copy(readings, readings + windows_n_, sorted);
+    std::sort(sorted, sorted + windows_n_);
+    const __int128 median = sorted[windows_n_ / 2];
+    __int128 span = 0, pushes = 0;
+    for (int i = 0; i < windows_n_; i++) {
+        if (readings[i] * HICCUP_DEN <= median * (HICCUP_DEN + 1)) {
+            span += windows_[i].span;
+            pushes += windows_[i].pushes;
+        }
+    }
+    return clamp64(round_div(span, pushes));
+}
+
+int64_t DisplayRate::period(DisplaySource* source) const {
+    if (const int64_t a = achieved()) {
+        *source = DisplaySource::measured;
+        return a;
+    }
+    if (refresh_) {
+        *source = DisplaySource::measured;
+        return refresh_;
+    }
+    if (prior_) {
+        *source = DisplaySource::nominal;
+        return prior_;
+    }
+    *source = DisplaySource::none;
+    return 0;
 }
 
 DisplayPeriod display_period_from_feedback(const PresentedSample* samples, size_t n) {

@@ -1,15 +1,15 @@
-/* Test-only display sinks (plan ch. 15.4 B-162; WI-P4-3), never installed: mrvideopace's measured
- * display period without Weston or a DRM device. Each refreshes on its own grid on
+/* Test-only display sinks (plan ch. 15.4 B-162, B-175; WI-P4-3), never installed: mrvideopace's
+ * measured display period without Weston or a DRM device. Each refreshes on its own grid on
  * CLOCK_MONOTONIC (`period-ns`, `drift-ppm`: negative is a slow display, its period longer).
  *
  * mrtestvideosink models waylandsink with Yocto 0008's present-every-frame: a frame waits until
- * the previous one is presented, at the first refresh after its commit, then is committed, and
- * `display-stats` has 0008's fields and types. `stall-ms` switches the output off for that long:
- * nothing is presented, a wait gives up after 1 s (`present-timeouts`) and until a refresh shows
- * the last commit again frames are committed at once, counted `not-presented` (0008's rule).
+ * the previous one is presented, at the first refresh after its commit that may show one
+ * (`present-max-mhz`), then is committed; `display-stats` has 0008's fields and types. `stall-ms`
+ * switches the output off: a wait gives up after 1 s and frames are then committed at once,
+ * counted `not-presented`, until a refresh shows the last commit again (0008's rule).
  *
- * mrtestkmssink models kmssink: unless `skip-vsync`, each frame returns at the first refresh after
- * it, every `late-every`th `late-us` after it (a late wake), and the sink has no stats. */
+ * mrtestkmssink models kmssink: unless `skip-vsync`, each frame returns at the `vblanks`th refresh
+ * from its flip, every `late-every`th `late-us` later (a late wake); the sink has no stats. */
 #include <gst/base/gstbasesink.h>
 #include <gst/gst.h>
 
@@ -48,6 +48,13 @@ static gint64 grid_period(const Grid* g) {
     return (gint64)(((__int128)g->period_ns * (1000000 - g->ppm) * 2 + 1000000) / 2000000);
 }
 
+/* Refresh n can show a new frame under a cap of `cap_mhz` frames a second (0: every one). */
+static gboolean grid_usable(const Grid* g, gint64 n, guint cap_mhz) {
+    if (!cap_mhz || n < 0) return TRUE;
+    const __int128 k = (__int128)grid_period(g) * cap_mhz;
+    return (n + 1) * k / 1000000000000LL > n * k / 1000000000000LL;
+}
+
 /* Until `at` (CLOCK_MONOTONIC ns) or a signal, `lock` held. */
 static void wait_until(GCond* cond, GMutex* lock, gint64 at) {
     g_cond_wait_until(cond, lock, (at + 999) / 1000);
@@ -79,6 +86,7 @@ struct _MrTestVideoSink {
     GCond cond;
     gint64 period_ns;   /* the properties; the grid takes them at a start */
     gint drift_ppm;
+    guint present_max_mhz;   /* live: 0 presents at every refresh */
     Grid grid;
     gboolean unlocked;
     gboolean pending;          /* the last commit is not presented yet */
@@ -93,14 +101,25 @@ struct _MrTestVideoSink {
 
 G_DEFINE_TYPE(MrTestVideoSink, mr_test_video_sink, GST_TYPE_BASE_SINK)
 
-enum { VPROP_0, VPROP_PERIOD_NS, VPROP_DRIFT_PPM, VPROP_STALL_MS, VPROP_DISPLAY_STATS };
+enum {
+    VPROP_0,
+    VPROP_PERIOD_NS,
+    VPROP_DRIFT_PPM,
+    VPROP_STALL_MS,
+    VPROP_DISPLAY_STATS,
+    VPROP_PRESENT_MAX_MHZ,
+};
 
-/* When the pending commit is presented: the first refresh after it, past an output off. */
+/* When the pending commit is presented: the first refresh after it that may show a new frame,
+ * past an output off. */
 static gint64 tv_presentation(const MrTestVideoSink* s, gint64* seq) {
     gint64 n = grid_next(&s->grid, s->commit_ns);
+    while (!grid_usable(&s->grid, n, s->present_max_mhz)) n++;
     if (s->stall_to > s->stall_from && grid_at(&s->grid, n) >= s->stall_from &&
-        grid_at(&s->grid, n) < s->stall_to)
+        grid_at(&s->grid, n) < s->stall_to) {
         n = grid_next(&s->grid, s->stall_to - 1);
+        while (!grid_usable(&s->grid, n, s->present_max_mhz)) n++;
+    }
     *seq = n;
     return grid_at(&s->grid, n);
 }
@@ -246,6 +265,12 @@ static void tv_set_property(GObject* object, guint id, const GValue* value, GPar
         case VPROP_STALL_MS:
             tv_stall(s, g_value_get_uint(value));
             break;
+        case VPROP_PRESENT_MAX_MHZ:
+            g_mutex_lock(&s->lock);
+            s->present_max_mhz = g_value_get_uint(value);
+            g_cond_broadcast(&s->cond);
+            g_mutex_unlock(&s->lock);
+            break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
             break;
@@ -274,6 +299,11 @@ static void tv_get_property(GObject* object, guint id, GValue* value, GParamSpec
         }
         case VPROP_DISPLAY_STATS:
             g_value_take_boxed(value, tv_stats(s));
+            break;
+        case VPROP_PRESENT_MAX_MHZ:
+            g_mutex_lock(&s->lock);
+            g_value_set_uint(value, s->present_max_mhz);
+            g_mutex_unlock(&s->lock);
             break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
@@ -342,6 +372,14 @@ static void mr_test_video_sink_class_init(MrTestVideoSinkClass* klass) {
                           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
                                         GST_PARAM_MUTABLE_PLAYING)));
     g_object_class_install_property(
+        gobject_class, VPROP_PRESENT_MAX_MHZ,
+        g_param_spec_uint("present-max-mhz", "Present max (mHz)",
+                          "At most this many frames a second presented (mHz), the rest of the "
+                          "refreshes showing the last frame again; 0: a frame at every refresh.",
+                          0, 1000000, 0,
+                          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+                                        GST_PARAM_MUTABLE_PLAYING)));
+    g_object_class_install_property(
         gobject_class, VPROP_DISPLAY_STATS,
         g_param_spec_boxed("display-stats", "Display stats",
                            "0008's wayland-display-stats: every field guint64 but clock-monotonic, "
@@ -368,6 +406,7 @@ struct _MrTestKmsSink {
     gint64 period_ns;
     gint drift_ppm;
     gboolean skip_vsync;
+    guint vblanks;   /* the return at the vblank-th refresh from the flip on */
     guint late_every, late_us;
     guint64 frames;
     Grid grid;
@@ -383,6 +422,7 @@ enum {
     KPROP_SKIP_VSYNC,
     KPROP_LATE_EVERY,
     KPROP_LATE_US,
+    KPROP_VBLANKS,
 };
 
 static GstFlowReturn tk_render(GstBaseSink* bsink, GstBuffer* buf) {
@@ -398,7 +438,7 @@ static GstFlowReturn tk_render(GstBaseSink* bsink, GstBuffer* buf) {
         s->grid.started = TRUE;
         s->grid.origin = now;
     }
-    gint64 at = grid_at(&s->grid, grid_next(&s->grid, now));
+    gint64 at = grid_at(&s->grid, grid_next(&s->grid, now) + (gint64)s->vblanks - 1);
     if (s->late_every && ++s->frames % s->late_every == 0) at += (gint64)s->late_us * 1000;
     while (now < at) {
         if (s->unlocked) {
@@ -453,6 +493,7 @@ static void tk_set_property(GObject* object, guint id, const GValue* value, GPar
         case KPROP_SKIP_VSYNC: s->skip_vsync = g_value_get_boolean(value); break;
         case KPROP_LATE_EVERY: s->late_every = g_value_get_uint(value); break;
         case KPROP_LATE_US: s->late_us = g_value_get_uint(value); break;
+        case KPROP_VBLANKS: s->vblanks = g_value_get_uint(value); break;
         default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec); break;
     }
     g_mutex_unlock(&s->lock);
@@ -467,6 +508,7 @@ static void tk_get_property(GObject* object, guint id, GValue* value, GParamSpec
         case KPROP_SKIP_VSYNC: g_value_set_boolean(value, s->skip_vsync); break;
         case KPROP_LATE_EVERY: g_value_set_uint(value, s->late_every); break;
         case KPROP_LATE_US: g_value_set_uint(value, s->late_us); break;
+        case KPROP_VBLANKS: g_value_set_uint(value, s->vblanks); break;
         default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec); break;
     }
     g_mutex_unlock(&s->lock);
@@ -483,6 +525,7 @@ static void mr_test_kms_sink_init(MrTestKmsSink* s) {
     g_mutex_init(&s->lock);
     g_cond_init(&s->cond);
     s->period_ns = DEFAULT_PERIOD_NS;
+    s->vblanks = 1;
     s->late_us = 5000;
     s->grid.period_ns = DEFAULT_PERIOD_NS;
     gst_base_sink_set_sync(GST_BASE_SINK(s), FALSE);
@@ -512,6 +555,13 @@ static void mr_test_kms_sink_class_init(MrTestKmsSinkClass* klass) {
         g_param_spec_boolean("skip-vsync", "Skip vsync",
                              "Return at once instead of at the next refresh.", FALSE,
                              (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+    g_object_class_install_property(
+        gobject_class, KPROP_VBLANKS,
+        g_param_spec_uint("vblanks", "Vblanks",
+                          "The refresh, counted from the flip as 1, a frame returns at: 2 is "
+                          "kmssink waiting for the vblank after its flip (one frame per two "
+                          "refreshes).",
+                          1, 4, 1, (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
     g_object_class_install_property(
         gobject_class, KPROP_LATE_EVERY,
         g_param_spec_uint("late-every", "Late every",

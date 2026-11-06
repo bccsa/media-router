@@ -1,7 +1,7 @@
-// video_pace: mrts::VideoPace (WI-P4-3, ch. 15.4 B-162), p4-3a's cases of
+// video_pace: mrts::VideoPace and mrts::DisplayRate (WI-P4-3, ch. 15.4 B-162, B-175), the cases of
 // ../../py/video_pace_test.py one for one, same names, same order (its last, the replay format, is
-// the reference's own). The element's streaming thread and the two sinks are modelled as there:
-// a display slower than the content shows only through its back-pressure on the releases.
+// the reference's own). The element's streaming thread and the sinks are modelled as there: a
+// display slower than the content shows only through its back-pressure on the releases.
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
@@ -21,8 +21,10 @@ namespace {
 
 constexpr int64_t SEC = 1000000000, MS = 1000000, US = 1000;
 constexpr int64_t P50 = 20 * MS;                         // 50p
+constexpr int64_t P60 = 16666667;                        // 60p
 constexpr int64_t LATENCY = 100 * MS;                    // the input's lateness at the element
 constexpr int64_t SLOW = 20000800;                       // a 50 Hz display 40 ppm slow
+constexpr int64_t DSI = 16656184;                        // the Pi 5 box's DSI panel, 60.038 Hz
 constexpr int64_t WRAP_NS = (1LL << 33) * 100000 / 9;    // the 33-bit point in house ns
 constexpr DisplaySource MEASURED = DisplaySource::measured;
 constexpr DisplaySource NOMINAL = DisplaySource::nominal;
@@ -62,7 +64,11 @@ struct Wayland {
     int64_t callback = 0;
     Wayland(int64_t p, int64_t ph = 0) : period(p), phase(ph) {}
     virtual ~Wayland() {}
-    int64_t refresh_after(int64_t t) const { return phase + (floordiv(t - phase, period) + 1) * period; }
+    virtual int64_t refresh_after(int64_t t) const {
+        return phase + (floordiv(t - phase, period) + 1) * period;
+    }
+    // A sink without presentation feedback, timed by its returns (kmssink).
+    virtual bool blocking() const { return false; }
     // (the push's return, the presentation)
     virtual std::pair<int64_t, int64_t> push(int64_t t) {
         const int64_t commit = !pending || t >= callback ? t : callback;
@@ -75,14 +81,46 @@ struct Wayland {
 // kmssink sync=false: show_frame flips at the first vblank after the push and returns then.
 struct Kms : Wayland {
     Kms(int64_t p, int64_t ph = 0) : Wayland(p, ph) {}
+    bool blocking() const override { return true; }
     std::pair<int64_t, int64_t> push(int64_t t) override {
         const int64_t shown = refresh_after(t);
         return {shown, shown};
     }
 };
 
+// Wayland on a compositor that presents at most cap_mhz frames a second (mHz): refresh n can show a
+// new frame only when floor(n x period x cap / 10^12) steps there (Weston on the Pi 5 box's DSI).
+struct Capped : Wayland {
+    int64_t cap;
+    Capped(int64_t p, int64_t ph, int64_t cap_mhz) : Wayland(p, ph), cap(cap_mhz) {}
+    static __int128 floor12(__int128 v) {   // floor(v / 10^12), as Python's //
+        const __int128 q = v / 1000000000000LL;
+        return v % 1000000000000LL < 0 ? q - 1 : q;
+    }
+    bool usable(int64_t n) const {
+        const __int128 k = (__int128)period * cap;
+        return floor12((n + 1) * k) > floor12(n * k);
+    }
+    int64_t refresh_after(int64_t t) const override {
+        int64_t n = floordiv(t - phase, period) + 1;
+        while (!usable(n)) n++;
+        return phase + n * period;
+    }
+};
+
+// kmssink as DEV-P4a and DEV-P4b measured it: the flip at the first vblank after the push, the
+// return at the vblank after that, so at most one frame per two refreshes.
+struct KmsWait : Kms {
+    KmsWait(int64_t p, int64_t ph = 0) : Kms(p, ph) {}
+    std::pair<int64_t, int64_t> push(int64_t t) override {
+        const int64_t shown = refresh_after(t);
+        return {shown + period, shown};
+    }
+};
+
 // mrvideopace's streaming thread over `frames`: a frame enters when it is ready and the previous
-// push has returned; a kept frame is pushed at its release, a dropped one frees the thread at once.
+// push has returned, held when it waited for that push; a kept frame is pushed at its release, a
+// dropped one frees the thread at once.
 std::vector<Rec> drive(VideoPace& pace, const std::vector<Frame>& frames, Wayland* display = nullptr) {
     std::vector<Rec> out;
     out.reserve(frames.size());
@@ -90,8 +128,9 @@ std::vector<Rec> drive(VideoPace& pace, const std::vector<Frame>& frames, Waylan
     int64_t free_at = 0;
     for (const Frame& f : frames) {
         if (f.gap) pace.on_gap();
-        const int64_t arrival = !have_free || f.ready >= free_at ? f.ready : free_at;
-        const PaceDecision d = pace.on_frame(f.pts, f.dur, arrival, f.discont);
+        const bool held = have_free && f.ready < free_at;
+        const int64_t arrival = held ? free_at : f.ready;
+        const PaceDecision d = pace.on_frame(f.pts, f.dur, arrival, f.discont, held);
         int64_t shown = 0;
         if (d.rate_drop) {
             free_at = arrival;
@@ -101,6 +140,62 @@ std::vector<Rec> drive(VideoPace& pace, const std::vector<Frame>& frames, Waylan
             const std::pair<int64_t, int64_t> r = display->push(d.release_ns);
             free_at = r.first;
             shown = r.second;
+        }
+        have_free = true;
+        out.push_back(Rec{f.pts, arrival, d.release_ns, d.rate_drop, shown});
+    }
+    return out;
+}
+
+// S12's refresh as the element reads it once a second: 0008's from its feedback (the model's
+// refresh, once a frame has gone), else the last 4,096 returns counted in the prior or, without
+// one, in their 25th-percentile interval (B-162 F2); 0 before that.
+int64_t s12_refresh(const Wayland& display, const std::vector<int64_t>& returns, int64_t prior) {
+    if (returns.empty()) return 0;
+    if (!display.blocking()) return display.period;
+    const size_t from = returns.size() > 4096 ? returns.size() - 4096 : 0;
+    std::vector<int64_t> ivs;
+    for (size_t i = from + 1; i < returns.size(); i++)
+        if (returns[i] > returns[i - 1]) ivs.push_back(returns[i] - returns[i - 1]);
+    if (ivs.empty()) return 0;
+    std::sort(ivs.begin(), ivs.end());
+    const int64_t base = prior > 0 ? prior : ivs[ivs.size() / 4];
+    return display_period_from_returns(returns.data() + from, returns.size() - from, base).period_ns;
+}
+
+// drive with mrvideopace's display rate: at the first frame and then once a second of arrivals the
+// rate takes the prior and S12's refresh and the pace the rate's period; every kept push's return
+// goes to the rate, pressed when the frame left at once on the last push's return.
+std::vector<Rec> drive_rate(VideoPace& pace, DisplayRate& rate, const std::vector<Frame>& frames,
+                            Wayland* display, int64_t prior = 0) {
+    std::vector<Rec> out;
+    out.reserve(frames.size());
+    std::vector<int64_t> returns;
+    bool have_free = false, have_update = false;
+    int64_t free_at = 0, update = 0;
+    for (const Frame& f : frames) {
+        if (f.gap) pace.on_gap();
+        const bool held = have_free && f.ready < free_at;
+        const int64_t arrival = held ? free_at : f.ready;
+        if (!have_update || arrival >= update) {
+            rate.set_prior(prior);
+            rate.set_refresh(s12_refresh(*display, returns, prior));
+            DisplaySource source = DisplaySource::none;
+            const int64_t period = rate.period(&source);
+            pace.set_display(period, source);
+            update = arrival + SEC;
+            have_update = true;
+        }
+        const PaceDecision d = pace.on_frame(f.pts, f.dur, arrival, f.discont, held);
+        int64_t shown = 0;
+        if (d.rate_drop) {
+            free_at = arrival;
+        } else {
+            const std::pair<int64_t, int64_t> r = display->push(d.release_ns);
+            free_at = r.first;
+            shown = r.second;
+            returns.push_back(free_at);
+            rate.on_push(free_at, held && d.release_ns == arrival);
         }
         have_free = true;
         out.push_back(Rec{f.pts, arrival, d.release_ns, d.rate_drop, shown});
@@ -540,6 +635,144 @@ void test_stamp_jitter() {
     }
 }
 
+// --- 16 to 20: the rate the sink achieves (p4-3c, B-175) ---------------------------------------
+
+void test_slow_presenting_display() {
+    // Weston on the Pi 5 box's 60.038 Hz DSI presents HEVC 1080p60 at about 56.6 fps (DEV-P4b).
+    VideoPace pace;
+    DisplayRate rate;
+    const int64_t achieved = 1000000000000LL / 56600;
+    Capped display(DSI, 3700 * US, 56600);
+    const std::vector<Rec> rec = drive_rate(pace, rate, live(cadence(36000, 60, 1), P60), &display, DSI);
+    const PaceSummary s = pace.take();
+    const double want = expected_drops(rec, achieved);
+    const int64_t got = (int64_t)drop_indices(rec).size();
+    const std::vector<int64_t> late = release_lateness(slice(rec, 3600, rec.size()));
+    CHECK(fmt("16 60p on a 60.038 Hz display presenting at most 56.6 fps: drops = the presentation "
+              "deficit +- 1 %% over 10 min, %lld (want %.1f)", (long long)got, want).c_str(),
+          std::fabs((double)got - want) * 100 <= want);
+    CHECK(fmt("16 the decimation runs on the achieved period, not the refresh (%lld ns, %.3f %% off)",
+              (long long)s.display_period, 100.0 * (double)(s.display_period - achieved) / (double)achieved)
+              .c_str(),
+          s.display_source == DisplaySource::measured && std::llabs(s.display_period - achieved) * 200 <= achieved);
+    CHECK(fmt("16 release lateness flat within one of the display's frames after the first minute "
+              "(%.2f ms)", (double)spread(late) / MS).c_str(),
+          spread(late) <= s.display_period);
+    CHECK(fmt("16 the rate foresaw the drops: %lld of %lld were the sink's a period behind",
+              (long long)s.behind, (long long)got).c_str(),
+          (int64_t)s.behind * 10 <= got);
+}
+
+void test_kms_every_other_refresh() {
+    // kmssink on that DSI shows one frame per two refreshes (DEV-P4a, DEV-P4b).
+    const std::pair<int64_t, int64_t> runs[] = {{50, 20}, {60, 30}};
+    for (const auto& run : runs) {
+        const int64_t num = run.first, per_second = run.second;
+        VideoPace pace;
+        DisplayRate rate;
+        KmsWait display(DSI, 3700 * US);
+        const std::vector<Rec> rec =
+            drive_rate(pace, rate, live(cadence(600 * num, num, 1), SEC / num), &display, DSI);
+        const PaceSummary s = pace.take();
+        const int64_t drops = (int64_t)drop_indices(rec).size();
+        const double got = (double)drops / 600;
+        const std::vector<int64_t> late = release_lateness(slice(rec, (size_t)(60 * num), rec.size()));
+        CHECK(fmt("17 %lldp into kmssink presenting every second refresh at 60.038 Hz: %lld drops a "
+                  "second +- 1 %% (%.3f)", (long long)num, (long long)per_second, got).c_str(),
+              std::fabs(got - (double)per_second) * 100 <= (double)per_second);
+        CHECK(fmt("17 %lldp into that kmssink: release lateness flat within a frame after the first "
+                  "minute (%.2f ms), the period two refreshes", (long long)num, (double)spread(late) / MS)
+                  .c_str(),
+              spread(late) <= SEC / num && s.display_period == 2 * DSI);
+        CHECK(fmt("17 %lldp into that kmssink: the rate foresaw the drops once measured (%lld of %lld the "
+                  "sink's)", (long long)num, (long long)s.behind, (long long)drops).c_str(),
+              (int64_t)s.behind * 10 <= drops);
+    }
+}
+
+bool rate_is(const DisplayRate& rate, int64_t period, DisplaySource source) {
+    DisplaySource got = DisplaySource::none;
+    const int64_t p = rate.period(&got);
+    return p == period && got == source;
+}
+
+void test_display_rate() {
+    DisplayRate rate;
+    rate.set_prior(DSI);
+    rate.set_refresh(DSI);
+    for (int64_t k = 0; k <= 2000; k++) rate.on_push(k * P50, k > 0);   // 40 s of a sink taking 50/s
+    CHECK("18 the prior given and the measurement slower: the measurement rules",
+          rate_is(rate, P50, MEASURED) && rate.achieved() == P50);
+    DisplayRate paced;
+    paced.set_refresh(DSI);
+    for (int64_t k = 0; k <= 2000; k++) paced.on_push(k * P50, false);
+    CHECK("18 pushes the element paced (none left at once on the last return): the refresh stays",
+          rate_is(paced, DSI, MEASURED) && paced.achieved() == 0);
+    DisplayRate early;
+    for (int64_t k = 0; k <= 1000; k++) early.on_push(k * P50, k > 0);   // two windows only
+    CHECK("18 two windows do not make a rate yet", early.achieved() == 0 && rate_is(early, 0, DisplaySource::none));
+    for (int64_t k = 1; k <= 500; k++) rate.on_push(2000 * P50 + k * (P50 + P50 / 100), true);
+    CHECK(fmt("18 a window 1 %% long among five does not move the rate (%lld)", (long long)rate.achieved()).c_str(),
+          rate.windows() == 5 && rate.achieved() == P50);
+    rate.set_refresh(DSI * 101 / 100 + 1);
+    CHECK("18 the refresh moving more than 1 %: measured again", rate.achieved() == 0 && rate.windows() == 0);
+    for (int64_t k = 0; k <= 1500; k++) rate.on_push(k * 2 * DSI, k > 0);
+    rate.restart();
+    CHECK("18 a restart (new caps): measured again", rate.achieved() == 0 && rate.windows() == 0);
+}
+
+void test_keeps_up_as_before() {
+    {
+        VideoPace pace;
+        DisplayRate rate;
+        Wayland display(DSI, 3700 * US);
+        const std::vector<Rec> rec = drive_rate(pace, rate, live(cadence(6000, 50, 1), P50), &display, DSI);
+        const PaceSummary s = pace.take();
+        CHECK("19 50p on a 60.038 Hz display that presents every frame: no drop, nothing measured, the "
+              "refresh kept",
+              drop_indices(rec).empty() && rate.achieved() == 0 && s.display_period == DSI &&
+                  all_equal(release_lateness(rec), LATENCY));
+    }
+    VideoPace pace;
+    DisplayRate rate;
+    Wayland display(P50, 3700 * US);
+    const std::vector<Rec> rec = drive_rate(pace, rate, live(cadence(36000, 60, 1), P60), &display);
+    const PaceSummary s = pace.take();
+    const std::vector<int64_t> idx = drop_indices(rec);
+    std::vector<int64_t> late_idx;
+    for (int64_t i : idx)
+        if (i > 120) late_idx.push_back(i);
+    CHECK(fmt("19 60p on a 50 Hz display, no prior: its every refresh is its achieved period, 1 in 6 "
+              "after the first second (%lld drops)", (long long)idx.size()).c_str(),
+          s.display_period == P50 && all_equal(spacings(late_idx), 6) &&
+              std::fabs((double)idx.size() - expected_drops(rec, P50)) <= 2);
+}
+
+// Capped, frozen 300 ms from 35 s: inside the third window, the one that makes the rate.
+struct Hiccup : Capped {
+    Hiccup(int64_t p, int64_t ph, int64_t cap_mhz) : Capped(p, ph, cap_mhz) {}
+    int64_t refresh_after(int64_t t) const override {
+        int64_t v = Capped::refresh_after(t);
+        while (35 * SEC <= v && v < 35 * SEC + 300 * MS) v = Capped::refresh_after(v);
+        return v;
+    }
+};
+
+void test_hiccup_window() {
+    VideoPace pace;
+    DisplayRate rate;
+    const int64_t achieved = 1000000000000LL / 56600;
+    Hiccup display(DSI, 3700 * US, 56600);
+    const std::vector<Rec> rec = drive_rate(pace, rate, live(cadence(18000, 60, 1), P60), &display, DSI);
+    const PaceSummary s = pace.take();
+    const double want = expected_drops(rec, achieved) + (double)(300 * MS) / (double)achieved;
+    const int64_t got = (int64_t)drop_indices(rec).size();
+    CHECK(fmt("20 a 300 ms freeze inside a window of the measurement does not move the rate (%lld ns), "
+              "drops the deficit and the freeze +- 1 %% (%lld, want %.1f)",
+              (long long)s.display_period, (long long)got, want).c_str(),
+          std::llabs(s.display_period - achieved) * 200 <= achieved && std::fabs((double)got - want) * 100 <= want);
+}
+
 void (*const CASES[])() = {test_50p_on_60hz,         test_60p_on_50hz,
                            test_60_on_5994,          test_50p_on_slow_display_measured,
                            test_50p_on_matched_display, test_slow_display_nominal,
@@ -547,7 +780,9 @@ void (*const CASES[])() = {test_50p_on_60hz,         test_60p_on_50hz,
                            test_idr_spikes,          test_wrap_point,
                            test_display_period,      test_60p_on_slow_50hz,
                            test_foreign_clock_source, test_faster_display_banks_one_frame,
-                           test_stamp_jitter};
+                           test_stamp_jitter,        test_slow_presenting_display,
+                           test_kms_every_other_refresh, test_display_rate,
+                           test_keeps_up_as_before,  test_hiccup_window};
 
 }  // namespace
 
