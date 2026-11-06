@@ -133,9 +133,28 @@ describe('pollClockSource', () => {
         expect(read).toHaveBeenCalledWith(PTP_STATUS_ENV);
     });
 
+    it('PTP turned off on the fallback: status.env stays in /run, the fallback goes', async () => {
+        // The Device Manager's disable stops ptp4l and starts chronyd; ptp4l's runtime
+        // directory, status.env in it, is kept.
+        const read = async () => 'PTP_DOMAIN=0\nPTP_SLAVE_ONLY=1\nPTP_NTP_FALLBACK=1\n';
+        const units = (ptp4l: string) =>
+            vi.fn(async (cmd: string) => (cmd === 'systemctl' ? `active\n${ptp4l}\n` : SYNCED));
+        expect(await pollClockSource(units('inactive'), { readText: read })).toMatchObject({
+            source: 'chrony',
+            ntpFallback: false,
+        });
+        // Any other state keeps it: a restart's stop, or a failed ptp4l, which leaves a PTP box
+        // on internet time rather than making it an NTP box.
+        for (const ptp4l of ['deactivating', 'failed']) {
+            const poll = await pollClockSource(units(ptp4l), { readText: read });
+            expect(poll).toMatchObject({ source: 'chrony', ntpFallback: true });
+        }
+    });
+
     it('one status.env read a poll gives pmc its domain; a box without one has no fallback', async () => {
-        const exec = vi.fn(async (cmd: string) =>
-            cmd === 'systemctl' ? 'inactive\nactive\n' : '',
+        const exec = vi.fn(
+            async (cmd: string): Promise<string> =>
+                cmd === 'systemctl' ? 'inactive\nactive\n' : '',
         );
         const read = vi.fn(async () => 'PTP_DOMAIN=127\nPTP_SLAVE_ONLY=1\nPTP_NTP_FALLBACK=0\n');
         expect(await pollClockSource(exec, { readText: read })).toEqual({

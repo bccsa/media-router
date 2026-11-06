@@ -527,9 +527,12 @@ describe("HouseClock on a slave-only box's NTP fallback (B-215)", () => {
 
     it('a change of the fallback alone is a state change', async () => {
         vi.useFakeTimers();
-        // The fallback's start runs chronyd before it writes status.env.
+        // The fallback's start runs chronyd before it writes status.env; ptp4l runs on.
         let env = slaveOnlyEnv(0);
-        const h = fakeSidecar({ readText: async () => env });
+        const h = fakeSidecar({
+            exec: async (cmd) => (cmd === 'systemctl' ? 'active\nactive\n' : ''),
+            readText: async () => env,
+        });
         clock = h.clock;
         h.clock.start();
         await vi.advanceTimersByTimeAsync(0);

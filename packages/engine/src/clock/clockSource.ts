@@ -13,8 +13,14 @@ export const execStdout: ExecStdout = (cmd, args) =>
 const UNITS = ['chronyd.service', 'media-router-ptp4l.service'];
 
 /** `systemctl is-active` prints one state per unit, in argument order. */
-export function sourceFromUnits(stdout: string): TimeSyncSource {
+function unitStates(stdout: string): { chrony?: string; ptp?: string } {
     const [chrony, ptp] = stdout.split('\n').map((l) => l.trim());
+    return { chrony, ptp };
+}
+
+/** Who owns the clock, from `systemctl is-active chronyd ptp4l`. */
+export function sourceFromUnits(stdout: string): TimeSyncSource {
+    const { chrony, ptp } = unitStates(stdout);
     // On a PTP box chronyd runs only while it owns the clock (a master-capable box as
     // grandmaster, the boot wait, or a slave-only box on the NTP fallback), so chronyd active
     // means chrony.
@@ -40,7 +46,8 @@ export interface ClockSourcePoll {
     source: TimeSyncSource;
     chrony?: ChronyTracking;
     ptp?: PtpClockState;
-    /** From status.env, read once a poll (it gives pmc its domain too); absent without it. */
+    /** From status.env, read once a poll (it gives pmc its domain too); false while ptp4l's unit
+     *  is inactive, absent without the file. */
     ntpFallback?: boolean;
 }
 
@@ -55,7 +62,9 @@ export async function pollClockSource(
         readPtpStatusEnv(opts.readText),
     ]);
     const poll: ClockSourcePoll = { source: sourceFromUnits(units) };
-    if (env) poll.ntpFallback = env.ntpFallback;
+    // status.env outlives ptp4l (its runtime directory is kept), so PTP turned off on the
+    // fallback leaves it behind: the fallback holds only while ptp4l's unit is not inactive.
+    if (env) poll.ntpFallback = env.ntpFallback && unitStates(units).ptp !== 'inactive';
     if (poll.source === 'ptp' && opts.readPtp !== false) {
         const ptp = await readPtpClock(exec, env?.domain ?? 0);
         if (ptp) poll.ptp = ptp;

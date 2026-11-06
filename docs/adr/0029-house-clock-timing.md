@@ -182,12 +182,14 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   7347a244 and 608ef45c, 2026-11-05; the owner's: "yes it should siwthc to
   ntc, but when the master comes back, go to ptp again"). The hand-over:
   - **To NTP** after 120 s without a usable PTP lock, counted from PTP's
-    start (each ptp4l start: at boot, or after a Device Manager save that
-    changes a PTP setting) or, once a master has been lost, from its last
-    lock. `mr-ptp-owner` judges a GET TIME_STATUS_NP every 5 s: a usable
-    lock is a port that follows a master (SLAVE, or UNCALIBRATED while
-    ptp4l runs free), syncs arriving and an offset that moved at most 1 ms
-    since the last reading.
+    start (each ptp4l start that restarts the watcher: at boot, or after a
+    Device Manager save that changes a PTP setting; a crash restart the
+    watcher outlives restarts the count only when that start changed side,
+    MR-048c) or, once a master has been lost, from its last lock.
+    `mr-ptp-owner` judges a GET TIME_STATUS_NP every 5 s: a usable lock is a
+    port that follows a master (SLAVE, or UNCALIBRATED while ptp4l runs
+    free), syncs arriving and an offset that moved at most 1 ms since the
+    last reading.
   - **Back to PTP** once a master's lock has held steady for 30 s unbroken
     (five of AES67's 6 s announce timeouts); any break starts the 30 s
     again, so a master that comes and goes hands nothing over.
@@ -215,7 +217,11 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   a new watcher starts with ptp4l, and one that outlived a restart follows
   that start's file before its next decision (MR-048c). The engine and the
   Device Manager only read it, never write it: the engine once a source
-  poll (below), the Device Manager for its PTP page.
+  poll (below), the Device Manager for its PTP page. It stays in `/run`
+  when ptp4l stops (ptp4l's runtime directory is kept), so PTP turned off
+  leaves the last start's file behind: the Device Manager's page shows its
+  fallback lines only while ptp4l is active, and the engine counts the
+  fallback only while ptp4l's unit is not inactive (B-215).
 - **A grandmaster's boot: chrony first, one step, then ptp4l.** The setup
   script (ptp4l's `ExecStartPre`) removes the token and stops chronyd on a
   slave-only box. On a master-capable box it writes the token; if chronyd
@@ -527,10 +533,13 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   the poll's round trip. Each poll also reads `status.env` once
   (`ptpStatus.ts` `readPtpStatusEnv`), the read that gives pmc its domain:
   `TimeSyncState.ntpFallback` is true while it says `PTP_SLAVE_ONLY=1` and
-  `PTP_NTP_FALLBACK=1`, false on any other PTP box, and absent on a box
-  without the file (B-215, 2026-11-06). A missing key reads 0, the setup's
-  default, so a setup older than the fallback reads as no fallback. No new
-  poll and no privilege: the file is 0644 in `/run`.
+  `PTP_NTP_FALLBACK=1` and ptp4l's unit is not `inactive` (PTP turned off
+  leaves the file behind; a restart's `activating` or `deactivating`, and a
+  `failed` ptp4l, which leaves the box on internet time, keep the flag),
+  false on any other PTP box, and absent on a box without the file (B-215,
+  2026-11-06). A missing key reads 0, the setup's default, so a setup older
+  than the fallback reads as no fallback. No new poll and no privilege: the
+  file is 0644 in `/run`.
 - **Where it shows.** `SystemStats.timeSync` (`packages/shared-types/src/timeSync.ts`:
   source, synced, traceable, TAI−UTC, errors, frequency, wait, epoch seq,
   reason and ISO time, E as a string) goes to `/system/timeSync` in the
