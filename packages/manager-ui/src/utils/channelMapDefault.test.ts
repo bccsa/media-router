@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-// The engine's own table, by path: the browser bundle never imports a plugin.
+// The engine's own table, by path: the browser bundle never imports a plugin. Its types come
+// from the engine's build, which package.json's devDependency on the engine orders first.
 import { default302mChannelMap } from '../../../../plugins/audio-302m-core/engine/defaultChannelMap';
 import { default302mMap, gainDb } from './channelMapDefault';
 

@@ -21,6 +21,7 @@
         "vuedraggable": "^4.1.0"
     },
     "devDependencies": {
+        "@media-router/engine": "workspace:*",
         "@tailwindcss/vite": "^4.1.8",
         "@vitejs/plugin-vue": "^5.2.4",
         "@vue/test-utils": "^2.4.6",
