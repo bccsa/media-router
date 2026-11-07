@@ -1,5 +1,6 @@
 // A launch's catch-up (B-206): the native runner skips what a module's inputs deliver stamped
-// before its pipeline first plays (`PipelineDescription.catchUp`) and reports it once per launch.
+// before its pipeline first plays (`PipelineDescription.catchUp`), and at its render element what
+// queued before that (B-167), and reports it once per launch.
 
 /** Plugin-event channel (runner `catch_up.h` EVENT). */
 export const CATCH_UP_EVENT = 'catch_up';

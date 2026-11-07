@@ -4,9 +4,9 @@ import {
     GstPluginBase,
     LAT_IN_PREFIX,
     PLAYOUT_WATCH_EVENT,
-    backlogShedConfig,
     buildAsrc,
     buildLatenessTap,
+    buildOutputPrefill,
     pulsePinnedStreamProps,
     readPlayoutWatch,
     type LiveInputBranch,
@@ -20,12 +20,7 @@ import {
     mixInputDemuxes,
     type AudioMixSource,
 } from '@media-router/plugin-audio-302m-core';
-import {
-    SINK_BUFFER_US,
-    SLAVE_METHOD_CUSTOM,
-    audio302mTsOffsetNs,
-    seedsWithin,
-} from './audio302mTiming.js';
+import { SINK_BUFFER_US, audio302mTsOffsetNs, seedsWithin } from './audio302mTiming.js';
 import { launchCatchUpText } from './launchCatchUp.js';
 import { buildOutputPlacement } from './outputPlacement.js';
 import { SilentOutputWatch } from './silentOutputWatch.js';
@@ -39,6 +34,8 @@ const LIVE_UPSTREAM = 'identity name=live_upstream sync=true';
 const OUT_ASRC = 'outasrc';
 
 const INPUT_PORT_ID = 'audio-in';
+/** The render tap: where the mix's content time first plays (B-167's render catch-up). */
+const RENDER_TAP = 'lat_render';
 /** The fan-in's name prefix: `buildAudioMixInput`'s default, so one source keeps its string. */
 const MIXER = 'mixin';
 
@@ -52,22 +49,12 @@ const MIXER = 'mixin';
  * (`pulsesink device=…`); it is not a routing fabric here: no remap-sink,
  * no pw-links, no pactl volume.
  *
- * TIMING. Under the engine-wide time-sync contract (ADR-0005) this sink is a
- * presentation leg like the video-player's and the audio-decoder's: it
- * presents at `stamped-time + D` on the house clock — every input decodes on
- * content time (`mrtsdemux`, the formula demux), `sync=true`, `ts-offset`
- * = the route's playout offset (decision 4) plus the `lipSyncMs` trim,
- * `provide-clock=false`, `slave-method=custom` (below), `max-lateness=-1`
- * (a late timeline — mid-stream join, restart backlog — drains instead of
- * being dropped into silence, the same disarm the audio-decoder uses), and
- * the backlog shedder armed at `outasrc`'s input (below). Field, the Pi 5 test box,
- * 2026-09-03: with the video-player paced at stamp + D and this sink on
- * `sync=false`, audio played on arrival + whatever PipeWire and the queues
- * happened to hold — 50–200 ms EARLY, re-rolled on every restart. Two legs of
- * one route can only agree if both schedule off the same number.
+ * TIMING (B-217, MR-057). The sink runs `sync=false` behind a 40 ms non-leaky prefill and no shedder
+ * is armed: late audio plays late, never cut to silence as `sync=true` did on a loaded box. Its
+ * `ts-offset` (D + `lipSyncMs`) is still pushed and times nothing; the render tap shows the lateness.
  *
  * CLOCKS (house-clock part 4.4). A source on a clock of its own is resampled to house rate where
- * it is decoded; `outasrc` follows the device's clock through the sink's custom slaving, so the
+ * it is decoded; `outasrc` follows the device's clock, read on a timer (B-166), so the
  * sink never drops or repeats samples for drift. One resampler per path (OQ-23).
  *
  * CHANNEL PLACEMENT. `channels` is the mix width (1–8), `firstChannel` where
@@ -90,10 +77,9 @@ const MIXER = 'mixin';
  *   watchdog once PipeWire and the device are back, not restarted in a loop meanwhile (B-195).
  * - NEVER a default device (broadcast rule): unconfigured device = health
  *   error, no pipeline.
- * - Plays nothing (its mixer delivers no audio for 5 s, or the runner's playout watch sees every
- *   buffer miss the sink for 1 s): a warning, not ok; a stalled mixer is relaunched once (B-197,
- *   B-206). A launch skips what its inputs deliver from before it plays (B-206). A miss that a
- *   raise of its route did not change is how its sink plays, held, not silence (B-210).
+ * - Plays nothing (its mixer delivers no audio for 5 s): a warning, not ok; a stalled mixer is
+ *   relaunched once (B-197). A late feed is played, not "Plays nothing" (B-217). A launch skips
+ *   what its inputs deliver from before it plays (B-206).
  */
 export class AudioOutput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'lipSyncMs'];
@@ -176,12 +162,13 @@ export class AudioOutput302mModule extends GstPluginBase {
         this.silent.onPlayout(watch.playing, watch.lateMs);
     }
 
-    /** One INFO line per launch that skipped its inputs' backlog (B-206). */
+    /** One INFO line per launch that skipped its inputs' backlog (B-206) or its mix's (B-167). */
     private logCatchUp(payload: unknown): void {
         const router = this.services?.mediaRouter;
         const text = launchCatchUpText(payload, {
             sources: this.sources(),
             name: (id) => router?.moduleName?.(id) ?? id,
+            render: { element: RENDER_TAP, label: 'the mix' },
         });
         if (text) this.log.info({ catchUp: payload }, text);
     }
@@ -336,18 +323,17 @@ export class AudioOutput302mModule extends GstPluginBase {
             bypassBelowPpm: single ? DECODE_BYPASS_PPM : 0,
         });
 
-        // Present at stamped time + D on the house clock (see the class comment). `name=sink` is
-        // what the live offset push, the shedder's budget and outasrc address; audioconvert and
-        // outasrc (no out-rate: the device's) let pulsesink negotiate the format and rate it wants.
+        // `name=sink` is what the live offset push and outasrc address; audioconvert and outasrc
+        // (no out-rate: the device's) let pulsesink negotiate the format and rate it wants.
         const sink =
-            `pulsesink name=sink device=${device} sync=true provide-clock=false` +
-            ` slave-method=${SLAVE_METHOD_CUSTOM} max-lateness=-1 buffer-time=${SINK_BUFFER_US}` +
+            `pulsesink name=sink device=${device} sync=false provide-clock=false` +
+            ` max-lateness=-1 buffer-time=${SINK_BUFFER_US}` +
             ` ts-offset=${tsOffsetNs} ${pulsePinnedStreamProps()}`;
         const chain = [
             `${continuationName}.`,
             LIVE_UPSTREAM,
             // Render lateness is read before outasrc, where PTS is still content time (part 4.4).
-            buildLatenessTap('lat_render'),
+            buildLatenessTap(RENDER_TAP),
             'audioconvert',
             outAsrc,
             `volume name=vol volume=${(volumePct / 100).toFixed(2)}`,
@@ -355,6 +341,8 @@ export class AudioOutput302mModule extends GstPluginBase {
             // Placement (if any) sits between the VU and the sink: the level meter
             // reads the mix, the sink receives the device-wide spread.
             placement.fragment,
+            // The ring's start margin; never leaks: a late or bursty feed waits, it is not dropped.
+            buildOutputPrefill(),
             sink,
         ];
         const pipeline = `${fragment} ${chain.filter((e) => e).join(' ! ')}`;
@@ -366,7 +354,7 @@ export class AudioOutput302mModule extends GstPluginBase {
             firstChannel,
             lastChannel: firstChannel - 1 + channels,
             ...(deviceChannels ? { deviceChannels } : {}),
-            timing: 'house clock, playout offset',
+            timing: 'plays as it arrives, late audio late',
             tsOffsetMs: Math.round(tsOffsetNs / 1_000_000),
         });
         this.setHealth('ok');
@@ -375,23 +363,17 @@ export class AudioOutput302mModule extends GstPluginBase {
             pipeline,
             ...(inputs ? { liveInputs: inputs } : {}),
             // What an input delivers from before this launch plays is its outage, skipped as TS at
-            // each input's ingress tap: never decoded, never in the mix or its pace (B-206).
-            catchUp: { prefix: LAT_IN_PREFIX },
+            // each input's ingress tap (B-206); once, at the render tap, what the mix queued before
+            // it first played, else a sync=false sink keeps that wait as delay for good (B-167).
+            catchUp: { prefix: LAT_IN_PREFIX, render: RENDER_TAP },
             restartOnError: true,
             // Audio only, nothing to drain; and the mixer arm's aligners hold every EOS
             // (hold-on-eos), so a drain would wait out its 6 s timeout on each stop or rebuild.
             eosDrain: false,
             pipeWireElements: ['sink'],
             timingSink: { element: 'sink', kind: 'audio' },
-            // The latency ratchet guard of this `sync=true` leg (backlogShed.ts), read and shed at
-            // outasrc's input, the last pad on content time: after it the PTS run on the device's
-            // clock (part 4.4). Whole PCM buffers, not keyframe-aligned; a click at most a minute.
-            backlogShed: backlogShedConfig(this.services, {
-                element: OUT_ASRC,
-                sink: 'sink',
-                keyframeAligned: false,
-                watchPlayout: true,
-            }),
+            // No backlog shedder (B-166): on this `sync=false` sink its budget, ts-offset plus the
+            // sink's latency, reads no latency, so every buffer would read late by its upstream's.
         };
     }
 }

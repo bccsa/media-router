@@ -105,7 +105,7 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('volume name=vol volume=0.80');
         expect(desc!.pipeline).toContain('level post-messages=true');
         expect(desc!.pipeline).toContain(
-            'pulsesink name=sink device=alsa_output.usb-foo sync=true',
+            'pulsesink name=sink device=alsa_output.usb-foo sync=false',
         );
         expect(desc!.restartOnError).toBe(true);
     });
@@ -132,7 +132,7 @@ describe('AudioOutput302mModule.buildPipeline', () => {
                 ' ! mrasrc name=outasrc bypass-below-ppm=0.5 device-sink=sink ! volume',
         );
         expect(desc!.pipeline).toContain(
-            'pulsesink name=sink device=alsa_output.usb-foo sync=true',
+            'pulsesink name=sink device=alsa_output.usb-foo sync=false',
         );
     });
 
@@ -182,13 +182,15 @@ describe('AudioOutput302mModule.buildPipeline', () => {
     });
 
     it('the default range on a stereo device, or one of unknown width, keeps the string byte-for-byte (B-214)', () => {
-        // v2.0.0.101's strings (b9c24948): every translation station's SSL 2 output.
+        // v2.0.0.101's strings (b9c24948): every translation station's SSL 2 output; its sink end
+        // as B-217 has it (the prefill, sync=false, no slave-method).
         const tail =
             ' ! capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=2" mixin_out.' +
             ' ! identity name=live_upstream sync=true ! mrlateness name=lat_render reference=running-time' +
             ' ! audioconvert ! mrasrc name=outasrc%ASRC% device-sink=sink ! volume name=vol volume=1.00' +
             ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
-            ' ! pulsesink name=sink device=alsa_output.usb-foo sync=true provide-clock=false slave-method=3' +
+            ' ! queue name=prefill leaky=0 min-threshold-time=40000000 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0' +
+            ' ! pulsesink name=sink device=alsa_output.usb-foo sync=false provide-clock=false' +
             ' max-lateness=-1 buffer-time=100000 ts-offset=0' +
             ' stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true"';
         const ingress = (i: number, hash: string) =>
@@ -235,7 +237,9 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         });
         expect(mono!.pipeline).toContain(
             'interval=100000000 ! audioconvert mix-matrix="<<(float)1.0000>, <(float)0.0000>>"' +
-                ' ! audio/x-raw,channels=2,channel-mask=(bitmask)0x0 ! pulsesink',
+                ' ! audio/x-raw,channels=2,channel-mask=(bitmask)0x0 ! queue name=prefill' +
+                ' leaky=0 min-threshold-time=40000000 max-size-time=1000000000 max-size-buffers=0' +
+                ' max-size-bytes=0 ! pulsesink',
         );
         // One channel is mono whatever its mask: the mix is not pinned, the source not matrixed.
         expect(mono!.pipeline).toContain('caps="audio/x-raw,rate=48000,channels=1"');
@@ -249,7 +253,9 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(stereo!.pipeline).toContain(
             'interval=100000000 ! capssetter caps="audio/x-raw,channel-mask=(bitmask)0x0"' +
                 ' ! audioconvert mix-matrix="<<(float)1.0000, (float)0.0000>, <(float)0.0000, (float)1.0000>>"' +
-                ' ! audio/x-raw,channels=2,channel-mask=(bitmask)0x0 ! pulsesink',
+                ' ! audio/x-raw,channels=2,channel-mask=(bitmask)0x0 ! queue name=prefill' +
+                ' leaky=0 min-threshold-time=40000000 max-size-time=1000000000 max-size-buffers=0' +
+                ' max-size-bytes=0 ! pulsesink',
         );
     });
 
@@ -301,7 +307,7 @@ describe('AudioOutput302mModule.buildPipeline', () => {
             'capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=8,channel-mask=(bitmask)0xc3f"',
         );
         expect(p).toMatch(
-            /level post-messages=true[^!]*! capssetter caps="audio\/x-raw,channel-mask=\(bitmask\)0x0" ! audioconvert mix-matrix="<[^"]*>" ! audio\/x-raw,channels=16,channel-mask=\(bitmask\)0x0 ! pulsesink name=sink device=alsa_output\.usb-foo sync=true [^!]*stream-properties="[^"]*"$/,
+            /level post-messages=true[^!]*! capssetter caps="audio\/x-raw,channel-mask=\(bitmask\)0x0" ! audioconvert mix-matrix="<[^"]*>" ! audio\/x-raw,channels=16,channel-mask=\(bitmask\)0x0 ! queue name=prefill [^!]* ! pulsesink name=sink device=alsa_output\.usb-foo sync=false [^!]*stream-properties="[^"]*"$/,
         );
         // 16 wide — up to the last channel used, never the card's 32.
         // Row 8 (device channel 9) carries mix channel 0: the first lit cell.
@@ -333,10 +339,10 @@ describe('AudioOutput302mModule.buildPipeline', () => {
             firstChannel: 3,
         });
         expect(desc!.pipeline).toContain(
-            'channel-mask=(bitmask)0x0 ! pulsesink name=sink device=alsa_output.usb-foo sync=true' +
-                ' provide-clock=false slave-method=3 max-lateness=-1 buffer-time=100000 ts-offset=200000000',
+            'channel-mask=(bitmask)0x0 ! queue name=prefill leaky=0 min-threshold-time=40000000 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0' +
+                ' ! pulsesink name=sink device=alsa_output.usb-foo sync=false' +
+                ' provide-clock=false max-lateness=-1 buffer-time=100000 ts-offset=200000000',
         );
-        expect(desc!.backlogShed).toMatchObject({ element: 'outasrc', sink: 'sink' });
     });
 
     it('health error (and no pipeline) when the range runs past the device', () => {
@@ -362,26 +368,16 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         );
     });
 
-    it('re-anchor on (ADR-0005 2026-10-08): the shed config asks to raise, never shed', () => {
-        const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
-        module.services.playoutReanchor = true;
-        expect(module.buildPipeline({ device: 'alsa_output.usb-foo' })!.backlogShed).toMatchObject({
-            element: 'outasrc',
-            sink: 'sink',
-            keyframeAligned: false,
-            onLateness: 'reanchor',
-            reanchorToleranceMs: 40,
-            reanchorHoldMs: 15000,
-            reanchorRetryMs: 30000,
-            rebaseHoldMs: 3000,
-            rebaseCooldownMs: 60000,
-        });
-    });
-
-    it('re-anchor off: the shed config has none of the re-anchor keys', () => {
-        const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
-        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
-        expect(desc!.backlogShed).not.toHaveProperty('onLateness');
+    it('no backlog shedder, re-anchor on or off (B-166): on its sync=false sink the budget reads no latency', () => {
+        for (const reanchor of [true, false]) {
+            for (const sources of [1, 2]) {
+                const { module } = makeModule({ sources, playout: { playoutOffsetMs: 300 } });
+                module.services.playoutReanchor = reanchor;
+                const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' })!;
+                expect(desc.backlogShed).toBeUndefined();
+                expect(desc.pipeline).toContain(' sync=false ');
+            }
+        }
     });
 });
 
@@ -390,7 +386,8 @@ describe('AudioOutput302mModule: a launch plays at its own D, whatever its sourc
         const mixed = makeModule({ sources: 2 }).module.buildPipeline({
             device: 'alsa_output.usb-foo',
         });
-        expect(mixed!.catchUp).toEqual({ prefix: 'lat_busin' });
+        // ... and once, at the render tap, what the mix queued before it first played (B-167).
+        expect(mixed!.catchUp).toEqual({ prefix: 'lat_busin', render: 'lat_render' });
         // Every input of the launch (and of a live add) has its tap under that prefix, before
         // its ingress queue: the TS is dropped in the thread that reads the socket.
         const taps = launched(mixed!).match(
@@ -400,15 +397,8 @@ describe('AudioOutput302mModule: a launch plays at its own D, whatever its sourc
         const direct = makeModule({ sources: 1 }).module.buildPipeline({
             device: 'alsa_output.usb-foo',
         });
-        expect(direct!.catchUp).toEqual({ prefix: 'lat_busin' });
+        expect(direct!.catchUp).toEqual({ prefix: 'lat_busin', render: 'lat_render' });
         expect(direct!.pipeline).toContain('mrlateness name=lat_busin_');
-    });
-
-    it('its shed probe watches the playout: the sink missing for a second is reported', () => {
-        const desc = makeModule({ sources: 2 }).module.buildPipeline({
-            device: 'alsa_output.usb-foo',
-        });
-        expect(desc!.backlogShed!.missWatchMs).toBe(1000);
     });
 
     it('a seed past its ts-offset (a producer read during its own outage burst) starts there: the sink keeps its ring', () => {
@@ -513,20 +503,15 @@ describe('AudioOutput302mModule: a second source on a direct pipeline (B-194)', 
 });
 
 describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-0005)', () => {
-    it('presents at stamp + D on the house clock: sync=true, ts-offset=D minus the ring it declares, custom-slaved, never drops late', () => {
+    it('the sink sync=false (B-166), no slave-method, no shedder, ts-offset still D minus the ring it declares, never drops late', () => {
         const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
         expect(desc!.pipeline).toContain(
-            '! pulsesink name=sink device=alsa_output.usb-foo sync=true provide-clock=false' +
-                ' slave-method=3 max-lateness=-1 buffer-time=100000 ts-offset=200000000',
+            '! pulsesink name=sink device=alsa_output.usb-foo sync=false provide-clock=false' +
+                ' max-lateness=-1 buffer-time=100000 ts-offset=200000000',
         );
-        expect(desc!.pipeline).not.toContain('sync=false');
-        // The latency-ratchet guard, at outasrc's input (content time), whole-buffer.
-        expect(desc!.backlogShed).toMatchObject({
-            element: 'outasrc',
-            sink: 'sink',
-            keyframeAligned: false,
-        });
+        expect(desc!.pipeline).not.toContain('slave-method');
+        expect(desc!.backlogShed).toBeUndefined();
         // …and the input on content time from the formula demux: nothing to align to stamps.
         expect(desc!.pipeline).toContain(
             'mrtsdemux name=mixin_demux0 select=audio/x-smpte-302m ! avdec_s302m',
@@ -589,7 +574,7 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
         }
     });
 
-    it('follows the device clock: outasrc on the sink by name, the sink custom-slaved, no audioresample, no skew (WI-P3-15)', () => {
+    it('follows the device clock: outasrc on the sink by name, read on a timer, no audioresample, no skew (WI-P3-15, B-166)', () => {
         for (const sources of [1, 2, 3]) {
             for (const deviceChannels of [undefined, 32]) {
                 const { module } = makeModule({ sources, deviceChannels });
@@ -598,9 +583,10 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
                     ...(deviceChannels ? { channels: 2, firstChannel: 3 } : {}),
                 })!.pipeline;
                 expect(p).not.toContain('audioresample');
-                expect(p).not.toMatch(/slave-method=(1|skew)\b/);
-                expect(p).toContain(' ! pulsesink name=sink device=alsa_output.usb-foo ');
-                expect(p).toContain(' slave-method=3 ');
+                expect(p).not.toContain('slave-method');
+                expect(p).toContain(
+                    ' ! pulsesink name=sink device=alsa_output.usb-foo sync=false ',
+                );
                 expect(p.match(/ ! mrasrc name=outasrc [^!]*device-sink=sink /g)).toHaveLength(1);
             }
         }
@@ -639,13 +625,11 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
         }
     });
 
-    it("sheds at outasrc's input, on content time: after it the PTS run on the device's clock", () => {
+    it("outasrc follows the sink it names, both arms: after it the PTS run on the device's clock", () => {
         for (const sources of [1, 2]) {
             const desc = makeModule({ sources }).module.buildPipeline({
                 device: 'alsa_output.usb-foo',
             })!;
-            // The shed point is the element's sink pad; the budget is the sink's ts-offset + latency.
-            expect(desc.backlogShed).toMatchObject({ element: 'outasrc', sink: 'sink' });
             expect(desc.pipeline).toMatch(
                 / ! audioconvert ! mrasrc name=outasrc [^!]*device-sink=sink /,
             );

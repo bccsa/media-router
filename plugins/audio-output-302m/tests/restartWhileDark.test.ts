@@ -193,24 +193,16 @@ describe.skipIf(skip !== null)(
             expect(sounds(L, 1000)).toBe(true);
         });
 
-        it('an output whose mix arrives past its playout time says so, not ok, and withdraws it once it plays', async () => {
-            // The leg is 500 ms late on a route left at D 60: nothing plays until the route is raised.
+        it('an output whose mix arrives past its D plays it as it comes (B-166: the sink runs sync=false): no warning, no raise', async () => {
+            // The leg is 500 ms late on a route left at D 60. The sink no longer waits for D and
+            // nothing reads lateness past it (no shedder), so the mix plays on arrival.
             const e = await start({ relay: { delayMs: 500 } });
-            const warned = await until(
-                () =>
-                    /^Plays nothing: every buffer reaches the sink \d+ ms past/.test(
-                        e.out().getState().error ?? '',
-                    ),
-                12_000,
-            );
-            expect(warned).toBe(true);
-            expect(e.out().getState().health).toBe('warning');
-            expect(sounds(L, 2000)).toBe(false);
-            // The re-anchor raises the route after its 15 s hold; then it plays and says nothing.
-            expect(await soundsWithin(L, 40_000)).toBe(true);
-            expect(
-                await until(() => !/^Plays nothing/.test(e.out().getState().error ?? ''), 10_000),
-            ).toBe(true);
+            expect(await soundsWithin(L, 12_000)).toBe(true);
+            expect(await soundsWithin(R, 6000)).toBe(true);
+            await sleep(3000);
+            expect(sounds(L, 2000)).toBe(true);
+            expect(e.out().getState().error ?? '').not.toMatch(/^Plays nothing/);
+            expect(e.router.getRoutePlayoutRaiseMs('out')).toBe(0);
         });
     },
 );

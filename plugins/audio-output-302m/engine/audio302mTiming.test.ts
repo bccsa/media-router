@@ -3,7 +3,6 @@ import {
     audio302mTsOffsetNs,
     SINK_BUFFER_US,
     SINK_DECLARED_LATENCY_MS,
-    SLAVE_METHOD_CUSTOM,
 } from './audio302mTiming.js';
 
 /** Services shaped as `effectivePlayoutOffsetNs` reads them. */
@@ -43,10 +42,8 @@ describe('audio302mTsOffsetNs', () => {
         expect(audio302mTsOffsetNs(services({ engineMs: 50 }), {})).toBe(0);
     });
 
-    it('pins the ring the field tuning was measured against, and custom slaving (no skew)', () => {
+    it('pins the ring the field tuning was measured against', () => {
         expect(SINK_BUFFER_US).toBe(100_000);
         expect(SINK_DECLARED_LATENCY_MS).toBe(100);
-        // The output ASRC follows the device through the sink's custom slaving (WI-P3-15).
-        expect(SLAVE_METHOD_CUSTOM).toBe(3);
     });
 });

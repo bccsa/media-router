@@ -15,60 +15,25 @@ behaviour it keeps bit for bit. Phase 3 adds, by configuration:
     drained first. An envelope step moves the timeline, not the content: labels re-anchored.
     An unflagged PTS hole past the bound is lost time, a step back past it a break (B-148).
   - device (`device`): the commanded ratio is the decode term times the device term
-    (1 + eps_dev, from AsrcDeviceLock on the sink's (itime, etime) pairs); the output counter is
-    contiguous from the first PTS and stays on the device timeline across a break: a new epoch
-    starts at the last content's label end plus the gap at the device ratio (B-148).
+    (1 + eps_dev, from asrc_device_ref.DeviceTerm on the device sink's clock read on a timer,
+    B-166); the output counter is contiguous from the first PTS and stays on the device timeline
+    across a break: a new epoch starts at the last content's label end plus the gap at the device
+    ratio (B-148), the offset taken afresh at each relock-device.
   - bypass_ppb = 0 with the device term: the device term alone, no lock (S17).
 
 asrc_bypass_ref_test.py holds the cases tests/asrc_servo_test.cpp ports, and replays this module
 against `mrts_cli asrc` (the C++) on the same call sequences (`replay`).
 """
 import sys
-from collections import deque
 
-E9 = 1000000000
-Q16 = 65536
-DELTA_LIM = 1 << 60
-FIT_X_LIM = 1 << 40
-FIT_Y_LIM = 1 << 30
-I64_MAX = (1 << 63) - 1
-I64_MIN = -(1 << 63)
+from asrc_device_ref import DeviceTerm
+from clock_lock import E9, I64_MAX, I64_MIN, ClockLock, asrc_lock_config, clamp, sat_add, sat_sub  # noqa: F401
 
 
-# --- integer helpers: C++ int64 semantics ------------------------------------------------------
+# --- integer helpers: C++ int64 semantics (the lock's own are clock_lock.py's) ----------------------
 
 def floor_div(a, b):
     return a // b
-
-
-def tdiv(a, b):
-    """C++ `/`: truncation toward zero."""
-    q = abs(a) // abs(b)
-    return q if (a >= 0) == (b >= 0) else -q
-
-
-def tmod(a, b):
-    return a - b * tdiv(a, b)
-
-
-def clamp(v, lo, hi):
-    return lo if v < lo else hi if v > hi else v
-
-
-def sat_add(a, b):
-    return clamp(a + b, I64_MIN, I64_MAX)
-
-
-def sat_sub(a, b):
-    return clamp(a - b, I64_MIN, I64_MAX)
-
-
-def mul_ppb(x, ppb):
-    """floor(x * ppb / 1e9), x and ppb clamped as ts_stc.cpp does."""
-    x = clamp(x, -DELTA_LIM, DELTA_LIM)
-    ppb = clamp(ppb, -E9, E9)
-    q = floor_div(x, E9)
-    return q * ppb + floor_div((x - q * E9) * ppb, E9)
 
 
 def half_frames_ns(h, hz):
@@ -78,467 +43,13 @@ def half_frames_ns(h, hz):
     return q * E9 + (h - q * d) * E9 // d
 
 
-# --- ClockLock (ts_stc.cpp), the ASRC's subset ------------------------------------------------
-
-class ClockLockConfig:
-    def __init__(self, **kw):
-        self.bucket_ns = 1000000000
-        self.rate_buckets_min = 30
-        self.rate_buckets_max = 300
-        self.rate_tau_ns = 120000000000
-        self.rate_warn_ppm = 100
-        self.rate_max_ppm = 1000
-        self.rate_refit_mads = 2
-        self.offset_buckets = 10
-        self.slew_acquire_ppm = 2000
-        self.acquire_ns = 5000000000
-        self.slew_track_ppm = 20
-        self.step_ns = 20000000
-        self.step_hold_ns = 10000000000
-        self.step_falls = False
-        self.backlog_ns = 490000000
-        self.step_fall_hold_ns = 300000000000
-        self.lost_ns = 5000000000
-        for k, v in kw.items():
-            if not hasattr(self, k):
-                raise AttributeError(k)
-            setattr(self, k, v)
-
-    def copy(self):
-        return ClockLockConfig(**vars(self))
-
-
-K_SCATTERED_DEN = 2
-
 # The decode lock's first fit (S16; B-125 has the prototype's sweep over 3 to 30).
 DECODE_FIRST_FIT_BUCKETS = 10
 
 
-def asrc_lock_config():
-    """The capture lock: the STC's constants, a 50 ms two-sided step, no backlog rule."""
-    c = ClockLockConfig()
-    c.step_ns = 50000000
-    c.step_falls = True
-    c.backlog_ns = 0
-    c.step_fall_hold_ns = 0
-    return c
-
-
 def asrc_decode_lock_config():
     """The capture lock with a short first fit: a demux's PTS carry no arrival jitter."""
-    c = asrc_lock_config()
-    c.rate_buckets_min = DECODE_FIRST_FIT_BUCKETS
-    return c
-
-
-FIT, CANDIDATE, OUT = 0, 1, 2
-AGREE, RISE, FALL = 0, 1, 2
-
-
-class Point:
-    __slots__ = ("sigma", "house", "level", "eps")
-
-    def __init__(self, sigma, house, level=FIT, eps=0):
-        self.sigma, self.house, self.level, self.eps = sigma, house, level, eps
-
-
-class StcLine:
-    __slots__ = ("sigma_ref", "house_ref", "rate_ppb", "slew_ppb", "slew_ns")
-
-    def __init__(self, sigma_ref=0, house_ref=0, rate_ppb=0, slew_ppb=0, slew_ns=0):
-        self.sigma_ref, self.house_ref, self.rate_ppb = sigma_ref, house_ref, rate_ppb
-        self.slew_ppb, self.slew_ns = slew_ppb, slew_ns
-
-    def travel(self, sigma):
-        if self.slew_ns == 0 or self.slew_ppb == 0:
-            return 0
-        d = sat_sub(sigma, self.sigma_ref)
-        if d <= 0:
-            return 0
-        m = mul_ppb(d, self.slew_ppb)
-        return min(m, self.slew_ns) if self.slew_ns > 0 else -min(m, -self.slew_ns)
-
-    def house_of(self, sigma):
-        d = clamp(sat_sub(sigma, self.sigma_ref), -DELTA_LIM, DELTA_LIM)
-        return sat_add(sat_add(sat_add(self.house_ref, d), mul_ppb(d, self.rate_ppb)),
-                       self.travel(sigma))
-
-
-def _median(v):
-    return sorted(v)[(len(v) - 1) // 2]
-
-
-def _ls_fit(X, Y, keep):
-    """ts_stc.cpp ls_fit: (mx, my, ppb), or None."""
-    n = sx = sy = 0
-    for i in range(len(X)):
-        if keep is not None and not keep[i]:
-            continue
-        n += 1
-        sx += X[i]
-        sy += Y[i]
-    if n < 3:
-        return None
-    mx, my = floor_div(sx, n), floor_div(sy, n)
-    cx = cy = sxx = sxy = 0
-    for i in range(len(X)):
-        if keep is not None and not keep[i]:
-            continue
-        x, y = X[i] - mx, Y[i] - my
-        cx += x
-        cy += y
-        sxx += x * x
-        sxy += x * y
-    den = sxx - tdiv(cx * cx, n)
-    num = sxy - tdiv(cx * cy, n)
-    if den <= 0:
-        return None
-    q = clamp(tdiv(num, den), -1000000, 1000000)
-    return mx, my, 1000 * q + tdiv(1000 * tmod(num, den), den)
-
-
-class ClockLock:
-    """Lower-envelope lock of remote time to arrival time, as mrts::ClockLock builds it; the
-    backlog and window rules are left out, as the ASRC's configurations turn both off."""
-    ACQUIRING, LOCKED, LOST = "acquiring", "locked", "lost"
-
-    def __init__(self, cfg):
-        c = cfg.copy()
-        if c.backlog_ns != 0 or c.step_fall_hold_ns != 0:
-            raise ValueError("this reference holds the ASRC's locks only (no backlog rule)")
-        c.bucket_ns = clamp(c.bucket_ns, 1000000, 10 * E9)
-        c.rate_buckets_min = clamp(c.rate_buckets_min, 3, 1000)
-        c.rate_buckets_max = clamp(c.rate_buckets_max, c.rate_buckets_min, 1000)
-        c.rate_tau_ns = clamp(c.rate_tau_ns, c.bucket_ns, 10000 * E9)
-        c.rate_max_ppm = clamp(c.rate_max_ppm, 0, 100000)
-        c.rate_warn_ppm = clamp(c.rate_warn_ppm, 0, 100000)
-        c.rate_refit_mads = clamp(c.rate_refit_mads, 0, 1000)
-        c.offset_buckets = clamp(c.offset_buckets, 1, 1000)
-        c.slew_acquire_ppm = clamp(c.slew_acquire_ppm, 0, 100000)
-        c.slew_track_ppm = clamp(c.slew_track_ppm, 0, 100000)
-        self.cfg = c
-        self.started = False
-        self.fresh = True
-        self.floor_found = False
-        self.line = StcLine()
-        self.origin_h = self.level_h = self.win_h = 0
-        self.bucket = 0
-        self.cur = Point(0, 0)
-        self.hist = deque()
-        self.cand = False
-        self.cand_h = 0
-        self.rate_known = False
-        self.eps_q16 = 0
-        self.rate_n = 0
-        self.rate_known_h = 0
-        self.fit_valid = False
-        self.fit_ppb_ = 0
-        self.fit_n = 0          # the last fit's points
-        self.epoch_h = 0
-        self.locked = False
-        self.run = self.run_fall = False
-        self.run_start_h = self.run_min = 0
-        self.step_fired = False
-        self.step_size = 0
-        self.travel_ns = self.travel_at_lock = 0
-        self.last_sample_h = self.last_seen_h = 0
-
-    def eps_ppb(self):
-        return floor_div(self.eps_q16 + Q16 // 2, Q16)
-
-    ppb = eps_ppb
-
-    def fit_ppb(self):
-        return self.fit_ppb_
-
-    def has_fit(self):
-        return self.fit_valid
-
-    def envelope_step(self):
-        return self.step_fired
-
-    def house_of(self, sigma):
-        return self.line.house_of(sigma)
-
-    def phase(self):
-        if self.started and sat_sub(self.last_seen_h, self.last_sample_h) >= self.cfg.lost_ns:
-            return self.LOST
-        return self.LOCKED if self.locked else self.ACQUIRING
-
-    def tick(self, now):
-        if now > self.last_seen_h:
-            self.last_seen_h = now
-
-    def feed(self, sigma, h):
-        c = self.cfg
-        if not self.started:
-            self.started = True
-            self.line = StcLine(sigma, h, self.eps_ppb(), 0, 0)
-            self.origin_h = self.epoch_h = self.win_h = h
-            self.bucket = 0
-            self.cur = Point(sigma, h)
-            self.last_sample_h = self.last_seen_h = h
-            return
-        self.last_sample_h = max(self.last_sample_h, h)
-        self.last_seen_h = max(self.last_seen_h, h)
-        k = floor_div(sat_sub(h, self.origin_h), c.bucket_ns)
-        if k > self.bucket:
-            self._close_bucket(sigma, h)
-            self.bucket = k
-            self.cur = Point(sigma, h)
-        elif sat_sub(h, sigma) < sat_sub(self.cur.house, self.cur.sigma):
-            self.cur = Point(sigma, h)
-
-    def _fit(self):
-        c, hist = self.cfg, self.hist
-        zi = len(hist)
-        while zi > 0 and hist[zi - 1].level != FIT:
-            zi -= 1
-        if zi == 0:
-            return None
-        z = hist[zi - 1]
-        dz = sat_sub(z.house, z.sigma)
-        span = min(c.rate_buckets_max * c.bucket_ns, FIT_X_LIM)
-        X, Y = [], []
-        i = zi
-        while i > 0:
-            i -= 1
-            if len(X) >= c.rate_buckets_max:
-                break
-            p = hist[i]
-            if p.level != FIT:
-                continue
-            if sat_sub(z.house, p.house) > span:
-                break
-            dx = sat_sub(p.sigma, z.sigma)
-            if dx < -FIT_X_LIM or dx > FIT_X_LIM:
-                continue
-            X.append(floor_div(dx, 1000000))
-            Y.append(clamp(sat_sub(sat_sub(p.house, p.sigma), dz), -FIT_Y_LIM, FIT_Y_LIM))
-        n = len(X)
-        if n < c.rate_buckets_min:
-            return None
-        r1 = _ls_fit(X, Y, None)
-        if r1 is None:
-            return None
-        mx, my, first = r1
-        r = [(Y[i] - my) - tdiv(first * (X[i] - mx), 1000) for i in range(n)]
-        mid = _median(r)
-        dev = [r[i] - mid if r[i] > mid else mid - r[i] for i in range(n)]
-        cut = c.rate_refit_mads * _median(dev)
-        keep = [r[i] <= cut for i in range(n)]
-        r2 = _ls_fit(X, Y, keep)
-        return (r2[2] if r2 is not None else first), n
-
-    def _classify(self, house_now):
-        c, hist = self.cfg, self.hist
-        b = hist[-1]
-        step = c.step_ns
-        drift = tdiv(2 * c.rate_max_ppm * c.bucket_ns, 1000000)
-        lag = clamp(tdiv(step, max(drift, 1)), 1, c.rate_buckets_max)
-        ref, seen = None, 0
-        i = len(hist) - 1
-        while i > 0:
-            i -= 1
-            if seen >= lag:
-                break
-            if hist[i].level == FIT:
-                ref = hist[i]
-                seen += 1
-        eps = ref.eps if ref is not None else 0
-
-        def u(p):
-            return sat_sub(sat_sub(p.house, p.sigma), mul_ppb(sat_sub(p.sigma, b.sigma), eps))
-
-        def set_level(frm, to):
-            for p in hist:
-                if p.level == frm:
-                    p.level = to
-
-        cmin, cmax = I64_MAX, I64_MIN
-        for p in hist:
-            if p.level == CANDIDATE:
-                cmin = min(cmin, u(p))
-                cmax = max(cmax, u(p))
-        ub = u(b)
-        if ref is None or (sat_sub(ub, u(ref)) <= step and sat_sub(u(ref), ub) <= step):
-            b.level = FIT
-            if ref is None:
-                self.level_h = b.house
-            if self.cand:
-                set_level(CANDIDATE, OUT)
-            self.cand = False
-            return
-        if not self.cand or sat_sub(ub, cmin) > step or sat_sub(cmax, ub) > step:
-            set_level(CANDIDATE, OUT)
-            self.cand = True
-            self.cand_h = sat_add(self.origin_h, self.bucket * c.bucket_ns)
-        b.level = CANDIDATE
-        if sat_sub(house_now, self.cand_h) >= c.step_hold_ns:
-            set_level(FIT, OUT)
-            set_level(CANDIDATE, OUT)
-            b.level = FIT
-            self.level_h = b.house
-            self.cand = False
-            self.fit_valid = False
-
-    def _level_share(self):
-        on = since = 0
-        for p in self.hist:
-            if p.house < self.level_h:
-                continue
-            since += 1
-            if p.level == FIT:
-                on += 1
-        return on, since
-
-    def _seed_densest(self):
-        c, hist = self.cfg, self.hist
-        n = len(hist)
-        if n < 2:
-            return
-        eps = self.eps_ppb()
-        z = hist[-1]
-        us = [sat_sub(sat_sub(p.house, p.sigma), mul_ppb(sat_sub(p.sigma, z.sigma), eps))
-              for p in hist]
-
-        def within(a, b):
-            return sat_sub(a, b) <= c.step_ns and sat_sub(b, a) <= c.step_ns
-
-        on, _ = self._level_share()
-        best, centre = -1, 0
-        for i in range(n):
-            cnt = sum(1 for j in range(n) if within(us[j], us[i]))
-            if cnt > best:
-                best, centre = cnt, us[i]
-        if best <= on:
-            return
-        oldest = I64_MAX
-        for p, up in zip(hist, us):
-            p.level = FIT if within(up, centre) else OUT
-            if p.level == FIT:
-                oldest = min(oldest, p.house)
-        self.level_h = oldest
-        self.cand = False
-
-    def _seed_floor(self, below):
-        c, hist, line = self.cfg, self.hist, self.line
-        a = sat_sub(hist[-2].house, line.house_of(hist[-2].sigma))
-        b = sat_sub(hist[-1].house, line.house_of(hist[-1].sigma))
-        if sat_sub(b, a) > c.step_ns:
-            return RISE
-        if sat_sub(a, b) > c.step_ns:
-            return FALL
-        lo, hi = min(a, b), max(a, b)
-        if hi >= -below:
-            return AGREE
-        line.house_ref = sat_add(line.house_ref, clamp(lo, -DELTA_LIM, DELTA_LIM))
-        return AGREE
-
-    def _close_bucket(self, sigma_now, house_now):
-        c, hist, line = self.cfg, self.hist, self.line
-        hist.append(self.cur)
-        cap = max(c.rate_buckets_max, c.offset_buckets)
-        while len(hist) > cap:
-            hist.popleft()
-        self.travel_ns += line.travel(sigma_now)
-        line.house_ref = line.house_of(sigma_now)
-        line.sigma_ref = sigma_now
-        line.slew_ppb = line.slew_ns = 0
-        hist[-1].eps = self.eps_ppb()
-        self._classify(house_now)
-        wait = False
-        on, since = self._level_share()
-        scattered = on * K_SCATTERED_DEN < since
-        if not self.rate_known and scattered:
-            wait = sat_sub(house_now, self.win_h) < c.rate_buckets_max * c.bucket_ns
-            if not wait:
-                self._seed_densest()
-        if not wait:
-            r = self._fit()
-            if r is not None:
-                f, n = r
-                self.fit_valid = True
-                self.fit_ppb_ = f
-                self.fit_n = n
-                lim = c.rate_max_ppm * 1000
-                fc = clamp(f, -lim, lim)
-                gap = fc - self.eps_ppb()
-                off = gap > c.slew_track_ppm * 1000 or gap < -c.slew_track_ppm * 1000
-                if not self.rate_known or n > self.rate_n or (off and not scattered):
-                    if not self.rate_known:
-                        self.rate_known_h = house_now
-                    self.rate_known = True
-                    self.eps_q16 = fc * Q16
-                    self.rate_n = n
-                else:
-                    g = min(Q16, tdiv(c.bucket_ns * n * Q16, c.rate_tau_ns * c.rate_buckets_max))
-                    self.eps_q16 += floor_div((fc * Q16 - self.eps_q16) * g, Q16)
-        line.rate_ppb = self.eps_ppb()
-        if (not self.locked and self.rate_known
-                and sat_sub(house_now, max(self.epoch_h, self.rate_known_h)) >= c.acquire_ns):
-            self.locked = True
-            self.travel_at_lock = self.travel_ns
-        if len(hist) >= 2 and self.fresh and not self.floor_found and not self.locked:
-            self.floor_found = self._seed_floor(c.step_ns) != FALL
-        e = I64_MAX
-        for i in range(len(hist) - min(len(hist), c.offset_buckets), len(hist)):
-            e = min(e, sat_sub(hist[i].house, line.house_of(hist[i].sigma)))
-        e = clamp(e, -DELTA_LIM, DELTA_LIM)
-        b = hist[-1]
-        rb = sat_sub(b.house, line.house_of(b.sigma))
-        cap_ppb = (c.slew_track_ppm if self.locked else c.slew_acquire_ppm) * 1000
-        ae = -e if e < 0 else e
-        line.slew_ppb = cap_ppb if ae >= tdiv(cap_ppb * c.bucket_ns, E9) else tdiv(ae * E9, c.bucket_ns)
-        line.slew_ns = e
-        if not self.locked or self.step_fired:
-            self.run = False
-            return
-        fall = c.step_falls and rb < -c.step_ns
-        if rb > c.step_ns or fall:
-            if not self.run or self.run_fall != fall:
-                self.run = True
-                self.run_fall = fall
-                self.run_start_h = sat_add(self.origin_h, self.bucket * c.bucket_ns)
-                self.run_min = rb
-            self.run_min = min(self.run_min, rb)
-            if sat_sub(house_now, self.run_start_h) >= c.step_hold_ns:
-                self.step_fired = True
-                self.step_size = self.run_min
-        else:
-            self.run = False
-
-    def relock(self, keep_rate):
-        self.started = False
-        self.fresh = False
-        self.hist.clear()
-        self.cand = False
-        self.fit_valid = False
-        self.locked = False
-        self.run = self.step_fired = False
-        self.step_size = 0
-        self.travel_ns = self.travel_at_lock = 0
-        if not keep_rate:
-            self.rate_known = False
-            self.eps_q16 = 0
-            self.rate_n = 0
-
-    def step_to_floor(self):
-        if not self.step_fired:
-            return
-        while self.hist and self.hist[0].house < self.run_start_h:
-            self.hist.popleft()
-        e = I64_MAX
-        for p in self.hist:
-            e = min(e, sat_sub(p.house, self.line.house_of(p.sigma)))
-        if e != I64_MAX:
-            e = clamp(e, -DELTA_LIM, DELTA_LIM)
-            self.line.house_ref = sat_add(self.line.house_ref, e)
-            self.travel_ns += e
-        self.line.slew_ppb = self.line.slew_ns = 0
-        self.fit_valid = False
-        self.run = self.step_fired = False
-        self.step_size = 0
+    return asrc_lock_config().copy(rate_buckets_min=DECODE_FIRST_FIT_BUCKETS)
 
 
 # --- the servo ---------------------------------------------------------------------------------
@@ -762,9 +273,9 @@ class AsrcServo:
             self._house_advance(frames)
 
     def device_recalibrated(self):
-        """The sink recalibrated its clock (new caps, sync latency, a device failure): the device
-        offset a new epoch carries restarts from the next output (B-148); the open epoch keeps
-        its labels."""
+        """The device term relocked (its ring acquired again, or its clock stepped: DeviceTerm's
+        take_recalibrated): the device offset a new epoch carries restarts from the next output
+        (B-148); the open epoch keeps its labels."""
         if self.cfg.device:
             self.cal_off = sat_sub(self._label_next(), self._house_pts())
 
@@ -866,7 +377,7 @@ class AsrcServo:
 
     def push(self, pts_ns, frames, discont, device_ppb=0):
         """Per buffer, before resampling: the command. `device_ppb`: the device lock's eps,
-        read by the caller from AsrcDeviceLock (0 without a device term)."""
+        read by the caller from the device term (DeviceTerm.device_ppb; 0 without one)."""
         lim = self.cfg.ratio_max_ppm * 1000
         self.dev_ppb = clamp(device_ppb, -lim, lim) if self.cfg.device else 0
         sigma = self._pos_ns(2 * (self.n_in + self.lost))
@@ -991,55 +502,27 @@ class AsrcServo:
         return ev
 
 
-class AsrcDeviceLock:
-    """The device term: a ClockLock on the sink's custom-slaving (itime, etime) pairs, device
-    time against house time. A sink discontinuity relocks it, keeping the rate; an alignment
-    resync is counted only (B-148). The sink reads etime, then itime, so a preemption between
-    them makes a pair early, which the lower envelope would follow: read_ns, from etime's read to
-    the caller's re-read after itime's, moves the pair to that re-read, the latest instant itime
-    can have been read, so every pair is late. The sink's first callback after its calibration
-    reads the device before its ring runs (measured up to 0.33 ms early): a (re)lock's first
-    SETTLE_NS of pairs are left out."""
-    SETTLE_NS = 100000000
-    # The sink's discontinuities as GstAudioBaseSinkDiscontReason numbers them.
-    NEW_CAPS, FLUSH, SYNC_LATENCY, ALIGNMENT, DEVICE_FAILURE = 1, 2, 3, 4, 5
+# --- the device term on its timer, as mrasrc runs it (asrc_device_ref.DeviceTerm, B-166) ---------
 
-    def __init__(self, cfg=None):
-        self.lock = ClockLock(cfg or asrc_decode_lock_config())
-        self.relocks = 0
-        self.alignments = 0
-        self.first = None   # the house time of the (re)lock's first pair
+def device_sample(term, sv, dev, mono):
+    """One timer read of the device sink's clock, the term started at the first (the first rendered
+    buffer); a relock-device it reports tells the servo before its next push (B-148's A1)."""
+    if not term.rendering:
+        term.start(mono)
+    term.sample(dev, mono)
+    _recalibrate(term, sv)
 
-    def feed(self, itime, etime, read_ns=0):
-        h = etime + max(read_ns, 0)
-        if self.first is None:
-            self.first = h
-        if h - self.first < self.SETTLE_NS:
-            return
-        self.lock.feed(itime, h)
-        if self.lock.envelope_step():
-            self.lock.step_to_floor()
 
-    def discont(self, why=None):
-        """A sink discontinuity (FLUSH by default): an alignment resync is counted, the lock kept; any other
-        relocks, keeping the rate. True when the sink recalibrated: AsrcServo.device_recalibrated()."""
-        why = self.FLUSH if why is None else why
-        if why == self.ALIGNMENT:
-            self.alignments += 1
-            return False
-        self.lock.relock(True)
-        self.relocks += 1
-        self.first = None
-        return why != self.FLUSH
+def device_restart(term, sv, mono):
+    """The sink's ring released and acquired again (a caps change, a restart): its clock starts again."""
+    term.stop(mono)
+    term.start(mono)
+    _recalibrate(term, sv)
 
-    def ppb(self):
-        return self.lock.ppb()
 
-    def rate_ppb(self):
-        return rate_of(self.lock.ppb())
-
-    def locked(self):
-        return self.lock.phase() == ClockLock.LOCKED
+def _recalibrate(term, sv):
+    if term.take_recalibrated():
+        sv.device_recalibrated()
 
 
 # --- replay: the call sequences asrc_bypass_ref_test.py runs against `mrts_cli asrc` -----------
@@ -1065,11 +548,10 @@ def replay(lines):
       b PTS FRAMES DISCONT DEV_PPB                     push(); prints the command
       o K / t K                                        produced(K) / tail_produced(K)
       g                                                end_epoch(); prints its result
-      d ITIME ETIME [READ]                             the device lock: a pair
-      x [WHY]                                          a sink discontinuity (GstAudioBaseSinkDiscontReason,
-                                                       2 flush by default); a recalibration tells the servo
-      p                                                prints the stats and the device lock"""
-    out, sv, dev, n = [], None, None, 0
+      s DEV MONO                                       a timer read of the device sink's clock
+      r MONO                                           the sink's ring acquired again (device_restart)
+      p                                                prints the stats and the device term"""
+    out, sv, term, n = [], None, None, 0
     for raw in lines:
         f = raw.split()
         if not f or f[0].startswith("#"):
@@ -1077,13 +559,12 @@ def replay(lines):
         if f[0] == "cfg":
             in_hz, out_hz, bppb, device, delay = (int(x) for x in f[1:6])
             lockcfg = asrc_decode_lock_config() if bppb > 0 else asrc_lock_config()
-            devcfg = asrc_decode_lock_config()
             if len(f) > 6:
-                lockcfg.rate_buckets_min = devcfg.rate_buckets_min = int(f[6])
+                lockcfg.rate_buckets_min = int(f[6])
             cfg = AsrcServoConfig(lock=lockcfg, bypass_ppb=bppb, device=bool(device))
             sv = AsrcServo(in_hz, out_hz, cfg)
             sv.set_delay(delay)
-            dev = AsrcDeviceLock(devcfg)
+            term = DeviceTerm()
         elif f[0] == "b":
             c = sv.push(int(f[1]), int(f[2]), f[3] == "1", int(f[4]))
             out.append(_cmd_line(n, sv, c))
@@ -1095,16 +576,15 @@ def replay(lines):
             sv.tail_produced(int(f[1]))
         elif f[0] == "g":
             out.append(f"g {int(sv.end_epoch())} {sv.tail_pts_at(0)}")
-        elif f[0] == "d":
-            dev.feed(int(f[1]), int(f[2]), int(f[3]) if len(f) > 3 else 0)
-        elif f[0] == "x":
-            if dev.discont(int(f[1]) if len(f) > 1 else None):
-                sv.device_recalibrated()
+        elif f[0] == "s":
+            device_sample(term, sv, int(f[1]), int(f[2]))
+        elif f[0] == "r":
+            device_restart(term, sv, int(f[1]))
         elif f[0] == "p":
             s = sv.stats()
             out.append("p " + " ".join(f"{k}={s[k]}" for k in s)
-                       + f" dev-ppb={dev.ppb()} dev-rate={dev.rate_ppb()} dev-locked={int(dev.locked())}"
-                       + f" dev-relocks={dev.relocks} dev-alignments={dev.alignments}")
+                       + f" dev-ppb={term.device_ppb()} dev-rate={rate_of(term.device_ppb())}"
+                       + f" dev-lock={term.lock_state()} dev-relocks={sum(term.relocks.values())}")
         else:
             raise ValueError(f"unknown line: {raw!r}")
     return out

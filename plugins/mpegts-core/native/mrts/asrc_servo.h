@@ -1,8 +1,9 @@
 // The ASRC (plan ch. 5 part 4.5, WI-P1-8; ch. 7 part 4.4, WI-P3-5, B-148), py/asrc_bypass_ref.py ported rule
-// for rule (OQ-1, S30): ClockLock on input frame index against buffer PTS gives the source rate; a phase servo
-// commands the resampler so the output is a house-rate counter, PTS_out(m) = T0 + m / out_rate. Integer-only.
+// for rule (OQ-1, S30): a ClockLock gives the source rate and a phase servo commands the resampler; its device
+// term follows the sink's clock on a timer (ch. 8 WI-P4-4, B-166: py/asrc_device_ref.py). Integer-only.
 #pragma once
 #include <cstdint>
+#include <deque>
 #include <vector>
 
 #include "ts_stc.h"
@@ -37,6 +38,10 @@ struct AsrcServoConfig {
 // Decode mode on the decode lock (S17: bypass_ppb 0 with the device term is the device term alone).
 AsrcServoConfig asrc_decode_config(int64_t bypass_ppb, bool device);
 
+// The device term's lock (B-165): the capture lock with a 1000-bucket window and a 1200 s loop, a fit
+// taken at once only past the ratio clamp (a short fit after a restart never replaces the rate kept).
+ClockLockConfig asrc_device_lock_config();
+
 struct AsrcEvent {
     // gap: lost cycles or time, the output jumps their length; shift: the stamps moved, the samples did not.
     enum class Kind { relock, ratio_out_of_bounds, engaged, gap, shift };
@@ -60,12 +65,9 @@ const char* asrc_event_name(AsrcEvent::Kind k);
 // (house = (1 + ε) x its time): round(-ε / (1 + ε)).
 int64_t asrc_rate_of(int64_t eps_ppb);
 
-// Per buffer: push() before resampling (rates, frames to drop), produced() after. Capture mode:
-// the resampler is never reset; what it holds back is a new T0's first output. Steering only
-// moves the ratio; a relock onto a floor below the last output drops that overlap. With
-// cycle_input lost cycles or time jump the output and a stamp shift moves nothing; the lock keeps its line.
-// B-148: decode modes take an unflagged PTS hole as lost time and a step back as a break; device mode keeps
-// its labels on the device timeline across a break (a new epoch at the last label end plus the gap).
+// Per buffer: push() before resampling (rates, frames to drop), produced() after. Steering moves only the
+// ratio; a capture relock keeps the resampler and drops input under the last output. Lost time, breaks and
+// the device timeline across a break: ADR-0029's ASRC section (B-148, B-180).
 class AsrcServo {
   public:
     // The lock's phase. Its lost needs a tick without samples, and the servo only
@@ -120,7 +122,7 @@ class AsrcServo {
     // The resampler's lookahead in input frames (gst_audio_resampler_get_max_latency).
     void set_delay(uint32_t frames) { delay_ = frames; }
     // pts_ns: the capture time (capture) or content time (decode) of the buffer's first frame;
-    // every buffer carries one. device_ppb: AsrcDeviceLock::ppb(), with cfg.device only. dur_ns:
+    // every buffer carries one. device_ppb: AsrcDeviceTerm::device_ppb(), with cfg.device only. dur_ns:
     // the buffer's duration as its source stamped it (a cycle's size), < 0 when it has none.
     Command push(int64_t pts_ns, uint32_t frames, bool discont, int64_t device_ppb = 0,
                  int64_t dur_ns = -1);
@@ -131,14 +133,16 @@ class AsrcServo {
     bool end_epoch();
     int64_t tail_pts_at(uint64_t k) const;
     void tail_produced(uint32_t frames);
-    // Device mode: the sink recalibrated its clock (new caps, sync latency, a device failure). The device
-    // offset a new epoch carries restarts from the next output (B-148); the open epoch keeps its labels.
+    // Device mode: the device term relocked (AsrcDeviceTerm::take_recalibrated). The device offset a new
+    // epoch carries restarts from the next output (B-148); the open epoch keeps its labels.
     void device_recalibrated();
 
     int64_t t0() const { return t0_; }
     uint64_t epoch_frames() const { return m_; }   // m: output frames since T0
     int64_t pts_at(uint64_t m) const;              // T0 + floor(m * 1e9 / out_hz)
     int64_t next_pts() const { return pts_at(m_); }
+    // The next output's content time: its label on the house-rate counter (render lateness, B-166).
+    int64_t next_content_pts() const { return house_pts(); }
     State state() const;
     Mode mode() const;
     bool passing() const { return passing_; }   // no resampler in the path: nothing held back
@@ -219,37 +223,118 @@ class AsrcServo {
 const char* asrc_state_name(AsrcServo::State s);
 const char* asrc_mode_name(AsrcServo::Mode m);
 
-// The device term (WI-P3-5): a ClockLock on a sink's custom-slaving (itime, etime) pairs, device
-// time against house time. A sink discontinuity relocks it, keeping the rate; an alignment resync is
-// counted only (B-148). Not thread-safe.
-class AsrcDeviceLock {
+// The device term (WI-P4-4, B-165/B-166): py/asrc_device_ref.py's DeviceTerm. A timer reads the device sink's
+// clock against house time into a ClockLock; the ratio (1 + eps_in) / (1 + eps_dev) - 1 follows the device.
+// The stall rule reads two counts (frames pushed, frames at the sink), never a level. Not thread-safe.
+struct AsrcDeviceConfig {
+    int64_t sample_ns = 100000000;       // the timer
+    int64_t settle_ns = 15000000000LL;   // after the clock first moves, and after a relock
+    int64_t relock_ns = 50000000;        // a device-clock step ...
+    int relock_samples = 2;              // ... in this many fed samples in a row
+    int64_t flat_den = 10;               // flat: the clock moved under 1/flat_den of house time
+    int64_t stall_ns = 1000000000;       // the sink took nothing this long while samples waited
+    int64_t waiting_ns = 100000000;      // samples waiting beyond what the 40 ms prefill holds back
+    int64_t probe_ns = 500000000;        // while stalled, a flush this often
+    int64_t resume_ns = 200000000;       // taken since a flush past an empty 100 ms ring: resumed
+    int64_t rate_hz = 48000;
+    int64_t ratio_max_ppm = 1000;
+    ClockLockConfig lock = asrc_device_lock_config();
+};
+
+struct AsrcDeviceEvent {
+    enum class Kind { relock_device, device_stalled, device_resumed };
+    Kind kind;
+    const char* reason;   // relock_device: "restart" or "step"; "" otherwise
+    int64_t at;           // house time of the read (a restart: of the start)
+    // relock_device step: the step (ns, 0 for a restart); stalled: frames waiting; resumed: frames dropped so far.
+    int64_t value;
+};
+
+const char* asrc_device_event_name(AsrcDeviceEvent::Kind k);
+
+// (1 + eps_in) / (1 + eps_dev) - 1 in ppb, rounded, clamped to +-max_ppm.
+int64_t asrc_device_ratio(int64_t eps_in_ppb, int64_t eps_dev_ppb, int64_t max_ppm);
+
+class AsrcDeviceTerm {
   public:
-    // The sink's first callback after its calibration reads the device before its ring runs
-    // (measured up to 0.33 ms early): the pairs of a (re)lock's first this much are left out.
-    static constexpr int64_t SETTLE_NS = 100000000;
-    // The sink's discontinuities, as GstAudioBaseSinkDiscontReason numbers them.
-    enum class Discont { new_caps = 1, flush = 2, sync_latency = 3, alignment = 4, device_failure = 5 };
-    explicit AsrcDeviceLock(const ClockLockConfig& cfg = asrc_decode_lock_config());
-    // read_ns: house time from etime's read to the caller's re-read after itime's. The sink reads
-    // etime, then itime, so a preemption between them makes a pair early, which the lower envelope
-    // would follow; at the re-read, the latest instant itime can have been read, every pair is late.
-    void feed(int64_t itime_ns, int64_t etime_ns, int64_t read_ns = 0);
-    // An alignment resync moves neither clock: counted, the lock and its fit window kept. Any other
-    // relocks, keeping the rate. True when the sink recalibrated (new caps, sync latency, a device
-    // failure): AsrcServo::device_recalibrated().
-    bool discont(Discont why = Discont::flush);
-    int64_t ppb() const { return lock_.ppb(); }   // ε: house = (1 + ε) device time
-    int64_t rate_ppb() const { return asrc_rate_of(lock_.ppb()); }
-    bool locked() const { return lock_.phase() == ClockLock::Phase::locked; }
-    uint64_t relocks() const { return relocks_; }
-    uint64_t alignments() const { return alignments_; }
+    enum class LockState { idle, settle, acquiring, locked, lost };
+    struct Stats {
+        int64_t device_ppb = 0, device_rate_ppb = 0;
+        uint64_t relocks_restart = 0, relocks_step = 0, device_stalls = 0;
+        int64_t dropped = 0;   // frames the stall rule dropped (never taken, or taken into a stopped ring)
+        uint64_t flushes = 0;
+        int64_t flat_ns = 0;   // house time read flat, never fed
+        uint64_t fed = 0;
+    };
+
+    explicit AsrcDeviceTerm(const AsrcDeviceConfig& cfg = AsrcDeviceConfig());
+    // The first buffer the sink renders after it acquired its ring: reads may begin. After a stop it
+    // relocks keeping the rate (reason restart): the stream's clock starts again from 0.
+    void start(int64_t mono, std::vector<AsrcDeviceEvent>* events);
+    void stop(int64_t mono);   // the ring released: no read until the next start
+    // One timer read: the device clock, then house time; the counts or < 0 for none. True: flush downstream now.
+    bool sample(int64_t dev_ns, int64_t mono_ns, int64_t pushed, int64_t rendered,
+                std::vector<AsrcDeviceEvent>* events);
+    bool rendering() const { return rendering_; }
+    bool stalled() const { return stalled_; }
+    int64_t device_ppb() const;   // eps_dev in ClockLock's sense; 0 until the lock has a rate
+    int64_t ratio_ppb(int64_t eps_in_ppb = 0) const;
+    LockState lock_state() const;
+    // A relock-device since the last call: the servo's device_recalibrated() (B-148's A1).
+    bool take_recalibrated();
+    Stats stats() const;
     const ClockLock& lock() const { return lock_; }
+    const AsrcDeviceConfig& config() const { return cfg_; }
 
   private:
+    void clock(int64_t dev, int64_t mono, std::vector<AsrcDeviceEvent>* events);
+    bool render(int64_t mono, int64_t pushed, int64_t taken, std::vector<AsrcDeviceEvent>* events);
+    void relock_step(int64_t mono, int64_t step_ns, std::vector<AsrcDeviceEvent>* events);
+
+    AsrcDeviceConfig cfg_;
     ClockLock lock_;
-    uint64_t relocks_ = 0, alignments_ = 0;
-    bool have_first_ = false;
-    int64_t first_ns_ = 0;   // the house time of the (re)lock's first pair
+    bool rendering_ = false;
+    bool have_prev_ = false;   // the last read: (prev_dev_, prev_mono_)
+    int64_t prev_dev_ = 0, prev_mono_ = 0;
+    bool moved_ = false;       // the clock moved since the start or relock, at moved_at_
+    int64_t moved_at_ = 0;
+    bool epoch_ = false;       // the lock was fed since the term began
+    int beyond_ = 0;           // fed reads in a row past relock_ns
+    uint64_t relocks_restart_ = 0, relocks_step_ = 0;
+    bool recal_ = false;
+    int64_t flat_ns_ = 0;
+    uint64_t fed_ = 0;
+    bool stalled_ = false;
+    bool have_taken_ = false;
+    int64_t taken_prev_ = 0;
+    int64_t discarded_ = 0;   // pushed frames the flushes discarded before the sink took them
+    bool waiting_ = false;    // frames waiting since wait_since_
+    int64_t wait_since_ = 0;
+    int64_t flush_at_ = 0, taken_at_flush_ = 0;
+    uint64_t stalls_ = 0, flushes_ = 0;
+    int64_t dropped_ = 0;
+    int64_t wait_frames_, resume_frames_;
+};
+
+const char* asrc_device_lock_state_name(AsrcDeviceTerm::LockState s);
+
+// Render lateness (B-165): now less the PTS of the sample at the device. Each rendered buffer's write position
+// (the base sink's next_sample after its render, less its frames) maps to its content time; the device clock
+// gives the position played. A buffer wholly behind that position is dropped before the look-up.
+class AsrcRenderLateness {
+  public:
+    explicit AsrcRenderLateness(int64_t rate_hz) : rate_(rate_hz > 0 ? rate_hz : 1) {}
+    void rendered(int64_t write_pos, int64_t frames, int64_t pts_ns);
+    void flush() { map_.clear(); }
+    // False while no buffer of the map is at the device's position.
+    bool at(int64_t now_ns, int64_t dev_ns, int64_t* lateness_ns);
+
+  private:
+    struct Seg {
+        int64_t write_pos, frames, pts;
+    };
+    int64_t rate_;
+    std::deque<Seg> map_;
 };
 
 }  // namespace mrts

@@ -676,6 +676,8 @@ elements" below do not start.
   source of a multichannel output its own map (Input 1 to Output 1, say) to
   have it play on that one channel. A mono or stereo output on a device of two
   channels (an SSL 2) is unchanged.
+- **Audio Output (302M) never drops audio that arrives late: it plays it late
+  instead (MR-057).**
 - **Audio inputs capture again by themselves after PipeWire restarts.** Up to
   v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
   buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and
