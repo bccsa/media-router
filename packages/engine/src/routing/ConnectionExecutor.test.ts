@@ -728,7 +728,7 @@ describe('ConnectionExecutor', () => {
                 ),
             );
             registry.register(
-                new MpegTsBusExecutor(moduleGetter, getUdpPort, '239.0.0.1', connLabel),
+                new MpegTsBusExecutor(moduleGetter, getUdpPort, connLabel),
             );
             const execNoResolver = new ConnectionExecutor(registry);
 

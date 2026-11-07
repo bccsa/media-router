@@ -65,15 +65,8 @@ const PEER_FIELDS = [
 ];
 
 export class RistInputModule extends GstPluginBase {
-    /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
-     *  never by this pipeline, so it is live and never pends a restart. O, the trims and the
-     *  smoothing cooldown are the restamp's live properties (§5.5, B-95). */
-    protected liveUpdatableParams = [
-        'playoutOffsetMs',
-        INGEST_OFFSET_KEY,
-        PID_TRIMS_KEY,
-        SMOOTHING_COOLDOWN_KEY,
-    ];
+    /** O, the trims and the smoothing cooldown are the restamp's live properties (§5.5, B-95). */
+    protected liveUpdatableParams = [INGEST_OFFSET_KEY, PID_TRIMS_KEY, SMOOTHING_COOLDOWN_KEY];
     private linkHealth = new RistLinkHealth();
     private flows = new RistFlowTracker();
     private peerNames = new Map<number, string>();

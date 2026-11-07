@@ -71,21 +71,6 @@ describe('nativeRunnerEligible', () => {
         ).toBeNull();
     });
 
-    it('accepts the presentation-leg shape (Stage 2: backlog shed)', () => {
-        const leg = {
-            ...audioMatrix,
-            backlogShed: {
-                element: 'sink',
-                sink: 'sink',
-                keyframeAligned: false,
-                toleranceMs: 250,
-                holdMs: 5000,
-                cooldownMs: 60000,
-                sanityMs: 10000,
-            },
-        };
-        expect(nativeRunnerIneligibility(leg)).toBeNull();
-    });
 });
 
 describe('resolveNativeHook', () => {

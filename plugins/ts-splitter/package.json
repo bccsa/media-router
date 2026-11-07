@@ -26,15 +26,6 @@
                     "maximum": 100,
                     "x-unit": "ms",
                     "description": "Coalesce output for this long to cut CPU. 0 = forward immediately."
-                },
-                "playoutOffsetMs": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 10000,
-                    "x-unit": "ms",
-                    "x-live": true,
-                    "title": "Playout Offset",
-                    "description": "Route latency budget behind the house clock (empty = 60 ms); an edit resets any engine auto-raise."
                 }
             }
         },

@@ -13,8 +13,6 @@ namespace mr::gate_kf {
 /** `cfg` = {"decoder": name} or nullptr. False on a hard error (element /
  *  pad missing) — the caller tears the pipeline down. Armed before PLAYING. */
 bool start(GstElement* pipe, JsonObject* cfg);
-/** Shut an open gate on `decoder` again ("this decoder was just reset"). */
-void reclose(const std::string& decoder);
 /** The gated decoder's sink pad (borrowed), or nullptr — the EOS drain's
  *  addressable decoder when the pipeline-level EOS cannot travel. */
 GstPad* decoder_pad(std::string* name);

@@ -151,7 +151,7 @@ describe('MediaRouter', () => {
 
     it('updateChannelMap is a no-op for non-existent connection', async () => {
         // Should not throw
-        await router.updateChannelMap('no-such-conn', [{ sourceChannel: 0, sinkChannel: 0 }]);
+        await router.updateChannelMap('no-such-conn', [{ srcChannel: 0, dstChannel: 0 }]);
     });
 
     it('updateChannelMap warns for non-audio connection', async () => {
@@ -164,7 +164,7 @@ describe('MediaRouter', () => {
         );
 
         // Should not throw — just logs a warning and returns
-        await router.updateChannelMap(connId, [{ sourceChannel: 0, sinkChannel: 0 }]);
+        await router.updateChannelMap(connId, [{ srcChannel: 0, dstChannel: 0 }]);
 
         // Connection still exists unchanged
         const conns = router.getConnections();
@@ -176,7 +176,7 @@ describe('MediaRouter', () => {
         registerAudioPair(router);
         const connId = await router.createConnection('a', 'out', 'b', 'in');
 
-        const newMap = [{ sourceChannel: 0, sinkChannel: 1 }];
+        const newMap = [{ srcChannel: 0, dstChannel: 1 }];
         await router.updateChannelMap(connId, newMap);
 
         const conn = router.getConnections().find((c) => c.id === connId);
@@ -186,7 +186,7 @@ describe('MediaRouter', () => {
     it('updateChannelMap clears channelMap when given empty array', async () => {
         registerAudioPair(router);
         const connId = await router.createConnection('a', 'out', 'b', 'in', [
-            { sourceChannel: 0, sinkChannel: 0 },
+            { srcChannel: 0, dstChannel: 0 },
         ]);
 
         await router.updateChannelMap(connId, []);

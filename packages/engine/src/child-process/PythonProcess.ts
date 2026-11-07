@@ -7,7 +7,6 @@ import type {
     TsProbeRunnerConfig,
     RenderWatchRunnerConfig,
     KeyframeGateConfig,
-    BacklogShedConfig,
     CatchUpConfig,
     LiveInputBranch,
 } from '../plugins/PluginModule.js';
@@ -57,7 +56,6 @@ export interface RunnerStartOptions {
     tsProbe?: TsProbeRunnerConfig;
     renderWatch?: RenderWatchRunnerConfig;
     keyframeGate?: KeyframeGateConfig;
-    backlogShed?: BacklogShedConfig;
     /** Which runner binary hosts the pipeline (ADR-0019) — see `nativeRunner.ts`. */
     runner?: 'python' | 'native';
     /** EOS-drain before a deliberate stop (default true) — `PipelineDescription.eosDrain`. */

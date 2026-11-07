@@ -855,9 +855,7 @@ describe('VideoPlayerModule helpers', () => {
                 { sync: true },
                 { bufferMs: 1500 },
                 { bufferMs: 0 },
-                { lipSyncMs: 500 },
-                { lipSyncMs: -40 },
-                { sync: false, bufferMs: 5000, lipSyncMs: 2000 },
+                { sync: false, bufferMs: 5000 },
             ]) {
                 const desc = module.buildPipeline({ ...config, ...stored })!;
                 expect(desc.pipeline, JSON.stringify(stored)).toBe(plain.pipeline);
@@ -869,21 +867,17 @@ describe('VideoPlayerModule helpers', () => {
             expect(plain.pipeline).toMatch(
                 / kmssink name=sink (connector-id=\d+ )?sync=false qos=false /,
             );
-            expect(plain.backlogShed).toBeUndefined();
         });
 
-        it('Sync, Buffer and Lip-Sync Trim are gone from the manifest, and nothing is live but the fallback text and the subtitles', () => {
+        it('Sync and Buffer are gone from the manifest, and nothing is live but the fallback text and the subtitles', () => {
             const manifest = JSON.parse(
                 fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'),
             );
-            for (const key of ['sync', 'bufferMs', 'lipSyncMs']) {
+            for (const key of ['sync', 'bufferMs']) {
                 expect(manifest.mediaRouter.configSchema.properties).not.toHaveProperty(key);
             }
             const module = new VideoPlayerModule();
-            expect((module as any).liveUpdatableParams).not.toContain('lipSyncMs');
             expect((module as any).liveUpdatableParams[0]).toBe('fallbackText');
-            // No route playout offset reaches the sink either: the push and its hook are gone.
-            expect((module as any).onRoutePlayoutOffsetChanged).toBeUndefined();
         });
 
         it('carries MR_GLIB_PRGNAME into the env on the Wayland path', () => {
@@ -2356,13 +2350,7 @@ describe('VideoPlayerModule helpers', () => {
     });
 
     describe('onLiveConfigUpdate', () => {
-        function makeRunningModule(opts: {
-            hasSource: boolean;
-            /** Engine-wide default playout offset D. */
-            playoutOffsetMs?: number;
-            /** Override declared by the route head feeding this player. */
-            routeOffsetMs?: number;
-        }) {
+        function makeRunningModule(opts: { hasSource: boolean }) {
             const module = new VideoPlayerModule();
             const setProperty = vi.fn().mockResolvedValue(undefined);
             (module as any).services = {
@@ -2373,11 +2361,7 @@ describe('VideoPlayerModule helpers', () => {
                             ? { port: 5500, socketPath: '/tmp/mr-bus-5500-abc.sock' }
                             : undefined,
                     ),
-                    getRoutePlayoutOffsetMs: vi.fn(() => opts.routeOffsetMs),
                 },
-                ...(opts.playoutOffsetMs !== undefined
-                    ? { playoutOffsetMs: opts.playoutOffsetMs }
-                    : {}),
             };
             (module as any).config = { fallbackText: 'old', display: '' };
             // Pretend a child process is running and reachable.
@@ -2416,16 +2400,6 @@ describe('VideoPlayerModule helpers', () => {
             (module as any).busStallDetected = true;
             await module.onLiveConfigUpdate({ fallbackText: 'Whats sup' });
             expect(setProperty).toHaveBeenCalledWith('nov', 'text', 'Whats sup');
-        });
-
-        it('a change to a stored Lip-Sync Trim pushes nothing: the setting is gone (B-169)', async () => {
-            const { module, setProperty } = makeRunningModule({
-                hasSource: true,
-                playoutOffsetMs: 300,
-                routeOffsetMs: 500,
-            });
-            await module.onLiveConfigUpdate({ lipSyncMs: 40 });
-            expect(setProperty).not.toHaveBeenCalled();
         });
     });
 });

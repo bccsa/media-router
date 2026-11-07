@@ -39,9 +39,7 @@ import {
  *
  * Receives an L24/L16 48 kHz RTP audio stream off the network and republishes
  * it on the local bus as SMPTE-302M — the same shape as `audio-input-302m`,
- * with a network source instead of a capture device. It is a bus PRODUCER and
- * therefore a route head: `playoutOffsetMs` set here is the budget every player
- * fed from this stream presents against.
+ * with a network source instead of a capture device. It is a bus PRODUCER.
  *
  * Timing. The jitterbuffer's PTS is the capture-time evidence (house-clock
  * design §5.4): `mrasrc` locks the sender's clock to it and resamples to the
@@ -56,10 +54,8 @@ import {
  * that is not there simply stops producing audio.
  */
 export class Aes67InputModule extends GstPluginBase {
-    /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
-     *  never by this pipeline, so it is live and never pends a restart. O is the
-     *  restamp's live property (§5.5); no per-PID trim on a capture (OQ-15). */
-    protected liveUpdatableParams = ['playoutOffsetMs', INGEST_OFFSET_KEY];
+    /** O is the restamp's live property (§5.5); no per-PID trim on a capture (OQ-15). */
+    protected liveUpdatableParams = [INGEST_OFFSET_KEY];
 
     /** The ASRC's and the restamp's card: the Clock section and part 10's warnings. */
     private readonly ingestTiming = new IngestTimingReporter(this.ingestTimingHost(), {

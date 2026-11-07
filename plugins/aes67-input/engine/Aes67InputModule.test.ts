@@ -384,7 +384,7 @@ describe('Aes67InputModule on house time (WI-P1-11)', () => {
         expect(p).not.toContain('pid-trims');
     });
 
-    it('a live edit of O sets the restamp property with no restart; the playout offset stays live', async () => {
+    it('a live edit of O sets the restamp property with no restart', async () => {
         const module = makeModule();
         module.config = { address: '239.69.0.1' };
         const setElementProperty = vi.fn(async () => {});
@@ -394,7 +394,6 @@ describe('Aes67InputModule on house time (WI-P1-11)', () => {
         });
         await instance.applyConfigUpdate({ ingestOffsetMs: 500 });
         expect(setElementProperty).toHaveBeenCalledWith('restamp', 'offset-ns', 500_000_000);
-        await instance.applyConfigUpdate({ playoutOffsetMs: 120 });
         expect(setElementProperty).toHaveBeenCalledTimes(1);
         expect(instance.getState().pendingRestart).toBe(false);
         // A later rebuild starts on the edited value.
@@ -414,7 +413,7 @@ describe('Aes67InputModule on house time (WI-P1-11)', () => {
             // No clock lock to smooth (b95s).
             expect(props.smoothingCooldownMin).toBeUndefined();
             const live = Object.keys(props).filter((k) => props[k]['x-live'] === true);
-            expect(live).toEqual(expect.arrayContaining(['playoutOffsetMs', 'ingestOffsetMs']));
+            expect(live).toEqual(['ingestOffsetMs']);
             expect(new Aes67InputModule().getLiveUpdatableParams()).toEqual(
                 expect.arrayContaining(live),
             );

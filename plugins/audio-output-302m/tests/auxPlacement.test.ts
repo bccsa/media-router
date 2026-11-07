@@ -264,11 +264,8 @@ describe.skipIf(skip !== null)(
             };
             const connections: object[] = [];
             feeds.forEach((f, i) => {
-                // The Master feeds: a route of D 300 each; NYA's transcoder 125 ms ahead.
-                modules[f] = mod('tone', `${f} master`, {
-                    freq: 440 + 110 * i,
-                    playoutOffsetMs: 300,
-                });
+                // The Master feeds; NYA's transcoder 125 ms ahead.
+                modules[f] = mod('tone', `${f} master`, { freq: 440 + 110 * i });
                 modules[`${f}xc`] = mod('relay', `${f} transcoder`, {
                     delayMs: f === 'nya' ? 0 : 125,
                 });

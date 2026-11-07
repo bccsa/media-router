@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { io as IOClient, type Socket as ClientSocket } from 'socket.io-client';
 import { LcpServer } from './LcpServer.js';
 import { LocalServer } from './LocalServer.js';
+import type { ModuleRuntimeState } from '@media-router/shared-types';
 
 /**
  * Integration tests for LcpServer ↔ LCP client communication.
@@ -72,7 +73,12 @@ describe('LcpServer', () => {
     });
 
     it('broadcasts module state changes', async () => {
-        const state = { running: true, health: 'ok', ready: true };
+        const state: ModuleRuntimeState = {
+            running: true,
+            health: 'ok',
+            ready: true,
+            pendingRestart: false,
+        };
         const promise = waitForEvent(client, 'moduleState');
         lcpServer.broadcastState('mic-1', state);
         const received = await promise;
@@ -200,9 +206,9 @@ describe('LcpServer', () => {
 
     it('broadcastAllStates sends all states to clients', async () => {
         const states = {
-            'mic-1': { running: true, health: 'ok', ready: true },
-            'spk-1': { running: false, health: 'ok', ready: false },
-        };
+            'mic-1': { running: true, health: 'ok', ready: true, pendingRestart: false },
+            'spk-1': { running: false, health: 'ok', ready: false, pendingRestart: false },
+        } satisfies Record<string, ModuleRuntimeState>;
         const promise = waitForEvent(client, 'allStates');
         lcpServer.broadcastAllStates(states);
         const received = await promise;
@@ -210,7 +216,9 @@ describe('LcpServer', () => {
     });
 
     it('sendInitialState broadcasts allStates', async () => {
-        const states = { 'mic-1': { running: true, health: 'ok', ready: true } };
+        const states: Record<string, ModuleRuntimeState> = {
+            'mic-1': { running: true, health: 'ok', ready: true, pendingRestart: false },
+        };
         const promise = waitForEvent(client, 'allStates');
         lcpServer.sendInitialState(states);
         const received = await promise;

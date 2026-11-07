@@ -5,7 +5,7 @@ import type { AudioDevice } from './PipeWireManager.js';
 import { SinkVolumeNormalizer } from './SinkVolumeNormalizer.js';
 
 function makeQueue(impl: () => Promise<string> = () => Promise.resolve('')) {
-    const exec = vi.fn(impl);
+    const exec = vi.fn((_args: string[]) => impl());
     return { queue: { exec } as unknown as PaCommandQueue, exec };
 }
 

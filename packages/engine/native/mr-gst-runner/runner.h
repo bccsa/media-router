@@ -9,8 +9,7 @@
 //   (commands.cpp); per-consumer bus fan-out edges with the stall watchdog
 //   (bus_edges.cpp, their socket paths' ownership in edge_path.cpp, B-190);
 //   the time-sync contract's house clock and the native
-//   `mrtsstamp` egress stamper (stamper.cpp); the backlog shedder
-//   (backlog_shed.cpp); pad-link
+//   `mrtsstamp` egress stamper (stamper.cpp); pad-link
 //   rules and stream discovery (pad_link.cpp); the keyframe gate, render
 //   keep-up watch and TS video-info probe, and the mrrist plugin loader
 //   (gates.cpp); runner hooks in their native form (hooks.cpp, ADR-0020); a
@@ -91,8 +90,6 @@ struct Runner {
     void teardown_pipeline(GstElement* pipe, bool drain = true, bool errored = false);
     void arm_playing_watchdog(int timeout_ms);
     void cancel_playing_watchdog();
-    /** Pipeline running time in ms (0 without a pipeline/clock). */
-    double now_running_ms();
     void emit_plugin_event(const std::string& channel, JsonNode* payload);
 
     // --- commands (commands.cpp) ---

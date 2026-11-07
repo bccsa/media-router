@@ -257,7 +257,9 @@ function pendingOps() {
     const ops = new AudioDeviceOps(queue as never, { now: () => t });
     const flush = () => new Promise((r) => setImmediate(r));
     // Each first lets the calls asked so far reach pactl, then answers them.
-    const answer = async (out = (args: string[]) => (args[1] === 'sources' ? MIC : '')) => {
+    const answer = async (
+        out: (args: string[]) => string = (args) => (args[1] === 'sources' ? MIC : ''),
+    ) => {
         await flush();
         for (const c of pending.splice(0)) c.ok(out(c.args));
         await flush();

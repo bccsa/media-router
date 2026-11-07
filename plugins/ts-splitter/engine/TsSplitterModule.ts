@@ -69,10 +69,6 @@ import { formatPid, languageFromEsInfo, streamTypeInfo } from './streamTypes.js'
  * here (the demuxer keeps that duty — a name would outrank the language).
  */
 export class TsSplitterModule extends GstPluginBase {
-    /** Route-head playout offset (ADR-0005 decision 4) — the splitter reads it
-     *  itself for nothing; the engine fans it out to the consumers of each
-     *  output leg, which is why it must never mark a pending restart here. */
-    protected liveUpdatableParams = ['playoutOffsetMs'];
     /** The source's CURRENT PMT (PID-keyed) — replaced wholesale by every
      *  discovery event. Empty until the first PMT of this run. */
     private readonly discovered = new Map<number, DiscoveredStreamConfig>();

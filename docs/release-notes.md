@@ -407,6 +407,17 @@ elements" below do not start.
   offset there is nothing to trim, the picture is never timed by its sink, and
   its input queue holds what a stall leaves (up to 5 s). Stored values are
   ignored; a rollback restores them.
+- **Playout Offset** on SRT Input, RIST Input, MPEG-TS IP Input, AES67 Input
+  and TS Splitter: no output waits for a playout offset any more, so a route
+  has none to set. Stored values are ignored; a rollback restores them. The
+  engine also ignores `MR_PLAYOUT_OFFSET_MS` and `MR_PLAYOUT_REANCHOR` in its
+  unit file.
+- **The automatic playout raises are gone.** A late output no longer raises
+  its route's playout offset or re-anchors itself: there is no **Playout
+  re-anchor** section, badge or "Playout re-anchored" warning on a route's
+  input or its outputs, and no "Backlog shed" lines in the journal. Nothing is
+  dropped to catch up: an output that falls behind plays on behind until a
+  gap in its input or a restart.
 
 **Needs the image's native elements (Phase 2)**
 

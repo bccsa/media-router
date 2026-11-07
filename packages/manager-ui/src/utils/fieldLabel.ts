@@ -2,7 +2,7 @@
  * Heading for a schema-driven settings field.
  *
  * JSON Schema `title` wins when the plugin sets one; otherwise the camelCase
- * key is split into words (`playoutOffsetMs` → "Playout Offset Ms"). Shared by
+ * key is split into words (`ingestOffsetMs` → "Ingest Offset Ms"). Shared by
  * the settings form, array-item fields and the module context menu so a field
  * is named the same everywhere.
  */

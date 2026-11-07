@@ -131,15 +131,6 @@
                     "default": 1000,
                     "title": "Stats Interval",
                     "description": "ms"
-                },
-                "playoutOffsetMs": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 10000,
-                    "x-unit": "ms",
-                    "x-live": true,
-                    "title": "Playout Offset",
-                    "description": "Route latency budget behind the house clock (empty = 60 ms); an edit resets any engine auto-raise."
                 }
             }
         },

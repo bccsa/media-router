@@ -27,15 +27,8 @@ import {
  * and rendezvous modes. Optional AES encryption via passphrase.
  */
 export class SrtInputModule extends GstPluginBase {
-    /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
-     *  never by this pipeline, so it is live and never pends a restart. O, the trims and the
-     *  smoothing cooldown are the restamp's live properties (§5.5, B-95). */
-    protected liveUpdatableParams = [
-        'playoutOffsetMs',
-        INGEST_OFFSET_KEY,
-        PID_TRIMS_KEY,
-        SMOOTHING_COOLDOWN_KEY,
-    ];
+    /** O, the trims and the smoothing cooldown are the restamp's live properties (§5.5, B-95). */
+    protected liveUpdatableParams = [INGEST_OFFSET_KEY, PID_TRIMS_KEY, SMOOTHING_COOLDOWN_KEY];
     private statsTimer: ReturnType<typeof setInterval> | null = null;
     private statPoller: SrtStatPoller;
     /** The restamp's card: Clock badge and sections, one section per PID, part 10's warnings. */

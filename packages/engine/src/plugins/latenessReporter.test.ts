@@ -1007,31 +1007,3 @@ describe('LatenessReporter: demuxes and consumer ASRCs (WI-P3-6)', () => {
         expect(r.streamWarnings(9000)[0].text).toBe('Input demux carries no stream');
     });
 });
-
-describe('LatenessReporter.contentLatenessMs — what a playout re-anchor comes down on (B-210)', () => {
-    it('the latest input arrival (window mean) or the aligners’ pace, the later; no output tap', () => {
-        const r = fanIn();
-        expect(r.contentLatenessMs(0)).toBeNull();
-        r.onEvent('mrlateness:lat_busin_1', win(5, 1, 30), 0);
-        r.onEvent('mrlateness:lat_busin_2', win(26, 20, 40), 0);
-        // Sink-paced: the render tap moves with D, the arrival does not.
-        r.onEvent('mrlateness:lat_render', win(2_000), 0);
-        expect(r.contentLatenessMs(0)).toBe(26);
-        r.onEvent(
-            'mralignwatch:mixin_aw_1',
-            aw('c1', 'present', { latenessMs: 9, paceMs: 1_500 }),
-            0,
-        );
-        expect(r.contentLatenessMs(0)).toBe(1_500);
-        // An absent input's pace is no hold on the mix.
-        r.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'absent', { paceMs: 3_000 }), 10);
-        expect(r.contentLatenessMs(10)).toBe(26);
-    });
-
-    it('a tap gone quiet (a dark input) no longer counts', () => {
-        const r = new LatenessReporter();
-        r.onEvent('mrlateness:lat_busin_0', win(400), 0);
-        r.onEvent('mrlateness:lat_busin_1', win(5), 5000);
-        expect(r.contentLatenessMs(7000)).toBe(5);
-    });
-});

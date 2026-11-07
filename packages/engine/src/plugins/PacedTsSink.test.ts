@@ -60,7 +60,9 @@ function writeMedia(sink: TestSink, startByte: number, seconds: number): void {
  * advancing the clock alone is not enough — each tick has to be handed back to
  * the event loop, which `advanceTimersByTimeAsync` does.
  */
-const run = (ms: number): Promise<void> => vi.advanceTimersByTimeAsync(ms);
+const run = async (ms: number): Promise<void> => {
+    await vi.advanceTimersByTimeAsync(ms);
+};
 
 /**
  * How far AHEAD of 1x realtime the datagram for media second `m` went out, in

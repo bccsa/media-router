@@ -9,12 +9,6 @@ import type {
     LiveSwapTarget,
 } from '../child-process/UnixFdFanoutController.js';
 import type { LiveInputBranch } from '../plugins/PluginModule.js';
-import { PLAYOUT_OFFSET_KEY } from '../plugins/playoutOffset.js';
-import type {
-    PlayoutLegOffset,
-    PlayoutRaise,
-    PlayoutRebaseNote,
-} from '../plugins/playoutReanchor.js';
 
 const log = createLogger('ModuleInstance');
 
@@ -260,13 +254,6 @@ export class ModuleInstance extends EventEmitter {
                 (this.plugin.isLiveChange?.(key, value, this.config[key]) ?? true);
             if (live) {
                 liveChanges[key] = value;
-            } else if (key === PLAYOUT_OFFSET_KEY) {
-                // A route head's playout offset is an ENGINE-level annotation on
-                // the route, not a parameter of the producer's own pipeline —
-                // nothing in the producer reads it, so it can never need a
-                // restart there. It reaches the consumers through the fan-out
-                // below. Live by construction, whatever the plugin's list says.
-                continue;
             } else {
                 hasNonLive = true;
             }
@@ -285,49 +272,7 @@ export class ModuleInstance extends EventEmitter {
             this._pendingRestart = true;
         }
 
-        // This module is a route head and its playout offset D moved — push it
-        // to every consumer of its bus so both legs of the route re-anchor
-        // together (ADR-0005 decision 4). Fire-and-forget: a consumer that can't
-        // take it self-corrects on its next rebuild.
-        if (PLAYOUT_OFFSET_KEY in changes && this.services?.mediaRouter) {
-            // The operator took ownership of D: any runtime re-anchor raise goes
-            // FIRST, so the fan-out below pushes the edited value alone.
-            this.services.mediaRouter.clearPlayoutRaise?.(this.instanceId);
-            await this.services.mediaRouter
-                .notifyPlayoutOffsetChanged(this.instanceId)
-                .catch((err: unknown) => {
-                    log.debug(
-                        { err: formatError(err), instanceId: this.instanceId },
-                        'Playout-offset fan-out failed',
-                    );
-                });
-        }
-
         this.emitStateChange();
-    }
-
-    /**
-     * The route head feeding this module changed its playout offset D — let the
-     * plugin re-push its sink `ts-offset`. Optional hook: modules that don't
-     * present (producers, transcoders) simply don't implement it.
-     */
-    async notifyRoutePlayoutOffsetChanged(): Promise<void> {
-        await this.plugin.onRoutePlayoutOffsetChanged?.();
-    }
-
-    /** This module's route raise changed (re-anchor, ADR-0005 2026-10-08). */
-    notifyRoutePlayoutRaised(raise: PlayoutRaise | null): void {
-        this.plugin.onRoutePlayoutRaised?.(raise);
-    }
-
-    /** A leg below this route head rebased itself (`null`: that is over, B-210). */
-    notifyRoutePlayoutRebased(note: PlayoutRebaseNote | null): void {
-        this.plugin.onRoutePlayoutRebased?.(note);
-    }
-
-    /** This leg's own re-anchor past its route's reach (`null`: cleared, B-210). */
-    notifyPlayoutLegOffset(offset: PlayoutLegOffset | null): void {
-        this.plugin.onPlayoutLegOffset?.(offset);
     }
 
     /** Get PipeWire node names for audio routing (single-port modules). */

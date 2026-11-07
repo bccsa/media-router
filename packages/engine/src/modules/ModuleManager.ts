@@ -29,10 +29,6 @@ export class ModuleManager extends EventEmitter {
     private mediaRouter: MediaRouter | null = null;
     private processManager: ProcessManager | null = null;
     private deviceProviders: DeviceProviderRegistry | null = null;
-    /** Engine-wide default playout offset D in ms — see `EngineConfig.playoutOffsetMs`. */
-    private playoutOffsetMs: number | undefined;
-    /** Re-anchor instead of shed — see `EngineConfig.playoutReanchor`. */
-    private playoutReanchor = false;
     private houseClock: HouseClock | null = null;
 
     constructor(
@@ -41,8 +37,6 @@ export class ModuleManager extends EventEmitter {
         mediaRouter?: MediaRouter,
         processManager?: ProcessManager,
         deviceProviders?: DeviceProviderRegistry,
-        playoutOffsetMs?: number,
-        playoutReanchor?: boolean,
         houseClock?: HouseClock,
     ) {
         super();
@@ -51,8 +45,6 @@ export class ModuleManager extends EventEmitter {
         this.mediaRouter = mediaRouter ?? null;
         this.processManager = processManager ?? null;
         this.deviceProviders = deviceProviders ?? null;
-        this.playoutOffsetMs = playoutOffsetMs;
-        this.playoutReanchor = playoutReanchor === true;
         this.houseClock = houseClock ?? null;
     }
 
@@ -99,10 +91,6 @@ export class ModuleManager extends EventEmitter {
                       mediaRouter: this.mediaRouter,
                       processManager: this.processManager,
                       deviceProviders: this.deviceProviders,
-                      ...(this.playoutOffsetMs !== undefined
-                          ? { playoutOffsetMs: this.playoutOffsetMs }
-                          : {}),
-                      ...(this.playoutReanchor ? { playoutReanchor: true } : {}),
                       ...(this.houseClock ? { houseClock: this.houseClock } : {}),
                       instanceId,
                   }

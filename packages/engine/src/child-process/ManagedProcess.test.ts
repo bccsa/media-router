@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { ManagedProcess } from './ManagedProcess.js';
+import { ManagedProcess, type ManagedProcessOptions } from './ManagedProcess.js';
 import { holdUntilZombie, uncaughtDuring } from './testing/unreapedChild.js';
 
 describe('ManagedProcess', () => {
@@ -13,10 +13,7 @@ describe('ManagedProcess', () => {
     });
 
     function create(
-        opts: Partial<Parameters<typeof ManagedProcess.prototype.start>[0]> & {
-            command: string;
-            label: string;
-        },
+        opts: Partial<ManagedProcessOptions> & { command: string; label: string },
     ): ManagedProcess {
         const proc = new ManagedProcess(
             {

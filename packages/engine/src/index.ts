@@ -8,7 +8,6 @@ export type {
     PadLinkRule,
     RistRunnerConfig,
     TsProbeRunnerConfig,
-    BacklogShedConfig,
     CatchUpConfig,
     RunnerHook,
     EngineServices,
@@ -246,32 +245,6 @@ export { PacedUnixStreamTsSink } from './plugins/PacedUnixStreamTsSink.js';
 export { REDACTED, redactSecrets } from '@media-router/shared-types';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
-export {
-    effectivePlayoutOffsetMs,
-    effectivePlayoutOffsetNs,
-    parsePlayoutOffsetMs,
-    resolveEnginePlayoutOffsetMs,
-    DEFAULT_PLAYOUT_OFFSET_MS,
-    MAX_PLAYOUT_OFFSET_MS,
-    PLAYOUT_OFFSET_KEY,
-} from './plugins/playoutOffset.js';
-export type {
-    PlayoutOffsetOptions,
-    PlayoutOffsetServices,
-    PlayoutOffsetRouteSource,
-} from './plugins/playoutOffset.js';
-export {
-    backlogShedConfig,
-    BACKLOG_SHED_EVENT,
-    BACKLOG_SHED_TOLERANCE_MS,
-    BACKLOG_SHED_HOLD_MS,
-    BACKLOG_SHED_COOLDOWN_MS,
-    BACKLOG_SHED_SANITY_MS,
-    PLAYOUT_MISS_MS,
-    PLAYOUT_WATCH_EVENT,
-    readPlayoutWatch,
-} from './plugins/backlogShed.js';
-export type { BacklogShedOptions, BacklogShedServices } from './plugins/backlogShed.js';
 export {
     OUTPUT_PREFILL_MS,
     OUTPUT_PREFILL_NAME,

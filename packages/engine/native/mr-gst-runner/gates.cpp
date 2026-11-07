@@ -11,7 +11,6 @@
 #include <optional>
 #include <vector>
 
-#include "backlog_shed.h"
 #include "ipc.h"
 #include "json_util.h"
 #include "mrts/ts_psi.h"
@@ -136,15 +135,6 @@ bool start(GstElement* pipe, JsonObject* cfg) {
     st->probe_id = gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, on_buffer, new std::shared_ptr<State>(st),
                                      [](gpointer p) { delete static_cast<std::shared_ptr<State>*>(p); });
     return true;
-}
-
-void reclose(const std::string& decoder) {
-    std::shared_ptr<State> st = g_state;
-    if (!st || st->decoder != decoder || !st->opened.load()) return;
-    st->opened.store(false);
-    st->since_close = 0;
-    st->rearms++;
-    ipc::log(fmt("keyframe gate: %s re-armed after a post-shed decoder flush (re-arm #%lld)", decoder.c_str(), st->rearms));
 }
 
 GstPad* decoder_pad(std::string* name) {
@@ -321,8 +311,6 @@ gboolean tick(gpointer) {
         json_object_set_double_member(o, "expectedFps", std::round(expected * 100) / 100);
         json_object_set_double_member(o, "droppedFps", std::round(dropped / window_s * 10) / 10);
         json_object_set_double_member(o, "arrivalsFps", std::round(arrivals / window_s * 10) / 10);
-        // Retained latency, when a shedder is armed to measure it.
-        shed::window_into(runner().now_running_ms(), o);
         JsonNode* n = json_node_new(JSON_NODE_OBJECT);
         json_node_take_object(n, o);
         runner().emit_plugin_event(std::string("renderwatch:") + kind, n);

@@ -28,7 +28,6 @@ import { getAllIps, findBuildNumber, getHostname } from './system/deviceInfo.js'
 import { ModuleLifecycle, mapPorts } from './modules/ModuleLifecycle.js';
 import { retireConnectionsOnPorts } from './modules/portPrune.js';
 import { ModuleRunController } from './modules/ModuleRunController.js';
-import { resolveEnginePlayoutOffsetMs } from './plugins/playoutOffset.js';
 import { HouseClock } from './clock/HouseClock.js';
 import type { RouterTree } from './tree/RouterTree.js';
 import { createRouterTree } from './tree/createRouterTree.js';
@@ -42,23 +41,6 @@ export interface EngineConfig {
     localPort?: number;
     pluginsDir?: string;
     profilesPath?: string;
-    /**
-     * Engine-wide default playout offset D, in ms (ADR-0005 decision 4).
-     * Presentation sinks schedule at `stamped-time + D`; a route can override
-     * it on its route head (see `plugins/playoutOffset.ts`).
-     *
-     * Omitted → `MR_PLAYOUT_OFFSET_MS` decides, else 60 ms, so the fleet can
-     * retune the budget from the unit file without a code change. An unparseable
-     * value (or one outside 0–10000 ms) is ignored and falls through to the default.
-     */
-    playoutOffsetMs?: number;
-    /**
-     * Never drop on lateness (ADR-0005 amendment 2026-10-08, on by default): a
-     * late presentation leg asks the engine to raise its route's D instead of
-     * shedding. Omitted → `MR_PLAYOUT_REANCHOR` decides (`'0'` restores
-     * today's shedding exactly).
-     */
-    playoutReanchor?: boolean;
 }
 
 /**
@@ -86,10 +68,6 @@ export class Engine {
     readonly deviceProviders: DeviceProviderRegistry;
     /** The one owner of the house epoch E and of time-sync state (house-clock design §10.3). */
     readonly houseClock: HouseClock;
-    /** Resolved engine-wide default playout offset D in ms — see `EngineConfig.playoutOffsetMs`. */
-    readonly playoutOffsetMs: number;
-    /** Resolved never-drop re-anchor switch — see `EngineConfig.playoutReanchor`. */
-    readonly playoutReanchor: boolean;
 
     private apiServer: FastifyInstance | null = null;
     private config: EngineConfig;
@@ -131,13 +109,6 @@ export class Engine {
         this.processManager = new ProcessManager();
         this.deviceProviders = new DeviceProviderRegistry();
         this.houseClock = new HouseClock({ processManager: this.processManager });
-        // Playout offset D (ADR-0005 decision 4): config → env → default.
-        this.playoutOffsetMs = resolveEnginePlayoutOffsetMs(
-            config.playoutOffsetMs,
-            process.env.MR_PLAYOUT_OFFSET_MS,
-        );
-        // Re-anchor instead of shed — same precedence shape (config → env → on).
-        this.playoutReanchor = config.playoutReanchor ?? process.env.MR_PLAYOUT_REANCHOR !== '0';
 
         this.pluginLoader = new PluginLoader(config.pluginsDir);
         this.mediaRouter = new MediaRouter();
@@ -147,11 +118,8 @@ export class Engine {
             this.mediaRouter,
             this.processManager,
             this.deviceProviders,
-            this.playoutOffsetMs,
-            this.playoutReanchor,
             this.houseClock,
         );
-        this.mediaRouter.setPlayoutReanchor(this.playoutReanchor, this.playoutOffsetMs);
         this.managerConnection = new ManagerConnection();
         this.localChanges = new LocalChanges(this.managerConnection);
         this.localServer = new LocalServer(config.localPort ?? LOCAL_PORT);
@@ -362,8 +330,6 @@ export class Engine {
             mediaRouter: this.mediaRouter,
             processManager: this.processManager,
             deviceProviders: this.deviceProviders,
-            playoutOffsetMs: this.playoutOffsetMs,
-            playoutReanchor: this.playoutReanchor,
             houseClock: this.houseClock,
         });
         log.info({ pluginCount }, 'Loaded plugins');

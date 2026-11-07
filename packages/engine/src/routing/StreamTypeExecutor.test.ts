@@ -14,21 +14,21 @@ function makeExecutor(streamType: string, handleType: ActiveHandle['type']): Str
 describe('StreamTypeExecutorRegistry', () => {
     it('dispatches execute by streamType and teardown by handleType', () => {
         const reg = new StreamTypeExecutorRegistry();
-        const udp = makeExecutor('muxed/mpegts', 'udp');
+        const udp = makeExecutor('muxed/mpegts', 'bus');
         reg.register(udp);
         expect(reg.forStreamType('muxed/mpegts')).toBe(udp);
-        expect(reg.forHandle({ connectionId: 'c', type: 'udp' })).toBe(udp);
+        expect(reg.forHandle({ connectionId: 'c', type: 'bus' })).toBe(udp);
     });
 
     it('aliases extra stream types onto the SAME instance (audio/302m rides the TS executor)', () => {
         const reg = new StreamTypeExecutorRegistry();
-        const udp = makeExecutor('muxed/mpegts', 'udp');
+        const udp = makeExecutor('muxed/mpegts', 'bus');
         reg.register(udp, ['audio/302m']);
         // One instance serves both types — execute state (e.g. materialize
         // tracking) and teardown dispatch stay coherent.
         expect(reg.forStreamType('audio/302m')).toBe(udp);
         expect(reg.forStreamType('muxed/mpegts')).toBe(udp);
-        expect(reg.forHandle({ connectionId: 'c', type: 'udp' })).toBe(udp);
+        expect(reg.forHandle({ connectionId: 'c', type: 'bus' })).toBe(udp);
         expect(reg.streamTypes().sort()).toEqual(['audio/302m', 'muxed/mpegts']);
     });
 });

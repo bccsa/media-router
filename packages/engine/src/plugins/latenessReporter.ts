@@ -317,20 +317,6 @@ export class LatenessReporter {
         if (tap.startsWith(LAT_IN_PREFIX)) this.tapped.add(tap);
     }
 
-    /** How late the module's content is on the house clock before any playout offset: its latest
-     *  input's arrival (a bus-ingress tap's window mean) or its aligners' pace, the later; null
-     *  without a reading. What a playout re-anchor comes back down on (B-210). */
-    contentLatenessMs(now = Date.now()): number | null {
-        this.expire(now);
-        const late: number[] = [];
-        for (const [tap, e] of this.taps)
-            if (tap.startsWith(LAT_IN_PREFIX)) late.push(e.window.meanMs);
-        for (const w of this.watches.list()) {
-            if (w.report.state === 'present') late.push(w.report.paceMs);
-        }
-        return late.length ? Math.max(...late) : null;
-    }
-
     /** The health text while an output reads OFF_CLOCK_MS or more off the house clock, the one
      *  furthest off named (B-203); null when none does. */
     offClockWarning(now = Date.now()): string | null {

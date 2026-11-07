@@ -107,13 +107,13 @@ const SRT_INPUT_SCHEMA = {
         port: { type: 'number', default: 9000, title: 'Port', description: '' },
         mode: { type: 'string', enum: ['listener', 'caller', 'rendezvous'], default: 'listener' },
         latency: { type: 'number', default: 125, title: 'Latency' },
-        playoutOffsetMs: {
+        outputDelayMs: {
             type: 'number',
             minimum: 0,
             maximum: 10000,
             'x-unit': 'ms',
             'x-live': true,
-            title: 'Playout Offset',
+            title: 'Output Delay',
         },
         ingestOffsetMs: {
             type: 'number',
@@ -162,7 +162,7 @@ function seedSrtInput(mod: Record<string, unknown> = {}) {
                 displayName: 'Venue feed',
                 configSchema: SRT_INPUT_SCHEMA,
                 liveUpdatableParams: [
-                    'playoutOffsetMs',
+                    'outputDelayMs',
                     'ingestOffsetMs',
                     'pidTrimsMs',
                     'smoothingCooldownMin',
@@ -596,10 +596,10 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
         expect(settingBlock(wrapper, 'Smoothing Cooldown').get('[data-test="unit"]').text()).toBe(
             'min',
         );
-        // Playout Offset declares x-unit ms as well and keeps the bare MrInput.
-        const playout = settingBlock(wrapper, 'Playout Offset');
-        expect(playout.find('[data-test="unit"]').exists()).toBe(false);
-        expect(playout.text()).not.toContain('ms');
+        // Output Delay declares x-unit ms as well and keeps the bare MrInput.
+        const delay = settingBlock(wrapper, 'Output Delay');
+        expect(delay.find('[data-test="unit"]').exists()).toBe(false);
+        expect(delay.text()).not.toContain('ms');
     });
 
     it('Save writes a changed trim map whole beside a changed offset, stale PIDs included', async () => {
@@ -642,13 +642,13 @@ const TYPED_SCHEMA = {
         host: { type: 'string', default: '0.0.0.0', title: 'Host' },
         port: { type: 'number', default: 9000, minimum: 1, maximum: 65535, title: 'Port' },
         busBatchMs: { type: 'integer', default: 20, minimum: 0, maximum: 100, title: 'Bus Batch' },
-        playoutOffsetMs: {
+        outputDelayMs: {
             type: 'number',
             minimum: 0,
             maximum: 10000,
             'x-unit': 'ms',
             'x-live': true,
-            title: 'Playout Offset',
+            title: 'Output Delay',
         },
         url: { type: 'string', default: '', 'x-live': true, 'x-debounceMs': 800, title: 'URL' },
         volume: {
@@ -680,8 +680,8 @@ function seedTyped(modules: Record<string, Record<string, unknown>> = { 'typed-1
                     pluginId: 'srt-input',
                     displayName: id,
                     configSchema: TYPED_SCHEMA,
-                    liveUpdatableParams: ['playoutOffsetMs', 'url', 'volume'],
-                    settings: { playoutOffsetMs: 120, ...settings },
+                    liveUpdatableParams: ['outputDelayMs', 'url', 'volume'],
+                    settings: { outputDelayMs: 120, ...settings },
                 },
             ]),
         ),
@@ -713,26 +713,24 @@ describe('ModuleSettingsPanel — every typed setting validates and writes at En
         seedTyped();
         const wrapper = mountPanel('typed-1');
 
-        await typeKeys(boxIn(wrapper, 'Playout Offset'), '250');
+        await typeKeys(boxIn(wrapper, 'Output Delay'), '250');
         vi.advanceTimersByTime(1000);
         expect(mockModuleSetting).not.toHaveBeenCalled();
-        expect(reasonIn(wrapper, 'Playout Offset')).toBeUndefined();
+        expect(reasonIn(wrapper, 'Output Delay')).toBeUndefined();
 
-        await boxIn(wrapper, 'Playout Offset').trigger('change');
+        await boxIn(wrapper, 'Output Delay').trigger('change');
         vi.advanceTimersByTime(1000);
-        expect(mockModuleSetting.mock.calls).toEqual([
-            ['eng-1', 'typed-1', 'playoutOffsetMs', 250],
-        ]);
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'typed-1', 'outputDelayMs', 250]]);
     });
 
     it('a live number out of range is refused with the reason; an unchanged commit writes nothing', async () => {
         seedTyped();
         const wrapper = mountPanel('typed-1');
 
-        await boxIn(wrapper, 'Playout Offset').setValue('20000');
-        expect(reasonIn(wrapper, 'Playout Offset')).toBe('Must be between 0 and 10000 ms');
-        await boxIn(wrapper, 'Playout Offset').setValue('120');
-        expect(reasonIn(wrapper, 'Playout Offset')).toBeUndefined();
+        await boxIn(wrapper, 'Output Delay').setValue('20000');
+        expect(reasonIn(wrapper, 'Output Delay')).toBe('Must be between 0 and 10000 ms');
+        await boxIn(wrapper, 'Output Delay').setValue('120');
+        expect(reasonIn(wrapper, 'Output Delay')).toBeUndefined();
 
         expect(mockModuleSetting).not.toHaveBeenCalled();
     });
@@ -828,26 +826,26 @@ describe('ModuleSettingsPanel — every typed setting validates and writes at En
         seedTyped();
         const wrapper = mountPanel('typed-1');
 
-        await typeKeys(boxIn(wrapper, 'Playout Offset'), '33');
+        await typeKeys(boxIn(wrapper, 'Output Delay'), '33');
         await typeKeys(boxIn(wrapper, 'Host'), 'gate');
         useEngineStore().applyEnginePatch('eng-1', [
             { op: 'replace', path: '/modules/typed-1/settings/volume', value: 80 },
         ]);
         await nextTick();
 
-        expect((boxIn(wrapper, 'Playout Offset').element as HTMLInputElement).value).toBe('33');
+        expect((boxIn(wrapper, 'Output Delay').element as HTMLInputElement).value).toBe('33');
         expect((boxIn(wrapper, 'Host').element as HTMLInputElement).value).toBe('gate');
         expect(mockModuleSetting).not.toHaveBeenCalled();
     });
 
     it('typed text stays with its module when the panel opens another one', async () => {
-        seedTyped({ 'typed-1': {}, 'typed-2': { playoutOffsetMs: 60 } });
+        seedTyped({ 'typed-1': {}, 'typed-2': { outputDelayMs: 60 } });
         const wrapper = mountPanel('typed-1');
 
-        await typeKeys(boxIn(wrapper, 'Playout Offset'), '777');
+        await typeKeys(boxIn(wrapper, 'Output Delay'), '777');
         await wrapper.setProps({ moduleId: 'typed-2' });
 
-        expect((boxIn(wrapper, 'Playout Offset').element as HTMLInputElement).value).toBe('60');
+        expect((boxIn(wrapper, 'Output Delay').element as HTMLInputElement).value).toBe('60');
         expect(mockModuleSetting).not.toHaveBeenCalled();
     });
 });
@@ -934,10 +932,10 @@ describe('ModuleSettingsPanel — a setting changed but not saved survives anoth
         const wrapper = mountPanel('typed-1');
 
         await commitThree(wrapper);
-        await outsideWrite('typed-1', 'playoutOffsetMs', 300);
+        await outsideWrite('typed-1', 'outputDelayMs', 300);
 
         expectThreeKept(wrapper);
-        expect((boxIn(wrapper, 'Playout Offset').element as HTMLInputElement).value).toBe('300');
+        expect((boxIn(wrapper, 'Output Delay').element as HTMLInputElement).value).toBe('300');
         await save(wrapper);
         expect(mockModuleSettings.mock.calls).toEqual([
             ['eng-1', 'typed-1', { port: 9001, mode: 'caller', fec: true }],
@@ -993,7 +991,7 @@ describe('ModuleSettingsPanel — a setting changed but not saved survives anoth
 
         await typeKeys(boxIn(wrapper, 'Port'), '9001');
         await outsideWrite('typed-1', 'port', 9100);
-        await outsideWrite('typed-1', 'playoutOffsetMs', 300);
+        await outsideWrite('typed-1', 'outputDelayMs', 300);
         expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('9001');
 
         await boxIn(wrapper, 'Port').trigger('change');
@@ -1257,7 +1255,7 @@ describe('ModuleSettingsPanel — a live write lands on the module it was made o
                     pluginId: 'srt-input',
                     displayName: 'typed-1',
                     configSchema: TYPED_SCHEMA,
-                    liveUpdatableParams: ['playoutOffsetMs', 'url', 'volume'],
+                    liveUpdatableParams: ['outputDelayMs', 'url', 'volume'],
                     settings: { volume: 10 },
                 },
             },

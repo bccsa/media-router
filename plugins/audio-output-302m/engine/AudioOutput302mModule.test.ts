@@ -1,6 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'fs';
-import { join } from 'path';
 import { GstPluginBase, ModuleInstance, liveInputLaunchText } from '@media-router/engine';
 import {
     default302mChannelMap,
@@ -17,8 +15,6 @@ const launched = (desc: { pipeline: string; liveInputs?: any[] }): string =>
 function makeModule(
     opts: {
         sources?: number;
-        /** The engine default D (ms) and an optional route-head override. */
-        playout?: { playoutOffsetMs?: number; routeOverrideMs?: number };
         /** Provide a PipeWire service whose getDeviceInfo reports this width
          *  (null = device not enumerated). Absent = no PipeWire service at all. */
         deviceChannels?: number | null;
@@ -34,11 +30,9 @@ function makeModule(
         streamType: 'audio/302m',
         socketPath: `/tmp/mr-bus-${40100 + i}-x.sock`,
     }));
-    const getRoutePlayoutOffsetMs = vi.fn(() => opts.playout?.routeOverrideMs);
     module.services = {
         instanceId: 'aout-1',
-        mediaRouter: { getModuleBusSources: vi.fn(() => sources), getRoutePlayoutOffsetMs },
-        ...(opts.playout ? { playoutOffsetMs: opts.playout.playoutOffsetMs ?? 300 } : {}),
+        mediaRouter: { getModuleBusSources: vi.fn(() => sources) },
         ...(opts.deviceChannels !== undefined
             ? {
                   pipeWire: {
@@ -60,7 +54,7 @@ function makeModule(
     module.setStatusData = vi.fn();
     const setElementProperty = vi.fn(async () => undefined);
     module.setElementProperty = setElementProperty;
-    return { module, setHealth, setElementProperty, getRoutePlayoutOffsetMs };
+    return { module, setHealth, setElementProperty };
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -365,25 +359,6 @@ describe('AudioOutput302mModule.buildPipeline', () => {
             expect.stringContaining('not enumerated by PipeWire'),
         );
     });
-
-    it('no playout offset in either arm (B-167): D, a route override and the re-anchor change nothing', () => {
-        for (const sources of [1, 2]) {
-            const plain = makeModule({ sources }).module.buildPipeline({
-                device: 'alsa_output.usb-foo',
-            })!;
-            for (const reanchor of [true, false]) {
-                const { module, getRoutePlayoutOffsetMs } = makeModule({
-                    sources,
-                    playout: { playoutOffsetMs: 300, routeOverrideMs: 500 },
-                });
-                module.services.playoutReanchor = reanchor;
-                const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' })!;
-                expect(desc.pipeline).toBe(plain.pipeline);
-                expect(desc.backlogShed).toBeUndefined();
-                expect(getRoutePlayoutOffsetMs).not.toHaveBeenCalled();
-            }
-        }
-    });
 });
 
 describe('AudioOutput302mModule: a launch catches up, whatever its sources went through (B-206)', () => {
@@ -420,21 +395,16 @@ describe('AudioOutput302mModule: a launch catches up, whatever its sources went 
     });
 
     it('a launch seeds every pace at 0, whatever a producer last read (B-167: no D to hold them to)', () => {
-        for (const playout of [undefined, { playoutOffsetMs: 300, routeOverrideMs: 800 }]) {
-            const { module } = makeModule({ sources: 3, playout });
-            module.services.mediaRouter.getModuleBusSources = vi.fn(() => [
-                { ...source(0), seedLatenessMs: 4300 },
-                { ...source(1), seedLatenessMs: 50 },
-                source(2),
-            ]);
-            const text = launched(module.buildPipeline({ device: 'alsa_output.usb-foo' })!);
-            // A read off a producer's outage burst is stale; one that really is late lifts the
-            // pace itself once it delivers. A source with no reading has no seed.
-            expect(text.match(/ seed-lateness=\d+/g)).toEqual([
-                ' seed-lateness=0',
-                ' seed-lateness=0',
-            ]);
-        }
+        const { module } = makeModule({ sources: 3 });
+        module.services.mediaRouter.getModuleBusSources = vi.fn(() => [
+            { ...source(0), seedLatenessMs: 4300 },
+            { ...source(1), seedLatenessMs: 50 },
+            source(2),
+        ]);
+        const text = launched(module.buildPipeline({ device: 'alsa_output.usb-foo' })!);
+        // A read off a producer's outage burst is stale; one that really is late lifts the
+        // pace itself once it delivers. A source with no reading has no seed.
+        expect(text.match(/ seed-lateness=\d+/g)).toEqual([' seed-lateness=0', ' seed-lateness=0']);
     });
 });
 
@@ -570,21 +540,9 @@ describe('AudioOutput302mModule.buildPipeline — plays as soon as it can (house
         }
     });
 
-    it('lipSyncMs is gone: not in the manifest, not live, and a stored value builds the same string', async () => {
-        const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
-        expect(manifest.mediaRouter.configSchema.properties).not.toHaveProperty('lipSyncMs');
-        for (const name of Object.keys(SHAPES) as Array<keyof typeof SHAPES>) {
-            expect(build(name, { lipSyncMs: -110 })).toBe(build(name));
-            expect(build(name, { lipSyncMs: 400 })).toBe(build(name));
-        }
-        const { module, setElementProperty } = makeModule({ sources: 1 });
+    it('only volume and audioEnabled are live: nothing else reaches the sink (B-167)', () => {
+        const { module } = makeModule({ sources: 1 });
         expect(module.liveUpdatableParams).toEqual(['volume', 'audioEnabled']);
-        module.config = { device: 'alsa_output.usb-foo' };
-        module.buildPipeline(module.config);
-        await module.onLiveConfigUpdate({ lipSyncMs: 50 });
-        expect(setElementProperty).not.toHaveBeenCalled();
-        // No route D reaches the sink either: the push and its hook are gone.
-        expect(module.onRoutePlayoutOffsetChanged).toBeUndefined();
     });
 
     it('volume is still live, on the gst volume element', async () => {
@@ -596,7 +554,7 @@ describe('AudioOutput302mModule.buildPipeline — plays as soon as it can (house
     });
 
     it('the status says house clock, with no playout offset', () => {
-        const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
+        const { module } = makeModule({ sources: 1 });
         module.buildPipeline({ device: 'alsa_output.usb-foo' });
         const [, output] = module.setStatusData.mock.calls.find((c: any[]) => c[0] === 'output');
         expect(output.timing).toBe('house clock');
@@ -644,18 +602,6 @@ describe('AudioOutput302mModule.buildPipeline — plays as soon as it can (house
         })!.pipeline;
         expect(p).toContain('mrtsdemux name=mixin_demux0 select=audio/x-smpte-302m ! avdec_s302m');
         expect(p).not.toMatch(/\btsdemux\b/);
-    });
-
-    it('mixLatencyMs is gone: not in the manifest, and a stored value changes nothing', () => {
-        const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
-        expect(manifest.mediaRouter.configSchema.properties).not.toHaveProperty('mixLatencyMs');
-        const { module } = makeModule({ sources: 2 });
-        const plain = module.buildPipeline({ device: 'alsa_output.usb-foo' })!.pipeline;
-        const stored = module.buildPipeline({
-            device: 'alsa_output.usb-foo',
-            mixLatencyMs: 400,
-        })!.pipeline;
-        expect(stored).toBe(plain);
     });
 });
 

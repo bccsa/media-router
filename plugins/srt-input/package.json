@@ -81,15 +81,6 @@
                     "default": 0,
                     "title": "Key Length",
                     "description": "0 = none"
-                },
-                "playoutOffsetMs": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 10000,
-                    "x-unit": "ms",
-                    "x-live": true,
-                    "title": "Playout Offset",
-                    "description": "Route latency budget behind the house clock (empty = 60 ms); an edit resets any engine auto-raise."
                 }
             }
         },

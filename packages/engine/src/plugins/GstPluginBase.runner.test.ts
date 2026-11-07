@@ -25,7 +25,7 @@ class TestModule extends GstPluginBase {
 
 function makeModule() {
     const proc = new FakeProc();
-    const spawn = vi.fn(() => proc);
+    const spawn = vi.fn((_owner: string, _opts: ManagedProcessOptions) => proc);
     const module = new TestModule();
     void module.onInit({}, {
         instanceId: 'm1',
@@ -35,7 +35,7 @@ function makeModule() {
     return { module, proc, spawn };
 }
 
-const badgeIds = (m: TestModule) => m.getState().badges.map((b) => b.id);
+const badgeIds = (m: TestModule) => (m.getState().badges ?? []).map((b) => b.id);
 
 beforeEach(() => vi.clearAllMocks());
 

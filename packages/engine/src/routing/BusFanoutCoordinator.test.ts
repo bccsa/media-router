@@ -104,7 +104,7 @@ describe('BusFanoutCoordinator — live input re-link on producer PLAYING (#787)
         relink?: (c: Connection) => Promise<boolean>;
     }) {
         const attach = vi.fn();
-        const restart = vi.fn(async () => {});
+        const restart = vi.fn(async (_reason?: string) => {});
         const producer = {
             getBusAttachTarget: () => ({ sendBusAttach: attach, sendBusDetach: vi.fn() }),
             getChildProcess: () => ({ pipelineLaunchedAt: 2000 }),
@@ -187,7 +187,7 @@ describe('BusFanoutCoordinator — stale consumer relaunch on producer PLAYING',
     // ADR-0010 rule 4: a consumer launched at/before the producer's current launch holds a dead edge.
     function rig(opts: { producerLaunch?: number; consumerLaunch?: number; conns?: Connection[] }) {
         const attach = vi.fn();
-        const restart = vi.fn(async () => {});
+        const restart = vi.fn(async (_reason?: string) => {});
         const producer = {
             getBusAttachTarget: () => ({ sendBusAttach: attach, sendBusDetach: vi.fn() }),
             getChildProcess: () => ({ pipelineLaunchedAt: opts.producerLaunch }),
@@ -267,7 +267,7 @@ describe('BusFanoutCoordinator — stale consumer relaunch on producer PLAYING',
 describe('BusFanoutCoordinator — a live input the consumer runs without joins (B-192)', () => {
     const PORT = 40002;
     function rig(opts: { lost: boolean; producerLaunch?: number; consumerLaunch?: number }) {
-        const restart = vi.fn(async () => {});
+        const restart = vi.fn(async (_reason?: string) => {});
         const producerChild = { pipelineLaunchedAt: opts.producerLaunch ?? 1000, isRunning: true };
         const producer = {
             getBusAttachTarget: () => ({ sendBusAttach: vi.fn(), sendBusDetach: vi.fn() }),

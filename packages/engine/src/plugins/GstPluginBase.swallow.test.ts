@@ -37,9 +37,7 @@ describe('GstPluginBase live-control wrappers — swallow RPC failures', () => {
         mod = new TestModule();
         debugSpy = vi.fn();
         // Replace the per-instance logger with a spy
-        (mod as unknown as { log: { debug: typeof debugSpy } }).log = {
-            debug: debugSpy,
-        } as unknown as (typeof mod)['log'];
+        (mod as unknown as { log: { debug: typeof debugSpy } }).log = { debug: debugSpy };
     });
 
     it('setElementProperty: resolves and logs at debug when childProcess throws', async () => {

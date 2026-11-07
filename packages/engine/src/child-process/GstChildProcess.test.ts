@@ -39,7 +39,13 @@ describe('sticky property replay', () => {
     // fake ControlIpc and flip `running` the way the stateChange handler does.
     function harness() {
         const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
-        const sendRequest = vi.fn(async () => ({}));
+        const sendRequest = vi.fn(
+            async (
+                _cmd: string,
+                _data?: any,
+                _timeoutMs?: number,
+            ): Promise<Record<string, unknown>> => ({}),
+        );
         child.ipc = { sendRequest, destroy: vi.fn() };
         child.running = true;
         return { child, sendRequest };
@@ -160,28 +166,6 @@ describe('start payload', () => {
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).keyframeGate).toBeUndefined();
     });
 
-    it('forwards backlogShed — dropping it leaves every paced leg on the ratchet', () => {
-        // The guard against the contract's latency ratchet. Lost here, the
-        // pipeline string still looks correct and the leg still plays — it just
-        // decays over HOURS while reporting itself healthy, which is exactly the
-        // failure it was written for (.42, 2026-08-13/14).
-        const backlogShed = {
-            element: 'vpdec',
-            sink: 'sink',
-            keyframeAligned: true,
-            toleranceMs: 250,
-            holdMs: 5_000,
-            cooldownMs: 60_000,
-            sanityMs: 10_000,
-        };
-        expect(payloadFor({ pipeline: 'fakesrc ! fakesink', backlogShed }).backlogShed).toEqual(
-            backlogShed,
-        );
-        // Absent on an unpaced leg — must stay absent, not become a shedder on
-        // elements that may not exist (a hard start error).
-        expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).backlogShed).toBeUndefined();
-    });
-
     it("forwards catchUp — dropping it lets a launch take its inputs' outage into its mix (B-206)", () => {
         const catchUp = { prefix: 'lat_busin' };
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink', catchUp }).catchUp).toEqual(catchUp);
@@ -216,7 +200,6 @@ describe('start payload (the wire to the runner)', () => {
         // The egress stamp needs no field: every egress is stamped by identity (WI-P2-3).
         const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
         expect(Object.keys(child.startPayload({ pipeline: 'x' })).sort()).toEqual([
-            'backlogShed',
             'busReports',
             'catchUp',
             'decoderThreadType',
@@ -299,7 +282,11 @@ describe('start payload (the wire to the runner)', () => {
 
     it('restartPipeline asks the runner to relaunch; a no-op with no pipeline; surfaces runner errors', async () => {
         const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
-        const sendRequest = vi.fn(async () => ({ ok: true }));
+        const sendRequest = vi.fn(
+            async (..._args: unknown[]): Promise<Record<string, unknown>> => ({
+                ok: true,
+            }),
+        );
         child.ipc = { sendRequest };
         await child.restartPipeline('x'); // no pipelineDesc yet
         expect(sendRequest).not.toHaveBeenCalled();

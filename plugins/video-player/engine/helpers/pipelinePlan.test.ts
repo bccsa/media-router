@@ -460,16 +460,6 @@ describe('planLivePipeline', () => {
         });
     });
 
-    it('arms no backlog shedder on any rung: nothing is dropped for lateness (B-169)', () => {
-        const all = Object.fromEntries(DECODER_ELEMENTS.map((e) => [e, true]));
-        for (const decoder of [
-            DECODEBIN_SELECTION,
-            selectDecoder({ codec: 'h265', available: all }),
-        ]) {
-            expect(planLivePipeline({ ...base, decoder }).backlogShed, decoder.id).toBeUndefined();
-        }
-    });
-
     it('drops the software scaler when the compositor scales for us', () => {
         expect(planLivePipeline({ ...base, waylandFullscreen: true }).pipeline).not.toContain(
             'videoscale',

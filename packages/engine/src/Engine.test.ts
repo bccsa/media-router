@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { AddressInfo } from 'net';
-import { Engine, type EngineConfig } from './Engine.js';
+import { Engine } from './Engine.js';
 import { GstInspectTimeoutError } from './plugins/gstInspect.js';
 
 /** Stand-in for the house clock: the test decides when the start wait ends. */
@@ -76,60 +76,6 @@ describe('Engine — LCP init payload', () => {
         // The run controller is the source of truth
         (engine.runController as unknown as { _running: boolean })._running = true;
         expect(engine.lcpServer._getInitData!().engineRunning).toBe(true);
-    });
-});
-
-/**
- * The engine-wide default playout offset D (ADR-0005 decision 4), resolved
- * once at construction so every module on the box starts from one number and
- * a route can only move off it deliberately (via its route head's override).
- */
-describe('Engine — default playout offset', () => {
-    let tmpDir: string;
-
-    const makeEngine = (config: Partial<EngineConfig> = {}): Engine =>
-        new Engine({
-            profilesPath: path.join(tmpDir, 'profiles.json'),
-            pluginsDir: tmpDir,
-            ...config,
-        });
-
-    beforeEach(() => {
-        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-test-'));
-        delete process.env.MR_PLAYOUT_OFFSET_MS;
-    });
-
-    afterEach(() => {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-        delete process.env.MR_PLAYOUT_OFFSET_MS;
-    });
-
-    it('defaults to 60 ms', () => {
-        expect(makeEngine().playoutOffsetMs).toBe(60);
-    });
-
-    it('takes an explicit engine config value, including 0', () => {
-        expect(makeEngine({ playoutOffsetMs: 450 }).playoutOffsetMs).toBe(450);
-        expect(makeEngine({ playoutOffsetMs: 0 }).playoutOffsetMs).toBe(0);
-    });
-
-    it('MR_PLAYOUT_OFFSET_MS retunes the fleet from the unit file', () => {
-        // start-engine.js passes no such option, so the env var is the only way
-        // to move the budget without a code change.
-        process.env.MR_PLAYOUT_OFFSET_MS = '450';
-        expect(makeEngine().playoutOffsetMs).toBe(450);
-    });
-
-    it('an explicit config value wins over the env var', () => {
-        process.env.MR_PLAYOUT_OFFSET_MS = '450';
-        expect(makeEngine({ playoutOffsetMs: 200 }).playoutOffsetMs).toBe(200);
-    });
-
-    it('ignores an unusable env value and falls through to the default', () => {
-        for (const bad of ['', 'soon', '-1', '99999']) {
-            process.env.MR_PLAYOUT_OFFSET_MS = bad;
-            expect(makeEngine().playoutOffsetMs).toBe(60);
-        }
     });
 });
 

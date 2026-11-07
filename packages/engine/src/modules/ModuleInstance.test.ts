@@ -12,6 +12,7 @@ class MockPlugin extends EventEmitter implements PluginModule {
     onDestroy = vi.fn().mockResolvedValue(undefined);
     getLiveUpdatableParams = vi.fn().mockReturnValue([] as string[]);
     onLiveConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    isLiveChange?: PluginModule['isLiveChange'];
 
     private _state: ModuleRuntimeState = {
         running: false,
@@ -48,6 +49,7 @@ function createMockServices(overrides: Partial<ModuleServices> = {}): ModuleServ
         processManager: {
             releaseAll: vi.fn().mockResolvedValue(undefined),
         } as any,
+        deviceProviders: {} as any,
         instanceId: 'test-instance',
         ...overrides,
     };
@@ -407,135 +409,6 @@ describe('ModuleInstance', () => {
         expect(plugin.onLiveConfigUpdate).not.toHaveBeenCalled();
         expect(instance.getState().pendingRestart).toBe(true);
         expect(instance.config.streams).toEqual([{ name: 'a' }, { name: 'b' }]);
-    });
-
-    // ---- playout offset D (ADR-0005 decision 4) ----
-    //
-    // A route head's `playoutOffsetMs` is an engine-level annotation on the
-    // ROUTE, not a parameter of the producer's own pipeline. Two consequences
-    // are load-bearing and pinned here: it must never mark the producer
-    // pending-restart (nothing in that pipeline reads it), and an edit must
-    // reach every consumer of the route in one pass, or one leg would run the
-    // new D while the other still ran the old one.
-
-    it('never marks pendingRestart for a route playout offset, whatever the plugin lists', async () => {
-        plugin.getLiveUpdatableParams.mockReturnValue([]);
-        const notifyPlayoutOffsetChanged = vi.fn().mockResolvedValue(undefined);
-        instance = new ModuleInstance(
-            'inst-1',
-            'srt-input',
-            plugin,
-            {},
-            createMockServices({
-                mediaRouter: { notifyPlayoutOffsetChanged } as any,
-            }),
-        );
-        await instance.start();
-        await instance.applyConfigUpdate({ playoutOffsetMs: 500 });
-        expect(instance.getState().pendingRestart).toBe(false);
-        expect(instance.config.playoutOffsetMs).toBe(500);
-    });
-
-    it('fans a route playout offset change out to the route consumers', async () => {
-        const notifyPlayoutOffsetChanged = vi.fn().mockResolvedValue(undefined);
-        instance = new ModuleInstance(
-            'inst-1',
-            'srt-input',
-            plugin,
-            {},
-            createMockServices({
-                mediaRouter: { notifyPlayoutOffsetChanged } as any,
-            }),
-        );
-        await instance.start();
-        await instance.applyConfigUpdate({ playoutOffsetMs: 500 });
-        expect(notifyPlayoutOffsetChanged).toHaveBeenCalledWith('inst-1');
-    });
-
-    // Re-anchor (ADR-0005 2026-10-08): an operator edit of the head's D takes
-    // ownership, so the runtime raise must be gone BEFORE the fan-out pushes D
-    // — otherwise the legs would re-push the old overlay on top of the new D.
-    it('clears the runtime re-anchor raise BEFORE the fan-out', async () => {
-        const order: string[] = [];
-        const clearPlayoutRaise = vi.fn(() => {
-            order.push('clear');
-        });
-        const notifyPlayoutOffsetChanged = vi.fn(async () => {
-            order.push('fan-out');
-        });
-        instance = new ModuleInstance(
-            'inst-1',
-            'srt-input',
-            plugin,
-            {},
-            createMockServices({
-                mediaRouter: { notifyPlayoutOffsetChanged, clearPlayoutRaise } as any,
-            }),
-        );
-        await instance.start();
-        await instance.applyConfigUpdate({ playoutOffsetMs: 500 });
-        expect(clearPlayoutRaise).toHaveBeenCalledWith('inst-1');
-        expect(order).toEqual(['clear', 'fan-out']);
-        // Any other edit leaves the raise alone.
-        await instance.applyConfigUpdate({ latency: 200 });
-        expect(clearPlayoutRaise).toHaveBeenCalledTimes(1);
-    });
-
-    it('forwards the re-anchor hooks to the plugin when it has them', async () => {
-        const hooks = {
-            onRoutePlayoutRaised: vi.fn(),
-            onRoutePlayoutRebased: vi.fn(),
-        };
-        Object.assign(plugin as unknown as PluginModule, hooks);
-        instance.notifyRoutePlayoutRaised(null);
-        const note = { moduleId: 'vp', label: 'vp', element: 'vdec', latenessMs: 21000, at: 0 };
-        instance.notifyRoutePlayoutRebased(note);
-        expect(hooks.onRoutePlayoutRaised).toHaveBeenCalledWith(null);
-        expect(hooks.onRoutePlayoutRebased).toHaveBeenCalledWith(note);
-    });
-
-    it('does not fan out for unrelated config changes', async () => {
-        const notifyPlayoutOffsetChanged = vi.fn().mockResolvedValue(undefined);
-        instance = new ModuleInstance(
-            'inst-1',
-            'srt-input',
-            plugin,
-            {},
-            createMockServices({
-                mediaRouter: { notifyPlayoutOffsetChanged } as any,
-            }),
-        );
-        await instance.start();
-        await instance.applyConfigUpdate({ latency: 200 });
-        expect(notifyPlayoutOffsetChanged).not.toHaveBeenCalled();
-    });
-
-    it('a failing fan-out does not fail the config update', async () => {
-        const notifyPlayoutOffsetChanged = vi.fn().mockRejectedValue(new Error('router down'));
-        instance = new ModuleInstance(
-            'inst-1',
-            'srt-input',
-            plugin,
-            {},
-            createMockServices({
-                mediaRouter: { notifyPlayoutOffsetChanged } as any,
-            }),
-        );
-        await instance.start();
-        await expect(instance.applyConfigUpdate({ playoutOffsetMs: 500 })).resolves.toBeUndefined();
-        expect(instance.config.playoutOffsetMs).toBe(500);
-    });
-
-    it('forwards the route-offset notification to the plugin hook when it has one', async () => {
-        const onRoutePlayoutOffsetChanged = vi.fn().mockResolvedValue(undefined);
-        (plugin as unknown as PluginModule).onRoutePlayoutOffsetChanged =
-            onRoutePlayoutOffsetChanged;
-        await instance.notifyRoutePlayoutOffsetChanged();
-        expect(onRoutePlayoutOffsetChanged).toHaveBeenCalled();
-    });
-
-    it('is a no-op for a plugin that does not present (no hook)', async () => {
-        await expect(instance.notifyRoutePlayoutOffsetChanged()).resolves.toBeUndefined();
     });
 
     it('applies a live param normally when isLiveChange accepts it', async () => {

@@ -135,7 +135,7 @@ describe('DeviceWatchdog', () => {
     it('skips overlapping ticks while a previous one is still running', async () => {
         // Hold onReconnect open until we tell it to resolve, then verify only
         // one onReconnect call fires even though several ticks elapse.
-        let release: (() => void) | null = null;
+        let release = null as (() => void) | null;
         const onReconnect = vi.fn(
             () =>
                 new Promise<void>((resolve) => {
@@ -175,7 +175,7 @@ describe('DeviceWatchdog', () => {
     });
 
     it('stop() awaits an in-flight tick before returning', async () => {
-        let release: (() => void) | null = null;
+        let release = null as (() => void) | null;
         const onReconnect = vi.fn(
             () =>
                 new Promise<void>((resolve) => {
@@ -400,7 +400,7 @@ describe('DeviceWatchdog: a lost PipeWire stream (B-195)', () => {
     });
 
     it('lose() waits for an in-flight rebuild, then tears the rebuilt stream down', async () => {
-        let release: (() => void) | null = null;
+        let release = null as (() => void) | null;
         const onReconnect = vi.fn(
             () =>
                 new Promise<void>((resolve) => {

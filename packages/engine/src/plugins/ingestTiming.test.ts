@@ -180,7 +180,7 @@ describe('applyIngestTimingLiveUpdate', () => {
 
     it('other keys set nothing', async () => {
         const m = control();
-        await applyIngestTimingLiveUpdate(m, { playoutOffsetMs: 80, volume: 50 });
+        await applyIngestTimingLiveUpdate(m, { latency: 80, volume: 50 });
         expect(m.calls).toEqual([]);
     });
 });

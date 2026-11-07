@@ -633,12 +633,18 @@ def _pes_reader(edge, clock):
     return pipe, rows
 
 
+_E_HOOK = re.compile(r"^\[(?:mr-gst-runner|gst-runner\.py)\] no-late-drop: (.*)$")
+# What the leg may post: its taps, the ASRC's stats and events, the demux's and the queue watch's.
+_E_CHANNELS = ("mrlateness:", "mrasrc-", "mrtsdemux:", "queue_overrun")
+
+
 def test_presentation_formula():
-    """presentation-formula (E's rewrite, WI-P3-16), both runners: a stamped 302M producer into
-    `mrtsdemux select` and a `fakesink sync=true`, the audio-output-302m leg's demux and sink. Every
-    buffer the sink syncs on runs at its PES PTS - 1 h, ceil to the ns (S12), the PES read off the
-    producer's wire on a second edge. E's shedder part stays until Phase 4: ts-offset -400 ms makes
-    every buffer 400 ms late with nothing queued, which the shedder reports as the timeline."""
+    """presentation-formula (E, WI-P3-16; rewritten for Phase 4, B-171), both runners: a stamped 302M
+    producer into the audio outputs' leg, `mrtsdemux select ! avdec_s302m ! mrasrc`, the 40 ms
+    prefill and a `sync=false` sink with an audio sink's qos and max-lateness. Every buffer reaches
+    the sink at its PES PTS - 1 h, ceil to the ns (S12), the PES read off the producer's wire on a
+    second edge; the render tap reports, the hook turns the sink's late drop off, and nothing else
+    posts (no shedder, no raise)."""
     if Gst.ElementFactory.find("unixfdsink") is None or Gst.ElementFactory.find("avenc_s302m") is None:
         print("SKIP E — unixfdsink / avenc_s302m unavailable")
         return
@@ -664,22 +670,26 @@ def test_presentation_formula():
             cons.wait_event(ev_is("ready"))
             cons.send({"cmd": "start",
                        "pipeline": f"unixfdsrc socket-path={edge} ! queue leaky=2 max-size-time=5000000000"
-                                   " ! mrtsdemux name=mixin_demux0 select=audio/x-smpte-302m ! queue"
-                                   " ! fakesink name=sink sync=true ts-offset=-400000000 max-lateness=-1",
-                       "backlogShed": {"element": "sink", "sink": "sink", "keyframeAligned": False,
-                                       "toleranceMs": 100, "holdMs": 1000, "cooldownMs": 60000,
-                                       "sanityMs": 10000}})
+                                   " ! mrtsdemux name=mixin_demux0 select=audio/x-smpte-302m ! avdec_s302m"
+                                   " ! mrasrc name=outasrc bypass-below-ppm=0.5"
+                                   " ! queue name=prefill leaky=0 min-threshold-time=40000000"
+                                   " max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0"
+                                   " ! mrlateness name=lat_render reference=running-time"
+                                   " ! fakesink name=sink sync=false qos=true max-lateness=20000000"})
             check(f"E {tag}: consumer PLAYING",
                   cons.wait_event(ev_is("state_change", state="playing"), timeout=8) is not None)
-            tl = cons.wait_event(lambda e: e.get("event") == "plugin_event" and e.get("channel") == "backlog_shed",
-                                 timeout=10)
-            check(f"E {tag}: the shedder reports through backlog_shed", tl is not None)
-            check(f"E {tag}: a late timeline with empty queues is reported, not shed",
-                  tl is not None and tl["payload"].get("outcome") == "timeline"
-                  and tl["payload"].get("excessBeforeMs", 0) > 100)
+            render = cons.wait_event(lambda e: e.get("event") == "plugin_event"
+                                     and e.get("channel") == "mrlateness:lat_render", timeout=5)
+            check(f"E {tag}: the render tap reports (mrlateness:lat_render)", render is not None)
             time.sleep(1.0)
             cons.pump()
             upto, now = len(cons.logs), clock.get_time()
+            hook = [m.group(1) for m in map(_E_HOOK.match, cons.logs) if m]
+            check(f"E {tag}: the hook turns the sink's late drop off ({hook[:1]})",
+                  any("sink qos→false, max-lateness→-1" in ln for ln in hook))
+            other = sorted({e.get("channel") for e in cons.events if e.get("event") == "plugin_event"
+                            and not str(e.get("channel")).startswith(_E_CHANNELS)})
+            check(f"E {tag}: nothing posts but the taps, the ASRC and the demux ({other})", not other)
             check(f"E {tag}: no lifecycle error", not cons.has_event(ev_is("error")))
             check(f"E {tag}: consumer exits 0", cons.stop_and_wait() == 0)
         finally:
@@ -697,177 +707,7 @@ def test_presentation_formula():
         check(f"E {tag}: in order, each once", at == sorted(set(at)))
 
 
-def test_shed_refusals():
-    r = RunnerProc()
-    try:
-        r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start", "pipeline": "audiotestsrc ! fakesink name=sink",
-                "backlogShed": {"element": "nosuch", "sink": "sink", "keyframeAligned": False}})
-        ev = r.wait_event(ev_is("error"))
-        check("E backlogShed names a missing element -> hard error", ev is not None and "nosuch" in ev["message"])
-    finally:
-        r.kill()
-
-
-# --------------------------------------------------------------------------- N: re-anchor parity (2026-10-08)
 _PY_RUNNER = [sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")]
-_RAISE_FIELDS = ["budgetMs", "cause", "element", "excessMs", "holdMs", "kind", "latencyMs",
-                 "queuedMs", "tsOffsetMs", "worstMs"]
-_REBASE_FIELDS = ["appliedOffsetNs", "budgetMs", "count", "element", "flushed", "kind",
-                  "latenessMs", "padOffsetNs", "sanityMs"]
-
-
-def test_reanchor_parity():
-    """`onLateness: "reanchor"` over the real protocol on BOTH runners, the python
-    ladder's steps 2 (raise, backlog queued), 4 (raise, late timeline) and 6
-    (future stamps rebased in-thread, the leg keeps flowing): every event's field
-    set equal to the python run's. Live audio into a `sync=true` sink; lateness is set by the sink's `ts-offset` (case E's idiom
-    — a live source re-paces any stamp offset away within its first buffers)."""
-    shed = {"element": "sink", "sink": "sink", "keyframeAligned": False, "toleranceMs": 100,
-            "holdMs": 600, "cooldownMs": 60000, "sanityMs": 10000, "onLateness": "reanchor",
-            "reanchorToleranceMs": 40, "reanchorHoldMs": 600, "reanchorRetryMs": 1500,
-            "rebaseHoldMs": 300, "rebaseCooldownMs": 500}
-
-    def start(argv, ts_ms, queue=""):
-        r = RunnerProc(argv)
-        r.wait_event(ev_is("ready"))
-        cmd = {"cmd": "start",
-               "pipeline": "audiotestsrc is-live=true samplesperbuffer=480"
-                           f" ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! level{queue}"
-                           f" ! fakesink name=sink sync=true ts-offset={int(ts_ms * 1e6)}",
-               "backlogShed": shed}
-        r.send(cmd)
-        return r
-
-    def reanchor(r, kind, timeout=8.0, after=None):
-        return (r.wait_event(lambda e: e.get("event") == "plugin_event" and e.get("channel") == "playout_reanchor"
-                             and e["payload"].get("kind") == kind and e is not after, timeout=timeout) or {})
-    both = {"py": _PY_RUNNER, "native": None}
-    runs = []
-    try:
-        # 2. 200 ms parked in a queue past a 60 ms budget: a raise, cause backlog.
-        # The queue reports its threshold as latency, so ts-offset takes it back
-        # off — the budget stays 60 ms + the source's own latency.
-        q = " ! queue min-threshold-time=200000000 max-size-time=2000000000 max-size-buffers=0 max-size-bytes=0"
-        r2 = {k: start(v, 60 - 200, queue=q) for k, v in both.items()}
-        runs += r2.values()
-        raise2 = {k: reanchor(r, "raise").get("payload", {}) for k, r in r2.items()}
-        check("N 2 both runners ask for a raise with the design's field set",
-              sorted(raise2["py"]) == _RAISE_FIELDS and sorted(raise2["native"]) == _RAISE_FIELDS)
-        check("N 2 a queued backlog is the cause on both, the level ~110 ms on both",
-              all(p.get("cause") == "backlog" and 60 < p.get("excessMs", 0) < 190 and p.get("queuedMs", 0) >= 150
-                  and p.get("tsOffsetMs") == -140 and p.get("holdMs") == 600
-                  and abs(p.get("budgetMs", 0) - p.get("tsOffsetMs", 0) - p.get("latencyMs", 0)) <= 0.11
-                  for p in raise2.values()))
-        for r in r2.values():
-            r.kill()
-        # 4. A budget 250 ms short with nothing queued: a raise, cause timeline.
-        r4 = {k: start(v, -250) for k, v in both.items()}
-        runs += r4.values()
-        raise4 = {k: reanchor(r, "raise").get("payload", {}) for k, r in r4.items()}
-        check("N 4 a late timeline asks too, same fields, cause timeline, ~220 ms on both",
-              sorted(raise4["py"]) == sorted(raise4["native"]) == _RAISE_FIELDS
-              and all(p.get("cause") == "timeline" and 170 < p.get("excessMs", 0) < 290
-                      and p.get("queuedMs") == 0 for p in raise4.values()))
-        for r in r4.values():
-            r.kill()
-        # 6. Every buffer 20 s early on a paced sink: rebased at the first one, and
-        # the streaming thread keeps going (level keeps posting) — nothing parked.
-        r6 = {k: start(v, 20000) for k, v in both.items()}
-        runs += r6.values()
-        rebase6 = {k: reanchor(r, "rebase").get("payload", {}) for k, r in r6.items()}
-        check("N 6 both rebase with the design's field set, unflushed, count 1",
-              sorted(rebase6["py"]) == sorted(rebase6["native"]) == _REBASE_FIELDS
-              and all(p.get("flushed") is False and p.get("count") == 1
-                      and -20250 < p.get("latenessMs", 0) < -19900 and p.get("appliedOffsetNs") == p.get("padOffsetNs")
-                      for p in rebase6.values()))
-        time.sleep(3.0)
-        for k, r in r6.items():
-            r.pump()
-        vu = {k: sum(1 for e in r.events if e.get("event") == "vu_data") for k, r in r6.items()}
-        check(f"N 6 the rebased leg keeps flowing on both (vu_data {vu})", all(n >= 3 for n in vu.values()))
-        check("N no lifecycle error on either runner", not any(r.has_event(ev_is("error")) for r in runs))
-        for r in r6.values():
-            r.kill()
-    finally:
-        for r in runs:
-            r.kill()
-
-
-def test_reanchor_gap_and_undo_parity():
-    """Field 2026-10-09 on BOTH runners. N 9: a past-stamped run shorter than the
-    rebase hold, an input gap (the valve closed), then the same lateness again —
-    the gap must restart the hold, so nothing is rebased. N 10: a rebase that
-    moved the leg later, then the producer's own timeline back inside the
-    cooldown — the overshoot is undone at once and the paced sink never parks.
-    Lateness is set live with the sink's `ts-offset` (case N's idiom)."""
-    shed = {"element": "sink", "sink": "sink", "keyframeAligned": False, "toleranceMs": 100,
-            "holdMs": 600, "cooldownMs": 60000, "sanityMs": 10000, "onLateness": "reanchor",
-            "reanchorToleranceMs": 40, "reanchorHoldMs": 600, "reanchorRetryMs": 1500,
-            "rebaseHoldMs": 1500, "rebaseCooldownMs": 30000}
-    pipeline = ("audiotestsrc is-live=true samplesperbuffer=480"
-                " ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! valve name=v drop=false ! level"
-                " ! fakesink name=sink sync=true ts-offset=0")
-    runs = {}
-
-    def each(cmd):
-        for r in runs.values():
-            r.send(cmd)
-
-    def rebases(r):
-        r.pump()
-        return [e["payload"] for e in r.events if e.get("event") == "plugin_event"
-                and e.get("channel") == "playout_reanchor" and e["payload"].get("kind") == "rebase"]
-
-    def ts_offset(ms):
-        each({"cmd": "set_property", "id": "o", "element": "sink", "property": "ts-offset",
-              "value": int(ms * 1e6)})
-
-    try:
-        runs = {"py": RunnerProc(_PY_RUNNER), "native": RunnerProc()}
-        for r in runs.values():
-            r.wait_event(ev_is("ready"))
-        each({"cmd": "start", "pipeline": pipeline, "backlogShed": shed})
-        time.sleep(1.5)
-        # 9. 0.5 s of 25 s-late buffers, a 2 s gap, the same lateness again, then in range.
-        ts_offset(-25000)
-        time.sleep(0.5)
-        each({"cmd": "set_property", "id": "v", "element": "v", "property": "drop", "value": True})
-        time.sleep(2.0)
-        each({"cmd": "set_property", "id": "v", "element": "v", "property": "drop", "value": False})
-        time.sleep(0.6)
-        ts_offset(0)
-        time.sleep(1.0)
-        gap = {k: rebases(r) for k, r in runs.items()}
-        check(f"N 9 an input gap restarts the rebase hold on both — no rebase ({ {k: len(v) for k, v in gap.items()} })",
-              all(v == [] for v in gap.values()))
-        # 10. A held past-stamped run is rebased; then the producer's timeline is back.
-        ts_offset(-25000)
-        past = {k: r.wait_event(lambda e: e.get("event") == "plugin_event"
-                                and e.get("channel") == "playout_reanchor"
-                                and e["payload"].get("kind") == "rebase", timeout=5.0)
-                for k, r in runs.items()}
-        check("N 10 a held past-stamped run is rebased on both", all(past.values()))
-        ts_offset(0)
-        time.sleep(0.5)
-        for r in runs.values():
-            r.pump()
-        vu0 = {k: sum(1 for e in r.events if e.get("event") == "vu_data") for k, r in runs.items()}
-        time.sleep(3.0)
-        for r in runs.values():
-            r.pump()
-        vu1 = {k: sum(1 for e in r.events if e.get("event") == "vu_data") for k, r in runs.items()}
-        undo = {k: rebases(r) for k, r in runs.items()}
-        check("N 10 the overshoot is undone at once on both, inside the 30 s cooldown",
-              all(len(v) == 2 and v[1].get("latenessMs", 0) < -10000 and v[1].get("count") == 2
-                  for v in undo.values()))
-        # A sink parked on a 25 s-future buffer blocks `level`: no vu_data at all.
-        check(f"N 10 and the paced sink never parks (vu_data {vu0} -> {vu1})",
-              all(vu1[k] - vu0[k] >= 3 for k in runs))
-        check("N 9-10 no lifecycle error on either runner", not any(r.has_event(ev_is("error")) for r in runs.values()))
-    finally:
-        for r in runs.values():
-            r.kill()
 
 
 # --------------------------------------------------------------------------- G: runner hooks (native form)
@@ -4662,165 +4502,6 @@ def test_catch_up_render():
             r.kill()
 
 
-# --------------------------------------------------------------------------- PW: playout watch (B-206)
-def test_playout_watch():
-    """PW (B-206): `missWatchMs` on the backlog shed reports the sink missing its playout once
-    every buffer has been past budget + tolerance that long, and playing once it is back in budget
-    200 ms; each on a change only. A sink ts-offset of -400 ms puts every buffer 400 ms (less the
-    sink's latency) late; a live ts-offset of 0 puts it back."""
-    r = RunnerProc()
-    watch = lambda: [e["payload"] for e in r.events  # noqa: E731
-                     if e.get("event") == "plugin_event" and e.get("channel") == "playout_watch"]
-    try:
-        r.send({"cmd": "start", "eosDrain": False,
-                "pipeline": "audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,rate=48000,channels=2"
-                            " ! fakesink name=sink sync=true ts-offset=-400000000 max-lateness=-1",
-                "backlogShed": {"element": "sink", "sink": "sink", "keyframeAligned": False,
-                                "toleranceMs": 250, "holdMs": 5000, "cooldownMs": 60000, "sanityMs": 10000,
-                                "onLateness": "reanchor", "reanchorToleranceMs": 40, "reanchorHoldMs": 15000,
-                                "reanchorRetryMs": 30000, "rebaseHoldMs": 3000, "rebaseCooldownMs": 60000,
-                                "missWatchMs": 1000}})
-        check("PW reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
-        t0 = time.monotonic()
-        miss = r.wait_event(lambda e: e.get("channel") == "playout_watch", timeout=4)
-        took = time.monotonic() - t0
-        p = miss["payload"] if miss else {}
-        check(f"PW missing after a second of late buffers ({took:.1f} s, {p})",
-              p.get("playing") is False and 0.9 <= took <= 2.5 and 330 <= p.get("lateMs", 0) <= 420
-              and p.get("element") == "sink")
-        time.sleep(1.5)
-        r.pump()
-        check(f"PW said once while it stays missing ({len(watch())})", len(watch()) == 1)
-        r.send({"cmd": "set_property", "id": "pw1", "element": "sink", "property": "ts-offset", "value": 0})
-        back = r.wait_event(lambda e: e.get("channel") == "playout_watch" and e["payload"].get("playing"),
-                            timeout=3)
-        check(f"PW playing once back in budget ({back['payload'] if back else None})", back is not None)
-        time.sleep(1.0)
-        r.pump()
-        check(f"PW two reports in all ({watch()})", len(watch()) == 2)
-        check("PW no lifecycle error", not r.has_event(ev_is("error")))
-        check("PW exits 0", r.stop_and_wait() == 0)
-    finally:
-        r.kill()
-
-# --------------------------------------------------------------------------- RA: a raise that cannot help (B-210)
-_RA_SHED = {"element": "lag", "sink": "sink", "keyframeAligned": False, "toleranceMs": 250, "holdMs": 5000,
-            "cooldownMs": 60000, "sanityMs": 10000, "onLateness": "reanchor", "reanchorToleranceMs": 40,
-            "reanchorHoldMs": 600, "reanchorRetryMs": 1500, "rebaseHoldMs": 3000, "rebaseCooldownMs": 60000,
-            "missWatchMs": 1000}
-
-
-def test_reanchor_sink_paced():
-    """RA (B-210, MR-044): what the engine's ratchet guard and decay rest on, over the real
-    protocol. RA 1: a sink that takes each buffer `delta` after its due time and whose placement
-    follows its ts-offset (`identity name=lag sync=true` running D + delta, ahead of a paced
-    fakesink at D; both moved together, as the engine's fan-out moves a real sink): its request
-    after a landed raise reads the same excess, one hold after the landing; unanswered (held), it
-    asks again on the retry, the same. RA 2: a late timeline (the sink's budget short): once a
-    raise covers it, it asks nothing more. RA 3: a raise taken back in one step on an on-time leg
-    (the decay): no request, no rebase, never missing, and it keeps playing."""
-    def start(lag_ms, sink_ms, element="lag"):
-        r = RunnerProc()
-        r.wait_event(ev_is("ready"))
-        lag = f" ! identity name=lag sync=true ts-offset={int(lag_ms * 1e6)}" if lag_ms is not None else ""
-        r.send({"cmd": "start", "eosDrain": False,
-                "pipeline": "audiotestsrc is-live=true samplesperbuffer=480"
-                            f" ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! level{lag}"
-                            f" ! fakesink name=sink sync=true ts-offset={int(sink_ms * 1e6)} max-lateness=-1",
-                "backlogShed": dict(_RA_SHED, element=element)})
-        return r
-
-    def raises(r):
-        # Each event stamped when first seen (polled every 20 ms): when the runner asked.
-        r.pump()
-        now = time.monotonic()
-        for e in r.events:
-            e.setdefault("_t", now)
-        return [(e["_t"], e["payload"]) for e in r.events if e.get("event") == "plugin_event"
-                and e.get("channel") == "playout_reanchor" and e["payload"].get("kind") == "raise"]
-
-    def wait_raises(r, n, timeout):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            got = raises(r)
-            if len(got) >= n:
-                return got
-            time.sleep(0.02)
-        return raises(r)
-
-    def ts_offset(r, element, ms):
-        r.send({"cmd": "set_property", "id": f"o-{element}", "element": element, "property": "ts-offset",
-                "value": int(ms * 1e6)})
-
-    runs = []
-    try:
-        # RA 1. D 60 ms, the sink 300 ms behind its due time whatever D is.
-        d, delta = 60, 300
-        r1 = start(d + delta, d)
-        runs.append(r1)
-        first = wait_raises(r1, 1, 6.0)
-        e1 = first[0][1].get("excessMs", 0) if first else 0
-        check(f"RA 1 a sink-paced leg asks for a raise ({e1} ms past its budget)",
-              len(first) == 1 and delta - 120 < e1 < delta + 30)
-        # The engine raises by its step (ceil20(excess + 40)) and the sink's placement moves with it.
-        raise_ms = -(-int(e1 + 40) // 20) * 20
-        ts_offset(r1, "sink", d + raise_ms)
-        ts_offset(r1, "lag", d + raise_ms + delta)
-        landed = time.monotonic()
-        second = wait_raises(r1, 2, 6.0)
-        took = second[1][0] - landed if len(second) >= 2 else 99
-        e2 = second[1][1].get("excessMs", 0) if len(second) >= 2 else 0
-        check(f"RA 1 after the raise landed it asks again one hold later ({took:.2f} s) with the same "
-              f"excess ({e1} -> {e2} ms): what the engine holds",
-              len(second) >= 2 and took < 0.6 + 1.0 and abs(e2 - e1) <= 40
-              and second[1][1].get("budgetMs", 0) > first[0][1].get("budgetMs", 0) + raise_ms - 1)
-        # Held: D stays. The runner asks again only on its retry, the same excess.
-        third = wait_raises(r1, 3, 6.0)
-        gap = third[2][0] - second[1][0] if len(third) >= 3 else 0
-        e3 = third[2][1].get("excessMs", 0) if len(third) >= 3 else 0
-        check(f"RA 1 unanswered, it re-asks on the retry ({gap:.2f} s), still {e3} ms: held again",
-              len(third) >= 3 and 1.3 <= gap <= 2.8 and abs(e3 - e1) <= 40)
-        r1.kill()
-
-        # RA 2. A budget 250 ms short with nothing queued: a raise covers it, nothing more is asked.
-        r2 = start(None, -250, element="sink")
-        runs.append(r2)
-        got = wait_raises(r2, 1, 6.0)
-        e = got[0][1].get("excessMs", 0) if got else 0
-        check(f"RA 2 a late timeline asks ({e} ms, {got[0][1].get('cause') if got else None})",
-              len(got) == 1 and 170 < e < 290 and got[0][1].get("cause") == "timeline")
-        ts_offset(r2, "sink", -250 + -(-int(e + 40) // 20) * 20)
-        time.sleep(3.5)
-        check(f"RA 2 the raise covered it: no further request ({len(raises(r2))})", len(raises(r2)) == 1)
-        r2.kill()
-
-        # RA 3. On time at 60 ms, a raise to 560 ms, then back to 60 ms in one step (the decay).
-        r3 = start(None, 60, element="sink")
-        runs.append(r3)
-        check("RA 3 reaches PLAYING", r3.wait_event(ev_is("state_change", state="playing")) is not None)
-        time.sleep(1.0)
-        ts_offset(r3, "sink", 560)
-        time.sleep(1.5)
-        r3.pump()
-        vu0 = sum(1 for e in r3.events if e.get("event") == "vu_data")
-        ts_offset(r3, "sink", 60)
-        time.sleep(3.0)
-        r3.pump()
-        vu1 = sum(1 for e in r3.events if e.get("event") == "vu_data")
-        missing = [e["payload"] for e in r3.events if e.get("channel") == "playout_watch"
-                   and e["payload"].get("playing") is False]
-        rebases = [e for e in r3.events if e.get("channel") == "playout_reanchor"
-                   and e["payload"].get("kind") == "rebase"]
-        check(f"RA 3 the step down asks nothing, rebases nothing, never misses ({len(raises(r3))}, "
-              f"{len(rebases)}, {missing})", not raises(r3) and not rebases and not missing)
-        # The runner forwards the meter about once a second (case N 6's count).
-        check(f"RA 3 and it keeps playing through it (vu_data {vu0} -> {vu1})", vu1 - vu0 >= 2)
-        check("RA no lifecycle error", not any(r.has_event(ev_is("error")) for r in runs))
-    finally:
-        for r in runs:
-            r.kill()
-
-
 test_runner_gone()
 test_plain_pipeline()
 test_identity_egress()
@@ -4829,9 +4510,6 @@ test_identity_base_time()
 test_consumer_data_wait()
 test_refusals()
 test_presentation_formula()
-test_shed_refusals()
-test_reanchor_parity()
-test_reanchor_gap_and_undo_parity()
 test_runner_hooks()
 test_runner_hooks_concurrent()
 test_deinterlace_guard_hook()
@@ -4872,8 +4550,6 @@ test_stop_while_starting()
 test_catch_up()
 test_catch_up_backlog()
 test_catch_up_render()
-test_playout_watch()
-test_reanchor_sink_paced()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

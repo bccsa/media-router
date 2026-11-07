@@ -44,10 +44,6 @@ const BRANCHES = [
 function makeModule(
     opts: {
         upstream?: { port: number; socketPath?: string } | null;
-        /** Engine-wide default playout offset D (gone from this output since B-168). */
-        playoutOffsetMs?: number;
-        /** Override declared by the route head feeding this decoder. */
-        routeOffsetMs?: number;
     } = {},
 ) {
     const module = new AudioDecoderModule() as any;
@@ -69,12 +65,7 @@ function makeModule(
                   sourcePortId: 'mpegts-out',
               },
     );
-    const getRoutePlayoutOffsetMs = vi.fn(() => opts.routeOffsetMs);
-    module.services = {
-        instanceId: 'dec-1',
-        mediaRouter: { getModuleBusSource, getRoutePlayoutOffsetMs },
-        ...(opts.playoutOffsetMs !== undefined ? { playoutOffsetMs: opts.playoutOffsetMs } : {}),
-    };
+    module.services = { instanceId: 'dec-1', mediaRouter: { getModuleBusSource } };
     module.config = {};
     module.probeResult = null;
     Object.defineProperty(module, 'pwNodeName', {
@@ -85,7 +76,7 @@ function makeModule(
     module.setHealth = setHealth;
     const setElementProperty = vi.fn(async () => {});
     module.setElementProperty = setElementProperty;
-    return { module, getModuleBusSource, getRoutePlayoutOffsetMs, setHealth, setElementProperty };
+    return { module, getModuleBusSource, setHealth, setElementProperty };
 }
 
 describe('AudioDecoderModule.buildPipeline', () => {
@@ -242,19 +233,16 @@ describe('AudioDecoderModule plays as soon as it can (B-168)', () => {
             expect(p.match(/\bleaky=[12]\b/g)).toEqual(['leaky=2']);
             expect(p.match(/\bmrasrc /g)).toHaveLength(1);
             expect(desc.timingSink).toEqual({ element: 'sink', kind: 'audio' });
-            expect(desc.backlogShed).toBeUndefined();
             // No launch catch-up: a launch measured no start backlog to skip (B-168).
             expect(desc.catchUp).toBeUndefined();
         }
     });
 
-    it('stored legacy keys build the same string: Sync Trim, Buffer, Sink Buffer, Low-Latency Sync, Sync Method', () => {
+    it('stored legacy keys build the same string: Buffer, Sink Buffer, Low-Latency Sync, Sync Method', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'aac' };
         const plain = module.buildPipeline({})!.pipeline;
         for (const stored of [
-            { syncOffsetMs: 40 },
-            { syncOffsetMs: 2000 },
             { bufferMs: 0 },
             { bufferMs: 100 },
             { bufferMs: 1500 },
@@ -270,40 +258,17 @@ describe('AudioDecoderModule plays as soon as it can (B-168)', () => {
         }
     });
 
-    it('none of the four is in the manifest, nor Sync Method (WI-P3-10)', () => {
+    it('none of the three is in the manifest, nor Sync Method (WI-P3-10)', () => {
         const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
         const props = manifest.mediaRouter.configSchema.properties;
-        for (const key of [
-            'syncOffsetMs',
-            'bufferMs',
-            'sinkBufferMs',
-            'lowLatencySync',
-            'slaveMethod',
-        ]) {
+        for (const key of ['bufferMs', 'sinkBufferMs', 'lowLatencySync', 'slaveMethod']) {
             expect(props).not.toHaveProperty(key);
         }
     });
 
-    it('no playout offset: the engine default, a route override and the re-anchor change nothing, and the route is not asked', () => {
-        const { module: plainModule } = makeModule();
-        const plain = plainModule.buildPipeline({})!.pipeline;
-        for (const reanchor of [true, false]) {
-            const { module, getRoutePlayoutOffsetMs } = makeModule({
-                playoutOffsetMs: 300,
-                routeOffsetMs: 500,
-            });
-            module.services.playoutReanchor = reanchor;
-            expect(module.buildPipeline({})!.pipeline).toBe(plain);
-            expect(getRoutePlayoutOffsetMs).not.toHaveBeenCalled();
-        }
-    });
-
-    it('Sync Trim is not live and nothing reaches the sink: the trim push and the route hook are gone', async () => {
-        const { module, setElementProperty } = makeModule({ routeOffsetMs: 500 });
+    it('only volume and audioEnabled are live: nothing else reaches the sink (B-168)', () => {
+        const { module } = makeModule();
         expect(module.liveUpdatableParams).toEqual(['volume', 'audioEnabled']);
-        await module.onLiveConfigUpdate({ syncOffsetMs: 40 });
-        expect(setElementProperty).not.toHaveBeenCalled();
-        expect(module.onRoutePlayoutOffsetChanged).toBeUndefined();
     });
 
     it('volume is still live, on the gst volume element', async () => {
@@ -314,7 +279,7 @@ describe('AudioDecoderModule plays as soon as it can (B-168)', () => {
         expect(setElementProperty).toHaveBeenLastCalledWith('vol', 'volume', 0);
     });
 
-    it('FF9 is gone (B-184): a rebase report and a 6 s pause in the meter relaunch nothing in 70 s', () => {
+    it('FF9 is gone (B-184): a 6 s pause in the meter relaunches nothing in 70 s', () => {
         vi.useFakeTimers();
         try {
             const { module } = makeModule();
@@ -325,13 +290,6 @@ describe('AudioDecoderModule plays as soon as it can (B-168)', () => {
                 restartPipeline,
             };
             module.onPipelinePlaying();
-            module.onPluginEvent('playout_reanchor', {
-                kind: 'rebase',
-                element: 'sink',
-                latenessMs: -11365.7,
-                padOffsetNs: -11_365_700_000,
-                count: 1,
-            });
             for (let t = 0; t < 70_000; t += 100) {
                 if (t < 2000 || t >= 8000) module.setVuData([-20, -20]);
                 vi.advanceTimersByTime(100);

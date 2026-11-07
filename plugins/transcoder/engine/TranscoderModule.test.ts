@@ -141,26 +141,6 @@ describe('buildPipeline', () => {
         expect(desc.pipeline).not.toMatch(/\btsdemux\b/);
     });
 
-    it('ignores a stored subtitleDelayMs: no hold, the same string (OQ-24, OQ-33)', () => {
-        const build = (extra: Record<string, unknown> = {}) => {
-            const { module, getModuleBusSource } = makeModule();
-            getModuleBusSource.mockImplementation((_id: string, portId?: string) =>
-                portId === 'subtitles-in'
-                    ? { port: 5600, socketPath: '/tmp/mr-bus-5600-sub.sock' }
-                    : { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
-            );
-            const renditions = [{ width: 1280, height: 720, bitrate: 2500 }];
-            return module.buildPipeline({ renditions, ...extra })!.pipeline;
-        };
-        const plain = build();
-        for (const subtitleDelayMs of [1400, 5000, -10, 'abc']) {
-            const p = build({ subtitleDelayMs });
-            expect(p).toBe(plain);
-            expect(p).not.toContain('subhold');
-            expect(p).not.toContain('min-threshold-time');
-        }
-    });
-
     it('with Subtitles In wired the video waits in the burn-in pace group, else no watch (WI-P3-13)', () => {
         const { module, getModuleBusSource } = makeModule();
         const config = { renditions: [{ width: 1280, height: 720, bitrate: 2500 }] };

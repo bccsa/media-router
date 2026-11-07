@@ -92,7 +92,7 @@ describe('a reconnect and the defaults a module start filled in (MR-035)', () =>
                 set('/modules/in1/settings/ingestOffsetMs', 120),
                 set('/modules/out1/settings/latency', 200),
             ]);
-            await r.routerWrite([set('/modules/in1/settings/playoutOffsetMs', 300)]);
+            await r.routerWrite([set('/modules/in1/settings/smoothingCooldownMin', 10)]);
             await flush();
         });
         await sleep(300);
@@ -103,22 +103,22 @@ describe('a reconnect and the defaults a module start filled in (MR-035)', () =>
             ],
         ]);
         expect(r.plugin('in1').liveChanges).toEqual([
-            { playoutOffsetMs: 300 },
+            { smoothingCooldownMin: 10 },
             { ingestOffsetMs: 120 },
         ]);
         expect(pending()).toEqual({ in1: false, out1: true, mux1: false, rist1: false });
         expect(running()).toEqual({
             ...ran,
-            in1: { ...ran.in1, ingestOffsetMs: 120, playoutOffsetMs: 300 },
+            in1: { ...ran.in1, ingestOffsetMs: 120, smoothingCooldownMin: 10 },
             out1: { ...ran.out1, latency: 200 },
         });
         // The box's own change went up with its journal.
-        await r.shows('/modules/in1/settings/playoutOffsetMs', 300);
+        await r.shows('/modules/in1/settings/smoothingCooldownMin', 10);
         expect(r.stored().modules.in1.settings).toEqual({
             port: 9000,
             mode: 'listener',
             ingestOffsetMs: 120,
-            playoutOffsetMs: 300,
+            smoothingCooldownMin: 10,
         });
         expect(r.lcpOps.filter((op) => op.op === 'remove')).toEqual([]);
     }, 30_000);

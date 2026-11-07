@@ -177,7 +177,7 @@ describe('GstPluginBase busGate → health', () => {
         expect(state.health).toBe('warning');
         expect(state.error).toBe('Waiting for upstream module(s): SCC Feed');
         expect(state.error).not.toContain('/tmp/');
-        expect(state.statusData.bus).toEqual({ 'Waiting for producer': 'SCC Feed' });
+        expect(state.statusData?.bus).toEqual({ 'Waiting for producer': 'SCC Feed' });
     });
 
     it('an edge no longer wired (a stale replay) is named by the module behind its channel port (B-194)', async () => {
@@ -215,7 +215,7 @@ describe('GstPluginBase busGate → health', () => {
         const state = module.getState();
         expect(state.health).toBe('ok');
         expect(state.error).toBeNull();
-        expect(state.statusData.bus).toEqual({});
+        expect(state.statusData?.bus).toEqual({});
     });
 
     it('does NOT stomp an unrelated warning raised while the gate was waiting', async () => {
@@ -230,7 +230,7 @@ describe('GstPluginBase busGate → health', () => {
         expect(state.health).toBe('warning');
         expect(state.error).toBe('ffmpeg helper crashed — restarting (attempt 2)');
         // The gate's own section still clears — the wait really is over.
-        expect(state.statusData.bus).toEqual({});
+        expect(state.statusData?.bus).toEqual({});
     });
 
     it('an error raised while gated survives the gate opening', async () => {

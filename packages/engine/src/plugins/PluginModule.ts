@@ -5,7 +5,6 @@ import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
-import type { PlayoutLegOffset, PlayoutRaise, PlayoutRebaseNote } from './playoutReanchor.js';
 import type { HouseClock } from '../clock/HouseClock.js';
 
 /**
@@ -53,16 +52,6 @@ export interface EngineServices {
     mediaRouter: MediaRouter;
     processManager: ProcessManager;
     deviceProviders: DeviceProviderRegistry;
-    /** Engine-wide default playout offset D in ms (ADR-0005 decision 4, see
-     *  `EngineConfig.playoutOffsetMs`). Presentation modules resolve their sink
-     *  `ts-offset` from it via `effectivePlayoutOffsetMs`, which also consults
-     *  the route head's override. Absent (test harnesses) falls back to the
-     *  60 ms default. */
-    playoutOffsetMs?: number;
-    /** Never drop on lateness — raise the route's D instead (ADR-0005
-     *  2026-10-08, `EngineConfig.playoutReanchor`). Absent reads as off
-     *  (shed, as before). */
-    playoutReanchor?: boolean;
     /** The engine's house epoch E and time-sync state (house-clock design §4.2):
      *  `epoch()`, `ready()`, events `epoch` and `state`. Absent in test harnesses. */
     houseClock?: HouseClock;
@@ -123,26 +112,6 @@ export interface PluginModule {
     isLiveChange?(key: string, newValue: unknown, oldValue: unknown): boolean;
     /** Apply live config changes (only for params in getLiveUpdatableParams). */
     onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void>;
-    /**
-     * The playout offset D of the route this module consumes changed — the
-     * ROUTE HEAD's `playoutOffsetMs` was edited (ADR-0005 decision 4). Fanned
-     * out by `MediaRouter.notifyPlayoutOffsetChanged` to every consumer of that
-     * producer, so both legs of a route re-anchor together. Presentation
-     * modules re-push their sink `ts-offset`; everyone else omits it.
-     */
-    onRoutePlayoutOffsetChanged?(): Promise<void>;
-    /**
-     * This module's route raise changed (ADR-0005 2026-10-08): the head gets
-     * its record (`null` = cleared); a leg that asked gets one with
-     * `raiseMs: 0` when an edit of the head's D, or its decay (B-210), reset it.
-     * `GstPluginBase` implements both ends (warning, status section, head badge).
-     */
-    onRoutePlayoutRaised?(raise: PlayoutRaise | null): void;
-    /** A leg below this route head rebased itself onto an implausible timeline, or
-     *  re-anchored on its own past the route's reach (`null`: that is over, B-210). */
-    onRoutePlayoutRebased?(note: PlayoutRebaseNote | null): void;
-    /** This leg's own re-anchor past its route's reach (`null`: cleared, B-210). */
-    onPlayoutLegOffset?(offset: PlayoutLegOffset | null): void;
     /** Return PipeWire node names for audio routing (single-port modules). */
     getPipeWireNodes?(): { source?: string; sink?: string };
     /** Return PipeWire node names for a specific port (multi-port modules like N-1 mixer). */
@@ -476,31 +445,6 @@ export interface PipelineDescription {
      */
     keyframeGate?: KeyframeGateConfig;
     /**
-     * Hand a clock-paced leg's RETAINED BACKLOG back — the time-sync contract's
-     * latency ratchet guard (ADR-0005; `plugins/backlogShed.ts` carries the full
-     * rationale and the numbers).
-     *
-     * WHY. A `sync=true` sink drains at exactly media rate, so anything the
-     * leg's leaky queues absorb during a downstream hiccup is retained latency
-     * for ever — the legacy `sync=false` sink presented on arrival and drained
-     * its own backlog, which is why nothing needed this before. Field (.42, ~16 h
-     * under the contract): 50 fps decoded, 2.5 fps on the glass, restored
-     * instantly by a live +1 s `ts-offset` and broken again by reverting it.
-     *
-     * WHAT THE RUNNER DOES. Measures lateness on the named element's sink pad
-     * (`now_running_time − (buffer_running_time + ts-offset)`, so the number is
-     * the excess over the route's D directly), and when that stays over
-     * `toleranceMs` for `holdMs` it DROPS the oldest queued data until the leg
-     * is back inside D — up to the next keyframe when `keyframeAligned`, which
-     * a video leg must set (a delta unit whose references were dropped is the
-     * V4L2 wedge the keyframe gate exists for). One `backlog_shed` plugin event
-     * per episode with before/after retained latency, and `cooldownMs` between
-     * episodes so it cannot oscillate.
-     *
-     * Omitted, nothing is armed (a `sync=false` leg drains its own backlog).
-     */
-    backlogShed?: BacklogShedConfig;
-    /**
      * Plugin-owned runner-side python (`plugins/<x>/py/<module>.py`, on the
      * runner's PYTHONPATH). For each entry the runner imports `module` and
      * calls `install(pipeline, config, ctx)` before PLAYING and `clear()` on
@@ -547,39 +491,6 @@ export interface RenderWatchRunnerConfig {
 export interface KeyframeGateConfig {
     /** `name=` of the decoder in `pipeline` whose sink pad is gated. */
     decoder: string;
-}
-
-/**
- * Backlog shedder config — see PipelineDescription.backlogShed. Plugins never
- * write this literal: `backlogShedConfig()` (plugins/backlogShed.ts) owns the
- * numbers and the contract gate for every leg.
- */
-export interface BacklogShedConfig {
-    /** `name=` of the element whose sink pad is measured and shed at. */
-    element: string;
-    /** `name=` of the presentation sink whose `ts-offset` is the route's D. */
-    sink: string;
-    /** End a shed only on a keyframe (mandatory ahead of a video decoder). */
-    keyframeAligned: boolean;
-    /** Retained latency over D, in ms, that is tolerated before shedding. */
-    toleranceMs: number;
-    /** How long the excess must hold before it counts, in ms. */
-    holdMs: number;
-    /** Minimum gap between sheds on this leg, in ms. */
-    cooldownMs: number;
-    /** Lateness past which a reading is a timeline mismatch, not a backlog. */
-    sanityMs: number;
-    /** `reanchor`: never drop on lateness, ask the engine to raise D
-     *  (`playoutReanchor.ts`). Absent = `shed`, exactly as before. */
-    onLateness?: 'reanchor' | 'shed';
-    reanchorToleranceMs?: number;
-    reanchorHoldMs?: number;
-    reanchorRetryMs?: number;
-    rebaseHoldMs?: number;
-    rebaseCooldownMs?: number;
-    /** Playout watch (B-206, native runner): every buffer past budget for this long reports the
-     *  sink missing, `playout_watch` {playing:false}; in budget again, {playing:true}. */
-    missWatchMs?: number;
 }
 
 /** See PipelineDescription.catchUp. */

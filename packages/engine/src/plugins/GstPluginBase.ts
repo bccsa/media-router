@@ -14,21 +14,8 @@ import type { ManagedProcess, ManagedProcessOptions } from '../child-process/Man
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { START_WAITS_FOR_PIPEWIRE } from './pipeWireLoss.js';
 import { VuStallWatch } from './VuStallWatch.js';
-import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 import { QUEUE_OVERRUN_EVENT, queueOverrunText, type QueueOverrun } from './queueOverrun.js';
 import { STAMP_OFF_CLOCK_EVENT, stampOffClockText, type StampOffClock } from './offClock.js';
-import {
-    DEFAULT_PLAYOUT_OFFSET_MS,
-    PLAYOUT_OFFSET_KEY,
-    parsePlayoutOffsetMs,
-} from './playoutOffset.js';
-import {
-    PLAYOUT_REANCHOR_EVENT,
-    type PlayoutLegOffset,
-    type PlayoutRaise,
-    type PlayoutRebaseNote,
-} from './playoutReanchor.js';
-import { PlayoutReanchorState, type PlayoutWarningKind } from './playoutReanchorState.js';
 import { ModuleTiming } from './moduleTiming.js';
 import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
 import type { DemuxInputRef } from './demuxWatches.js';
@@ -46,8 +33,6 @@ type OwnedWarning =
     | 'silence'
     | 'reconnect'
     | 'input-lost'
-    | 'reanchor'
-    | 'rebase'
     | 'timing-plugin'
     | 'input-absent'
     | 'aligner-full'
@@ -125,7 +110,6 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         log: (level, obj, msg) =>
             level === 'warn' ? this.log.warn(obj, msg) : this.log.info(obj, msg),
         alignerInput: (watch) => this.alignerInputOf(watch),
-        contentLateness: (lateMs) => this.playout.onContentLateness(lateMs),
         wired: (s) => {
             const id = this.services?.instanceId;
             const router = this.services?.mediaRouter;
@@ -249,12 +233,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     /** A sink that plays nothing (B-197): over ok or this module's own transient text, never
      *  over an error or another writer's warning (ADR-0010 rule 2); null withdraws it and puts
-     *  back what it stood over, in PLAYING's order: lost inputs, re-anchor, aligners. */
+     *  back what it stood over, in PLAYING's order: lost inputs, aligners. */
     protected setPlaysNothing(text: string | null): void {
         if (text === null) {
             this.clearOwnWarning('plays-nothing');
             this.showLostInputs();
-            this.playout.show();
             this.timing.reassertWarnings();
             return;
         }
@@ -376,7 +359,6 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 if (this.services?.instanceId) {
                     this.services.mediaRouter?.onProducerPlaying(this.services.instanceId);
                 }
-                this.playout.reassert();
                 this.timing.onPlaying();
                 // Fires on EVERY playing transition, including a runner-internal
                 // crash-restart (which rebuilds the pipeline from the original
@@ -473,8 +455,6 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         // incarnation left behind — without this the stale text rides along
         // with health='ok' forever ("healthy but shows an old error").
         this.markHealthy();
-        // A standing re-anchor shows from the start, on a new instance too (B-210).
-        this.playout.reassert();
         this.emit('stateChange', this.getState());
 
         // For data-mode pipelines with a null-sink, start a separate VU metering process
@@ -911,18 +891,13 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     /**
      * Every runner plugin event lands here first.
      *
-     * `backlog_shed` is logged HERE, not per plugin: the backlog shedder is a
-     * contract-layer guard armed on every clock-paced leg (video-player,
-     * audio-decoder, any future presentation leg — see backlogShed.ts), so its
-     * one line per episode has to exist for all of them without each one
-     * remembering to write it. The subclass hook still gets the event and may
-     * do more with it. So are `queue_overrun` (B-170) and `stamp_off_clock` (B-203).
+     * `queue_overrun` (B-170) and `stamp_off_clock` (B-203) are logged HERE, not per plugin,
+     * so every module writes their one line; the subclass hook still gets the event.
      */
     protected dispatchPluginEvent(channel: string, payload: unknown): void {
         // Lateness windows, aligner reports and demux messages are the base class's alone
         // (WI-P0-9, WI-P2-13, WI-P3-6): no subclass hook. An ASRC's go on to it too.
         if (this.timing.onEvent(channel, payload)) return;
-        if (channel === BACKLOG_SHED_EVENT) this.logBacklogShed(payload);
         if (channel === QUEUE_OVERRUN_EVENT) {
             this.log.warn(
                 { queueOverrun: payload },
@@ -935,121 +910,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 stampOffClockText((payload ?? {}) as StampOffClock),
             );
         }
-        if (channel === PLAYOUT_REANCHOR_EVENT) {
-            this.playout
-                .onEvent(payload)
-                .catch((err) => this.log.warn({ err }, 'Playout re-anchor request failed'));
-        }
         this.onPluginEvent(channel, payload);
-    }
-
-    /**
-     * One journal line per backlog-shed episode (see `backlogShed.ts`).
-     *
-     * Deliberately at WARN for a real shed: frames (or samples) were dropped on
-     * purpose, and the retained/budget pair beside it is the evidence for WHY —
-     * without it a shed is indistinguishable in the journal from the glitch it
-     * repaired. `implausible`, `timeline` and `awaiting_keyframe` are the
-     * outcomes that shed nothing: the first says the reading was not a backlog
-     * at all, the second that the leg is late but its queues are empty (a
-     * producer stamping behind real time — dropping would return nothing), the
-     * third that the leg is caught up and waiting for an IRAP it must not skip.
-     */
-    private logBacklogShed(payload: unknown): void {
-        const p = (payload ?? {}) as { outcome?: string };
-        if (p.outcome === 'implausible') {
-            this.log.warn(
-                { backlogShed: payload },
-                'Backlog shed: lateness past the sanity ceiling — treated as a timeline mismatch, nothing shed',
-            );
-            return;
-        }
-        if (p.outcome === 'timeline') {
-            this.log.warn(
-                { backlogShed: payload },
-                'Backlog shed: over budget but nothing queued upstream — the timeline is late, not backlogged; nothing shed',
-            );
-            return;
-        }
-        if (p.outcome === 'awaiting_keyframe') {
-            this.log.warn(
-                { backlogShed: payload },
-                'Backlog shed: back inside the playout budget, holding for the next keyframe',
-            );
-            return;
-        }
-        this.log.warn(
-            { backlogShed: payload },
-            'Backlog shed — retained latency returned to the playout budget',
-        );
-    }
-
-    // --- Playout re-anchor (ADR-0005 amendment 2026-10-08) ---
-    // Both ends live in `PlayoutReanchorState`, so every leg and route head gets them free.
-
-    private readonly playout = new PlayoutReanchorState({
-        services: () => this.services,
-        log: () => this.log,
-        configuredOffsetMs: () =>
-            parsePlayoutOffsetMs(this.config[PLAYOUT_OFFSET_KEY]) ??
-            this.services?.playoutOffsetMs ??
-            DEFAULT_PLAYOUT_OFFSET_MS,
-        showSection: (section, status) => {
-            this.upsertStatusSection(section);
-            this.setStatusData(section.id, status);
-        },
-        clearSection: (id) => {
-            if (this.dynamicStatusSections.some((sec) => sec.id === id)) {
-                this.clearStatusSection(id);
-            }
-        },
-        setBadge: (id, badge) => (badge ? this.setBadge(id, badge) : this.clearBadge(id)),
-        warn: (kind, text) => this.ownReanchorWarning(kind, text),
-        clearWarnings: () => {
-            this.clearOwnWarning('reanchor');
-            this.clearOwnWarning('rebase');
-        },
-        heldChanged: (held) => this.onPlayoutHeldChanged(held),
-    });
-
-    /** Head: this route's raise (`null` = cleared). Leg: its route's raise reset to 0. */
-    onRoutePlayoutRaised(raise: PlayoutRaise | null): void {
-        this.playout.onRouteRaised(raise);
-    }
-
-    /** Head: a leg below it rebased itself — a producer timeline fault (`null`: over). */
-    onRoutePlayoutRebased(note: PlayoutRebaseNote | null): void {
-        this.playout.onRouteRebased(note);
-    }
-
-    /** Leg: its own re-anchor past its route's reach (`null`: cleared, B-210). */
-    onPlayoutLegOffset(offset: PlayoutLegOffset | null): void {
-        this.playout.onLegOffset(offset);
-    }
-
-    /** A raise could not help this leg (B-210): its sink's lateness is how it plays, not silence. */
-    protected playoutHeld(): boolean {
-        return this.playout.held();
-    }
-
-    /** The leg's raise became held, or no longer is: a module that watches its sink re-reads. */
-    protected onPlayoutHeldChanged(_held: boolean): void {
-        /* subclass hook */
-    }
-
-    /** A leg whose sink plays on time again (B-206): a raise it asked for stands as its section,
-     *  and what its warning stood over shows again (lost inputs, the aligners'). */
-    protected notePlayoutOnTime(): void {
-        this.playout.onPlayoutOnTime();
-        this.showLostInputs();
-        this.timing.reassertWarnings();
-    }
-
-    /** Taken only over `ok` or our own re-anchor/rebase text (ADR-0010 rule 2). */
-    private ownReanchorWarning(kind: PlayoutWarningKind, text: string): void {
-        const ours = this.ownedWarning === 'reanchor' || this.ownedWarning === 'rebase';
-        if (this.health !== 'ok' && !ours) return;
-        this.ownWarning(kind, text);
     }
 
     /**

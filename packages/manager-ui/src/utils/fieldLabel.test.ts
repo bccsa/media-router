@@ -3,12 +3,12 @@ import { fieldLabel } from './fieldLabel';
 
 describe('fieldLabel', () => {
     it('splits camelCase keys into capitalised words', () => {
-        expect(fieldLabel('playoutOffsetMs')).toBe('Playout Offset Ms');
+        expect(fieldLabel('ingestOffsetMs')).toBe('Ingest Offset Ms');
         expect(fieldLabel('port', {})).toBe('Port');
     });
 
     it('prefers a non-empty schema title', () => {
-        expect(fieldLabel('playoutOffsetMs', { title: 'Playout offset' })).toBe('Playout offset');
+        expect(fieldLabel('ingestOffsetMs', { title: 'Ingest offset' })).toBe('Ingest offset');
     });
 
     it('falls back to the humanized key when title is missing, blank or not a string', () => {

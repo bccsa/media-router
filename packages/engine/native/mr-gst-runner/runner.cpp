@@ -9,7 +9,6 @@
 #include <memory>
 #include <thread>
 
-#include "backlog_shed.h"
 #include "bus_edges.h"
 #include "bus_inputs.h"
 #include "capture_rt.h"
@@ -148,15 +147,6 @@ void Runner::cancel_playing_watchdog() {
 void Runner::arm_playing_watchdog(int timeout_ms) {
     cancel_playing_watchdog();
     if (timeout_ms > 0) playing_watchdog_id = g_timeout_add(timeout_ms, playing_timeout_cb, nullptr);
-}
-
-double Runner::now_running_ms() {
-    if (!pipeline || !GST_IS_PIPELINE(pipeline)) return 0.0;
-    GstClock* clock = gst_pipeline_get_pipeline_clock(GST_PIPELINE(pipeline));
-    if (!clock) return 0.0;
-    double ms = (double)(gst_clock_get_time(clock) - gst_element_get_base_time(pipeline)) / 1e6;
-    gst_object_unref(clock);
-    return ms;
 }
 
 /** Push EOS straight into the gated decoder when the whole-pipeline drain
@@ -402,13 +392,10 @@ void Runner::handle_start(JsonObject* data) {
     }
 
     // Report-only TS video-info probe and render keep-up watch, then the
-    // keyframe gate (NOT report-only — it drops, and must be armed before
-    // PLAYING) and the backlog shedder AFTER the gate on purpose: both probes
-    // sit on the decoder's sink pad and a shut gate must win.
+    // keyframe gate (NOT report-only — it drops, and must be armed before PLAYING).
     if (!tsprobe::start(pipeline, json_get_object(data, "tsProbe")) ||
         !render::start(pipeline, json_get_object(data, "renderWatch")) ||
-        !gate_kf::start(pipeline, json_get_object(data, "keyframeGate")) ||
-        !shed::start(pipeline, json_get_object(data, "backlogShed"))) {
+        !gate_kf::start(pipeline, json_get_object(data, "keyframeGate"))) {
         teardown_pipeline(pipeline);
         pipeline = nullptr;
         return;
@@ -472,10 +459,8 @@ void Runner::handle_stop() {
     }
     // AFTER the teardown: the drain reaches the decoder through the gate's
     // pad when the pipeline-level EOS can't travel, and the gate is harmless
-    // during a drain (it only ever touches buffers); the shedder's probe can
-    // only ever drop a buffer the drain does not need.
+    // during a drain (it only ever touches buffers).
     gate_kf::stop();
-    shed::stop();
     if (loop && g_main_loop_is_running(loop)) g_main_loop_quit(loop);
 }
 
