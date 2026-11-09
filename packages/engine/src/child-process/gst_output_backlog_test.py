@@ -1,23 +1,7 @@
 #!/usr/bin/env python3
-"""A stall's backlog at the video output plays at content rate and is never shed (house-clock plan
-ch. 8 WI-P4-14, §15; in place of the latency-ratchet test p4-11 deleted with the shedder).
-
-The player's video leg as it stands after Phase 4: a live 50p feed into `queue name=vp_esq leaky=0`
-(5 s), `mrvideopace`, and a sink, on the clock both runners give every pipeline (the monotonic
-system clock, base time 0). The feed stalls 2 s and then delivers its backlog at once (a hold):
-
-  A  an unpaced sink (fakesink sync=false): the backlog still leaves on the content's cadence,
-     its lateness up by the stall and flat after;
-  B  a media-rate display (mrtestvideosink at 50 Hz, 0008's model): the same;
-  C  B, then a 2 s content gap (DISCONT): the cadence collapses at the gap and the lateness comes
-     back to the input's.
-
-No arm sheds: every frame pushed is released and reaches the sink, none dropped by the pace.
-Lateness is the sink pad's own reading (now - PTS on the pipeline clock), not the element's.
-
-The mutant it fails on is mrvideopace without its hold (`release = arrival`; arm A drains the
-backlog at once): build it in a mirror tree and point MR_PLUGINS_DIR at it.
-Skips (exit 0) without GStreamer or the built plugin; arms B and C without the test display.
+"""A stall's backlog at the video output plays at content rate and is never shed (WI-P4-14, in place of
+the ratchet test): arms A fakesink, B mrtestvideosink at 50 Hz, C B then a 2 s gap. Its mutant:
+mrvideopace with release = arrival, via MR_PLUGINS_DIR. Skips (exit 0) without GStreamer or the plugin.
 """
 import os
 import sys

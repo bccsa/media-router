@@ -1,19 +1,6 @@
 #!/usr/bin/env python3
-"""Output conformance scenarios (plan ch. 8 part 7.4 corrected, WI-P4-14; WI-P4-9's check), in both
-runners.
-
-Each scenario starts the real outputs' runner commands (fixtures/output/pipelines.json, made by
-testing/outputConformance.test.ts) with `mrtestvideosink` and `mrtestaudiosink` for the display and
-the card (MR_GATE=1: the box's own), feeds them generated streams or recordings over unixfd edges at
-real time on the house clock (output_rig.py on aligner_rig.py), and judges what `mrvideopace`,
-`mrasrc`, `mrtsdemux`, `mrlateness` and the queue watch report against `<scenario>.expect.json`.
-Stalls are aligner_rig.Knobs 'hold', gaps 'drop' (the demux's jump rule makes the GAP) or an OQ-12
-marker; loops are rebased each lap with their continuity counters running on.
-
-The scenarios fail on two self-mutants: a planted `leaky=2` vp_esq (scn-out-capacity, `--mutant
-leaky-esq`) and mrvideopace without its hold (gst_output_backlog_test.py on a mutant build).
-
-Skips (exit 0) without GStreamer, numpy, the native plugins, the test sinks or the commands file.
+"""Output conformance scenarios (plan ch. 8 WI-P4-14): the outputs' real strings on test sinks, in both
+runners, judged against fixtures/output/<scenario>.expect.json; skips (exit 0) without what it needs.
 Run:  python3 output_conformance_test.py [--only scn-a,scn-b] [--runner native|py] [--mutant leaky-esq]
 """
 import argparse
@@ -219,6 +206,14 @@ def overruns(o, skip_tap=True):
             for _t, p in o.overruns() if not (skip_tap and p.get("element") == tap)]
 
 
+def episodes(o, t0):
+    """Its queue_overrun episodes at their first overrun (a report comes a second after its last, `ms`
+    after its first): (s, element, leaky, levelTimeMs, overruns), the ts-probe tap's apart."""
+    tap = probe_tap(o)
+    return [(round((t - t0) / S - 1 - (p.get("ms") or 0) / 1000, 1), p.get("element"), p.get("leaky"),
+             p.get("levelTimeMs"), p.get("overruns")) for t, p in o.overruns() if p.get("element") != tap]
+
+
 def probe_tap(o):
     """The player's ts-probe tap queue's name: unnamed queues are numbered in the string's order."""
     s = o.start_cmd["pipeline"]
@@ -369,10 +364,10 @@ def scn_out_gap_recovers(tag, argv, exp):
         st, dd = last(dec.asrc_stats()), demux_last(dec)
         evs = [p.get("kind") + ":" + str(p.get("reason")) for _t, p in dec.asrc_events()]
         nh = [p for _t, p in dec.demux() if p.get("reason") == "not-house-time"]
-        # At a gap the prefill's time level reads the PTS jump as fullness until the jumping AU leaves (F9).
-        ov = overruns(dec)
-        gap_full = [e for e in ov if want_gaps and e[0] == "prefill" and not e[1]
-                    and abs((e[2] or 0) - length * 1000) <= x["gap_level_tol_ms"]]
+        # F9: at a gap the prefill's time level reads the PTS jump as fullness; one overrun there, judged
+        # by its time (its level read 0 when the jumping AU had left, as on the python runner).
+        ov, lo, hi = episodes(dec, t0), at + length + x["gap_episode_s"][0], at + length + x["gap_episode_s"][1]
+        gap_full = [e for e in ov if want_gaps and e[1] == "prefill" and not e[2] and e[4] == 1 and lo <= e[0] <= hi]
         if gap_full:
             print(f"    {label} decoder: Found (B-174, F9): prefill met full at the gap {gap_full} "
                   "(its time level counts the PTS jump)")
@@ -381,7 +376,7 @@ def scn_out_gap_recovers(tag, argv, exp):
               f"demux gaps {dd.get('gaps')} markers {dd.get('markers')}, stale {dd.get('pes-dropped-stale')}, "
               f"not-house-time "
               f"{[(p.get('stale'), p.get('offset-ms')) for p in nh]}, queues {ov} (at most one prefill episode "
-              f"at the gap's {length * 1000:.0f} ms ± {x['gap_level_tol_ms']})",
+              f"of one overrun at {lo:g}-{hi:g} s)",
               ra and rb and abs(orig.mid(ra) - orig.mid(rb)) <= x["audio_back_ms"]
               and evs == arm["asrc_events"] and st.get("dropped-frames") == 0
               and dd.get("gaps") == want_gaps and dd.get("markers") == arm.get("markers", 0)
@@ -432,6 +427,9 @@ def scn_out_video_only(tag, argv, exp):
     its HEVC rung on ffmpeg's libx265: every frame shown."""
     for arm in exp["arms"]:
         label = f"{exp['scenario']} {arm['name']} {tag}"
+        if arm["kind"].startswith("hevc") and not shutil.which("ffmpeg"):
+            print(f"SKIP {label} — no ffmpeg for its libx265 stream")
+            continue
         run = av_run(argv, dict(exp, kind=arm["kind"], player=arm["player"]), keys=("player",))
         run.on_time(label)
         run.clean(label)
@@ -491,10 +489,12 @@ def scn_out_rate(tag, argv, exp):
         lat = [r[3] for r in tail]
         check(f"{label}: the refresh measured ({ps.get('refresh-source')} {refresh} ns, want "
               f"{arm['refresh_ns']} ± {x['refresh_tol_ns']}); from {frm and sec(frm[0], t0)} s: rate drops "
-              f"{drops} = the deficit {want and round(want, 2)} ± 1 of {frames} frames, the release lateness flat "
+              f"{drops} = the deficit {want and round(want, 2)} ± 1 of {frames} frames (a faster display: none, "
+              f"{ps.get('rate-drops')} in all), the release lateness flat "
               f"({orig.spread(lat)} ms, within {x['flat_ms']}); presented {ds.get('presented')} of {released}",
               ps.get("refresh-source") == "measured" and abs(refresh - arm["refresh_ns"]) <= x["refresh_tol_ns"]
               and want is not None and drops is not None and abs(drops - want) <= 1
+              and (refresh >= content or (drops == 0 and ps.get("rate-drops") == 0))
               and abs(released - (ds.get("presented") or 0)) <= 2 and orig.spread(lat) is not None
               and orig.spread(lat) <= x["flat_ms"])
         if arm.get("from_first_drop") and frm:
@@ -543,10 +543,7 @@ def scn_out_capacity(tag, argv, exp):
     pl, t0 = run.outputs["player"], run.t0
     ps = run.reads.get(("player", "vp_pace", "stats")) or {}
     rows = [(round((t - t0) / S, 1), p.get("present-lateness-ns", 0) / 1e6) for t, p in pl.paces()]
-    tap = probe_tap(pl)
-    # Each episode at its first overrun: a report comes a second after its last, `ms` after its first.
-    ev = [(round((t - t0) / S - 1 - (p.get("ms") or 0) / 1000, 1), p.get("element"), p.get("leaky"),
-           p.get("levelTimeMs")) for t, p in pl.overruns() if p.get("element") != tap]
+    ev = episodes(pl, t0)
     first = ev[0] if ev else None
     backstop = next((e for e in ev if e[2]), None)
     upto = [v for s_, v in rows if x["rising_from_s"] <= s_ <= (backstop[0] if backstop else seconds)]
@@ -612,10 +609,10 @@ def scn_asrc_out_drift(tag, argv, exp):
     over = trend * 1800 if trend is not None else None
     ppm = (st.get("device-ppb") or 0) / 1000
     check(f"{label}: the device term on the card's {exp['ppm']} ppm ({ppm} ppm, engaged at "
-          f"{engaged and sec(engaged, t0)} s, by {x['settle_s']} s), render lateness "
+          f"{engaged and sec(engaged, t0)} s, by {x['engaged_by_s']} s), render lateness "
           f"{orig.mid([v for _t, v in rows])} ms, "
           f"its trend {over and round(over, 2)} ms over 30 min (within {x['drift_ms_30min']}) from "
-          f"{x['settle_s']} s, between steps", engaged is not None and engaged <= t0 + x["settle_s"] * S
+          f"{x['settle_s']} s, between steps", engaged is not None and engaged <= t0 + x["engaged_by_s"] * S
           and abs(ppm - exp["ppm"]) <= x["ppm_tol"] and over is not None and abs(over) <= x["drift_ms_30min"]
           and st.get("state") == "locked")
     resyncs = run.reads.get(("aout", "sink", "resyncs"))
@@ -836,13 +833,16 @@ def scn_out_wrap(tag, argv, exp):
         moves[name_] = [(sec(b_[0], t0), round(b_[1] - a_[1], 1), a_[0] < tw + x["near_wrap_s"] * S <= b_[0]
                          or a_[0] <= tw < b_[0]) for a_, b_ in zip(rows, rows[1:]) if abs(b_[1] - a_[1]) > 1]
     at_wrap = [m[:2] for v in moves.values() for m in v if m[2]]
-    others = [m[:2] for v in moves.values() for m in v if not m[2]]
-    # A frame or an AU the shared host makes late steps that output's lateness for good (13.6's hold).
-    check(f"{label}: through the wrap ({sec(tw, t0)} s): no demux gap {gaps}, no lateness move in the "
-          f"report across it ({at_wrap}), elsewhere at most {x['late_steps']} one-unit steps ({others}); "
-          f"the ASRC never relocked ({st.get('relocks')}) or dropped ({st.get('dropped-frames')})",
-          gaps == (0, 0) and not at_wrap and len(others) <= x["late_steps"]
-          and all(abs(d) <= x["unit_ms"] for _t, d in others)
+    # The shared host's one-unit steps (a frame; an AU and a card segment) fall anywhere, the wrap's
+    # report too; a wrap fault is a gap, a relock or a move past a unit.
+    big = [(n, m[:2]) for n, v in moves.items() for m in v if abs(m[1]) > x["unit_ms"][n]]
+    steps = sum(len(v) for v in moves.values())
+    listed = {n: [m[:2] for m in v] for n, v in moves.items()}
+    check(f"{label}: through the wrap ({sec(tw, t0)} s): no demux gap {gaps}, at most {x['late_steps']} "
+          f"one-unit steps (video {x['unit_ms']['video']}, audio {x['unit_ms']['audio']} ms) in all "
+          f"({listed}; across the wrap {at_wrap}), none past a unit "
+          f"({big}); the ASRC never relocked ({st.get('relocks')}) or dropped ({st.get('dropped-frames')})",
+          gaps == (0, 0) and not big and steps <= x["late_steps"]
           and st.get("relocks") == 0 and st.get("dropped-frames") == 0)
     video_ok(f"{label} player", pl, x)
 

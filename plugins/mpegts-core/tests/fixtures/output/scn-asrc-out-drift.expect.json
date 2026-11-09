@@ -11,6 +11,7 @@
     "ppm_tol": 2.0,
     "drift_ms_30min": 2.0,
     "step_ms": 1.0,
-    "resyncs": 1
+    "resyncs": 1,
+    "engaged_by_s": 75
   }
 }

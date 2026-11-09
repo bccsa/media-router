@@ -10,7 +10,10 @@
     ],
     "from_s": 4,
     "near_wrap_s": 0.3,
-    "late_steps": 2,
-    "unit_ms": 22
+    "late_steps": 3,
+    "unit_ms": {
+      "video": 22,
+      "audio": 33
+    }
   }
 }
