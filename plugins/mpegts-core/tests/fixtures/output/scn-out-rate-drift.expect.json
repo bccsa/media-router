@@ -1,0 +1,34 @@
+{
+  "scenario": "scn-out-rate-drift",
+  "graph": "generated 720p50 -> player50, mrtestvideosink at 50 Hz 40 ppm slow (S11), and 2000 ppm slow (a deficit CI sees)",
+  "kind": "h264-aac-720p50",
+  "player": "player50",
+  "seconds": 30,
+  "arms": [
+    {
+      "name": "40ppm",
+      "fps": 50,
+      "display": {
+        "period_ns": 20000000,
+        "drift_ppm": -40
+      },
+      "refresh_ns": 20000800
+    },
+    {
+      "name": "2000ppm",
+      "fps": 50,
+      "seconds": 45,
+      "display": {
+        "period_ns": 20000000,
+        "drift_ppm": -2000
+      },
+      "refresh_ns": 20040000,
+      "from_first_drop": true
+    }
+  ],
+  "expect": {
+    "settle_s": 3,
+    "flat_ms": 21,
+    "refresh_tol_ns": 2000
+  }
+}

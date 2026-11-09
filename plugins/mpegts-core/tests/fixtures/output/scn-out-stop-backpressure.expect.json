@@ -1,0 +1,81 @@
+{
+  "scenario": "scn-out-stop-backpressure",
+  "graph": "each output stopped with a full backlog in its queues (T26, MR-041): the player's vp_esq behind a throttled decoder; the audio decoder's prefill and ad_esq and Audio Output (302M)'s prefill behind an input stall's backlog (a card stall skips, Q2: it holds nothing); the burn-in transcoder's raw buffer behind a slowed encoder",
+  "seconds": 12,
+  "arms": [
+    {
+      "name": "player",
+      "entry": "player50",
+      "kind": "h264-aac-720p50",
+      "socket": "vp",
+      "throttle": [
+        " ! videoconvert ! videoscale ! ",
+        200000
+      ],
+      "full": [
+        [
+          "vp_esq",
+          4900
+        ]
+      ]
+    },
+    {
+      "name": "decoder",
+      "entry": "decoder",
+      "kind": "h264-aac-720p50",
+      "socket": "ad",
+      "hold": [
+        2,
+        8
+      ],
+      "full": [
+        [
+          "prefill",
+          900
+        ],
+        [
+          "ad_esq",
+          4900
+        ]
+      ]
+    },
+    {
+      "name": "aout302m",
+      "entry": "aout302m",
+      "fixture": "cap-mixer-302m-house.ts",
+      "pid": 65,
+      "socket": "ao",
+      "hold": [
+        2,
+        3
+      ],
+      "full": [
+        [
+          "prefill",
+          900
+        ]
+      ]
+    },
+    {
+      "name": "burnin",
+      "entry": "burnin",
+      "kind": "h264-aac",
+      "socket": "video",
+      "python_only": true,
+      "throttle": [
+        "shading-value=153 ! ",
+        400000
+      ],
+      "full": [
+        [
+          "queue2",
+          150
+        ]
+      ],
+      "cues": true
+    }
+  ],
+  "expect": {
+    "kill_ms": 8000
+  }
+}

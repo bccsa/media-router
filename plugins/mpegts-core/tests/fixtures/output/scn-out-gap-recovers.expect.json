@@ -1,0 +1,37 @@
+{
+  "scenario": "scn-out-gap-recovers",
+  "graph": "generated 720p50 H.264 + AAC with a 2 s content gap at 8 s (the jump rule; an OQ-12 marker) or a lone AAC PES 22.14 h old (T8) -> player50 and the audio decoder",
+  "kind": "h264-aac-720p50",
+  "seconds": 20,
+  "gap": [
+    8,
+    2
+  ],
+  "arms": [
+    {
+      "name": "drop",
+      "asrc_events": [
+        "relock:discont"
+      ]
+    },
+    {
+      "name": "marker",
+      "markers": 1,
+      "asrc_events": [
+        "relock:discont"
+      ]
+    },
+    {
+      "name": "stale",
+      "stale_h": 22.14,
+      "stale": 1,
+      "asrc_events": [
+        "relock:discont"
+      ]
+    }
+  ],
+  "expect": {
+    "video_back_ms": 21,
+    "audio_back_ms": 30
+  }
+}

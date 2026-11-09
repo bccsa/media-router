@@ -19,7 +19,10 @@ replays any fixture on its own clock after `mrts_cli rebase <in> <out> --to-ns <
 house 36 h, past the 33-bit wrap (25.5 h), their PES and their sidecar's stamps parted by 26.5 h
 on a replay's clock (the first PES - 1 h), which the conformance test now refuses.
 Arrival traces for the restamp are in `restamp/` (ch. 5 part 7.2, WI-P1-5); each
-`.expect.json` there says how its trace was recorded. An expectation's `cadenceWarning` means
+`.expect.json` there says how its trace was recorded. The output harness's runner commands are
+`output/pipelines.json`, made by the real modules (`testing/outputConformance.test.ts`, `vitest -u`), with
+one `scn-*.expect.json` per scenario of `output_conformance_test.py` (ch. 8 WI-P4-14, B-174); its
+streams are generated at test time or are the recordings here, none committed for it. An expectation's `cadenceWarning` means
 a PCR interval ran late against the PCR's own cadence (twice it, at least 500 ms, at most 4 s)
 at some point of the replay; `pcrCadenceMs` is the cadence learned at the end (B-86). A trace
 recorded before 2026-10-22 (B-84) gives a PES record the restamp's own `discontinuity_indicator`

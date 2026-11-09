@@ -1,0 +1,16 @@
+{
+  "scenario": "scn-out-wrap",
+  "graph": "generated 720p50 H.264 + AAC -> player50 and the audio decoder, the house clock crossing the PES wrap mid-run (time namespace)",
+  "kind": "h264-aac-720p50",
+  "seconds": 24,
+  "expect": {
+    "wrap_after_s": [
+      5,
+      20
+    ],
+    "from_s": 4,
+    "near_wrap_s": 0.3,
+    "late_steps": 2,
+    "unit_ms": 22
+  }
+}

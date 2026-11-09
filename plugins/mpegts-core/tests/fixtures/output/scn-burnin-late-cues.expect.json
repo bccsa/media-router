@@ -1,0 +1,15 @@
+{
+  "scenario": "scn-burnin-late-cues",
+  "graph": "generated 320x180 25 fps H.264 and cap-klv-sparse moved by rebase, every cue chunk 1.4 s after its PES (S29) -> the Video Transcoder's burn-in (python runner: its bridge), its rendition's egress",
+  "python_only": true,
+  "kind": "h264-aac",
+  "seconds": 33,
+  "cue_at_s": 2.02,
+  "cue_late_ms": 1400,
+  "expect": {
+    "pace_over_ms": 120,
+    "owed_min": 8,
+    "settled_s": 8,
+    "frames_min": 400
+  }
+}

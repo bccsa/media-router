@@ -1,0 +1,21 @@
+{
+  "scenario": "scn-out-stall",
+  "graph": "generated 720p50 H.264 + AAC, a 2 s input stall at 8 s (hold) -> player50 (mrtestvideosink 50 Hz) and the audio decoder (mrtestaudiosink)",
+  "kind": "h264-aac-720p50",
+  "seconds": 22,
+  "stall": [
+    8,
+    2
+  ],
+  "expect": {
+    "video_step_ms": 41,
+    "audio_step_ms": [
+      1930,
+      2020
+    ],
+    "flat_ms": 22,
+    "decoder_full": [
+      "prefill"
+    ]
+  }
+}

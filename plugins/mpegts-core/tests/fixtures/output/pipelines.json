@@ -1,0 +1,183 @@
+{
+  "player50": {
+    "start": {
+      "pipeline": "unixfdsrc socket-path=@SOCK@/vp.sock ! watchdog name=buswd_40500 timeout=5000 ! mrlateness name=lat_busin_40500_431d2a reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! capsfilter caps=\"video/x-h264\" ! queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! h264parse ! avdec_h264 name=vpdec thread-type=frame max-threads=3 ! videoconvert ! videoscale ! mrvideopace name=vp_pace refresh-mhz=50000 ! mrlateness name=lat_render reference=running-time ! kmssink name=sink connector-id=32 sync=false qos=false vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
+      "useStdioForData": false,
+      "linkOnPadAdded": [],
+      "readKlvNames": false,
+      "liveCaptureClock": false,
+      "decoderThreadType": "frame",
+      "busReports": [],
+      "tsProbe": {
+        "appsink": "tsprobe"
+      },
+      "renderWatch": {
+        "sink": "sink",
+        "pace": "vp_pace"
+      },
+      "keyframeGate": {
+        "decoder": "vpdec"
+      }
+    },
+    "env": {},
+    "runner": null
+  },
+  "player60": {
+    "start": {
+      "pipeline": "unixfdsrc socket-path=@SOCK@/vp.sock ! watchdog name=buswd_40500 timeout=5000 ! mrlateness name=lat_busin_40500_431d2a reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! capsfilter caps=\"video/x-h264\" ! queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! h264parse ! avdec_h264 name=vpdec thread-type=frame max-threads=3 ! videoconvert ! videoscale ! mrvideopace name=vp_pace refresh-mhz=60000 ! mrlateness name=lat_render reference=running-time ! kmssink name=sink connector-id=32 sync=false qos=false vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
+      "useStdioForData": false,
+      "linkOnPadAdded": [],
+      "readKlvNames": false,
+      "liveCaptureClock": false,
+      "decoderThreadType": "frame",
+      "busReports": [],
+      "tsProbe": {
+        "appsink": "tsprobe"
+      },
+      "renderWatch": {
+        "sink": "sink",
+        "pace": "vp_pace"
+      },
+      "keyframeGate": {
+        "decoder": "vpdec"
+      }
+    },
+    "env": {},
+    "runner": null
+  },
+  "playerHevc": {
+    "start": {
+      "pipeline": "unixfdsrc socket-path=@SOCK@/vp.sock ! watchdog name=buswd_40500 timeout=5000 ! mrlateness name=lat_busin_40500_431d2a reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! capsfilter caps=\"video/x-h265\" ! queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! h265parse ! avdec_h265 name=vpdec thread-type=frame max-threads=3 ! videoconvert ! videoscale ! mrvideopace name=vp_pace refresh-mhz=50000 ! mrlateness name=lat_render reference=running-time ! kmssink name=sink connector-id=32 sync=false qos=false vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
+      "useStdioForData": false,
+      "linkOnPadAdded": [],
+      "readKlvNames": false,
+      "liveCaptureClock": false,
+      "decoderThreadType": "frame",
+      "busReports": [],
+      "tsProbe": {
+        "appsink": "tsprobe"
+      },
+      "renderWatch": {
+        "sink": "sink",
+        "pace": "vp_pace"
+      },
+      "keyframeGate": {
+        "decoder": "vpdec"
+      }
+    },
+    "env": {},
+    "runner": null
+  },
+  "decoder": {
+    "start": {
+      "pipeline": "unixfdsrc socket-path=@SOCK@/ad.sock ! mrlateness name=lat_busin_40420_d5f407 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! mrtsdemux name=addemux media=audio ! queue name=ad_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! aacparse ! avdec_aac ! audioconvert ! mrlateness name=lat_render reference=running-time ! mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink ! audioconvert ! volume name=vol volume=1.00 ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000 ! queue name=prefill leaky=0 min-threshold-time=40000000 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! pulsesink name=sink device=MR_PW_adec sync=false provide-clock=false processing-deadline=100000000 buffer-time=100000 stream-properties=\"props,node.dont-fallback=(string)true,node.linger=(string)true\"",
+      "useStdioForData": false,
+      "linkOnPadAdded": [],
+      "readKlvNames": false,
+      "liveCaptureClock": false,
+      "decoderThreadType": "auto",
+      "busReports": []
+    },
+    "env": {},
+    "runner": null
+  },
+  "aout302m": {
+    "start": {
+      "pipeline": "unixfdsrc socket-path=@SOCK@/ao.sock ! mrlateness name=lat_busin_40410_56ac10 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! mrtsdemux name=mixin_demux0 select=audio/x-smpte-302m ! avdec_s302m ! audioconvert ! queue leaky=0 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0 ! capsfilter name=mixin_out caps=\"audio/x-raw,rate=48000,channels=2\" mixin_out. ! mrlateness name=lat_render reference=running-time ! audioconvert ! mrasrc name=outasrc bypass-below-ppm=0.5 device-sink=sink ! volume name=vol volume=1.00 ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000 ! queue name=prefill leaky=0 min-threshold-time=40000000 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! pulsesink name=sink device=alsa_output.test sync=false provide-clock=false buffer-time=100000 stream-properties=\"props,node.dont-fallback=(string)true,node.linger=(string)true\"",
+      "useStdioForData": false,
+      "linkOnPadAdded": [],
+      "readKlvNames": false,
+      "liveCaptureClock": false,
+      "decoderThreadType": "auto",
+      "busReports": [],
+      "eosDrain": false,
+      "pipeWireElements": [
+        "sink"
+      ],
+      "catchUp": {
+        "prefix": "lat_busin",
+        "render": "lat_render"
+      }
+    },
+    "env": {},
+    "runner": null
+  },
+  "mux1": {
+    "start": {
+      "pipeline": "mpegtsmux name=mux latency=0 alignment=7 prog-map=\"program_map,sink_256=(int)1,PCR_1=sink_256\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41050 reference=running-time ! tee name=busout_41050 allow-not-linked=true unixfdsrc name=busin_0 socket-path=@SOCK@/mx0.sock ! mrlateness name=lat_busin_0 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! mrtsdemux name=demux_0",
+      "useStdioForData": false,
+      "linkOnPadAdded": [],
+      "readKlvNames": false,
+      "liveCaptureClock": false,
+      "decoderThreadType": "auto",
+      "busReports": [],
+      "runnerHooks": [
+        {
+          "module": "mux_routing",
+          "config": {
+            "inputs": [
+              {
+                "demux": "demux_0",
+                "linkTo": "mux",
+                "pid": 256,
+                "routes": {
+                  "video": {
+                    "branch": "mralignwatch name=aw_demux_0_video aligner=mux input=demux_0_video max-size-bytes=40000000"
+                  },
+                  "audio": {
+                    "branch": "mralignwatch name=aw_demux_0_audio aligner=mux input=demux_0_audio max-size-bytes=40000000"
+                  },
+                  "klv": {
+                    "branch": "mralignwatch name=aw_demux_0_klv aligner=mux input=demux_0_klv max-size-bytes=40000000 sparse=true"
+                  },
+                  "subtitle": {
+                    "branch": "mralignwatch name=aw_demux_0_subtitle aligner=mux input=demux_0_subtitle max-size-bytes=40000000 sparse=true"
+                  }
+                },
+                "ignorePids": [
+                  496
+                ],
+                "pcr": {
+                  "program": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "env": {},
+    "runner": null
+  },
+  "burnin": {
+    "start": {
+      "pipeline": "unixfdsrc socket-path=@SOCK@/video.sock ! mrlateness name=lat_busin_40600_47e6e1 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! mrtsdemux name=demux media=video ! capsfilter caps=\"video/x-h264\" ! mralignwatch name=aw_burnv aligner=burnin input=video max-size-bytes=40000000 ! h264parse ! avdec_h264 thread-type=frame max-threads=3 ! queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! deinterlace name=deint mode=auto method=greedyl ! videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=25/1;video/x-raw,framerate=[1/1,25/1] ! textoverlay name=subov wait-text=false text=\"\" valignment=bottom halignment=center font-desc=\"Sans Bold 36\" ypad=40 shaded-background=true shading-value=153 ! tee name=t t. ! queue leaky=0 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videoscale ! video/x-raw,width=320,height=180 ! videoconvert ! x264enc name=venc_0 tune=zerolatency bitrate=300 speed-preset=ultrafast key-int-max=25 bframes=0 option-string=\"nal-hrd=cbr:vbv-maxrate=300:vbv-bufsize=300:scenecut=40\" ! h264parse config-interval=1 ! mpegtsmux name=mux_0 latency=0 alignment=0 ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41060 reference=running-time ! tee name=busout_41060 allow-not-linked=true unixfdsrc socket-path=@SOCK@/subs.sock ! mrlateness name=lat_busin_40601_379bf1 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! mrtsdemux name=subdemux media=private",
+      "useStdioForData": false,
+      "linkOnPadAdded": [],
+      "readKlvNames": false,
+      "liveCaptureClock": false,
+      "decoderThreadType": "auto",
+      "busReports": [],
+      "runnerHooks": [
+        {
+          "module": "deinterlace_guard",
+          "config": {
+            "element": "deint"
+          }
+        },
+        {
+          "module": "subtitle_bridge",
+          "config": {
+            "overlay": {
+              "demux": "subdemux",
+              "overlay": "subov",
+              "aligner": "burnin"
+            }
+          }
+        }
+      ]
+    },
+    "env": {},
+    "runner": "python"
+  }
+}

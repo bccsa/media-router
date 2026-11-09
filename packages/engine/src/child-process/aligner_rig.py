@@ -326,7 +326,8 @@ _GENERATED = {}
 def generated(kind, seconds):
     """Relative-time TS from GStreamer, cached per process: [bytes] of 7-packet buffers.
     `h264-aac`, `opus-32k`: the conformance scenarios' (WI-P2-14); `h264-1080p50`: the video player's
-    `video-leg-pace` case (B-169), 1080p50 H.264 alone with a keyframe each second."""
+    `video-leg-pace` case (B-169), 1080p50 H.264 alone with a keyframe each second; `h264-aac-720p50`,
+    `-720p60`, `-1080p50` and `hevc-720p50`: the output harness's (WI-P4-14)."""
     key = (kind, seconds)
     if key not in _GENERATED:
         if kind == "h264-aac":
@@ -346,10 +347,36 @@ def generated(kind, seconds):
             desc = (f"videotestsrc num-buffers={int(seconds * 50)} pattern=ball ! video/x-raw,format=I420,"
                     "width=1920,height=1080,framerate=50/1 ! x264enc tune=zerolatency speed-preset=ultrafast"
                     " bitrate=4000 key-int-max=50 ! h264parse ! mpegtsmux alignment=7 ! appsink name=ts sync=false")
+        elif kind in _AV_KINDS:
+            w, h, fps = _AV_KINDS[kind]
+            desc = (f"videotestsrc num-buffers={int(seconds * fps)} pattern=ball ! video/x-raw,format=I420,"
+                    f"width={w},height={h},framerate={fps}/1 ! x264enc tune=zerolatency speed-preset=ultrafast"
+                    f" bitrate={w * h * fps // 23040} key-int-max={fps} ! h264parse ! mux. "
+                    f"audiotestsrc num-buffers={int(seconds * 48000 / 1024)} samplesperbuffer=1024 ! "
+                    "audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! mux. "
+                    "mpegtsmux name=mux alignment=7 ! appsink name=ts sync=false")
+        elif kind == "hevc-720p50":
+            _GENERATED[key] = _ffmpeg_hevc(seconds)
+            return _GENERATED[key]
         else:
             raise ValueError(kind)
-        _GENERATED[key] = [d for _pts, d in generate_ts(desc, timeout=180.0)]
+        _GENERATED[key] = [d for _pts, d in generate_ts(desc, timeout=300.0)]
     return _GENERATED[key]
+
+
+# The output harness's H.264 + AAC kinds (WI-P4-14): width, height, frame rate; a keyframe a second.
+_AV_KINDS = {"h264-aac-720p50": (1280, 720, 50), "h264-aac-720p60": (1280, 720, 60),
+             "h264-aac-1080p50": (1920, 1080, 50)}
+
+
+def _ffmpeg_hevc(seconds):
+    """720p50 HEVC alone from ffmpeg's libx265 (GStreamer's x265enc needs more than the dev Pi has to
+    spare), a keyframe a second, as 7-packet buffers."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                          f"testsrc2=size=1280x720:rate=50:duration={seconds}", "-c:v", "libx265",
+                          "-preset", "ultrafast", "-x265-params", "keyint=50:min-keyint=50:bframes=0:log-level=error",
+                          "-b:v", "2M", "-f", "mpegts", "-"], capture_output=True, check=True, timeout=600).stdout
+    return [out[i:i + 1316] for i in range(0, len(out) - len(out) % 188, 1316)]
 
 
 def _shift_ts_field(b, at, shift):

@@ -1,0 +1,19 @@
+{
+  "scenario": "scn-out-capacity",
+  "graph": "generated 720p50 -> player50 with avdec_h264 max-threads=1 and identity sleep-time after it (about 90 % of real time); MR_GATE=1: 1080p50 for 4 min",
+  "kind": "h264-aac-720p50",
+  "gate_kind": "h264-aac-1080p50",
+  "seconds": 64,
+  "gate_seconds": 240,
+  "sleep_us": 22222,
+  "expect": {
+    "slope_from_s": 10,
+    "slope_to_s": 30,
+    "slope_ms_s": [
+      20,
+      400
+    ],
+    "full_after_s": 20,
+    "full_level_ms": 4900
+  }
+}

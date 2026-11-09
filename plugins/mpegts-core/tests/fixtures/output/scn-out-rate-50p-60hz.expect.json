@@ -1,0 +1,22 @@
+{
+  "scenario": "scn-out-rate-50p-60hz",
+  "graph": "generated 720p50 -> player60, mrtestvideosink at 60 Hz",
+  "kind": "h264-aac-720p50",
+  "player": "player60",
+  "seconds": 16,
+  "arms": [
+    {
+      "name": "50p-60hz",
+      "fps": 50,
+      "display": {
+        "period_ns": 16666667
+      },
+      "refresh_ns": 16666667
+    }
+  ],
+  "expect": {
+    "settle_s": 3,
+    "flat_ms": 21,
+    "refresh_tol_ns": 20000
+  }
+}

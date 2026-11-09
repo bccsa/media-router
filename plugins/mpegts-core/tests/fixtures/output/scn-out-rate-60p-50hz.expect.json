@@ -1,0 +1,57 @@
+{
+  "scenario": "scn-out-rate-60p-50hz",
+  "graph": "generated 720p60 -> player50, mrtestvideosink at 50 Hz; then its presentation capped and restored live (B-175 limit (b))",
+  "kind": "h264-aac-720p60",
+  "player": "player50",
+  "seconds": 16,
+  "arms": [
+    {
+      "name": "60p-50hz",
+      "fps": 60,
+      "display": {
+        "period_ns": 20000000
+      },
+      "refresh_ns": 20000000
+    },
+    {
+      "name": "capped-restored",
+      "fps": 60,
+      "kind": "h264-aac-720p60",
+      "player": "player60",
+      "seconds": 24,
+      "display": {
+        "period_ns": 16666667
+      },
+      "present_max_mhz": [
+        [
+          6,
+          40000
+        ],
+        [
+          14,
+          0
+        ]
+      ],
+      "phases": [
+        [
+          2,
+          6
+        ],
+        [
+          7,
+          14
+        ],
+        [
+          16,
+          24
+        ]
+      ]
+    }
+  ],
+  "expect": {
+    "settle_s": 3,
+    "flat_ms": 41,
+    "refresh_tol_ns": 20000,
+    "drops_extra": 2
+  }
+}

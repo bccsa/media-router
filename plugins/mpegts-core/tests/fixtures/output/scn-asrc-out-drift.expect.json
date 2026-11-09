@@ -1,0 +1,16 @@
+{
+  "scenario": "scn-asrc-out-drift",
+  "graph": "cap-mixer-302m-house.ts looped -> Audio Output (302M), mrtestaudiosink 100 ppm fast; CI 120 s, MR_GATE=1 30 min",
+  "fixture": "cap-mixer-302m-house.ts",
+  "pid": 65,
+  "ppm": 100.0,
+  "seconds": 120,
+  "gate_seconds": 1800,
+  "expect": {
+    "settle_s": 60,
+    "ppm_tol": 2.0,
+    "drift_ms_30min": 2.0,
+    "step_ms": 1.0,
+    "resyncs": 1
+  }
+}

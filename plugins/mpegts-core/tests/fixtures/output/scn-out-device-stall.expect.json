@@ -1,0 +1,18 @@
+{
+  "scenario": "scn-out-device-stall",
+  "graph": "generated 720p50 H.264 + AAC -> player50 and the audio decoder, both test sinks stopped 3 s at 8 s (stall-ms)",
+  "kind": "h264-aac-720p50",
+  "seconds": 22,
+  "stall": [
+    8,
+    3
+  ],
+  "expect": {
+    "frame_ms": 20,
+    "flat_ms": 21,
+    "audio_back_ms": 40,
+    "decoder_full": [
+      "prefill"
+    ]
+  }
+}

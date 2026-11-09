@@ -1,0 +1,21 @@
+{
+  "scenario": "scn-out-video-only",
+  "graph": "generated 720p50 H.264 + AAC -> player50 alone (media=video); ffmpeg's libx265 720p50 -> playerHevc",
+  "kind": "h264-aac-720p50",
+  "seconds": 10,
+  "expect": {},
+  "arms": [
+    {
+      "name": "h264-aac",
+      "kind": "h264-aac-720p50",
+      "player": "player50",
+      "tail_frames": 8
+    },
+    {
+      "name": "hevc",
+      "kind": "hevc-720p50",
+      "player": "playerHevc",
+      "tail_frames": 8
+    }
+  ]
+}
