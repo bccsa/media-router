@@ -34,7 +34,6 @@ except (ValueError, ImportError):
     _GSTAPP_AVAILABLE = False
 
 import json
-import math
 import os
 import resource
 import signal
@@ -975,12 +974,12 @@ class _QueueWatch:
         if not self.first_us:
             self.first_us = now
         self.last_us = now
-        # The level it was full at, read at most once a second: the queue's lock is free while
-        # it emits the signal.
+        # The level it was full at, read at most once a second (the queue's lock is free while
+        # it emits the signal); the episode keeps its highest, as a read can find it drained.
         if now - self.level_us >= 1_000_000:
             self.level_us = now
-            self.level_ns = queue.get_property("current-level-time")
-            self.level_bytes = queue.get_property("current-level-bytes")
+            self.level_ns = max(self.level_ns, queue.get_property("current-level-time"))
+            self.level_bytes = max(self.level_bytes, queue.get_property("current-level-bytes"))
         self.overruns += 1
 
 
@@ -1046,6 +1045,7 @@ def _queue_watch_check(w, now):
     if now - last >= _QUEUE_QUIET_MS * 1000:
         _queue_overrun_report(w, total, last, False)
         w.open, w.base, w.first_us = False, total, 0
+        w.level_us = w.level_ns = w.level_bytes = 0   # the next episode reads its own level
     elif not w.long_reported and now - w.opened_us >= _QUEUE_LONG_MS * 1000:
         _queue_overrun_report(w, total, last, True)
         w.long_reported = True
@@ -2202,8 +2202,8 @@ _bus_branch_seq = 0
 # timeline later (a late-level correction, a source restart) — reads as a full
 # queue for one buffer and the leak drops it: one dropped bus buffer per
 # re-anchor, a CC break on every PID in it, DISCONT, and the consumer's
-# keyframe gate paying a GOP (.103, 2026-09-08 13:02-13:15: one CC break per
-# re-anchor, measured on the bus with the wire clean). 5 s is past any step
+# keyframe gate paying a GOP (the Pi 5 test box, 2026-09-08 13:02-13:15: one
+# CC break per re-anchor, measured on the bus with the wire clean). 5 s is past any step
 # the stamper corrects in place (its conditioner absorbs up to 10 s and marks
 # a larger one a restart); a stalled consumer still sheds here, at 5 s of its
 # stream or the byte cap, whichever comes first, and never back-pressures the

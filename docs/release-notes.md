@@ -394,6 +394,34 @@ elements" below do not start.
   video decoder again, and in testing rapid reopening stopped a Pi 4's
   hardware H.264 decoder until a reboot.
 
+**What the outputs show (Phase 4)**
+
+- **Render lateness is when the picture is shown or the sound is heard,** as
+  the output measures it: Video Player from the frames its display presented,
+  Audio Decoder and Audio Output (302M) from the position their sound card
+  plays. **Device latency** is what the display or the card adds after the
+  decode. The **Presentation delay** row is gone: no output waits for one.
+- **Video Player's Timing section adds Rate match,** for example "50.00 fps →
+  50.00 Hz measured, 0 drops/min": the stream's frame rate, the rate the
+  display takes, and the frames dropped each minute to match it. **Late
+  releases** counts frames a minute shown after their slot, and **Pace hold**
+  how long a frame waits for its slot.
+- **The audio outputs' Timing section adds Device relocks and Device
+  stalls** under Device clock: how often the card's clock was taken afresh,
+  and how often the card stopped taking sound.
+- **Lateness trend, on every output that renders:** how fast its lateness
+  grows over the last 3 minutes, for example "+12 ms/min — decode or device
+  slower than real time". It reads "measuring" for 3 minutes after a start
+  or a gap. It is a number to read, with no alarm and no setting.
+- **New warnings, which only warn: nothing is dropped.** "Display not
+  presenting (output off?)" while Video Player's display shows nothing (a
+  monitor off or unplugged); "Audio device stalled — nothing plays until it
+  takes audio again, then it plays live" while an audio output's card stops
+  taking sound; and on any module whose queue fills, "Queue <input> full at
+  <n> ms — content lost at capacity" or, for a queue that holds rather than
+  drops, "<queue> holding <n> ms at capacity — the input queue loses next",
+  until 30 s after the queue drained.
+
 **Removed settings (Phase 4), nothing migrated**
 
 - **Lip-Sync Trim** on Audio Output (302M): with no playout offset there is

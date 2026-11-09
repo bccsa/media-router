@@ -74,23 +74,25 @@ describe('ModuleTiming', () => {
         t.stop(false);
     });
 
-    it('reads D and the audio ring from the named sink at PLAYING', async () => {
+    it('reads the audio ring from the named sink at PLAYING, and no ts-offset', async () => {
         const props: Record<string, number> = { 'ts-offset': 60 * MS, 'buffer-time': 100_000 };
+        const asked: string[] = [];
         const t = new ModuleTiming({
             emit: () => {},
-            getProperty: async (_el, prop) => props[prop],
+            getProperty: async (_el, prop) => {
+                asked.push(prop);
+                return props[prop];
+            },
             busSources: () => [],
         });
         t.start({ pipeline: 'fakesrc ! fakesink', timingSink: { element: 'sink', kind: 'audio' } });
         t.onPlaying();
         await new Promise((r) => setImmediate(r));
         t.onEvent('mrlateness:lat_render', win(20));
-        t.tick();
-        expect(t.publication.data.timing).toMatchObject({
-            presentationDelayMs: 60,
-            deviceLatencyMs: 100,
-            renderMs: 160,
-        });
+        for (let i = 0; i < 6; i++) t.tick();
+        expect(t.publication.data.timing).toMatchObject({ deviceLatencyMs: 100, renderMs: 120 });
+        expect(t.publication.data.timing).not.toHaveProperty('presentationDelayMs');
+        expect(asked).toEqual(['buffer-time']);
         t.stop(false);
     });
 
@@ -1057,6 +1059,131 @@ describe('demuxes and consumer ASRCs (WI-P3-6)', () => {
         t.tick();
         expect(t.summary()).toMatchObject({ clockCorrection: { measuring: true } });
         expect(t.publication.data.timing).toMatchObject({ clockCorrection: 'measuring' });
+        t.stop(false);
+    });
+});
+
+describe('the queue-full warning and the display log (WI-P4-12)', () => {
+    afterEach(() => vi.useRealTimers());
+
+    const edge = (port: number, sourceModuleId: string, sinkPortId: string): BusSourceRef => {
+        const connectionId = `c-${port}`;
+        return {
+            port,
+            socketPath: busEdgeSocketPath(port, connectionId),
+            connectionId,
+            sourceModuleId,
+            sinkPortId,
+        };
+    };
+
+    function timing(sources: BusSourceRef[], pipeline: string) {
+        const queueFull = vi.fn();
+        const log = vi.fn();
+        const t = new ModuleTiming({
+            emit: () => {},
+            getProperty: async () => undefined,
+            busSources: () => sources,
+            queueFull,
+            log,
+        });
+        t.start({ pipeline });
+        return { t, queueFull, log };
+    }
+
+    it('names the bus input a leaky queue serves; a held queue by its name; logs each, passes it on', () => {
+        const one = edge(41000, 'srt-1', 'mpegts-in');
+        const { t, queueFull, log } = timing([one], buildBusSrc({ name: 'busin', port: 41000 }));
+        const p = {
+            element: 'queue3',
+            input: 'unixfdsrc0',
+            leaky: 2,
+            levelTimeMs: 5000,
+            overruns: 9,
+            ms: 400,
+        };
+        expect(t.onEvent('queue_overrun', p)).toBe(false);
+        // One input: its label, whatever its unixfdsrc is called.
+        expect(queueFull).toHaveBeenLastCalledWith(
+            'Queue srt-1 (mpegts-in) full at 5000 ms — content lost at capacity',
+        );
+        expect(log).toHaveBeenLastCalledWith(
+            'warn',
+            { queueOverrun: p },
+            'Queue srt-1 (mpegts-in) full at 5000 ms — content lost at capacity: 9 buffers dropped in 400 ms',
+        );
+        t.onEvent('queue_overrun', {
+            element: 'vp_esq',
+            input: 'unixfdsrc0',
+            leaky: 0,
+            levelTimeMs: 4990,
+        });
+        expect(queueFull).toHaveBeenLastCalledWith(
+            'Queue srt-1 (mpegts-in) full at 5000 ms — content lost at capacity; ' +
+                'vp_esq holding 4990 ms at capacity — the input queue loses next',
+        );
+        t.stop(false);
+        expect(queueFull).toHaveBeenLastCalledWith(null);
+    });
+
+    it('with several inputs, the one whose tap the unixfdsrc carries; an ingest queue by its own name', () => {
+        const a = edge(41000, 'srt-1', 'in-1');
+        const b = edge(41001, 'rist-2', 'in-2');
+        const pipeline = ['busin_0', 'busin_1']
+            .map((name, i) => buildBusSrc({ name, port: 41000 + i }) + ' ! fakesink')
+            .join(' ');
+        const { t, queueFull } = timing([a, b], pipeline);
+        t.onEvent('queue_overrun', { element: 'q', input: 'busin_1', leaky: 2, levelTimeMs: 10 });
+        // busin_1's tap is not an edge tap here: no match among two inputs, the queue's name.
+        expect(queueFull).toHaveBeenLastCalledWith(
+            'Queue q full at 10 ms — content lost at capacity',
+        );
+        t.stop(false);
+        const known = new ModuleTiming({
+            emit: () => {},
+            getProperty: async () => undefined,
+            busSources: () => [],
+            queueFull,
+        });
+        known.start({
+            pipeline,
+            timingInputs: [
+                { tap: latInName('busin_0'), n: 1, label: 'cam A' },
+                { tap: latInName('busin_1'), n: 2, label: 'cam B' },
+            ],
+        });
+        known.onEvent('queue_overrun', {
+            element: 'q',
+            input: 'busin_1',
+            leaky: 2,
+            levelTimeMs: 10,
+        });
+        expect(queueFull).toHaveBeenLastCalledWith(
+            'Queue cam B full at 10 ms — content lost at capacity',
+        );
+        known.onEvent('queue_overrun', {
+            element: 'ingestq',
+            input: null,
+            leaky: 2,
+            levelTimeMs: 7,
+        });
+        expect(queueFull.mock.calls.at(-1)![0]).toMatch(
+            /^Queue ingestq full at 7 ms .*; Queue cam B full/,
+        );
+        known.stop(false);
+    });
+
+    it('the display stopping and presenting again is one line each', () => {
+        const { t, log } = timing([], 'videotestsrc ! fakesink');
+        const msg = (presenting: boolean) => ({ released: 9, 'display-presenting': presenting });
+        expect(t.onEvent('mrvideopace:vp_pace', msg(true))).toBe(false);
+        t.onEvent('mrvideopace:vp_pace', msg(false));
+        t.onEvent('mrvideopace:vp_pace', msg(false));
+        t.onEvent('mrvideopace:vp_pace', msg(true));
+        expect(log.mock.calls.map((c) => [c[0], c[2]])).toEqual([
+            ['warn', 'Display not presenting (output off?)'],
+            ['info', 'Display presenting again'],
+        ]);
         t.stop(false);
     });
 });

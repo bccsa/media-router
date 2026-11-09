@@ -1,6 +1,7 @@
 // The consumer ASRCs' `mrasrc-stats` and `mrasrc-event` messages (house-clock WI-P3-6): a decode
 // term's clock correction, an output's device clock, the out-of-bounds warning, and the events
-// for the log. A capture ASRC (an ingest's: neither term) is its ingest card's alone.
+// for the log; a device term's render lateness, relocks and stalls (WI-P4-12). A capture ASRC (an
+// ingest's: neither term) is its ingest card's alone.
 import type { ClockCorrection } from '@media-router/shared-types';
 import { ASRC_EVENT, ASRC_STATS } from './ingestTiming.js';
 import { launchElements } from './launchElements.js';
@@ -42,6 +43,14 @@ export interface AsrcWatch {
     devicePpm?: number;
     /** The source fit past the bound (ppm, positive fast), while it stands. */
     outOfBoundsPpm?: number;
+    /** A device term: the lateness of what its device plays (absent while unknown), its
+     *  relocks and stalls, and whether it stands stalled (`device-stalled` to `device-resumed`). */
+    renderLatenessMs?: number;
+    deviceRelocks?: number;
+    deviceStalls?: number;
+    stalled?: boolean;
+    /** Changes at every relock, gap and stall the element counts, and at a new element. */
+    gapMark: string;
 }
 
 /** An `mrasrc-event` of a consumer ASRC, for the module's log. */
@@ -68,6 +77,13 @@ interface Entry {
     rateKnown: boolean;
     /** The out-of-bounds fit as a rate (ppb), while it stands. */
     outOfBoundsPpb?: number;
+    gaps: number;
+    deviceRelocks: number;
+    deviceStalls: number;
+    /** 0 while the device term does not know it (the element's rule). */
+    renderLatenessNs: number;
+    stalled: boolean;
+    generation: number;
 }
 
 type Payload = Record<string, unknown>;
@@ -119,6 +135,11 @@ export class AsrcWatches {
         } else if (kind === 'engaged') {
             event.sourcePpm = num(p, 'source-ppb') / 1000;
         }
+        if ((kind === 'device-stalled' || kind === 'device-resumed') && e) {
+            const was = e.stalled;
+            e.stalled = kind === 'device-stalled';
+            return { changed: was !== e.stalled, event };
+        }
         if (kind !== 'ratio-out-of-bounds' || !e) return { changed: false, event };
         const was = e.outOfBoundsPpb;
         e.outOfBoundsPpb = ratePpbOf(num(p, 'fit-ppb'));
@@ -132,7 +153,8 @@ export class AsrcWatches {
         const inFrames = num(p, 'in-frames');
         const relocks = num(p, 'relocks');
         // A new element under an old name (a runner respawn) starts with nothing standing.
-        const again = old && (inFrames < old.inFrames || relocks < old.relocks);
+        const again = !!old && (inFrames < old.inFrames || relocks < old.relocks);
+        const kept = old && !again;
         const e: Entry = {
             at: now,
             mode: mode as AsrcMode,
@@ -142,15 +164,23 @@ export class AsrcWatches {
             inFrames,
             relocks,
             rateKnown: p['rate-known'] !== false,
-            ...(old && !again && old.outOfBoundsPpb !== undefined
+            ...(kept && old.outOfBoundsPpb !== undefined
                 ? { outOfBoundsPpb: old.outOfBoundsPpb }
                 : {}),
+            gaps: num(p, 'gaps'),
+            deviceRelocks: num(p, 'device-relocks'),
+            deviceStalls: num(p, 'device-stalls'),
+            renderLatenessNs: num(p, 'render-lateness-ns'),
+            stalled: kept ? old.stalled : false,
+            generation: (old?.generation ?? 0) + (again ? 1 : 0),
         };
         // Back in bounds once the locked source rate is below the element's hysteresis.
         if (e.state === 'locked' && Math.abs(e.sourcePpb) < BACK_PPB) e.outOfBoundsPpb = undefined;
         this.entries.set(name, e);
         return {
-            changed: (old?.outOfBoundsPpb !== undefined) !== (e.outOfBoundsPpb !== undefined),
+            changed:
+                (old?.outOfBoundsPpb !== undefined) !== (e.outOfBoundsPpb !== undefined) ||
+                !!old?.stalled !== e.stalled,
         };
     }
 
@@ -162,7 +192,8 @@ export class AsrcWatches {
     list(): AsrcWatch[] {
         const out: AsrcWatch[] = [];
         for (const [name, e] of this.entries) {
-            const w: AsrcWatch = { name };
+            const mark = [e.generation, e.relocks, e.gaps, e.deviceRelocks, e.deviceStalls];
+            const w: AsrcWatch = { name, gapMark: mark.join('/') };
             const engaged = e.mode === 'decode' || e.mode === 'decode+device';
             // `device` from a decode + device element: its source still passes at house rate.
             const decode =
@@ -177,7 +208,13 @@ export class AsrcWatches {
             } else if (decode) {
                 w.correction = {};
             }
-            if (e.mode === 'device' || e.mode === 'decode+device') w.devicePpm = e.devicePpb / 1000;
+            if (e.mode === 'device' || e.mode === 'decode+device') {
+                w.devicePpm = e.devicePpb / 1000;
+                if (e.renderLatenessNs !== 0) w.renderLatenessMs = e.renderLatenessNs / 1e6;
+                w.deviceRelocks = e.deviceRelocks;
+                w.deviceStalls = e.deviceStalls;
+                w.stalled = e.stalled;
+            }
             if (e.outOfBoundsPpb !== undefined) w.outOfBoundsPpm = e.outOfBoundsPpb / 1000;
             out.push(w);
         }
@@ -197,6 +234,10 @@ export function asrcWarningText(ppm: number, label?: string): string {
         " — check the source's sample rate"
     );
 }
+
+/** A device term that stopped taking audio (B-166's stall rule: skip, then play live). */
+export const DEVICE_STALLED_TEXT =
+    'Audio device stalled — nothing plays until it takes audio again, then it plays live';
 
 /** `+23.4 ppm`, `−12.1 ppm` (one decimal, a true minus sign), `0.0 ppm`. */
 export function signedPpm(ppm: number): string {

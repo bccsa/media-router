@@ -128,10 +128,14 @@ describe('the decode ASRC chains', () => {
             'device-ppb': -12_100,
         });
         w.take('mrasrc-stats', 'asrc', stats('device', 0), 0);
-        expect(w.list()).toEqual([{ name: 'asrc', correction: {}, devicePpm: -12.1 }]);
+        // With the device term's counts (WI-P4-12).
+        const device = { deviceRelocks: 0, deviceStalls: 0, stalled: false };
+        expect(w.list()).toMatchObject([
+            { name: 'asrc', correction: {}, devicePpm: -12.1, ...device },
+        ]);
         w.take('mrasrc-stats', 'asrc', stats('decode+device', 40_000), 2000);
-        expect(w.list()).toEqual([
-            { name: 'asrc', correction: { sourcePpm: 40 }, devicePpm: -12.1 },
+        expect(w.list()).toMatchObject([
+            { name: 'asrc', correction: { sourcePpm: 40 }, devicePpm: -12.1, ...device },
         ]);
     });
 
@@ -146,9 +150,11 @@ describe('the decode ASRC chains', () => {
             'source-ppb': sourcePpb,
             'device-ppb': 0,
         });
+        // No device term: no device clock, render lateness or counts.
+        const only = (correction: object) => [{ name: 'asrc', correction, gapMark: '0/0/0/0/0' }];
         w.take('mrasrc-stats', 'asrc', stats('bypass', 0), 0);
-        expect(w.list()).toEqual([{ name: 'asrc', correction: {} }]);
+        expect(w.list()).toEqual(only({}));
         w.take('mrasrc-stats', 'asrc', stats('decode', -40_000), 2000);
-        expect(w.list()).toEqual([{ name: 'asrc', correction: { sourcePpm: -40 } }]);
+        expect(w.list()).toEqual(only({ sourcePpm: -40 }));
     });
 });

@@ -119,35 +119,30 @@ describe('LatenessReporter', () => {
         expect(inputs).toHaveBeenCalledTimes(1);
     });
 
-    it('an output with D = 60 ms and λ = 20 ms renders at 60 + device', () => {
+    it('with no presentation reading, an output renders at λ(render) + the device stand-in', () => {
         const r = new LatenessReporter();
         r.onEvent('mrlateness:lat_busin_41000_abcdef', win(5));
         r.onEvent('mrlateness:lat_render', win(20));
-        r.setPresentation({ presentationDelayMs: 60, deviceLatencyMs: 100 });
+        r.setDeviceStandIn({ deviceLatencyMs: 100 });
         const s = r.summary();
         expect(s.output?.meanMs).toBe(20);
         expect(s.decodeMs).toBe(15);
-        expect(s.renderMs).toBe(160);
-    });
-
-    it('λ = 150 ms past D renders at 150 + device', () => {
-        const r = new LatenessReporter();
-        r.onEvent('mrlateness:lat_render', win(150));
-        r.setPresentation({ presentationDelayMs: 60, deviceLatencyMs: 100 });
-        expect(r.summary().renderMs).toBe(250);
+        expect(s.deviceLatencyMs).toBe(100);
+        expect(s.renderMs).toBe(120);
+        expect(s).not.toHaveProperty('presentationDelayMs');
     });
 
     it('carries the note of a stand-in device latency, and clears it on reset', () => {
         const r = new LatenessReporter();
         r.onEvent('mrlateness:lat_render', win(20));
-        r.setPresentation({ deviceLatencyMs: 1000 / 60, deviceLatencyNote: '60 Hz assumed' });
+        r.setDeviceStandIn({ deviceLatencyMs: 1000 / 60, deviceLatencyNote: '60 Hz assumed' });
         expect(r.summary().deviceLatencyNote).toBe('60 Hz assumed');
-        r.setPresentation({ deviceLatencyMs: 20 });
+        r.setDeviceStandIn({ deviceLatencyMs: 20 });
         expect(r.summary().deviceLatencyNote).toBeUndefined();
-        r.setPresentation({ deviceLatencyMs: 1000 / 60, deviceLatencyNote: '60 Hz assumed' });
+        r.setDeviceStandIn({ deviceLatencyMs: 1000 / 60, deviceLatencyNote: '60 Hz assumed' });
         r.reset();
         r.onEvent('mrlateness:lat_render', win(20));
-        r.setPresentation({ deviceLatencyMs: 20 });
+        r.setDeviceStandIn({ deviceLatencyMs: 20 });
         expect(r.summary().deviceLatencyNote).toBeUndefined();
     });
 

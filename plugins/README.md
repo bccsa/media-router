@@ -2191,7 +2191,7 @@ reaches your module. What it publishes, every row with its label and unit
 and re-sent only when a value moves by ≥ 1 ms: a `timing` section (Output
 lateness mean and min–max; Added latency = output mean − the slowest input's
 mean; Slowest input, with two or more inputs; and for outputs Decode,
-Presentation delay, Device latency and Render lateness); one `timing-in-<n>`
+Device latency, Render lateness and Lateness trend, below); one `timing-in-<n>`
 section per input (Lateness, Added), labelled `<source module> (<sink port>)`
 and numbered by the input's fixed place — the bus inputs a run starts with by
 sink port, numeric-aware, then connection id, one wired later after them — so a
@@ -2209,7 +2209,8 @@ shows absent: B-93), and a pace that falls by itself logs "Pace fell by <ms>
 ms: every input steady for <fall-after>" (B-82); audio-processing adds
 Processing latency (its LSP chain's reported lookahead, OQ-22). Lateness is
 display only: no threshold and no warning on it (OQ-8, deferred until the
-fleet has numbers); the aligners' `input-absent` and `aligner-full` warnings
+fleet has numbers), and its trend is a row with no alarm and no setting (OQ-34);
+the aligners' `input-absent` and `aligner-full` warnings
 (below) are about an input, not lateness. What a plugin author does:
 
 - **Output modules** wrap their final sink in
@@ -2227,14 +2228,48 @@ fleet has numbers); the aligners' `input-absent` and `aligner-full` warnings
   `buffer-time=OUTPUT_RING_US` (100 ms; `packages/engine/src/plugins/outputSink.ts`,
   OQ-31, B-167, B-168). Set
   `timingSink: { element, kind: 'audio' | 'video', refreshHz? }` on the
-  description too, so the engine reads the sink's `ts-offset` (D) and, on
-  audio base sinks, `buffer-time` through `get_property`. A video sink's
-  device latency is one refresh at `refreshHz`, the rate of the mode the
-  output is driven at (video-player resolves it in
-  `engine/helpers/outputRefresh.ts` from weston.ini or the EDID); leave it
-  out when unknown and the row reads `Device latency (60 Hz assumed)`. Render
-  lateness is `max(λ, D) + device` while sinks still wait for D; it becomes
-  `λ + device` in Phase 4.
+  description too: at each PLAYING the engine reads an audio base sink's
+  `buffer-time` through `get_property`, and a video sink's device latency is
+  one refresh at `refreshHz`, the rate of the mode the output is driven at
+  (video-player resolves it in `engine/helpers/outputRefresh.ts` from
+  weston.ini or the EDID; left out when unknown, the row reads `Device
+  latency (60 Hz assumed)`). That is a stand-in, used only until the
+  presentation reports its own render lateness (next bullet): then Render
+  lateness is that reading and Device latency = Render lateness −
+  λ(`lat_render`); without one, Render lateness = λ + the stand-in. No sink
+  waits for a playout offset any more, so nothing reads `ts-offset` (B-171,
+  B-172).
+- **Outputs report their presentation** (house-clock WI-P4-12, B-172), with
+  no code of yours beyond naming the elements: both runners forward
+  `mrvideopace` and `mrasrc-stats`/`mrasrc-event` unsubscribed (and on to
+  your `onPluginEvent`). From the video pace: Render lateness =
+  `present-lateness-ns` (the presented frame, by 0008's feedback, else the
+  kept one plus a period), `Rate match` (`50.00 fps → 50.00 Hz measured, 0
+  drops/min`: the content's rate, the display's as the pace sees it,
+  `achieved`, else the mode's `measured` or `nominal` refresh, and its rate
+  drops plus the frames it dropped behind, per minute over the last minute),
+  `Late releases` (/min) and `Pace hold` (its mean hold, ms). From an ASRC
+  with a device term: Render lateness = `render-lateness-ns` once known (0:
+  not yet), and `Device relocks` and `Device stalls` beside Device clock (no
+  second clock row). `Lateness trend` on every output that renders: the
+  least-squares slope of Render lateness over the last 3 min, `+12 ms/min —
+  decode or device slower than real time` when it rises, `measuring` until
+  3 min ran with no gap; a gap is a reading missing for 6 s, a gap the pace
+  collapsed, a relock, a device relock or stall, a display outage, a new
+  element or a change of where the reading comes from. Three warnings join
+  the module's timing warnings (one health text it owns, ADR-0010 rule 2);
+  they warn, nothing drops: `display-not-presenting` (`Display not
+  presenting (output off?)`, while the pace reads `display-presenting`
+  false: 0008's `not-presented` or `present-timeouts` rising),
+  `device-stalled` (`Audio device stalled — nothing plays until it takes
+  audio again, then it plays live`, from `device-stalled` to
+  `device-resumed`), and `queue-full` for every module, from the runners'
+  `queue_overrun` (B-170): a leaky queue `Queue <input> full at <ms> ms —
+  content lost at capacity` (the bus input it serves by its label, else the
+  queue's name), a non-leaky one `<name> holding <ms> ms at capacity — the
+  input queue loses next`, standing while its episode is open and 30 s after
+  it closed; each episode is also one WARN line with that text and its
+  counts.
 - **Inputs whose taps are named per branch** (a source given its own name in
   `buildBusSrc({ name })` gets a tap named after it — `lat_busin_<i>` in
   mpegts-muxer — which the router's edge list cannot map to a source) are

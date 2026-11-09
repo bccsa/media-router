@@ -14,7 +14,6 @@ import type { ManagedProcess, ManagedProcessOptions } from '../child-process/Man
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { START_WAITS_FOR_PIPEWIRE } from './pipeWireLoss.js';
 import { VuStallWatch } from './VuStallWatch.js';
-import { QUEUE_OVERRUN_EVENT, queueOverrunText, type QueueOverrun } from './queueOverrun.js';
 import { STAMP_OFF_CLOCK_EVENT, stampOffClockText, type StampOffClock } from './offClock.js';
 import { ModuleTiming } from './moduleTiming.js';
 import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
@@ -39,6 +38,7 @@ type OwnedWarning =
     | 'plays-nothing'
     | 'input-reanchored'
     | 'off-clock'
+    | 'queue-full'
     | StreamWarning['kind'];
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
@@ -51,8 +51,8 @@ import {
 
 const defaultLog = createLogger('GstPluginBase');
 
-/** The timing display's warnings (WI-P2-13, WI-P3-6, B-203, B-205): one health text, owned by
- *  the module. */
+/** The timing display's warnings (WI-P2-13, WI-P3-6, B-203, B-205, WI-P4-12): one health text,
+ *  owned by the module. */
 const TIMING_WARNINGS: ReadonlySet<OwnedWarning> = new Set<OwnedWarning>([
     'input-absent',
     'aligner-full',
@@ -61,7 +61,10 @@ const TIMING_WARNINGS: ReadonlySet<OwnedWarning> = new Set<OwnedWarning>([
     'input-not-house-time',
     'input-no-stream',
     'asrc-out-of-bounds',
+    'device-stalled',
+    'display-not-presenting',
     'off-clock',
+    'queue-full',
 ]);
 
 /**
@@ -122,6 +125,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             });
         },
         streamWarnings: (warnings) => this.onStreamWarnings(warnings),
+        queueFull: (text) => this.onQueueFull(text),
         demuxInput: (element) => this.demuxInputOf(element),
     });
 
@@ -538,6 +542,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         reanchored: null as string | null,
         stream: [] as StreamWarning[],
         offClock: null as string | null,
+        queueFull: null as string | null,
     };
 
     private onAlignerWarnings(
@@ -556,17 +561,24 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.showTimingWarnings();
     }
 
+    /** Full queues (WI-P4-12): a warning until 30 s after the last episode closed. */
+    private onQueueFull(text: string | null): void {
+        if (this.timingWarnings.queueFull === text) return;
+        this.timingWarnings.queueFull = text;
+        this.showTimingWarnings();
+    }
+
     /** An output off the house clock (B-203): a warning while it lasts. */
     private onOffClock(text: string | null): void {
         this.timingWarnings.offClock = text;
         this.showTimingWarnings();
     }
 
-    /** The aligners' (WI-P2-13, B-205), demuxes', ASRCs' (WI-P3-6) and off-clock (B-203) warnings
-     *  as one health text owned by its first: only over ok or our own (ADR-0010 rule 2), never over
+    /** The aligners' (WI-P2-13, B-205), demuxes', ASRCs' (WI-P3-6), off-clock (B-203), the
+     *  presentation's and full queues' (WI-P4-12) warnings as one health text owned by its first: only over ok or our own (ADR-0010 rule 2), never over
      *  a stopped or failed module, so another writer's stands until it clears; none: withdrawn. */
     private showTimingWarnings(): void {
-        const { absent, full, reanchored, stream, offClock } = this.timingWarnings;
+        const { absent, full, reanchored, stream, offClock, queueFull } = this.timingWarnings;
         const parts: Array<{ kind: OwnedWarning; text: string }> = [
             ...(absent !== null ? [{ kind: 'input-absent' as const, text: absent }] : []),
             ...(full !== null ? [{ kind: 'aligner-full' as const, text: full }] : []),
@@ -575,6 +587,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 : []),
             ...stream,
             ...(offClock !== null ? [{ kind: 'off-clock' as const, text: offClock }] : []),
+            ...(queueFull !== null ? [{ kind: 'queue-full' as const, text: queueFull }] : []),
         ];
         const text = parts.map((p) => p.text).join('; ');
         const owned = this.ownedWarning;
@@ -891,19 +904,14 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     /**
      * Every runner plugin event lands here first.
      *
-     * `queue_overrun` (B-170) and `stamp_off_clock` (B-203) are logged HERE, not per plugin,
-     * so every module writes their one line; the subclass hook still gets the event.
+     * `queue_overrun` (B-170, by the timing display, which warns of it: WI-P4-12) and
+     * `stamp_off_clock` (B-203) are logged HERE, not per plugin, so every module writes their one
+     * line; the subclass hook still gets the event.
      */
     protected dispatchPluginEvent(channel: string, payload: unknown): void {
         // Lateness windows, aligner reports and demux messages are the base class's alone
         // (WI-P0-9, WI-P2-13, WI-P3-6): no subclass hook. An ASRC's go on to it too.
         if (this.timing.onEvent(channel, payload)) return;
-        if (channel === QUEUE_OVERRUN_EVENT) {
-            this.log.warn(
-                { queueOverrun: payload },
-                queueOverrunText((payload ?? {}) as QueueOverrun),
-            );
-        }
         if (channel === STAMP_OFF_CLOCK_EVENT) {
             this.log.warn(
                 { stampOffClock: payload },

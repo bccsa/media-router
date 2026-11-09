@@ -184,6 +184,22 @@ describe('Audio Output (302M) that plays nothing (B-197)', () => {
         await module.onStop();
     });
 
+    it('one source played direct: what it queued before it first played is named as its source', async () => {
+        const { module, child, log } = await started(1);
+        child.emit('pluginEvent', {
+            channel: 'catch_up',
+            payload: {
+                inputs: [{ element: 'lat_render', skippedMs: 384, buffers: 38 }],
+                skippedMs: 384,
+            },
+        });
+        const lines = log.info.mock.calls.filter((c) => String(c[1]).startsWith('Caught up'));
+        expect(lines.map((c) => c[1])).toEqual([
+            'Caught up at the start: skipped 384 ms of its source from before it played, never played late',
+        ]);
+        await module.onStop();
+    });
+
     it('one source played direct: no audio is its source going quiet, not judged here', async () => {
         const { module, child } = await started(1);
         await vi.advanceTimersByTimeAsync(20_000);

@@ -1,7 +1,7 @@
 // A module's timing summary as status sections and a face badge (ADR-0007: the plugin
 // computes, the UI renders). Every row is labelled with its unit, so the operator reads a
 // number, not a colour. House-clock plan WI-P0-9; the aligner rows WI-P2-13; the demux and
-// ASRC rows WI-P3-6.
+// ASRC rows WI-P3-6; the output rows WI-P4-12.
 import type {
     ClockCorrection,
     LatenessStatsMs,
@@ -11,6 +11,8 @@ import type {
     StatusValue,
 } from '@media-router/shared-types';
 import { clockCorrectionText, signedPpm } from './asrcWatches.js';
+import { latenessTrendText } from './latenessTrend.js';
+import { rateMatchText } from './videoPaceWatches.js';
 
 export const TIMING_SECTION = 'timing';
 export const TIMING_BADGE = 'lateness';
@@ -105,14 +107,19 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     if (s.waitingFor !== undefined) rows.push(['waitingFor', 'Waiting for', s.waitingFor]);
     else if (s.slowest) rows.push(['slowest', 'Slowest input', s.slowest]);
     if (s.decodeMs !== undefined) rows.push(['decodeMs', 'Decode', ms(s.decodeMs), 'ms']);
-    if (s.presentationDelayMs !== undefined) {
-        rows.push(['presentationDelayMs', 'Presentation delay', ms(s.presentationDelayMs), 'ms']);
-    }
     if (s.deviceLatencyMs !== undefined) {
         const note = s.deviceLatencyNote ? ` (${s.deviceLatencyNote})` : '';
         rows.push(['deviceLatencyMs', `Device latency${note}`, ms(s.deviceLatencyMs), 'ms']);
     }
     if (s.renderMs !== undefined) rows.push(['renderMs', 'Render lateness', ms(s.renderMs), 'ms']);
+    if (s.latenessTrend) {
+        rows.push(['latenessTrend', 'Lateness trend', latenessTrendText(s.latenessTrend)]);
+    }
+    if (s.rateMatch) rows.push(['rateMatch', 'Rate match', rateMatchText(s.rateMatch)]);
+    if (s.lateReleasesPerMin !== undefined) {
+        rows.push(['lateReleases', 'Late releases', Math.round(s.lateReleasesPerMin), '/min']);
+    }
+    if (s.paceHoldMs !== undefined) rows.push(['paceHoldMs', 'Pace hold', ms(s.paceHoldMs), 'ms']);
     if (s.pipeWireLatencyMs !== undefined) {
         rows.push(['pipeWireLatencyMs', 'PipeWire latency', ms(s.pipeWireLatencyMs), 'ms']);
     }
@@ -120,6 +127,9 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     if (s.deviceClockPpm !== undefined) {
         rows.push(['deviceClock', 'Device clock', signedPpm(s.deviceClockPpm)]);
     }
+    if (s.deviceRelocks !== undefined)
+        rows.push(['deviceRelocks', 'Device relocks', s.deviceRelocks]);
+    if (s.deviceStalls !== undefined) rows.push(['deviceStalls', 'Device stalls', s.deviceStalls]);
     if (rows.length) section(TIMING_SECTION, 'Timing', rows, pub);
 
     // Numbered by the input's fixed place, so one going dark never renumbers the rest.
@@ -153,12 +163,22 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     put('pace', s.paceMs);
     put('waitingFor', s.waitingFor);
     put('decode', s.decodeMs);
-    put('d', s.presentationDelayMs);
     put('device', s.deviceLatencyMs);
     put('device.note', s.deviceLatencyNote);
     put('render', s.renderMs);
     put('pw', s.pipeWireLatencyMs);
     put('proc', s.processingLatencyMs);
+    // The trend at its display step (1 ms/min), the rates at theirs (0.01 fps or Hz, 1 /min).
+    const trend = s.latenessTrend;
+    put('trend', trend && (trend.msPerMin === undefined ? 'measuring' : trend.msPerMin));
+    put('rate.fps', s.rateMatch && s.rateMatch.contentFps * 100);
+    put('rate.hz', s.rateMatch && s.rateMatch.displayHz * 100);
+    put('rate.source', s.rateMatch?.displaySource);
+    put('rate.drops', s.rateMatch?.dropsPerMin);
+    put('late', s.lateReleasesPerMin);
+    put('hold', s.paceHoldMs);
+    put('relocks', s.deviceRelocks);
+    put('stalls', s.deviceStalls);
     // ppm in tenths, its display step; a correction's `none` and `measuring` are values of their own.
     const tenths = (c: ClockCorrection | undefined): number | string | undefined =>
         c && (c.measuring ? 'measuring' : c.sourcePpm === undefined ? 'none' : c.sourcePpm * 10);

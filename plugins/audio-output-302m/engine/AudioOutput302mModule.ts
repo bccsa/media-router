@@ -142,7 +142,8 @@ export class AudioOutput302mModule extends GstPluginBase {
         const text = launchCatchUpText(payload, {
             sources: this.sources(),
             name: (id) => router?.moduleName?.(id) ?? id,
-            render: { element: RENDER_TAP, label: 'the mix' },
+            // One source plays direct: its render tap is that source's (B-172's carry).
+            render: { element: RENDER_TAP, label: this.mixerLaunched ? 'the mix' : 'its source' },
         });
         if (text) this.log.info({ catchUp: payload }, text);
     }

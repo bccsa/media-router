@@ -1,7 +1,8 @@
 // LatenessReporter (§9.5, WI-P0-9): taps' and sidecars' `mrlateness` windows as the timing
 // summary (`lat_busin…` in; `lat_render`/`lat_egress`/`lat_busout…` out), no threshold (OQ-8) but
 // the off-clock warning (B-203); aligner modules add their `mralignwatch` reports and warnings
-// (WI-P2-13), consumers their demuxes' counters and their ASRCs' clocks (WI-P3-6).
+// (WI-P2-13), consumers their demuxes' counters and their ASRCs' clocks (WI-P3-6), outputs their
+// presentation's own render lateness, rate match and trend (WI-P4-12).
 import type {
     AlignerInputState,
     ClockCorrection,
@@ -34,9 +35,17 @@ import {
     ASRC_STATS,
     AsrcWatches,
     asrcWarningText,
+    DEVICE_STALLED_TEXT,
     type AsrcLogEvent,
     type AsrcWatch,
 } from './asrcWatches.js';
+import {
+    DISPLAY_NOT_PRESENTING_TEXT,
+    VIDEO_PACE_EVENT,
+    VideoPaceWatches,
+    type VideoPaceWatch,
+} from './videoPaceWatches.js';
+import { LatenessTrend } from './latenessTrend.js';
 import { launchElements } from './launchElements.js';
 import { OFF_CLOCK_MS, offClockText } from './offClock.js';
 
@@ -96,25 +105,54 @@ export interface AlignerWarnings {
     reanchored: string | null;
 }
 
-/** What the demuxes and the consumer ASRCs warn of (WI-P3-6), each kind owned by the module. */
+/** What the demuxes and the consumer ASRCs warn of (WI-P3-6), and an output's presentation
+ *  (WI-P4-12), each kind owned by the module. */
 export type StreamWarningKind =
     | 'demux-unknown-stream'
     | 'input-not-house-time'
     | 'input-no-stream'
-    | 'asrc-out-of-bounds';
+    | 'asrc-out-of-bounds'
+    | 'device-stalled'
+    | 'display-not-presenting';
 
 export interface StreamWarning {
     kind: StreamWarningKind;
     text: string;
 }
 
-/** A demux's new program or a consumer ASRC's event, with the input it names (none: the
- *  module's own ASRC). */
+/** A demux's new program, a consumer ASRC's event, with the input it names (none: the
+ *  module's own ASRC), or a display that stopped or went on presenting. */
 export type StreamLogEvent =
     | { source: 'demux'; label: string; program: DemuxProgram }
-    | { source: 'asrc'; label?: string; event: AsrcLogEvent };
+    | { source: 'asrc'; label?: string; event: AsrcLogEvent }
+    | { source: 'display'; name: string; presenting: boolean };
 
-const STREAM_CHANNELS = [DEMUX_EVENT, ASRC_STATS, ASRC_EVENT].map((c) => `${c}:`);
+const STREAM_CHANNELS = [DEMUX_EVENT, ASRC_STATS, ASRC_EVENT, VIDEO_PACE_EVENT].map((c) => `${c}:`);
+
+/** The presentation's own render lateness (the largest of several), and its gap mark. */
+interface RenderReading {
+    ms: number;
+    mark: string;
+}
+
+function renderReading(paces: VideoPaceWatch[], asrcs: AsrcWatch[]): RenderReading | undefined {
+    const from = (xs: Array<{ ms?: number; mark: string }>, kind: string) => {
+        const known = xs.filter((x): x is { ms: number; mark: string } => x.ms !== undefined);
+        if (!known.length) return undefined;
+        const ms = Math.max(...known.map((x) => x.ms));
+        return { ms, mark: `${kind}:${known.map((x) => x.mark).join(',')}` };
+    };
+    return (
+        from(
+            paces.map((p) => ({ ms: p.presentLatenessMs, mark: p.gapMark })),
+            'pace',
+        ) ??
+        from(
+            asrcs.map((a) => ({ ms: a.renderLatenessMs, mark: a.gapMark })),
+            'asrc',
+        )
+    );
+}
 
 /** Several demuxes on one input (none today): their counters add up. */
 function sumDemux(watches: DemuxWatch[]): DemuxCounters | undefined {
@@ -214,9 +252,11 @@ export class LatenessReporter {
     private readonly watches = new AlignerWatches();
     private readonly demuxes = new DemuxWatches();
     private readonly asrcs = new AsrcWatches();
+    private readonly paces = new VideoPaceWatches();
+    private readonly trend: LatenessTrend;
     /** Each demux's `media` as the description builds it, for the no-stream text. */
     private demuxMedia = new Map<string, string>();
-    private presentationDelayMs: number | undefined;
+    /** The stand-in where the presentation reports no render lateness (ring, refresh). */
     private deviceLatencyMs: number | undefined;
     private deviceLatencyNote: string | undefined;
     private pipeWireLatencyMs: number | undefined;
@@ -226,10 +266,11 @@ export class LatenessReporter {
 
     constructor(private readonly opts: LatenessReporterOptions = {}) {
         this.intervalMs = opts.intervalMs ?? 2000;
+        this.trend = new LatenessTrend(STALE_WINDOWS * this.intervalMs, this.intervalMs / 2);
     }
 
-    /** Takes `mrlateness:<tap>`, `mralignwatch:<element>`, `mrtsdemux:<element>` and the
-     *  `mrasrc-*:<element>` plugin events; false for any other channel. */
+    /** Takes `mrlateness:<tap>`, `mralignwatch:<element>`, `mrtsdemux:<element>`,
+     *  `mrvideopace:<element>` and the `mrasrc-*:<element>` plugin events; false for others. */
     onEvent(channel: string, payload: unknown, now = Date.now()): boolean {
         if (this.onAligner(channel, payload, now)) return true;
         if (this.onStream(channel, payload, now)) return true;
@@ -274,9 +315,9 @@ export class LatenessReporter {
         );
     }
 
-    /** An `mrtsdemux:<element>` or `mrasrc-stats`/`mrasrc-event:<element>` message: whether a
-     *  warning changed, and what it completes for the log. Null for any other channel, and for
-     *  a capture ASRC's (its ingest card's alone). */
+    /** An `mrtsdemux:<element>`, `mrvideopace:<element>` or `mrasrc-stats`/`mrasrc-event:<element>`
+     *  message: whether a warning changed, and what it completes for the log. Null for any other
+     *  channel, and for a capture ASRC's (its ingest card's alone). */
     onStream(
         channel: string,
         payload: unknown,
@@ -292,6 +333,14 @@ export class LatenessReporter {
             const label = program ? this.labelOfKey(this.demuxKey(name), name) : '';
             const events: StreamLogEvent[] = program ? [{ source: 'demux', label, program }] : [];
             return { changed: taken.changed, events };
+        }
+        if (prefix === `${VIDEO_PACE_EVENT}:`) {
+            const { changed } = this.paces.take(name, payload, now);
+            const presenting = (payload as Record<string, unknown> | null)?.['display-presenting'];
+            const events: StreamLogEvent[] = changed
+                ? [{ source: 'display', name, presenting: presenting !== false }]
+                : [];
+            return { changed, events };
         }
         const taken = this.asrcs.take(prefix.slice(0, -1), name, payload, now);
         if (!taken) return null;
@@ -327,12 +376,9 @@ export class LatenessReporter {
         return worst ? offClockText(worst.meanMs) : null;
     }
 
-    setPresentation(p: {
-        presentationDelayMs?: number;
-        deviceLatencyMs?: number;
-        deviceLatencyNote?: string;
-    }): void {
-        this.presentationDelayMs = p.presentationDelayMs;
+    /** The device latency stand-in, read off the sink: used only while the presentation
+     *  reports no render lateness of its own. */
+    setDeviceStandIn(p: { deviceLatencyMs?: number; deviceLatencyNote?: string }): void {
         this.deviceLatencyMs = p.deviceLatencyMs;
         this.deviceLatencyNote = p.deviceLatencyNote;
     }
@@ -357,8 +403,10 @@ export class LatenessReporter {
         this.watches.clear();
         this.demuxes.clear();
         this.asrcs.clear();
+        this.paces.clear();
+        this.trend.gap();
         this.configure(undefined);
-        this.presentationDelayMs = this.deviceLatencyMs = this.pipeWireLatencyMs = undefined;
+        this.deviceLatencyMs = this.pipeWireLatencyMs = undefined;
         this.deviceLatencyNote = undefined;
         this.processingLatencyMs = undefined;
         this.instrument = true;
@@ -375,6 +423,7 @@ export class LatenessReporter {
         this.watches.expire(now, staleMs);
         this.demuxes.expire(now, staleMs);
         this.asrcs.expire(now, staleMs);
+        this.paces.expire(now, staleMs);
     }
 
     private labelOf(watch: AlignerWatchRef): string {
@@ -446,6 +495,14 @@ export class LatenessReporter {
             const input = this.inputOf(this.asrcKey(a.name), rows);
             const text = asrcWarningText(a.outOfBoundsPpm, input?.label);
             out.push({ kind: 'asrc-out-of-bounds', text, n: input?.n ?? Infinity });
+        }
+        // The output's own: its device stopped taking audio, its display stopped presenting.
+        if (this.asrcs.list().some((a) => a.stalled)) {
+            out.push({ kind: 'device-stalled', text: DEVICE_STALLED_TEXT, n: Infinity });
+        }
+        if (this.paces.list().some((p) => !p.presenting)) {
+            const text = DISPLAY_NOT_PRESENTING_TEXT;
+            out.push({ kind: 'display-not-presenting', text, n: Infinity });
         }
         return out.sort((a, b) => a.n - b.n).map(({ kind, text }) => ({ kind, text }));
     }
@@ -610,22 +667,52 @@ export class LatenessReporter {
         }
         if (tapped.length >= 2 && slowestIn) summary.slowest = slowestIn.label;
         Object.assign(summary, this.alignerPace(rows, internal));
-        if (render) {
-            if (slowestIn) summary.decodeMs = render.meanMs - slowestIn.lateness!.meanMs;
-            const d = this.presentationDelayMs;
-            const device = this.deviceLatencyMs ?? 0;
-            if (d !== undefined) summary.presentationDelayMs = d;
-            if (this.deviceLatencyMs !== undefined) summary.deviceLatencyMs = device;
-            if (this.deviceLatencyNote) summary.deviceLatencyNote = this.deviceLatencyNote;
-            // Phase 0: sinks still wait for D, so render is max(λ, D) + device.
-            summary.renderMs = Math.max(render.meanMs, d ?? 0) + device;
-        }
+        Object.assign(summary, this.renderFields(render, slowestIn, now));
         if (this.pipeWireLatencyMs !== undefined)
             summary.pipeWireLatencyMs = this.pipeWireLatencyMs;
         if (this.processingLatencyMs !== undefined)
             summary.processingLatencyMs = this.processingLatencyMs;
         Object.assign(summary, streams.module);
         return summary;
+    }
+
+    /** Render lateness: the presentation's own (`mrvideopace`, `mrasrc`'s device term), else
+     *  λ(render) + the stand-in; device latency, what it adds to λ(render); the pace's rows,
+     *  the device term's counts, and the trend. */
+    private renderFields(
+        render: LatenessWindowMs | undefined,
+        slowestIn: ModuleTimingInput | undefined,
+        now: number,
+    ): Partial<ModuleTimingSummary> {
+        const out: Partial<ModuleTimingSummary> = {};
+        const paces = this.paces.list();
+        const devices = this.asrcs.list().filter((a) => a.deviceStalls !== undefined);
+        const reading = renderReading(paces, devices);
+        if (render && slowestIn) out.decodeMs = render.meanMs - slowestIn.lateness!.meanMs;
+        if (reading) {
+            out.renderMs = reading.ms;
+            if (render) out.deviceLatencyMs = reading.ms - render.meanMs;
+        } else if (render) {
+            if (this.deviceLatencyMs !== undefined) out.deviceLatencyMs = this.deviceLatencyMs;
+            if (this.deviceLatencyNote) out.deviceLatencyNote = this.deviceLatencyNote;
+            out.renderMs = render.meanMs + (this.deviceLatencyMs ?? 0);
+        }
+        const pace = paces[0];
+        if (pace) {
+            out.rateMatch = pace.rateMatch;
+            out.lateReleasesPerMin = pace.lateReleasesPerMin;
+            out.paceHoldMs = pace.meanHoldMs;
+        }
+        if (devices.length) {
+            out.deviceRelocks = devices.reduce((n, a) => n + a.deviceRelocks!, 0);
+            out.deviceStalls = devices.reduce((n, a) => n + a.deviceStalls!, 0);
+        }
+        if (out.renderMs !== undefined) {
+            this.trend.add(now, out.renderMs, reading?.mark ?? 'tap');
+            const trend = this.trend.slope();
+            if (trend) out.latenessTrend = trend;
+        }
+        return out;
     }
 
     /** Each row's demux counters and clock correction; the module's own ASRC and its device

@@ -5,6 +5,7 @@ import {
     AsrcWatches,
     asrcWarningText,
     clockCorrectionText,
+    DEVICE_STALLED_TEXT,
     ratePpbOf,
     signedPpm,
 } from './asrcWatches.js';
@@ -46,7 +47,19 @@ function watches(): AsrcWatches {
     w.configure(PIPELINE);
     return w;
 }
-const one = (w: AsrcWatches, name: string) => w.list().find((x) => x.name === name);
+/** Phase 3's fields of one ASRC; the device term's of WI-P4-12 are read by `device`. */
+const one = (w: AsrcWatches, name: string) => {
+    const x = w.list().find((a) => a.name === name);
+    if (!x) return x;
+    const { gapMark, renderLatenessMs, deviceRelocks, deviceStalls, stalled, ...p3 } = x;
+    void [gapMark, renderLatenessMs, deviceRelocks, deviceStalls, stalled];
+    return p3;
+};
+const device = (w: AsrcWatches, name: string) => {
+    const x = w.list().find((a) => a.name === name)!;
+    const { renderLatenessMs, deviceRelocks, deviceStalls, stalled, gapMark } = x;
+    return { renderLatenessMs, deviceRelocks, deviceStalls, stalled, gapMark };
+};
 
 describe('launchElements', () => {
     it("reads each named element's properties up to its link, quotes taken off", () => {
@@ -280,5 +293,76 @@ describe('the forwarded messages as recorded (forwarded-messages.json)', () => {
         expect(one(w, 'outasrc')!.outOfBoundsPpm).toBeUndefined();
         // The device term alone has no source lock: its rate-known is false, and engaged it would measure.
         expect(one(w, 'outasrc')!.correction).toEqual({ measuring: true });
+    });
+});
+
+describe('the device term (WI-P4-12)', () => {
+    const dev = (o: Record<string, number | string | boolean> = {}) =>
+        stats('device', {
+            'device-relocks': 1,
+            'device-stalls': 0,
+            'render-lateness-ns': 0,
+            gaps: 0,
+            ...o,
+        });
+
+    it('render lateness once the term knows it (0: unknown), its relocks and stalls', () => {
+        const w = watches();
+        w.take('mrasrc-stats', 'devasrc', dev(), 0);
+        expect(device(w, 'devasrc')).toMatchObject({
+            renderLatenessMs: undefined,
+            deviceRelocks: 1,
+            deviceStalls: 0,
+            stalled: false,
+        });
+        w.take('mrasrc-stats', 'devasrc', dev({ 'render-lateness-ns': 182_500_000 }), 1);
+        expect(device(w, 'devasrc').renderLatenessMs).toBe(182.5);
+        // A decode term alone has none of them.
+        w.take('mrasrc-stats', 'dasrc', stats('decode'), 1);
+        expect(device(w, 'dasrc')).toMatchObject({
+            renderLatenessMs: undefined,
+            deviceRelocks: undefined,
+            stalled: undefined,
+        });
+    });
+
+    it('stands stalled from device-stalled to device-resumed, a change each way', () => {
+        const w = watches();
+        w.take('mrasrc-stats', 'devasrc', dev(), 0);
+        expect(w.take('mrasrc-event', 'devasrc', event('device-stalled'), 1)!.changed).toBe(true);
+        expect(w.take('mrasrc-stats', 'devasrc', dev({ 'device-stalls': 1 }), 2)!.changed).toBe(
+            false,
+        );
+        expect(device(w, 'devasrc')).toMatchObject({ stalled: true, deviceStalls: 1 });
+        expect(w.take('mrasrc-event', 'devasrc', event('device-resumed'), 3)!.changed).toBe(true);
+        expect(device(w, 'devasrc').stalled).toBe(false);
+        // A new element under the old name starts unstalled.
+        w.take('mrasrc-event', 'devasrc', event('device-stalled'), 4);
+        expect(w.take('mrasrc-stats', 'devasrc', dev({ 'in-frames': 10 }), 5)!.changed).toBe(true);
+        expect(device(w, 'devasrc').stalled).toBe(false);
+        expect(DEVICE_STALLED_TEXT).toMatch(/^Audio device stalled/);
+    });
+
+    it('its gap mark moves at a relock, a gap, a device relock or stall and a new element', () => {
+        const w = watches();
+        const marks = [
+            dev(),
+            dev({ relocks: 1 }),
+            dev({ relocks: 1, gaps: 1 }),
+            dev({ relocks: 1, gaps: 1, 'device-relocks': 2 }),
+            dev({ relocks: 1, gaps: 1, 'device-relocks': 2, 'device-stalls': 1 }),
+            dev({ relocks: 1, gaps: 1, 'device-relocks': 2, 'device-stalls': 1, 'in-frames': 5 }),
+        ].map((p, i) => {
+            w.take('mrasrc-stats', 'devasrc', p, i);
+            return device(w, 'devasrc').gapMark;
+        });
+        expect(new Set(marks).size).toBe(marks.length);
+        w.take(
+            'mrasrc-stats',
+            'devasrc',
+            dev({ relocks: 1, gaps: 1, 'device-relocks': 2, 'device-stalls': 1, 'in-frames': 9 }),
+            9,
+        );
+        expect(device(w, 'devasrc').gapMark).toBe(marks[marks.length - 1]);
     });
 });

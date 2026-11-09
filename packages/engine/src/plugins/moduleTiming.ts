@@ -1,10 +1,11 @@
 // Per-module lateness display (WI-P0-9): the reporter, the 2 s tick with its change throttle,
-// the sink reads for D and device latency, the aligners' warnings and events (WI-P2-13), and the
-// demuxes' and ASRCs' (WI-P3-6). GstPluginBase owns one and merges it into `getState()`.
+// the sink read for the device latency stand-in, the aligners' warnings and events (WI-P2-13),
+// the demuxes' and ASRCs' (WI-P3-6), and the queue-full warning (WI-P4-12). GstPluginBase owns
+// one and merges it into `getState()`.
 import type { ModuleTimingSummary } from '@media-router/shared-types';
 import type { PipelineDescription, TimingInputRef, TimingSink } from './PluginModule.js';
 import { readNodeLatency } from '../audio/pipeWireLatency.js';
-import { busSrcTapName, shortHash } from './busHelpers.js';
+import { busSrcTapName, latInName, shortHash } from './busHelpers.js';
 import { reanchorEventText, type AlignerInputRef, type AlignerWatchRef } from './alignerWatches.js';
 import { DEMUX_EVENT, type DemuxInputRef } from './demuxWatches.js';
 import { signedPpm } from './asrcWatches.js';
@@ -16,11 +17,16 @@ import {
     type StreamWarning,
 } from './latenessReporter.js';
 import { latenessTapAvailable } from './latenessTap.js';
+import {
+    QUEUE_OVERRUN_EVENT,
+    QueueFullWatch,
+    queueFullText,
+    queueOverrunText,
+    type QueueOverrun,
+} from './queueOverrun.js';
 import { timingChanged, timingPublication, type TimingPublication } from './timingSections.js';
 
 const TICK_MS = 2000;
-/** D moves live (route playout offset pushes), so the sink is re-read every 5 ticks. */
-const SINK_READ_EVERY = 5;
 /** A video output whose mode is unknown: one refresh at this rate stands in, and says so. */
 const ASSUMED_REFRESH_HZ = 60;
 const PIPEWIRE_POLL_MS = 10_000;
@@ -102,8 +108,11 @@ export interface ModuleTimingHost {
     /** The edge stands in the module's stored graph, whether or not it is applied now (its
      *  producer disabled, stopped or restarting): its input keeps its row (B-93). */
     wired?(source: BusSourceRef): boolean;
-    /** The demuxes' and consumer ASRCs' warnings (WI-P3-6), empty when none stands. */
+    /** The demuxes' and consumer ASRCs' warnings (WI-P3-6) and the output's presentation's
+     *  (WI-P4-12), empty when none stands. */
     streamWarnings?(warnings: StreamWarning[]): void;
+    /** The full queues' warning (WI-P4-12), null when none stands: on an episode and every tick. */
+    queueFull?(text: string | null): void;
     /** The module's own answer for which input a demux, or an ASRC on one input's branch,
      *  serves; undefined: the engine's rule. */
     demuxInput?(element: string): DemuxInputRef | undefined;
@@ -120,7 +129,7 @@ export class ModuleTiming {
     private pwTimer: ReturnType<typeof setInterval> | null = null;
     private pwGen = 0;
     private sink: TimingSink | undefined;
-    private ticks = 0;
+    private readonly queues = new QueueFullWatch();
     /** Watches that served a bus edge: once its connection is gone, the input was removed. */
     private readonly edgeWatches = new Set<string>();
     private declared: TimingInputRef[] | undefined;
@@ -171,9 +180,14 @@ export class ModuleTiming {
     }
 
     /** `mrlateness:`, `mralignwatch:` and `mrtsdemux:<element>` events, false for others; a state,
-     *  full or warning change goes out at once. `mrasrc-*` are read and passed on (false): an
-     *  ingest's card reads its capture ASRC's. */
+     *  full or warning change goes out at once. `mrasrc-*` and `mrvideopace:` are read and passed
+     *  on (false): an ingest's card reads its capture ASRC's. A `queue_overrun` is logged here
+     *  for every module, warned, and passed on. */
     onEvent(channel: string, payload: unknown): boolean {
+        if (channel === QUEUE_OVERRUN_EVENT) {
+            this.onQueueOverrun(payload);
+            return false;
+        }
         const aligner = this.reporter.onAligner(channel, payload);
         const stream = aligner ? null : this.reporter.onStream(channel, payload);
         if (stream) {
@@ -273,19 +287,19 @@ export class ModuleTiming {
         this.sink = undefined;
         this.declared = undefined;
         this.seen.clear();
-        this.ticks = 0;
+        this.queues.clear();
         const had = visible(this.pub);
         this.pub = EMPTY;
         this.last = null;
         // The demuxes' first: what the module shows only loses parts, never shows an old one.
         this.host.streamWarnings?.([]);
+        this.host.queueFull?.(null);
         this.host.alignerWarnings?.(null, null, null);
         this.host.offClock?.(null);
         if (emit && had) this.host.emit();
     }
 
     tick(now = Date.now()): void {
-        if (this.sink && ++this.ticks % SINK_READ_EVERY === 0) void this.readSink();
         this.publish(now);
     }
 
@@ -304,6 +318,12 @@ export class ModuleTiming {
 
     private syncWarnings(now = Date.now()): void {
         this.host.streamWarnings?.(this.reporter.streamWarnings(now));
+        if (this.host.queueFull) {
+            const texts = this.queues
+                .standing(now)
+                .map((p) => queueFullText(p, this.queueInput(p)));
+            this.host.queueFull(texts.length ? texts.join('; ') : null);
+        }
         if (this.host.alignerWarnings) {
             const w = this.reporter.alignerWarnings(now);
             this.host.alignerWarnings(w.absent, w.full, w.reanchored);
@@ -349,6 +369,24 @@ export class ModuleTiming {
             .map(({ source }) => source)
             .filter((s) => !listed.has(s.connectionId) && !!this.host.wired?.(s));
         return [...now, ...stopped];
+    }
+
+    /** One episode of a queue at its bound (B-170): one WARN line, and the warning at once. */
+    private onQueueOverrun(payload: unknown): void {
+        const p = (payload ?? {}) as QueueOverrun;
+        this.host.log?.('warn', { queueOverrun: payload }, queueOverrunText(p, this.queueInput(p)));
+        this.queues.take(payload, Date.now());
+        this.syncWarnings();
+    }
+
+    /** The bus input a queue serves, by its label: its `unixfdsrc`'s tap among the inputs, else
+     *  the module's one input; none for an ingest's own queue. */
+    private queueInput(p: QueueOverrun): string | undefined {
+        if (!p.input) return undefined;
+        const inputs = this.inputs();
+        const tap = latInName(p.input);
+        return (inputs.find((i) => i.tap === tap) ?? (inputs.length === 1 ? inputs[0] : undefined))
+            ?.label;
     }
 
     /** A window off the house timeline is a fault since B-26 (the runners forward no unstamped
@@ -416,6 +454,14 @@ export class ModuleTiming {
 
     /** A demux's new program; a consumer ASRC's event (an engage worded as part 10 words it). */
     private logStream(e: StreamLogEvent): void {
+        if (e.source === 'display') {
+            this.host.log?.(
+                e.presenting ? 'info' : 'warn',
+                { displayPresenting: { name: e.name, presenting: e.presenting } },
+                e.presenting ? 'Display presenting again' : 'Display not presenting (output off?)',
+            );
+            return;
+        }
         if (e.source === 'demux') {
             const { name, generation, pads, pcrPid } = e.program;
             this.host.log?.(
@@ -443,10 +489,10 @@ export class ModuleTiming {
         );
     }
 
+    /** The device latency stand-in, at each PLAYING: the audio ring, or one display refresh. */
     private async readSink(): Promise<void> {
         const sink = this.sink;
         if (!sink) return;
-        const offset = Number(await this.host.getProperty(sink.element, 'ts-offset'));
         let device: number | undefined;
         let note: string | undefined;
         if (sink.kind === 'audio') {
@@ -460,8 +506,7 @@ export class ModuleTiming {
             if (!hz) note = `${ASSUMED_REFRESH_HZ} Hz assumed`;
         }
         if (this.sink !== sink) return; // stopped or restarted meanwhile
-        this.reporter.setPresentation({
-            presentationDelayMs: Number.isFinite(offset) ? offset / 1_000_000 : undefined,
+        this.reporter.setDeviceStandIn({
             deviceLatencyMs: device,
             deviceLatencyNote: note,
         });

@@ -66,6 +66,15 @@ export interface ModuleTimingOutput {
     lateness: LatenessStatsMs;
 }
 
+/** A video output's rate match: the content's frame rate, the display's (achieved, else the
+ *  mode's measured or nominal refresh; 0: unknown) and the pace's drops for it, per minute. */
+export interface RateMatch {
+    contentFps: number;
+    displayHz: number;
+    displaySource: 'achieved' | 'measured' | 'nominal' | 'none';
+    dropsPerMin: number;
+}
+
 /** Built by the engine's LatenessReporter; display only, no alarm (OQ-8). */
 export interface ModuleTimingSummary {
     output?: LatenessStatsMs;
@@ -83,13 +92,23 @@ export interface ModuleTimingSummary {
     waitingFor?: string;
     /** Outputs that render: λ(render) − λ(input). */
     decodeMs?: number;
-    /** The sink's ts-offset (D) while sinks still wait for it. */
-    presentationDelayMs?: number;
+    /** Render lateness − λ(render) where the presentation reports its own; else a stand-in
+     *  (the audio ring, one display refresh). */
     deviceLatencyMs?: number;
     /** Set when the device latency is a stand-in (`60 Hz assumed`: the output mode is unknown). */
     deviceLatencyNote?: string;
-    /** max(λ(render), D) + device: when the content is seen or heard. */
+    /** When the content is seen or heard: `mrvideopace`'s or `mrasrc`'s render lateness, else
+     *  λ(render) + device (house-clock WI-P4-12). */
     renderMs?: number;
+    /** Video outputs: the content's rate against the rate the display takes (`mrvideopace`). */
+    rateMatch?: RateMatch;
+    /** Video outputs: frames the pace released after their slot, per minute. */
+    lateReleasesPerMin?: number;
+    /** Video outputs: the pace's mean hold of a frame before its slot (ms). */
+    paceHoldMs?: number;
+    /** Outputs that render: the slope of render lateness over 3 min with no gap; no msPerMin
+     *  while it measures (no alarm, OQ-34). */
+    latenessTrend?: { msPerMin?: number };
     /** PipeWire-graph modules carry no PTS; they show the graph's latency. */
     pipeWireLatencyMs?: number;
     /** What the module's processing delays its content by that its PTS do not carry (a
@@ -99,6 +118,9 @@ export interface ModuleTimingSummary {
     clockCorrection?: ClockCorrection;
     /** An audio output's device clock against house time (ppm, positive when fast). */
     deviceClockPpm?: number;
+    /** An audio output's device term: its relocks and stalls since the element started. */
+    deviceRelocks?: number;
+    deviceStalls?: number;
     /** False when libgstmrlateness.so is not installed. */
     instrument: boolean;
 }

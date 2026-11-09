@@ -238,6 +238,56 @@ describe('AudioDecoderModule plays as soon as it can (B-168)', () => {
         }
     });
 
+    it("its Timing section (WI-P4-12): asrc's render lateness, device latency, device relocks and stalls", () => {
+        const { module } = makeModule();
+        module.services.mediaRouter.getModuleBusSources = () => [];
+        module.probeResult = { codec: 'aac' };
+        const desc = module.buildPipeline({})!;
+        const deliver = (c: string, p: unknown) => module.dispatchPluginEvent(c, p);
+        const ms = (v: number) => ({
+            count: 50,
+            'min-ns': v * 1e6,
+            'mean-ns': v * 1e6,
+            'max-ns': v * 1e6,
+        });
+        module.timing.start(desc);
+        const tap = /mrlateness name=(lat_busin\S*)/.exec(desc.pipeline)![1];
+        deliver(`mrlateness:${tap}`, ms(40));
+        deliver('mrlateness:lat_render', ms(60));
+        deliver('mrasrc-stats:asrc', {
+            mode: 'device',
+            state: 'locked',
+            'in-frames': 96_000,
+            relocks: 0,
+            'device-ppb': 9_000,
+            'device-relocks': 1,
+            'device-stalls': 2,
+            'render-lateness-ns': 205_000_000,
+        });
+        module.timing.tick();
+        const pub = module.timing.publication;
+        const labels = pub.sections[0].fields.map((f: { label: string }) => f.label);
+        expect(labels).toEqual(
+            expect.arrayContaining([
+                'Render lateness',
+                'Device latency',
+                'Device clock',
+                'Device relocks',
+                'Device stalls',
+            ]),
+        );
+        expect(labels).not.toContain('Rate match');
+        expect(JSON.stringify(pub)).not.toMatch(/Presentation delay/);
+        expect(pub.data.timing).toMatchObject({
+            renderMs: 205,
+            deviceLatencyMs: 145,
+            deviceClock: '+9.0 ppm',
+            deviceRelocks: 1,
+            deviceStalls: 2,
+        });
+        module.timing.stop(false);
+    });
+
     it('stored legacy keys build the same string: Buffer, Sink Buffer, Low-Latency Sync, Sync Method', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'aac' };

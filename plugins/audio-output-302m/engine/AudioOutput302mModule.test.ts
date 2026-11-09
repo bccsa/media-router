@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GstPluginBase, ModuleInstance, liveInputLaunchText } from '@media-router/engine';
+import {
+    DEVICE_STALLED_TEXT,
+    GstPluginBase,
+    ModuleInstance,
+    liveInputLaunchText,
+} from '@media-router/engine';
 import {
     default302mChannelMap,
     liveAsrcName,
@@ -483,6 +488,71 @@ describe('AudioOutput302mModule: a second source on a direct pipeline (B-194)', 
         // Enabled again: added to the running mixer, as before.
         bus.mockReturnValue(both);
         expect(module.getLiveInputBranch('audio-in', 'c-1')).toMatchObject({ element: 'mixin' });
+    });
+});
+
+describe('AudioOutput302mModule timing (WI-P4-12)', () => {
+    it("its Timing section: outasrc's render lateness, device relocks and stalls; a stalled device warns", () => {
+        const { module, setHealth } = makeModule({ sources: 2 });
+        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' })!;
+        const deliver = (c: string, p: unknown) => module.dispatchPluginEvent(c, p);
+        const ms = (v: number) => ({
+            count: 50,
+            'min-ns': v * 1e6,
+            'mean-ns': v * 1e6,
+            'max-ns': v * 1e6,
+        });
+        module.timing.start(desc);
+        module.health = 'ok';
+        setHealth.mockImplementation((health: string, error?: string) => {
+            module.health = health;
+            module.error = error;
+        });
+        const stats = (o: Record<string, number> = {}) => ({
+            mode: 'device',
+            state: 'locked',
+            'in-frames': 96_000,
+            relocks: 0,
+            'device-ppb': -135_000,
+            'device-relocks': 0,
+            'device-stalls': 0,
+            'render-lateness-ns': 290_000_000,
+            ...o,
+        });
+        deliver('mrlateness:lat_render', ms(110));
+        deliver('mrasrc-stats:outasrc', stats());
+        module.timing.tick();
+        const pub = module.timing.publication;
+        expect(pub.sections[0].fields.map((f: { label: string }) => f.label)).toEqual(
+            expect.arrayContaining([
+                'Render lateness',
+                'Device latency',
+                'Device clock',
+                'Device relocks',
+                'Device stalls',
+            ]),
+        );
+        expect(JSON.stringify(pub)).not.toMatch(/Presentation delay/);
+        expect(pub.data.timing).toMatchObject({
+            renderMs: 290,
+            deviceLatencyMs: 180,
+            deviceStalls: 0,
+        });
+        // B-206's late 'Plays nothing' gives way to the device term's stall (T24).
+        deliver('mrasrc-event:outasrc', {
+            kind: 'device-stalled',
+            reason: '',
+            'pending-frames': 4800,
+        });
+        expect(setHealth).toHaveBeenLastCalledWith('warning', DEVICE_STALLED_TEXT);
+        deliver('mrasrc-stats:outasrc', stats({ 'device-stalls': 1 }));
+        deliver('mrasrc-event:outasrc', {
+            kind: 'device-resumed',
+            reason: '',
+            'dropped-frames': 9600,
+        });
+        expect(setHealth).toHaveBeenLastCalledWith('ok');
+        module.timing.stop(false);
     });
 });
 

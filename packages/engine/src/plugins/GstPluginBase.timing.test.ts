@@ -95,16 +95,45 @@ describe('GstPluginBase timing section', () => {
         expect(state.statusData!.timing).toMatchObject({
             outputMs: 20,
             decodeMs: 15,
-            presentationDelayMs: 60,
             deviceLatencyMs: 100,
-            renderMs: 160,
+            renderMs: 120,
         });
+        expect(state.statusData!.timing).not.toHaveProperty('presentationDelayMs');
         expect(state.badges).toContainEqual(
-            expect.objectContaining({ id: 'lateness', text: '160 ms' }),
+            expect.objectContaining({ id: 'lateness', text: '120 ms' }),
         );
 
         await m.onStop();
         expect(m.getState().dynamicStatusSections).toEqual([]);
         expect(m.getState().badges).toEqual([]);
+    });
+    it('a display that stops presenting warns, and the warning goes when it presents again (S31)', async () => {
+        vi.useFakeTimers();
+        h.FakeChildProcess.instances = [];
+        const m = new OutputModule();
+        await m.onInit({}, { instanceId: 'vp-1' } as unknown as ModuleServices);
+        await m.onStart();
+        const child = h.FakeChildProcess.instances[0]!;
+        child.emit('stateChange', { state: 'playing' });
+        await vi.advanceTimersByTimeAsync(0);
+        const pace = (presenting: boolean) => ({
+            channel: 'mrvideopace:vp_pace',
+            payload: { released: 100, 'display-presenting': presenting },
+        });
+        child.emit('pluginEvent', pace(true));
+        expect(m.getState().health).toBe('ok');
+        child.emit('pluginEvent', pace(false));
+        expect(m.getState()).toMatchObject({
+            health: 'warning',
+            error: 'Display not presenting (output off?)',
+        });
+        await vi.advanceTimersByTimeAsync(2000);
+        child.emit('pluginEvent', pace(false));
+        expect(m.getState().health).toBe('warning');
+        child.emit('pluginEvent', pace(true));
+        expect(m.getState().health).toBe('ok');
+        // It passes on to the module's own hook too.
+        expect(m.seen.filter((c) => c === 'mrvideopace:vp_pace')).toHaveLength(4);
+        await m.onStop();
     });
 });

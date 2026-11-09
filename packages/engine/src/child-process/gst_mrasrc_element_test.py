@@ -1383,6 +1383,9 @@ else:
           f"realign after the start ({_sk['resyncs'] - _rs.get('start', -1)}; {_rs.get('start')} with the first renders)",
           not _errors and len(_late) > 500 and _hi - _lo < 2 * MS and _sk["underruns"] == 0
           and 0 <= _rs.get("start", -1) <= 1 and _sk["resyncs"] == _rs["start"])
+    # The device's 1 s is what the reading holds (the ring and the quantum add a little): WI-P4-12 shows it.
+    check(f"... and it is the device's latency: {_lo / MS:.1f} .. {_hi / MS:.1f} ms for device-ns 1 s (900 .. 1100)",
+          900 * MS < _lo and _hi < 1100 * MS)
     check(f"... the device term locked at {_st.get('device-ppb', 0) / 1000:+.3f} ppm (+100), the ratio its term "
           f"({_st.get('ratio-ppb', 0) / 1000:+.3f} ppm), no relock-device, no stall, the sink never skewed "
           f"({_sk['calibrations']} calibrations)",

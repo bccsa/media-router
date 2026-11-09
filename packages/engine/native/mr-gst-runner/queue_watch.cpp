@@ -26,8 +26,8 @@ struct Watch {
     std::atomic<guint64> overruns{0};
     std::atomic<gint64> first_us{0};   // the first overrun since the last episode closed
     std::atomic<gint64> last_us{0};
-    std::atomic<gint64> level_us{0};   // when the level below was read
-    std::atomic<guint64> level_ns{0};
+    std::atomic<gint64> level_us{0};   // when the level below was last read
+    std::atomic<guint64> level_ns{0};  // the episode's highest read
     std::atomic<guint> level_bytes{0};
     std::atomic<bool> removed{false};  // left the pipeline: its episode ends at the next tick
     // Main loop only: the open episode.
@@ -46,21 +46,28 @@ guint g_tick_id = 0;
 GstElement* g_pipe = nullptr;   // owned ref while installed
 gulong g_added_id = 0, g_removed_id = 0;
 
+template <typename T>
+void store_max(std::atomic<T>& a, T v) {
+    T cur = a.load(std::memory_order_relaxed);
+    while (v > cur && !a.compare_exchange_weak(cur, v, std::memory_order_relaxed)) {
+    }
+}
+
 void on_overrun(GstElement* queue, gpointer user) {
     auto* w = static_cast<Watch*>(user);
     const gint64 now = g_get_monotonic_time();
     gint64 none = 0;
     w->first_us.compare_exchange_strong(none, now, std::memory_order_relaxed);
     w->last_us.store(now, std::memory_order_relaxed);
-    // The level it was full at, read at most once a second: the queue's lock is free while it
-    // emits the signal.
+    // The level it was full at, read at most once a second (the queue's lock is free while it
+    // emits the signal); the episode keeps its highest, as a read can find the queue drained.
     if (now - w->level_us.load(std::memory_order_relaxed) >= G_USEC_PER_SEC) {
         w->level_us.store(now, std::memory_order_relaxed);
         guint64 ns = 0;
         guint bytes = 0;
         g_object_get(queue, "current-level-time", &ns, "current-level-bytes", &bytes, nullptr);
-        w->level_ns.store(ns, std::memory_order_relaxed);
-        w->level_bytes.store(bytes, std::memory_order_relaxed);
+        store_max(w->level_ns, ns);
+        store_max(w->level_bytes, bytes);
     }
     w->overruns.fetch_add(1, std::memory_order_release);
 }
@@ -157,6 +164,10 @@ void check(Watch& w, gint64 now) {
         w.open = false;
         w.base = total;
         w.first_us.store(0, std::memory_order_relaxed);
+        // The next episode reads its own level, from its first overrun.
+        w.level_ns.store(0, std::memory_order_relaxed);
+        w.level_bytes.store(0, std::memory_order_relaxed);
+        w.level_us.store(0, std::memory_order_relaxed);
     } else if (!w.long_reported && now - w.opened_us >= (gint64)LONG_MS * 1000) {
         report(w, total, last, true);
         w.long_reported = true;

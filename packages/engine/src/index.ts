@@ -231,8 +231,11 @@ export {
 export {
     QUEUE_OVERRUN_EVENT,
     WATCHED_QUEUE_NAMES,
+    queueFullText,
     queueOverrunText,
 } from './plugins/queueOverrun.js';
+export { DEVICE_STALLED_TEXT } from './plugins/asrcWatches.js';
+export { DISPLAY_NOT_PRESENTING_TEXT, VIDEO_PACE_EVENT } from './plugins/videoPaceWatches.js';
 export type { QueueOverrun } from './plugins/queueOverrun.js';
 export { tsQueueByteCap } from './plugins/queueBounds.js';
 export { capsStreamInfo } from './plugins/streamCapsInfo.js';

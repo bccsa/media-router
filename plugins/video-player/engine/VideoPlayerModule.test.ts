@@ -1494,6 +1494,57 @@ describe('VideoPlayerModule helpers', () => {
             vi.restoreAllMocks();
         });
 
+        it("its Timing section (WI-P4-12): the pace's render lateness, rate match, late releases, no presentation delay", () => {
+            const module = makeModule();
+            (module as any).services.mediaRouter.getModuleBusSources = () => [];
+            const desc = build(module);
+            expect(desc.pipeline).toContain('mrvideopace name=vp_pace');
+            const timing = (module as any).timing;
+            const deliver = (c: string, p: unknown) => (module as any).dispatchPluginEvent(c, p);
+            timing.start(desc);
+            const ms = (v: number) => ({
+                count: 50,
+                'min-ns': v * 1e6,
+                'mean-ns': v * 1e6,
+                'max-ns': v * 1e6,
+            });
+            const tap = /mrlateness name=(lat_busin\S*)/.exec(desc.pipeline)![1];
+            deliver(`mrlateness:${tap}`, ms(100));
+            deliver('mrlateness:lat_render', ms(215));
+            deliver('mrvideopace:vp_pace', {
+                released: 500,
+                late: 0,
+                'rate-drops': 0,
+                'content-fps-x100': 5000,
+                'refresh-ns': 20_000_000,
+                'refresh-source': 'measured',
+                'mean-hold-ns': 12_000_000,
+                'present-lateness-ns': 240_000_000,
+                'display-presenting': true,
+            });
+            timing.tick();
+            const section = timing.publication.sections.find(
+                (x: { id: string }) => x.id === 'timing',
+            );
+            expect(section.fields.map((f: { label: string }) => f.label)).toEqual(
+                expect.arrayContaining([
+                    'Render lateness',
+                    'Device latency',
+                    'Lateness trend',
+                    'Rate match',
+                    'Late releases',
+                ]),
+            );
+            expect(JSON.stringify(section)).not.toMatch(/Presentation delay/);
+            expect(timing.publication.data.timing).toMatchObject({
+                renderMs: 240,
+                deviceLatencyMs: 25,
+                rateMatch: '50.00 fps → 50.00 Hz measured, 0 drops/min',
+                lateReleases: 0,
+            });
+            timing.stop(false);
+        });
+
         describe('bootstrap → upgrade', () => {
             it('builds decodebin3 and arms the TS probe before any videoinfo has arrived', () => {
                 const module = makeModule();

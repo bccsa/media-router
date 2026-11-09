@@ -31,11 +31,47 @@ export interface QueueOverrun {
     ongoing?: boolean;
 }
 
-/** The episode's WARN line, in B-182's words. */
-export function queueOverrunText(p: QueueOverrun): string {
-    const still = p.ongoing ? ', still dropping' : '';
-    return (
-        `Queue ${p.element ?? '?'} full: ${p.overruns ?? 0} buffers dropped in ` +
-        `${p.ms ?? 0} ms (its output stopped draining${still})`
-    );
+/** A full queue's warning stands this long after its episode closed (WI-P4-12). */
+export const QUEUE_FULL_CLEAR_MS = 30_000;
+
+/** The warning by `leaky` (S15): a leaky queue loses content at its bound; a full non-leaky one
+ *  loses nothing itself, it holds its upstream, so the leaky input queue before it loses next.
+ *  `input`: the bus input it serves, by its label; none: the queue's own name. */
+export function queueFullText(p: QueueOverrun, input?: string): string {
+    const ms = p.levelTimeMs ?? 0;
+    const name = p.element ?? '?';
+    return p.leaky
+        ? `Queue ${input ?? name} full at ${ms} ms — content lost at capacity`
+        : `${name} holding ${ms} ms at capacity — the input queue loses next`;
+}
+
+/** The episode's WARN line: the warning's text (B-182's line folded into the leaky one), then
+ *  its counts. */
+export function queueOverrunText(p: QueueOverrun, input?: string): string {
+    const still = p.ongoing ? ', still open' : '';
+    const met = p.leaky ? 'dropped' : 'held back';
+    return `${queueFullText(p, input)}: ${p.overruns ?? 0} buffers ${met} in ${p.ms ?? 0} ms${still}`;
+}
+
+/** The `queue-full` warning: each queue's last episode, while open and for QUEUE_FULL_CLEAR_MS
+ *  after it closed. It warns; nothing drops. */
+export class QueueFullWatch {
+    private readonly episodes = new Map<string, { p: QueueOverrun; at: number }>();
+
+    take(payload: unknown, now: number): void {
+        const p = (payload ?? {}) as QueueOverrun;
+        this.episodes.set(p.element ?? '?', { p, at: now });
+    }
+
+    /** The standing episodes, in queue-name order; empty once each closed 30 s ago. */
+    standing(now: number): QueueOverrun[] {
+        for (const [name, e] of this.episodes) {
+            if (!e.p.ongoing && now - e.at >= QUEUE_FULL_CLEAR_MS) this.episodes.delete(name);
+        }
+        return [...this.episodes.keys()].sort().map((k) => this.episodes.get(k)!.p);
+    }
+
+    clear(): void {
+        this.episodes.clear();
+    }
 }

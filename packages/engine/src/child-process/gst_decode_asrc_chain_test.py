@@ -139,8 +139,9 @@ def run(pipe, secs=None):
 
 def run_settled(pipe, sink, secs, start=1.5):
     """run() for `secs`, the sink's write-position jumps read at `start` s and at the end: a
-    sync=false ring starts before the first write, so one realign may come with the first renders
-    (B-166; the outputs' prefill does not prevent it, B-167, B-168); none may come after."""
+    sync=false ring starts before the first write, so up to two realigns may come with the first
+    renders (B-166, a start-up race; the outputs' prefill does not prevent it, B-167, B-168, B-172);
+    none may come after."""
     e1, x1, eos = run(pipe, secs=start)
     first = sink.get_property("resyncs")
     e2, x2, eos2 = ([], [], eos) if eos or x1 else run(pipe, secs=secs - start)
@@ -225,7 +226,12 @@ else:
         check(f"{_arm}: the sink is never asked to skew and its write position never jumps after the start "
               f"({_sink['calibrations']} calibration changes; resyncs {_first} at the start, "
               f"{_sink['resyncs'] - _first} after)",
-              _sink["calibrations"] == 0 and _first <= 1 and _sink["resyncs"] == _first)
+              _sink["calibrations"] == 0 and _first <= 2 and _sink["resyncs"] == _first)
+        # The reading the output's Render lateness row shows (WI-P4-12), from its last mrasrc-stats:
+        # one source plays its recording (0.5 s ahead) on arrival; the mix's aligner holds to house time.
+        _late, (_lo, _hi) = (_out.get("render-lateness-ns") or 0) / MS, {"aout1": (-500, -200)}.get(_arm, (0, 300))
+        check(f"{_arm}: outasrc reports its render lateness, the recording's lead plus the device "
+              f"({_late:.1f} ms; {_lo} .. {_hi})", _lo < _late < _hi)
         check(f"{_arm}: nothing engaged ({[(n, e['kind']) for n, e in _events]})",
               not [e for _, e in _events if e["kind"] == "engaged"])
         if _br:

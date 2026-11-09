@@ -100,14 +100,13 @@ describe('timingPublication', () => {
             output: lat(20),
             inputs: [input('lat_busin_41000_abcdef', 5, 20)],
             decodeMs: 15,
-            presentationDelayMs: 60,
             deviceLatencyMs: 100,
-            renderMs: 160,
+            renderMs: 120,
         };
         expect(timingPublication(s).badge).toEqual({
             id: 'lateness',
             icon: 'timer',
-            text: '160 ms',
+            text: '120 ms',
             color: '#6b7280',
         });
     });
@@ -119,9 +118,8 @@ describe('timingPublication', () => {
             inputs: [input('lat_busin_0', 5, 20, 1), input('lat_busin_1', 9, 20, 2)],
             slowest: 'busin_1',
             decodeMs: 11,
-            presentationDelayMs: 60,
             deviceLatencyMs: 100,
-            renderMs: 160,
+            renderMs: 120,
             pipeWireLatencyMs: 21.3,
             processingLatencyMs: 5.2,
         };
@@ -134,7 +132,6 @@ describe('timingPublication', () => {
             'Processing latency',
             'Slowest input',
             'Decode',
-            'Presentation delay',
             'Device latency',
             'Render lateness',
             'PipeWire latency',
