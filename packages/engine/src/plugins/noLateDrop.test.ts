@@ -3,6 +3,9 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// Each of the 24 modules' loggers pipes into stderr: raise its listener cap before they load.
+vi.hoisted(() => process.stderr.setMaxListeners(64));
+
 // The player's render target reads the host's DRM connectors: none here, so the build never
 // depends on the box the suite runs on (a dev host without DRM).
 vi.mock('@media-router/engine', async (importOriginal) => ({
@@ -218,6 +221,14 @@ function lint(s: Subject, fates?: Map<string, Set<string>>): Finding[] {
     });
     return found;
 }
+
+/** The sinks that sync or carry a ts-offset, by parsed element. */
+const syncingSinks = (text: string): El[] =>
+    parseLaunch(text).filter(
+        (el) =>
+            el.factory.endsWith('sink') &&
+            (el.props.get('sync') === 'true' || el.props.has('ts-offset')),
+    );
 
 // ------------------------------------------------------------------------------------ the modules
 
@@ -531,8 +542,10 @@ describe('the no-late-drop lint (WI-P4-13, B-173)', () => {
         expect(all.flatMap((s) => lint(s, fates))).toEqual([]);
         expect(Object.fromEntries([...fates].map(([f, m]) => [f, [...m].sort()]))).toEqual(FATES);
         // aes67-output's netsink is the one syncing sink and the one ts-offset (WI-P4-10).
-        const syncing = all.filter((s) => /\bsync=true\b|\bts-offset=/.test(s.text));
+        const syncing = all.filter((s) => syncingSinks(s.text).length > 0);
         expect([...new Set(syncing.map((s) => s.module))]).toEqual(['aes67-output']);
+        // Parsed, not a regex: a PTP jitterbuffer's rfc7273-sync=true is no sink.
+        expect(syncingSinks('rtpjitterbuffer rfc7273-sync=true ! fakesink sync=false')).toEqual([]);
     });
 
     it('covers every module: each builds above, or has no launch string', async () => {
