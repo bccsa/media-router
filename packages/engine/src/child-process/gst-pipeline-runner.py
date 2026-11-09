@@ -2162,6 +2162,8 @@ def handle_set_klv_payload(data):
 # sink froze every sibling when one consumer stalled; a per-consumer branch
 # with a leaky queue sheds only its own buffers, so a consumer that restarts,
 # crash-loops, or stalls in preroll can never back up the producer or a sibling.
+# It stays leaky=2 (OQ-30): a full one is a resource fault the queue watch reports, not a
+# lateness drop; the R10 checklist's one runner-built leaky queue (B-173).
 #
 # Keyed by edge socket path so attach is idempotent — a re-applied connection
 # or a producer-restart re-attach is a no-op when the branch already exists.

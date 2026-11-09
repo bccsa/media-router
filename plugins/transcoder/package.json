@@ -275,7 +275,7 @@
                     "maximum": 2000,
                     "default": 200,
                     "title": "Buffer",
-                    "description": "Jitter and decode-ahead buffer. Costs this much latency. Floored at 100 ms.",
+                    "description": "Jitter and decode-ahead buffer. A slow encoder fills it before the input is held. Floored at 100 ms.",
                     "x-widget": "slider",
                     "x-step": 50,
                     "x-unit": "ms"

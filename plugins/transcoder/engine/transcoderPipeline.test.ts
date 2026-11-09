@@ -268,7 +268,19 @@ describe('buildPipeline', () => {
         }
     });
 
-    it('floors bufferMs at 100 ms — sub-100 leaky bounds shed compressed H.264 mid-GOP', () => {
+    it('buffers raw frames in a non-leaky queue after the decoder, and drops none (B-173)', () => {
+        const res = buildPipeline({ ...base, bufferMs: 300, outputs: [out(0, r()), out(1, r())] })!;
+        // A slow rendition fills it and holds the decoder: transcoder lateness, never lost frames.
+        expect(res.pipeline).toContain(
+            ' ! avdec_h264 thread-type=frame max-threads=3 ! ' +
+                'queue leaky=0 max-size-time=300000000 max-size-buffers=0 max-size-bytes=0 ! ',
+        );
+        // Each leaf's decoder-pool head queue holds too; only the bus ingress backstop leaks.
+        expect(res.pipeline.match(/leaky=2/g)).toHaveLength(1);
+        expect(res.pipeline.match(/queue leaky=0 max-size-buffers=4 /g)).toHaveLength(2);
+    });
+
+    it('floors bufferMs at 100 ms: a single-frame raw buffer held the input at every scene cut', () => {
         const res = buildPipeline({ ...base, bufferMs: 0, outputs: [out(0, r())] })!;
         // Both the jitter queue and the raw-frame queue must carry the floor.
         expect(res.pipeline).not.toContain('max-size-time=20000000 ');

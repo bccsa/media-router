@@ -223,7 +223,6 @@ export {
     videoStreamPid,
     audioStreamPid,
     muxSinkPadName,
-    buildLeakyQueue,
     buildBackpressureQueue,
     buildIngestQueue,
     INGEST_QUEUE_NAME,

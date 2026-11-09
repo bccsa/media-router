@@ -162,6 +162,26 @@ describe('Aes67OutputModule.buildPipeline', () => {
             const module = makeModule();
             expect(module.buildPipeline(DEST)!.pipeline).toContain('ts-offset=20000000');
         });
+
+        it("is the no-late-drop lint's one syncing sink, and nothing on its path leaks (WI-P4-10, B-173)", () => {
+            // max-lateness=-1, ts-offset = senderLatencyMs, and no leaky queue but the bus ingress
+            // backstop (OQ-30). That no removed timing setting moves it: the B-171 guard.
+            const module = makeModule();
+            const p: string = module.buildPipeline({ ...DEST, senderLatencyMs: 35 })!.pipeline;
+            const sink = p.slice(p.lastIndexOf(' ! udpsink ') + 3);
+            expect(sink).toMatch(/ sync=true max-lateness=-1 ts-offset=35000000$/);
+            const bus = buildBusSrc({
+                name: 'busin',
+                port: 41000,
+                socketPath: '/run/mr/edge.sock',
+            });
+            expect(p.startsWith(bus)).toBe(true);
+            expect(bus).toContain(' ! queue leaky=2 max-size-time=5000000000 ');
+            expect(p.slice(bus.length)).not.toMatch(/leaky=(?!0\b)/);
+            expect(
+                module.buildPipeline({ ...DEST, senderLatencyMs: 35, bufferMs: 900 })!.pipeline,
+            ).toBe(p);
+        });
     });
 
     describe('PTP epoch stamping', () => {

@@ -11,7 +11,7 @@ const encoder: EncoderBranchOptions = {
 };
 
 describe('buildEncodeLeaf', () => {
-    it("'decoder-pool' emits the bounded leaky head queue", () => {
+    it("'decoder-pool' emits the bounded non-leaky head queue (B-173)", () => {
         const leaf = buildEncodeLeaf({
             encoder,
             inputQueue: 'decoder-pool',
@@ -19,7 +19,7 @@ describe('buildEncodeLeaf', () => {
             sink: 'fakesink',
         });
         expect(
-            leaf.startsWith('queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! '),
+            leaf.startsWith('queue leaky=0 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! '),
         ).toBe(true);
     });
 

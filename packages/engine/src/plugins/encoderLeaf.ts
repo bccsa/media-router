@@ -18,10 +18,9 @@ import { type ImplId, buildEncoderBranch, type EncoderBranchOptions } from './en
 import type { HwScalerAvailability } from './probedEncoders.js';
 
 /**
- * Bounded LEAKY queue at the head of a leaf fed from a shared decode tee, so a
- * slow encoder sheds whole frames instead of stalling the tee and starving its
- * sibling leaves. Also the leaf's thread boundary — scale + convert + encode of
- * every branch then runs on its own core.
+ * Bounded NON-leaky queue at the head of a leaf fed from a shared decode tee: the leaf's thread
+ * boundary, so scale + convert + encode of every branch runs on its own core. A slow encoder
+ * fills it and holds the tee: the transcoder's lateness, never a lost frame (B-173).
  *
  * 4 buffers (80 ms @50 fps), not 2: vah264enc accepts frames in GPU batch
  * cycles, and with only 40 ms of slack every cycle shed frames — measured on
@@ -33,7 +32,7 @@ import type { HwScalerAvailability } from './probedEncoders.js';
  * N leaves) exhausted avdec's buffer pool and froze the whole transcode chain.
  * 4 × 3 leaves = 12 refs is well inside the pool.
  */
-const DECODER_POOL_QUEUE = 'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0';
+const DECODER_POOL_QUEUE = 'queue leaky=0 max-size-buffers=4 max-size-time=0 max-size-bytes=0';
 
 export interface EncodeLeafOptions {
     /** Fully-resolved encoder settings — forwarded to `buildEncoderBranch`. */
@@ -52,7 +51,7 @@ export interface EncodeLeafOptions {
      * Head-of-leaf queue.
      *
      * `'decoder-pool'` — leaf hangs off a decode tee and its buffers are frames
-     * from the decoder's pool: emit the bounded leaky queue (see
+     * from the decoder's pool: emit the bounded non-leaky queue (see
      * {@link DECODER_POOL_QUEUE} for the buffer count and why it is
      * buffers-bounded rather than time-bounded).
      *

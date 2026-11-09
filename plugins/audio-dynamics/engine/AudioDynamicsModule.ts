@@ -227,9 +227,10 @@ export class AudioDynamicsModule extends GstPluginBase {
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
         const instanceId = this.services?.instanceId ?? '';
+        // No max-lateness: inert at sync=false, and the runners set -1 on every sink (B-173).
         const outSink =
             `pulsesink device=MR_PW_${instanceId}_out sync=false slave-method=0 ` +
-            `processing-deadline=100000000 buffer-time=50000 max-lateness=200000000 ${pulsePinnedStreamProps()}`;
+            `processing-deadline=100000000 buffer-time=50000 ${pulsePinnedStreamProps()}`;
 
         if (this.mode === 'ducker') return this.buildDuckerPipeline(config, instanceId, outSink);
         return this.buildLadspaPipeline(config, instanceId, outSink);

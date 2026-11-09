@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
     audioStreamPid,
     buildIngestQueue,
-    buildLeakyQueue,
     buildBackpressureQueue,
     INGEST_QUEUE_MS,
     INGEST_QUEUE_NAME,
@@ -35,32 +34,13 @@ describe('deterministic PID scheme (D3)', () => {
     });
 });
 
-describe('buildLeakyQueue', () => {
-    it('emits a leaky=2 queue with byte/buffer caps disabled', () => {
-        expect(buildLeakyQueue(50)).toBe(
-            'queue leaky=2 max-size-time=50000000 max-size-buffers=0 max-size-bytes=0',
-        );
-    });
-    it('floors 0/negative to 20 ms — all-zero bounds would mean UNLIMITED, never-leaking', () => {
-        expect(buildLeakyQueue(0)).toContain('max-size-time=20000000');
-        expect(buildLeakyQueue(-10)).toContain('max-size-time=20000000');
-    });
-    it('clamps absurdly large values to 5 seconds', () => {
-        expect(buildLeakyQueue(99_999)).toContain('max-size-time=5000000000');
-    });
-});
-
-describe('queue builders × byte cap', () => {
-    it('apply the cap when passed, and stay off (raw-video safe) by default', () => {
-        // gate01 2026-09-06: a time-only leaky queue is unbounded once the stamps
-        // flowing through it stall — the byte bound is what still sheds.
-        expect(buildLeakyQueue(500, tsQueueByteCap(500))).toBe(
-            'queue leaky=2 max-size-time=500000000 max-size-buffers=0 max-size-bytes=4000000',
-        );
+describe('buildBackpressureQueue × byte cap', () => {
+    it('applies the cap when passed, and keeps it off (raw-video safe) by default', () => {
+        // gate01 2026-09-06: a time-only queue is unbounded once the stamps flowing through it
+        // stall: the byte bound is what still holds.
         expect(buildBackpressureQueue(500, tsQueueByteCap(500))).toBe(
             'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=4000000',
         );
-        expect(buildLeakyQueue(500)).toContain('max-size-bytes=0');
         expect(buildBackpressureQueue(500)).toContain('max-size-bytes=0');
     });
 });
@@ -71,7 +51,7 @@ describe('buildBackpressureQueue', () => {
             'queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0',
         );
     });
-    it('floors 0/negative to 20 ms and clamps huge values to 5 s, like buildLeakyQueue', () => {
+    it('floors 0/negative to 20 ms (all-zero bounds are UNLIMITED) and clamps huge values to 5 s', () => {
         expect(buildBackpressureQueue(-10)).toContain('max-size-time=20000000');
         expect(buildBackpressureQueue(0)).toContain('max-size-time=20000000');
         expect(buildBackpressureQueue(99_999)).toContain('max-size-time=5000000000');

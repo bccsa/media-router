@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseManifestTiming, withIngestTimingSettings } from '@media-router/shared-types';
 import { checkStartSettings } from '../modules/startSettings.js';
 import { GstChildProcess } from '../child-process/GstChildProcess.js';
 import * as engine from '../index.js';
+import { Aes67OutputModule } from '../../../../plugins/aes67-output/engine/Aes67OutputModule.js';
 
 /**
  * The guard for the timing settings and mechanisms Phase 4 deleted (B-171, S18; OQ-33): no
@@ -141,6 +142,25 @@ describe('the removed timing settings and mechanisms (B-171, OQ-33)', () => {
         ]) {
             expect(engine, name).not.toHaveProperty(name);
         }
+    });
+
+    it("aes67-output's syncing sink is moved by none of them, stored or in its services (WI-P4-10)", () => {
+        // The no-late-drop lint's one sync=true and ts-offset (B-173): its offset is senderLatencyMs.
+        const module = new Aes67OutputModule() as unknown as Record<string, unknown> & {
+            buildPipeline(c: Record<string, unknown>): { pipeline: string } | null;
+        };
+        const source = { port: 41000, socketPath: '/run/mr/edge.sock' };
+        const services = { instanceId: 'aes', mediaRouter: { getModuleBusSource: () => source } };
+        module.services = services;
+        module.setHealth = vi.fn();
+        const config = { address: '192.0.2.10', port: 5004, senderLatencyMs: 35 };
+        const plain = module.buildPipeline(config)!.pipeline;
+        expect(plain).toMatch(/ sync=true max-lateness=-1 ts-offset=35000000$/);
+        expect(module.buildPipeline({ ...config, ...removedFor('aes67-output') })!.pipeline).toBe(
+            plain,
+        );
+        module.services = { ...services, ...removedFor('aes67-output'), playoutReanchor: true };
+        expect(module.buildPipeline(config)!.pipeline).toBe(plain);
     });
 
     it('a shedder field an older description still sets never reaches either runner', () => {

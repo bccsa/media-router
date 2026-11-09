@@ -65,32 +65,6 @@ export function muxSinkPadName(pid: number): string {
 // TS-side codec→parser table was removed when auto-detect landed.
 
 /**
- * Format a leaky `queue` clamping its time-buffer to `bufferMs`. `leaky=2`
- * drops the oldest buffer under back-pressure rather than stalling the
- * upstream — that's the right policy for live broadcast pipelines.
- *
- * `maxBytes` (default 0 = unlimited) adds a byte ceiling that holds even when
- * the time bound cannot — see `queueBounds.ts` for why, the sizing helper
- * `tsQueueByteCap`, and which callers still run time-only. Never set it on a
- * raw-video queue.
- */
-export function buildLeakyQueue(bufferMs: number, maxBytes = 0): string {
-    // 5000 ms cap matches the demuxer's slider ceiling. The cap is only there
-    // to keep a runaway caller from queuing tens of seconds of latency; for
-    // HLS chains the operator legitimately wants 2-3 s of jitter buffer here
-    // to absorb sender-side event-loop stalls at segment boundaries.
-    // 20 ms floor: `max-size-time=0` with the other bounds 0 is UNLIMITED in
-    // GStreamer — the leaky policy silently never fires and any transient
-    // consumer stall accumulates as permanent standing latency (and, on a
-    // raw-video queue, unbounded memory). A 20 ms leaky bound adds no
-    // steady-state latency (the queue sits near-empty); it only bites during
-    // a stall, which is exactly when shedding is wanted.
-    const clamped = Math.max(20, Math.min(5000, bufferMs));
-    const ns = clamped * 1_000_000;
-    return `queue leaky=2 max-size-time=${ns} max-size-buffers=0 max-size-bytes=${maxBytes}`;
-}
-
-/**
  * Non-leaky bounded `queue` — back-pressures (blocks upstream) when full instead
  * of dropping the oldest buffer.
  *
@@ -104,18 +78,15 @@ export function buildLeakyQueue(bufferMs: number, maxBytes = 0): string {
  * isn't dropping, so neither should we. The `bufferMs` bound is a memory/runaway safety cap that
  * a healthy clean-link path never approaches; reaching it (a genuinely stuck
  * consumer) back-pressures rather than silently corrupting the stream.
- *
- * Do NOT use this to feed a real decoder/render sink (e.g. the video-player's
- * pre-decode queue): there the consumer can legitimately fall behind and
- * dropping (leaky) is the correct bound — back-pressure would stall playout.
+ * The transcoder's raw-frame buffer is one too: a slow encoder shows as its lateness, not as lost
+ * frames (B-173).
  *
  * `maxBytes` (default 0 = unlimited): byte ceiling that back-pressures even
  * when stalled timestamps defeat the time bound (see `queueBounds.ts`).
  */
 export function buildBackpressureQueue(bufferMs: number, maxBytes = 0): string {
-    // Same 20 ms floor as buildLeakyQueue: all-zero bounds mean UNLIMITED, so
-    // a stuck consumer would grow this queue without ever back-pressuring —
-    // the opposite of this helper's contract.
+    // 20 ms floor: all-zero bounds mean UNLIMITED, so a stuck consumer would grow this queue
+    // without ever back-pressuring; 5 s cap: a runaway caller queues no more latency than that.
     const clamped = Math.max(20, Math.min(5000, bufferMs));
     const ns = clamped * 1_000_000;
     return `queue leaky=0 max-size-time=${ns} max-size-buffers=0 max-size-bytes=${maxBytes}`;

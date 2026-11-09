@@ -8,7 +8,7 @@ import {
     buildScaleStage,
     buildBusDemux,
     buildBusSink,
-    buildLeakyQueue,
+    buildBackpressureQueue,
     buildEncodeLeaf,
     busTeeName,
 } from '@media-router/engine';
@@ -79,7 +79,8 @@ export function deinterlaceMethodForArch(arch: string): DeinterlaceMethod {
  * DECODES, and frame-threaded software H.264 decode only parallelises across
  * cores when it can run ahead of the consumers. `bufferMs` sizes two queues:
  * the input jitter queue (`buildTsUdpInput`, bus src → queue → the demux) and a
- * leaky RAW-frame queue placed AFTER the decoder, in front of videorate/tee.
+ * RAW-frame queue placed AFTER the decoder, in front of videorate/tee. Both are
+ * non-leaky: a slow encoder fills them and shows as lateness, never lost frames (B-173).
  *
  * The raw buffer must NOT sit on the compressed stream (an earlier version put
  * a `bufferMs` leaky queue between the demux and h264parse): the stock demux's
@@ -89,9 +90,8 @@ export function deinterlaceMethodForArch(arch: string): DeinterlaceMethod {
  * drop poisons the decode until the next keyframe. Measured on-box (2026-07-02,
  * same live feed, simultaneous 30 s runs): compressed-side leaky queue ≈ 1.4 MB
  * out; the identical pipeline with the buffer post-decode ≈ 19 MB (full CBR
- * rate). Leaky shedding is only safe on decoded frames, where each buffer is an
- * independent, correctly-timestamped picture. The jitter queue on the raw TS
- * input is fine — udpsrc timestamps every buffer it emits.
+ * rate). The raw buffer stays after the decoder: each buffer there is an independent,
+ * correctly-timestamped picture, so its time bound reads true.
  */
 export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipelineResult | null {
     if (input.outputs.length === 0) return null;
@@ -99,7 +99,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const fps = input.framerate;
     const kif = Math.max(1, Math.round(input.gopFrames));
     // 100 ms floor: this value sizes the input jitter queue AND the raw-frame
-    // work-ahead queue — both leaky. Historically `0` meant an UNLIMITED queue
+    // work-ahead queue. Historically `0` meant an UNLIMITED queue
     // (the helper emitted no bound), so operator configs carry 0 as "minimal".
     // With real bounds, 20 ms of raw buffer is a single frame at 50 fps:
     // encoder admission back-pressure then reaches the compressed input and
@@ -173,9 +173,9 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
 
     // H.264 only, on the demux's video pads: another video codec does not link.
     const videoCaps = 'capsfilter caps="video/x-h264"';
-    // Raw-frame work-ahead buffer (thread boundary decoder ↔ videorate/tee).
-    // Sits AFTER the decoder on purpose — see the buffering note above.
-    const rawBuffer = buildLeakyQueue(bufferMs);
+    // Raw-frame work-ahead buffer (thread boundary decoder ↔ videorate/tee), after the decoder
+    // on purpose (the note above). Full, it holds the decoder: lateness, not lost frames (B-173).
+    const rawBuffer = buildBackpressureQueue(bufferMs);
 
     // EXPLICIT decoder with the threading set INLINE — this is what actually
     // spreads the decode across cores on a LIVE feed. GStreamer single-threads
@@ -237,8 +237,8 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
         `${deinterlacer}videorate drop-only=true skip-to-first=true ! ${rateCaps} ! ${overlay}tee name=t ${teeBranches}` +
         (subs ? ` ${subs.inputFragment}` : '');
 
-    // `deinterlace` re-sends already-output fields after every DISCONT (the raw
-    // queue's sheds): the guard drops them before mpegtsmux sees DTS go back (#817).
+    // `deinterlace` re-sends already-output fields after every DISCONT (an input gap, a shed at
+    // the bus ingress): the guard drops them before mpegtsmux sees DTS go back (#817).
     const runnerHooks: RunnerHook[] = [
         ...(deinterlacer
             ? [{ module: 'deinterlace_guard', config: { element: DEINTERLACER_NAME } }]

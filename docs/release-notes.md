@@ -394,6 +394,16 @@ elements" below do not start.
   video decoder again, and in testing rapid reopening stopped a Pi 4's
   hardware H.264 decoder until a reboot.
 
+**Video Transcoder keeps every frame it decodes (Phase 4)**
+
+- **A rendition whose encoder cannot keep up no longer loses frames.** Its
+  frames wait instead, and since all renditions share one decode, every
+  rendition of that transcoder falls behind with it: its lateness grows by
+  the wait. The input holds what arrives meanwhile, up to 5 s; only past that
+  is content lost there, and the queue-full warning says so.
+- **Buffer's help now reads** "Jitter and decode-ahead buffer. A slow encoder
+  fills it before the input is held." The setting itself is unchanged.
+
 **What the outputs show (Phase 4)**
 
 - **Render lateness is when the picture is shown or the sound is heard,** as
