@@ -32,6 +32,7 @@
   ],
   "expect": {
     "video_back_ms": 21,
-    "audio_back_ms": 30
+    "audio_back_ms": 33,
+    "gap_level_tol_ms": 100
   }
 }

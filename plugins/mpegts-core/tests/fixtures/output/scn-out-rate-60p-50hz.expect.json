@@ -51,7 +51,6 @@
   "expect": {
     "settle_s": 3,
     "flat_ms": 41,
-    "refresh_tol_ns": 20000,
-    "drops_extra": 2
+    "refresh_tol_ns": 20000
   }
 }

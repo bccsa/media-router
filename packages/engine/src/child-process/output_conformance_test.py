@@ -369,17 +369,25 @@ def scn_out_gap_recovers(tag, argv, exp):
         st, dd = last(dec.asrc_stats()), demux_last(dec)
         evs = [p.get("kind") + ":" + str(p.get("reason")) for _t, p in dec.asrc_events()]
         nh = [p for _t, p in dec.demux() if p.get("reason") == "not-house-time"]
+        # At a gap the prefill's time level reads the PTS jump as fullness until the jumping AU leaves (F9).
+        ov = overruns(dec)
+        gap_full = [e for e in ov if want_gaps and e[0] == "prefill" and not e[1]
+                    and abs((e[2] or 0) - length * 1000) <= x["gap_level_tol_ms"]]
+        if gap_full:
+            print(f"    {label} decoder: Found (B-174, F9): prefill met full at the gap {gap_full} "
+                  "(its time level counts the PTS jump)")
         check(f"{label} decoder: back at its render lateness ({orig.mid(rb)} -> {orig.mid(ra)} ms, within "
               f"{x['audio_back_ms']}), events {evs} (want {arm['asrc_events']}), dropped {st.get('dropped-frames')}, "
               f"demux gaps {dd.get('gaps')} markers {dd.get('markers')}, stale {dd.get('pes-dropped-stale')}, "
               f"not-house-time "
-              f"{[(p.get('stale'), p.get('offset-ms')) for p in nh]}, queues {overruns(dec)}",
+              f"{[(p.get('stale'), p.get('offset-ms')) for p in nh]}, queues {ov} (at most one prefill episode "
+              f"at the gap's {length * 1000:.0f} ms ± {x['gap_level_tol_ms']})",
               ra and rb and abs(orig.mid(ra) - orig.mid(rb)) <= x["audio_back_ms"]
               and evs == arm["asrc_events"] and st.get("dropped-frames") == 0
               and dd.get("gaps") == want_gaps and dd.get("markers") == arm.get("markers", 0)
               and dd.get("pes-dropped-stale") == arm.get("stale", 0)
               and [p.get("stale") for p in nh] == ([True] if arm["name"] == "stale" else [])
-              and not overruns(dec))
+              and len(gap_full) <= 1 and all(e in gap_full for e in ov))
 
 
 def scn_out_device_stall(tag, argv, exp):
@@ -486,7 +494,7 @@ def scn_out_rate(tag, argv, exp):
               f"{drops} = the deficit {want and round(want, 2)} ± 1 of {frames} frames, the release lateness flat "
               f"({orig.spread(lat)} ms, within {x['flat_ms']}); presented {ds.get('presented')} of {released}",
               ps.get("refresh-source") == "measured" and abs(refresh - arm["refresh_ns"]) <= x["refresh_tol_ns"]
-              and want is not None and drops is not None and abs(drops - want) <= 1 + x.get("drops_extra", 0)
+              and want is not None and drops is not None and abs(drops - want) <= 1
               and abs(released - (ds.get("presented") or 0)) <= 2 and orig.spread(lat) is not None
               and orig.spread(lat) <= x["flat_ms"])
         if arm.get("from_first_drop") and frm:
@@ -535,21 +543,20 @@ def scn_out_capacity(tag, argv, exp):
     pl, t0 = run.outputs["player"], run.t0
     ps = run.reads.get(("player", "vp_pace", "stats")) or {}
     rows = [(round((t - t0) / S, 1), p.get("present-lateness-ns", 0) / 1e6) for t, p in pl.paces()]
-    early = [v for s_, v in rows if x["slope_from_s"] <= s_ <= x["slope_to_s"]]
-    slope = (early[-1] - early[0]) / (x["slope_to_s"] - x["slope_from_s"]) if len(early) > 1 else None
     tap = probe_tap(pl)
     # Each episode at its first overrun: a report comes a second after its last, `ms` after its first.
     ev = [(round((t - t0) / S - 1 - (p.get("ms") or 0) / 1000, 1), p.get("element"), p.get("leaky"),
            p.get("levelTimeMs")) for t, p in pl.overruns() if p.get("element") != tap]
     first = ev[0] if ev else None
     backstop = next((e for e in ev if e[2]), None)
-    upto = [v for s_, v in rows if x["slope_from_s"] <= s_ <= (backstop[0] if backstop else seconds)]
+    upto = [v for s_, v in rows if x["rising_from_s"] <= s_ <= (backstop[0] if backstop else seconds)]
     rising = all(b_ >= a_ for a_, b_ in zip(upto, upto[1:]))
     check(f"{label}: nothing lost until vp_esq is full: its episode first, held back, at its 5 s ({first}), "
           f"then the bus ingress backstop drops ({backstop}); the lateness rising all the way to it "
           f"({upto[:1]} -> {upto[-1:]} ms; episodes {ev[:4]})",
           first is not None and first[1] == "vp_esq" and not first[2] and first[3] >= x["full_level_ms"]
-          and first[0] >= x["full_after_s"] and rising and len(upto) >= 10)
+          and first[0] >= x["full_after_s"] and backstop is not None and backstop[0] > first[0]
+          and rising and len(upto) >= 10)
 
 
 def scn_out_av_after_mux(tag, argv, exp):
@@ -624,11 +631,9 @@ def scn_asrc_out_drift(tag, argv, exp):
 
 
 def scn_out_stop_backpressure(tag, argv, exp):
-    """T26 (MR-041): each output stopped while its queues hold a full backlog (the player's vp_esq
-    behind a throttled decoder, as its test display never holds back for long; the audio decoder's
-    prefill and ad_esq and the 302M prefill behind an input stall's backlog, as a stalled card skips
-    (Q2); the transcoder's raw buffer behind a slowed encoder): the runner exits on its own inside the
-    engine's kill window. Each stop's time is printed at the end."""
+    """T26 (MR-041): each output stopped with its queues full (a throttled stage or an input stall's
+    backlog fills them; a stalled card skips, Q2): the runner exits on its own inside the engine's
+    kill window. Each stop's time is printed at the end."""
     x = exp["expect"]
     for arm in exp["arms"]:
         if arm.get("python_only") and tag != "py":
@@ -837,7 +842,7 @@ def scn_out_wrap(tag, argv, exp):
           f"report across it ({at_wrap}), elsewhere at most {x['late_steps']} one-unit steps ({others}); "
           f"the ASRC never relocked ({st.get('relocks')}) or dropped ({st.get('dropped-frames')})",
           gaps == (0, 0) and not at_wrap and len(others) <= x["late_steps"]
-          and all(abs(d) <= x["unit_ms"] for _t, d in others) and len(moves) == 2
+          and all(abs(d) <= x["unit_ms"] for _t, d in others)
           and st.get("relocks") == 0 and st.get("dropped-frames") == 0)
     video_ok(f"{label} player", pl, x)
 

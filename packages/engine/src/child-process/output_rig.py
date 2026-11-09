@@ -178,7 +178,6 @@ class Output:
         p = on_sinks(self.start_cmd["pipeline"], video, audio)
         self.start_cmd["pipeline"] = edit(p) if edit else p
         self.runner, self.playing, self.rc, self.stop_ms = None, None, None, None
-        self._rid = 0
 
     def launch(self):
         env = dict(self.entry.get("env") or {}, **test_env())
@@ -194,7 +193,6 @@ class Output:
         return self.playing is not None
 
     def prop(self, element, name, timeout=5.0):
-        self._rid += 1
         got = self.runner.request({"cmd": "get_property", "element": element, "property": name}, "property",
                                   timeout)
         return got[1].get("value") if got and got[1].get("event") == "property" else None
