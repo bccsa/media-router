@@ -50,7 +50,7 @@ class DrainServo {
     static constexpr int64_t M_EVERY_NS = 600 * SEC, L_EVERY_NS = 3600 * SEC, STEP_NS = 5 * MS;
     static constexpr int64_t ABOVE_L_NS = 10 * MS, UNDER_FLOOR_NS = 10 * MS, RAISE_MIN_NS = 20 * MS;
     static constexpr int64_t GROUP_STALE_NS = 10 * SEC, RISE_CAP_NS = SEC;
-    static constexpr int64_t AUDIO_START_NS = 60 * MS, AUDIO_FLOOR_NS = 20 * MS;
+    static constexpr int64_t AUDIO_START_NS = 20 * MS, AUDIO_FLOOR_NS = 20 * MS;
 
     enum class State { warm_up, idle, draining, rising };
 
@@ -62,6 +62,7 @@ class DrainServo {
     void queue_level(int64_t now, int64_t level_ns);
     // Audio, each tick: whether the device starved since the last one.
     void starve(int64_t now, bool on);
+    bool starving() const { return in_episode_; }
     // Video: a release by_ns past its drained slot, neither collapsed nor sink-late.
     void late(int64_t now, int64_t by_ns);
     // A window clear (a relock, a stall's flush, caps, a flush, PAUSED): warm-up again, delta 0.

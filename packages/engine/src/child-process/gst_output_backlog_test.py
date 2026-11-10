@@ -149,7 +149,7 @@ def arm(label, sink, gap=None, seconds=SECONDS, drains=None):
             allowed = 0 if drains == "none" else frames / 200 + 1
             check(f"{label}: then drains to its target at <= 0.5 % ({slope:+.2f} ms/s from 40 s), zero samples "
                   f"lost, {drops} drain drops (<= {allowed:.0f}: {drains})",
-                  -5.5 <= slope <= -4.0 and drops <= allowed and (drains != "none" or drops == 0))
+                  -5.5 <= slope <= -4.5 and drops <= allowed and (drains != "none" or drops == 0))
     if gap:
         back = lateness(seen, t0, gap[0] + gap[1] + 0.5, SECONDS - 1)
         c = sum(back) / len(back) if back else None

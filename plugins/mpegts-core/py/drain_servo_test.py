@@ -16,6 +16,7 @@ CAP_PPB = ds.DMAX_PPB
 MIN = 60 * SEC
 HOUR = 3600 * SEC
 VERBOSE = "-v" in sys.argv
+M60 = 60 * MS                        # the cases built on r3's 60 ms start (the default is the floor now)
 
 
 def source(period_at, start=0, stalls=(), dip_every=0, dip_ns=0, until=None):
@@ -157,7 +158,7 @@ def case_steady():
     """2. A bursty link (bursts every 100 and 200 ms in turn, 150 ms on average) for 2 h, starting
     30 ms under its margin: no underrun; with no L yet the margin decays to its 20 ms floor in about
     80 min; alone, delta is never negative."""
-    s = DrainServo()
+    s = DrainServo(False, M60)
     ln = Link(s, source(lambda t: 100 * MS if t // (150 * MS) % 2 else 200 * MS), fill_ns=230 * MS)
     r = Run([ln])
     floor_at = []
@@ -187,7 +188,7 @@ def case_step():
     """3. The burst rhythm stepped from 150 to 300 ms at 10 min: exactly one underrun by 1 h, the
     margin back at L + 10 ms within 2 h of the raise; at most 4 underruns >= 1.75 h apart over
     8 h; the rhythm stepped back at 4 h: the margin <= 30 ms by 10 h."""
-    s = DrainServo()
+    s = DrainServo(False, M60)
     per = lambda t: 150 * MS if t < 10 * MIN or t >= 4 * HOUR else 300 * MS
     ln = Link(s, source(per), fill_ns=300 * MS)
     r = Run([ln])
@@ -229,7 +230,7 @@ def case_dip():
     """5. B3's rhythm: a trough of 100 ms, a 70 ms dip every 5 min, for 8 h: one dropout at the
     first dip after the drain, none in the 1.75 h after it, at most one per 2 h, never one per
     dip."""
-    s = DrainServo()
+    s = DrainServo(False, M60)
     ln = Link(s, source(steady(20 * MS), dip_every=5 * MIN, dip_ns=70 * MS), fill_ns=120 * MS)
     r = Run([ln])
     r.until(8 * HOUR)
@@ -247,7 +248,7 @@ def case_dip():
 def case_creep():
     """6. A 260 ppm creep (the device slower than the content): the excess stays <= 20 ms for 1 h
     (held near c x tau = 7.8 ms once engaged)."""
-    s = DrainServo()
+    s = DrainServo(False, M60)
     ln = Link(s, source(steady(20 * MS)), fill_ns=80 * MS, dev_ppb=-260000)
     r = Run([ln])
     r.until(HOUR)
@@ -420,12 +421,12 @@ def case_video_late():
 def case_hysteresis():
     """11. A slack 10 ms above the margin never engages; a drain lets go at 5 ms and does not
     re-engage below 20 ms (under 10 min: no margin decay)."""
-    s = DrainServo()
+    s = DrainServo(False, M60)
     ln = Link(s, source(steady(10 * MS)), fill_ns=80 * MS)   # trough 70 ms: E = 10 ms
     r = Run([ln])
     r.until(9 * MIN)
     quiet = max(p for (_t, p, *_x) in r.log[0]) == 0
-    s2 = DrainServo()
+    s2 = DrainServo(False, M60)
     ln2 = Link(s2, source(steady(10 * MS)), fill_ns=200 * MS)
     r2 = Run([ln2])
     r2.until(9 * MIN)
@@ -437,11 +438,40 @@ def case_hysteresis():
             ("hysteresis: one engage only", len(st) == 1)]
 
 
+def case_live():
+    """12. B-179 fix 1: a live link whose trough sits under the margin (the fill at the prefill's
+    delay line, no ring margin) publishes its render lateness, never more, so a group of it and a
+    member 85 ms behind ends at the higher of the two renders, not above it; no underrun."""
+    a = Link(DrainServo(), source(steady(20 * MS)), fill_ns=25 * MS, base_ns=40 * MS)
+    b = Link(DrainServo(), source(steady(20 * MS)), fill_ns=120 * MS, base_ns=-140 * MS)
+    links = [a, b]
+    g = Group(links)
+    r = Run(links)
+    over = [0]
+
+    def each(t):
+        g(t)
+        if t >= 40 * SEC:
+            over[0] = max(over[0], g.p - max(ln.render() for ln in links))
+
+    r.until(10 * MIN, each)
+    top = max(ln.render() for ln in links)
+    return [
+        ("live: the trough under the margin, no drain", a.s.excess < 0 and a.s.ppb == 0),
+        ("live: it publishes its render lateness", a.s.target == a.render()),
+        ("live: P never above the higher render", over[0] <= MS),
+        ("live: both end at the higher render, none above it",
+         all(abs(ln.render() - top) <= 20 * MS for ln in links) and top <= a.render() + MS),
+        ("live: no underrun", all(ln.s.underruns == 0 and ln.starved_ns == 0 for ln in links)),
+    ]
+
+
 CASES = {
     "backlog": case_backlog, "steady": case_steady, "steady_raise": case_steady_raise,
     "step": case_step, "starve": case_starve, "dip": case_dip, "creep": case_creep,
     "outage": case_outage, "discont": case_discont, "paced": case_paced, "group": case_group,
     "group_cap": case_group_cap, "video_late": case_video_late, "hysteresis": case_hysteresis,
+    "live": case_live,
 }
 
 
@@ -515,8 +545,19 @@ def m_negative_alone():
 
     def update(self, now, render, can):
         if not self.group or self.group_at == getattr(self, "own_at", None):
-            self.group, self.group_at, self.own_at = max(self.target, 1), now, now
+            self.group, self.group_at, self.own_at = max(render - self.excess, 1), now, now
         return orig(self, now, render, can)
+    return _patch(DrainServo, "update", update)
+
+
+def m_negative_target():
+    orig = DrainServo.update
+
+    def update(self, now, render, can):
+        ppb = orig(self, now, render, can)
+        if self.ppb >= 0:
+            self.held = self.target = render - self.excess
+        return ppb
     return _patch(DrainServo, "update", update)
 
 
@@ -589,6 +630,7 @@ MUTANTS = [
     ("L stopped at the floor", m_l_floor, "steady_raise"),
     ("a negative delta alone", m_negative_alone, "steady"),
     ("engage at 0 ms, no let-go band", m_no_hysteresis, "hysteresis"),
+    ("the target carrying a negative excess (r3)", m_negative_target, "live"),
 ]
 
 

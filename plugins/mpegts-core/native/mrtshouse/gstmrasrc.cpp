@@ -49,6 +49,9 @@ static const gint64 STATS_INTERVAL_NS = 2 * GST_SECOND;
 /* What passed, kept to prime the resampler at an engage: more than the filter's half length. */
 static const gsize HISTORY_FRAMES = 64;
 #define BYPASS_MAX_PPM 1000.0
+/* The drain's starvation dead band (B-179): the fill reads within a tick's interpolation of the prefill's delay on a
+ * clean live link, so only a slack this far under 0 on two ticks running is the device starving. */
+static const gint64 ASRC_STARVE_NS = 30 * GST_MSECOND;
 
 /* What the capture branches produce (WI-P1-8), and a decoder through audioconvert (S15); the
  * format passes through unchanged. */
@@ -70,11 +73,9 @@ struct AsrcDrainStats {
     bool capped = false, member = false;
 };
 
-/* The device term (WI-P4-4, B-166): a timer thread reads the device sink's clock into mrts::AsrcDeviceTerm, a probe
- * on the sink's pad starts it and maps each write to its content time; the streaming thread reads the atomics. The
- * term and the map under `mu`; one term per element, from the first READY->PAUSED to READY->NULL. The drain servo
- * (B-179) runs on the same timer under `mu`: the fill downstream (pushed frames the device has not played) less the
- * prefill's delay line, its lowest just before each push since the last tick; delta reaches push() by an atomic. */
+/* The device term (WI-P4-4, B-166): a timer reads the sink's clock into mrts::AsrcDeviceTerm, a probe on its pad
+ * maps each write to its content time; both under `mu`, the streaming thread reads the atomics. The drain servo
+ * (B-179) runs on the same timer; its delta reaches push() by an atomic. */
 struct AsrcDevice {
     std::mutex mu;
     AsrcDeviceTerm term;
@@ -95,6 +96,11 @@ struct AsrcDevice {
     bool have_anchor = false, have_tick = false, was_locked = false;
     int64_t anchor_pushed = 0, anchor_write = 0, tick_mono = 0, tick_pos = 0, prefill_ns = 0;
     std::vector<std::pair<int64_t, int64_t>> pushes;
+    // A starvation: the sink's write position jumping ahead (it underflowed and resynced) since the last tick, or
+    // the slack under -ASRC_STARVE_NS on two ticks running (since the first, below_at).
+    bool have_next = false;
+    int64_t last_next = 0, last_frames = 0, skipped = 0, below_at = 0;
+    int below_ticks = 0;
     std::atomic<int64_t> drain_ppb{0}, group_target{0};
     std::atomic<uint64_t> group_seq{0};
     uint64_t group_seen = 0;
@@ -565,6 +571,7 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
         if (!same) d->term.stop(0);   // the sink releases its ring and acquires it anew
         d->have_prev = false;
         d->have_anchor = false;
+        d->have_next = false;
         d->clear_pending.store(true);   // caps: the drain's window again (B-179)
         d->lateness.flush();
         d->bpf = GST_AUDIO_INFO_BPF(&ai);
@@ -586,6 +593,13 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
         const int64_t frames = (int64_t)(gst_buffer_get_size(buf) / d->bpf);
         const guint64 next = sink->next_sample;
         if (!d->term.rendering() && next != (guint64)-1 && clocked) d->term.start(mono, ev);
+        if (next != (guint64)-1) {   // the last buffer's write position past where the one before it ended
+            const int64_t gap = (int64_t)next - d->last_frames - d->last_next;
+            if (d->have_next && gap > d->term.config().rate_hz / 1000) d->skipped += gap;
+            d->last_next = (int64_t)next;
+            d->last_frames = frames;
+            d->have_next = true;
+        }
         if (d->have_prev && next != (guint64)-1) {
             d->lateness.rendered((int64_t)next - d->prev_frames, d->prev_frames, d->prev_pts);
             // The drain's anchor: this write position took the frames pushed after prev_pushed (B-179).
@@ -638,6 +652,7 @@ static void asrc_device_flush(GstMrAsrc* self) {
         std::lock_guard<std::mutex> g(self->dev->mu);
         self->dev->have_prev = false;
         self->dev->have_anchor = false;
+        self->dev->have_next = false;
         self->dev->clear_pending.store(true);   // a stall's flush: the drain's window again (B-179)
         self->dev->lateness.flush();
     }
@@ -645,10 +660,9 @@ static void asrc_device_flush(GstMrAsrc* self) {
     GST_PAD_STREAM_UNLOCK(sinkpad);
 }
 
-/* The drain (B-179), under mu at each tick: the fill downstream in frames (pushed less played, played the device's
- * position on the anchor) just before each push since the last tick, the device position interpolated between the
- * two reads, and now; less the prefill's delay, the slack, and at or below 0 the device starved. Only while the
- * term is locked (a lock, a relock or a stall's flush clears the window); a stalled device publishes no target. */
+/* The drain (B-179) at each tick, under mu, while the term is locked: the slack is the fill downstream (pushed less
+ * played, interpolated between two reads) just before each push and now, less the prefill's delay; a starvation is
+ * the sink's own (it skipped ahead) or the slack well under 0 on two ticks, never tick noise around 0. */
 static void asrc_drain_tick(AsrcDevice* d, int64_t dev_ns, int64_t mono, int64_t now, bool relocked, bool known) {
     mrts::DrainServo& s = d->drain;
     const bool locked = d->term.lock_state() == AsrcDeviceTerm::LockState::locked;
@@ -683,10 +697,25 @@ static void asrc_drain_tick(AsrcDevice* d, int64_t dev_ns, int64_t mono, int64_t
     d->tick_pos = pos;
     d->have_tick = true;
     const bool stalled = d->term.stalled();
+    const int64_t skipped_ns = (int64_t)((__int128)d->skipped * GST_SECOND / rate);
+    d->skipped = 0;
     if (locked && have && !stalled) {
         const int64_t slack = (int64_t)((__int128)lo * GST_SECOND / rate) - d->prefill_ns;
-        s.starve(now, slack <= 0);
+        d->below_ticks = slack <= -ASRC_STARVE_NS ? d->below_ticks + 1 : 0;
+        if (d->below_ticks == 1) d->below_at = now;
+        if (d->below_ticks >= 2) {
+            s.starve(d->below_at, true);
+        } else if (skipped_ns > 0 && !s.starving()) {   // too short for the fill to show it: its length skipped
+            s.starve(now - skipped_ns, true);
+            s.starve(now, false);
+        } else if (d->below_ticks == 0) {
+            s.starve(now, false);
+        }
+        GST_LOG("drain tick slack %" G_GINT64_FORMAT " us skipped %" G_GINT64_FORMAT " us",
+                    slack / 1000, skipped_ns / 1000);
         s.sample(now, slack);
+    } else {
+        d->below_ticks = 0;
     }
     s.update(now, d->lateness_ns.load(), locked && have && known && !stalled);
     d->drain_ppb.store(locked && !stalled ? s.ppb() : 0);

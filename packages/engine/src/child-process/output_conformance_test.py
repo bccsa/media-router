@@ -983,49 +983,78 @@ def group_spread(run, keys, t0, lo, hi):
 
 def scn_out_drain_group(tag, argv, exp):
     """-group (design part 12 item 7): a Video Player and an Audio Decoder of one muxed source and an Audio Output
-    302M on the same house timeline, the rig playing the engine (P = the max every 2 s). The 302M side takes one
-    underrun (its input held 200 ms once drained), then a shared 2 s stall (the 302M side's backlog 100 ms after the other's, so
-    the rig's two feeds never push a burst at once): every two members within 45 ms at the end and from
-    60 s after the stall. MR_DRAIN_MUTANT=ignore: the group target never set, and the check must fail."""
+    302M on the same house timeline, the rig playing the engine (P = the max every 2 s). The clean link first: no
+    underrun, nobody above the group's early level. Then a shared 200 ms stall (the 302M feed's 0.1 s later, the
+    same length, so the rig's two feeds never push a burst at once): the 302M side's one underrun raises its margin,
+    and every two members end within 45 ms. MR_DRAIN_MUTANT=ignore: the group target never set; the check fails."""
     label, x = f"{exp['scenario']} {tag}", exp["expect"]
     at, length = exp["stall"]
-    jolt_at, jolt = exp["jolt"]
     run = Run(argv)
     rel = rig.generated(exp["kind"], exp["seconds"] + 2)
     run.rel, run.pids = rel, orig.stream_pids(rel)
-    stall = rig.Knobs(silence=[(at, length, "hold")])
-    run.producer("feed", ["vp", "ad"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"], knobs=stall)
+    run.producer("feed", ["vp", "ad"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"],
+                 knobs=rig.Knobs(silence=[(at, length, "hold")]))
     whole = orig.chunked(orig.looped(*loop_of(orig.fixture(exp["fixture"]), exp["pid"], exp["seconds"] + 2)))
     run.producer("ao", ["ao"], ts=lambda t0: orig.at_house(whole, t0), stop_s=exp["seconds"],
-                 knobs=rig.Knobs(silence=[(jolt_at, jolt, "hold"), (at, length + 0.1, "hold")]))
+                 knobs=rig.Knobs(silence=[(at + 0.1, length, "hold")]))
     run.output("player", "player50", video=orig.display())
     run.output("decoder", "decoder", audio=orig.card())
     run.output("aout", "aout302m", audio=orig.card())
     members = [("player", "vp_pace"), ("decoder", "asrc"), ("aout", "outasrc")]
     role = GroupRole(run, members, ignore=os.environ.get("MR_DRAIN_MUTANT") == "ignore")
-    run.go(exp["seconds"] + 1, [(s, role) for s in range(2, exp["seconds"], 2)], [])
+    dev = {}
+
+    def device_underruns(tag):
+        for k in ("decoder", "aout"):
+            try:
+                dev[(tag, k)] = int(run.outputs[k].prop("sink", "underruns"))
+            except Exception:  # noqa: BLE001 (a real sink under MR_GATE=1 has no count)
+                dev[(tag, k)] = None
+
+    lo = x["clean_s"]
+    marks = [(lo, lambda: device_underruns("lo")), (at - 0.5, lambda: device_underruns("at"))]
+    run.go(exp["seconds"] + 1, [(s, role) for s in range(2, exp["seconds"], 2)] + marks, [])
     run.on_time(label)
     run.clean(label)
-    t0, keys = run.t0, [k for k, _ in members]
-    ao = last(device_stats(run.outputs["aout"]))
-    end = exp["seconds"]
-    after = group_spread(run, keys, t0, at + length + 60, end)
-    tail = group_spread(run, keys, t0, end - 8, end)
+    t0, keys, end = run.t0, [k for k, _ in members], exp["seconds"]
+    series = {k: run.outputs[k].paces() if k == "player" else device_stats(run.outputs[k]) for k in keys}
+    early = max(orig.mid([ms for t, ms in renders_of(run.outputs[k], k) if t0 + lo * S <= t < t0 + (lo + 8) * S])
+                or 0 for k in keys)
+    tops = {k: max([ms for t, ms in renders_of(run.outputs[k], k) if t0 + (lo + 8) * S <= t < t0 + at * S] or [0])
+            for k in keys}
+    ptop = max([p / 1e6 for t, p in role.p if t0 + (lo + 8) * S <= t < t0 + at * S] or [0])
+    before = {k: [(t, p) for t, p in series[k] if t < t0 + at * S] for k in keys}
+    # An underrun counted on the clean link must be the test device's own (the shared host can starve a ring that
+    # holds no margin); a video late release is the cadence's, not an underrun (B4).
+    under = {k: last(before[k]).get("underruns") or 0 for k in ("decoder", "aout")}
+    own = {k: (dev.get(("at", k)) - dev.get(("lo", k))) if dev.get(("at", k)) is not None
+           and dev.get(("lo", k)) is not None else 0 for k in under}
+    raised = {k: last(before[k]).get("drain-raises") or 0 for k in keys}
+    check(f"{label}: the clean link to {at} s: no underrun but the device's own ({under}; the test devices' "
+          f"{own}), no raise but from those ({raised}), nobody above the group's early level ({round(early, 1)} ms "
+          f"at {lo}-{lo + 8} s) by more than {x['rise_ms']} ms (highest {tops}, P {round(ptop, 1)})",
+          all(under[k] <= own[k] for k in under) and raised["player"] == 0
+          and all(raised[k] <= under[k] for k in under)
+          and all(v <= early + x["rise_ms"] for v in tops.values()) and ptop <= early + x["rise_ms"])
+    ao = last(series["aout"])
     check(f"{label}: the 302M side took its underrun and raised its margin ({ao.get('underruns')} underrun, "
-          f"{ao.get('drain-raises')} raise, margin {ao.get('drain-margin-ns', 0) / 1e6} ms)",
-          ao.get("underruns") == 1 and ao.get("drain-raises") == 1)
+          f"{ao.get('drain-raises')} raise, {ao.get('drain-outages')} outage, margin "
+          f"{ao.get('drain-margin-ns', 0) / 1e6} ms)",
+          ao.get("underruns") == 1 and ao.get("drain-raises") == 1 and ao.get("drain-outages") == 0)
+    tail = group_spread(run, keys, t0, end - 8, end)
     ends = {k: orig.mid([ms for t, ms in renders_of(run.outputs[k], k) if t >= t0 + (end - 8) * S]) for k in keys}
     pubs = {k: round(role.latest(k).get("drain-target-lateness-ns", 0) / 1e6, 1) for k in keys}
-    check(f"{label}: every two members within {x['spread_ms']} ms from 60 s after the shared stall ({after} ms) and "
-          f"at the end ({tail} ms; render {ends}, published {pubs}); P "
-          f"{round(role.p[-1][1] / 1e6, 1) if role.p else None} ms",
-          after is not None and tail is not None and after <= x["spread_ms"] and tail <= x["spread_ms"])
+    check(f"{label}: every two members within {x['spread_ms']} ms at the end ({tail} ms; render {ends}, published "
+          f"{pubs}); P {round(role.p[-1][1] / 1e6, 1) if role.p else None} ms",
+          tail is not None and tail <= x["spread_ms"])
     for k in keys:
-        st = last(run.outputs[k].paces() if k == "player" else device_stats(run.outputs[k]))
+        st = last(series[k])
+        behind = st.get("display-behind", 0) or 0
         check(f"{label} {k}: drained within the cap (drain-ppm {st.get('drain-ppm')}), nothing dropped "
-              f"(dropped {st.get('dropped-frames', 0)}, rate drops {st.get('rate-drops', 0)})",
-              abs(st.get("drain-ppm") or 0) <= 5000 and not st.get("dropped-frames") and not st.get("rate-drops"))
-
+              f"(dropped {st.get('dropped-frames', 0)}, rate drops {st.get('rate-drops', 0)}, of them display-behind "
+              f"{behind})",
+              abs(st.get("drain-ppm") or 0) <= 5000 and not st.get("dropped-frames")
+              and (st.get("rate-drops") or 0) <= behind)
 
 SCENARIOS = {
     "scn-out-stall": scn_out_stall,

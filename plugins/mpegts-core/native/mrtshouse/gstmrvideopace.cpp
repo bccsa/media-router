@@ -143,9 +143,13 @@ struct _GstMrVideoPace {
     GMutex snap_lock;
     Snapshot* snap;
 
-    /* The drain (B-179), streaming thread: made at the first content period (its margins are frames),
+    /* The drain (B-179), streaming thread: made at a content period (its margins are frames), anew at another,
      * kept across starts; the backlog queue (a ref from READY->PAUSED) and the engine's group target. */
     mrts::DrainServo* drain;
+    gint64 drain_period;              // the content period its margins were made in
+    gint64 present_offset;            // presented less released lateness at the display's last read
+    gint64 offset_seen;               // that read's presented time
+    gboolean have_offset;
     gchar* backlog_name;              // object lock
     GstElement* backlog;
     gboolean have_queue_read, clear_pending;
@@ -461,6 +465,11 @@ static void vp_publish(GstMrVideoPace* self, gint64 base) {
     s.presenting = !d.outage;
     if (d.have_presented) {
         s.present_lateness = d.last_presented - (d.last_running + base);
+        if (self->have_kept && d.last_presented != self->offset_seen) {   // the drain's display term (B-179)
+            self->present_offset = s.present_lateness - self->last_lateness;
+            self->offset_seen = d.last_presented;
+            self->have_offset = TRUE;
+        }
     } else if (self->have_kept) {
         const gint64 period = s.achieved ? s.achieved : s.refresh;
         s.present_lateness = self->last_lateness + (period ? period : s.content_period);
@@ -513,17 +522,20 @@ static void vp_report(GstMrVideoPace* self, gint64 now) {
 
 /* --- pads ----------------------------------------------------------------------------- */
 
-/* The drain (B-179) after each paced frame: its slack (slot' - arrival, neither collapsed nor the sink's wait), a
- * late release (by how much, unless the sink's last push returned past its slot), the backlog queue's level every
- * 100 ms, the group target as the engine last set it;
- * the law on the presented lateness, delta back into the pace. No display rate (none) or no display presenting:
+/* The drain (B-179) after each paced frame: its slack, a late release, the backlog queue's level, the group target;
+ * the law on this frame's presented lateness, delta back into the pace. No display rate or no display presenting:
  * nothing drains, and a display presenting nothing publishes no target (M4, M14). */
-static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 now, bool discont, bool have_free,
-                     gint64 free_at) {
+static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 running, gint64 now, bool discont,
+                     bool have_free, gint64 free_at) {
+    const gint64 tc = self->pace->content_period();
+    if (self->drain && tc > 0 && tc != self->drain_period) {   // another frame rate: margins in its frames
+        delete self->drain;
+        self->drain = NULL;
+    }
     if (!self->drain) {
-        const gint64 tc = self->pace->content_period();
         if (tc <= 0) return;
-        self->drain = new mrts::DrainServo(true, 2 * tc, tc);
+        self->drain = new mrts::DrainServo(true, tc, tc);
+        self->drain_period = tc;
     }
     mrts::DrainServo& s = *self->drain;
     if (self->clear_pending) {
@@ -539,7 +551,12 @@ static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 now, bo
     if (d.has_slack) s.sample(now, d.slack_ns);
     // Late past a slot the sink's last push already held the thread beyond (a decode after its return):
     // the sink's wait, as `held` is, not the input's; no raise from it (B-179, HELD_NS's limit).
-    if (d.late && !(have_free && free_at >= now - d.late_by_ns)) s.late(now, d.late_by_ns);
+    // Late by under a quarter frame is the release's scheduling jitter: no underrun, no raise (B-179 fix 1).
+    if (d.late && !(have_free && free_at >= now - d.late_by_ns) && 4 * d.late_by_ns >= tc) {
+        GST_DEBUG_OBJECT(self, "late release by %" G_GINT64_FORMAT " us, the drain at %" G_GINT64_FORMAT " ppb",
+                         (gint64)d.late_by_ns / 1000, (gint64)s.ppb());
+        s.late(now, d.late_by_ns);
+    }
     if (self->backlog && (!self->have_queue_read || now - self->queue_read_at >= QUEUE_READ_NS)) {
         guint64 level = 0;
         g_object_get(self->backlog, "current-level-time", &level, NULL);
@@ -550,9 +567,10 @@ static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 now, bo
     const PaceSummary p = self->pace->peek();
     const bool rate_known = p.display_source != DisplaySource::none;
     const bool presenting = !self->display->outage;
-    g_mutex_lock(&self->snap_lock);
-    const gint64 render = self->snap->present_lateness;
-    g_mutex_unlock(&self->snap_lock);
+    // This frame's release lateness plus what the display added at its last read (a refresh without one).
+    const gint64 released = d.rate_drop ? self->last_lateness : d.release_ns - running;
+    const gint64 period = self->rate->refresh() ? self->rate->refresh() : self->rate->prior();
+    const gint64 render = released + (self->have_offset ? self->present_offset : (period ? period : tc));
     s.update(now, render, rate_known && presenting && self->have_kept);
     self->pace->set_drain(rate_known && presenting ? s.ppb() : 0);
     for (const mrts::DrainEvent& e : s.take_events()) {
@@ -615,7 +633,7 @@ static GstFlowReturn vp_chain(GstPad*, GstObject* parent, GstBuffer* buf) {
     const bool held = self->have_free && now - self->free_at <= HELD_NS;
     const PaceDecision d =
         self->pace->on_frame((gint64)running, dur, now, GST_BUFFER_IS_DISCONT(buf), held);
-    vp_drain(self, d, now, GST_BUFFER_IS_DISCONT(buf), self->have_free, self->free_at);
+    vp_drain(self, d, (gint64)running, now, GST_BUFFER_IS_DISCONT(buf), self->have_free, self->free_at);
     GST_LOG_OBJECT(self, "pts %" GST_TIME_FORMAT " arrival %" G_GINT64_FORMAT " release %"
                    G_GINT64_FORMAT "%s%s", GST_TIME_ARGS(pts), now, d.release_ns,
                    held ? " (held)" : "", d.rate_drop ? " (rate drop)" : "");
@@ -708,8 +726,8 @@ static void vp_start(GstMrVideoPace* self) {
     self->frame_dur = 0;
     gst_caps_replace(&self->caps, NULL);
     self->display->reset();
-    self->have_kept = FALSE;
-    self->last_lateness = 0;
+    self->have_kept = self->have_offset = FALSE;
+    self->last_lateness = self->present_offset = self->offset_seen = 0;
     self->have_free = FALSE;
     self->free_at = 0;
     self->have_post = FALSE;
@@ -925,6 +943,8 @@ static void gst_mrvideopace_init(GstMrVideoPace* self) {
     self->last_lateness = self->next_post = self->free_at = 0;
     self->unpaced = 0;
     self->drain = NULL;
+    self->drain_period = self->present_offset = self->offset_seen = 0;
+    self->have_offset = FALSE;
     self->backlog_name = NULL;
     self->backlog = NULL;
     self->have_queue_read = self->clear_pending = FALSE;

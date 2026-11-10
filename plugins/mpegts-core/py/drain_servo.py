@@ -23,7 +23,8 @@ window clear (a relock, a stall's flush, caps, a flush, PAUSED), nor while an ep
 30 s after an audio starvation or an outage (its zeros are in the window). A sample below 0 (content that was late) reads
 0: the slack is what was early.
 
-The margin. Audio starts at 60 ms (floor 20 ms), video at 2 frames (floor 1); ceiling 500 ms. An
+The margin. Audio starts at its 20 ms floor (the live fill sits at the prefill's delay line: no
+ring margin to keep), video at 2 frames (floor 1); ceiling 500 ms. An
 audio starvation of at most 250 ms raises it at its end, whatever the drain did (B3); a longer one
 is an outage, counted apart. A video late release raises it only while delta > 0 or within 30 s
 after delta last was (B4); other late releases are counted, and one more than 250 ms late is an
@@ -31,7 +32,8 @@ outage. Late frames within 1 s of the last are one episode. A raise: L = m_u (th
 Every 10 min without a raise m falls 5 ms, never below the floor nor L + 10 ms (L once it exists);
 every hour L falls 5 ms, down to floor - 10 ms.
 
-Published target T (the group's input): L - E while it can drain; its render lateness while it
+Published target T (the group's input): L - max(E, 0) while it can drain (a trough under the
+margin never lifts the group); its render lateness while it
 cannot (warm-up, after a starvation, no lock, no display rate); held at its value when a rise began
 while delta < 0.
 
@@ -71,7 +73,7 @@ UNDER_FLOOR_NS = 10 * MS              # L decays to floor - this
 RAISE_MIN_NS = 20 * MS
 GROUP_STALE_NS = 10 * SEC
 RISE_CAP_NS = SEC
-AUDIO_START_NS = 60 * MS
+AUDIO_START_NS = 20 * MS
 AUDIO_FLOOR_NS = 20 * MS
 
 
@@ -269,7 +271,7 @@ class DrainServo:
         self.trough = trough if trough is not None else 0
         excess = trough - self.margin if warm else 0
         self.excess = excess
-        t_now = render_ns - excess
+        t_now = render_ns - max(excess, 0)
         if self.ppb >= 0:
             self.held = t_now
         self.target = self.held if self.ppb < 0 else t_now

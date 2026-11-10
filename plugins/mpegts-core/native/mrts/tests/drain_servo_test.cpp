@@ -16,6 +16,7 @@ namespace {
 
 constexpr int64_t SEC = DrainServo::SEC, MS = DrainServo::MS;
 constexpr int64_t TICK = 100 * MS, MIN = 60 * SEC, HOUR = 3600 * SEC;
+constexpr int64_t M60 = 60 * MS;   // the cases built on r3's 60 ms start (the default is the floor now)
 constexpr int64_t SLEW_STEP = TICK / DrainServo::SLEW_DEN;
 
 int64_t iabs64(int64_t v) { return v < 0 ? -v : v; }
@@ -160,7 +161,7 @@ void case_backlog() {
 
 void case_steady() {
     Source src{[](int64_t t) { return (t / (150 * MS)) % 2 ? 100 * MS : 200 * MS; }, {}, 0, 0, 0, 0, 0};
-    Link l(DrainServo(), src, 230 * MS);
+    Link l(DrainServo(false, M60), src, 230 * MS);
     Run r{{&l}};
     int64_t floor_at = -1;
     r.until(2 * HOUR, [&](int64_t t) {
@@ -185,7 +186,7 @@ void case_steady_raise() {
 
 void case_step() {
     Source src{[](int64_t t) { return t < 10 * MIN || t >= 4 * HOUR ? 150 * MS : 300 * MS; }, {}, 0, 0, 0, 0, 0};
-    Link l(DrainServo(), src, 300 * MS);
+    Link l(DrainServo(false, M60), src, 300 * MS);
     Run r{{&l}};
     int64_t back = -1;
     r.until(10 * HOUR, [&](int64_t t) {
@@ -230,7 +231,7 @@ void case_dip() {
     Source src = steady(20 * MS);
     src.dip_every = 5 * MIN;
     src.dip_ns = 70 * MS;
-    Link l(DrainServo(), src, 120 * MS);
+    Link l(DrainServo(false, M60), src, 120 * MS);
     Run r{{&l}};
     r.until(8 * HOUR);
     const auto ur = events(l, DrainEvent::Kind::underrun);
@@ -245,7 +246,7 @@ void case_dip() {
 }
 
 void case_creep() {
-    Link l(DrainServo(), steady(20 * MS), 80 * MS, 0, -260000);
+    Link l(DrainServo(false, M60), steady(20 * MS), 80 * MS, 0, -260000);
     Run r{{&l}};
     r.until(HOUR);
     int64_t worst = 0, held = 0;
@@ -407,12 +408,12 @@ void case_video_late() {
 }
 
 void case_hysteresis() {
-    Link l(DrainServo(), steady(10 * MS), 80 * MS);
+    Link l(DrainServo(false, M60), steady(10 * MS), 80 * MS);
     Run r{{&l}};
     r.until(9 * MIN);
     int64_t top = 0;
     for (const Row& row : l.log) top = std::max(top, row.ppb);
-    Link l2(DrainServo(), steady(10 * MS), 200 * MS);
+    Link l2(DrainServo(false, M60), steady(10 * MS), 200 * MS);
     Run r2{{&l2}};
     r2.until(9 * MIN);
     const auto st = events(l2, DrainEvent::Kind::drain_start);
@@ -423,6 +424,28 @@ void case_hysteresis() {
     CHECK("hysteresis: 10 ms above the margin never engages", top == 0);
     CHECK("hysteresis: lets go at 5 ms", let >= 0 && let <= 5 * MS);
     CHECK("hysteresis: one engage only", st.size() == 1);
+}
+
+// B-179 fix 1: a trough under the margin publishes its render lateness, never more; the group ends at the higher.
+void case_live() {
+    Link a(DrainServo(), steady(20 * MS), 25 * MS, 40 * MS);
+    Link b(DrainServo(), steady(20 * MS), 120 * MS, -140 * MS);
+    std::vector<Link*> links{&a, &b};
+    Group g{links};
+    Run r{links};
+    int64_t over = 0;
+    r.until(10 * MIN, [&](int64_t t) {
+        g(t);
+        if (t >= 40 * SEC) over = std::max(over, g.p - std::max(a.render(), b.render()));
+    });
+    const int64_t top = std::max(a.render(), b.render());
+    CHECK("live: the trough under the margin, no drain", a.s.excess() < 0 && a.s.ppb() == 0);
+    CHECK("live: it publishes its render lateness", a.s.target() == a.render());
+    CHECK("live: P never above the higher render", over <= MS);
+    CHECK("live: both end at the higher render, none above it",
+          iabs64(a.render() - top) <= 20 * MS && iabs64(b.render() - top) <= 20 * MS && top <= a.render() + MS);
+    CHECK("live: no underrun",
+          a.s.underruns() == 0 && b.s.underruns() == 0 && a.starved_ns == 0 && b.starved_ns == 0);
 }
 
 // The window: three buckets, the oldest leaving at each rotation, all of them after 30 s.
@@ -456,5 +479,6 @@ int main() {
     case_group_cap();
     case_video_late();
     case_hysteresis();
+    case_live();
     return test_summary("drain_servo");
 }
