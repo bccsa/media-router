@@ -1030,15 +1030,15 @@ def case_drain():
         at = (t_full - rig.t0) / S if t_full else None
         check(f"drain {hz} Hz: the backlog in bq drains at 0.5 % once 30 s are sampled (drain-ppm 5,000 at "
               f"{at or 0:.1f} s); release lateness falls {slope:+.2f} ms/s (5 +-10 %; at 50 Hz to 6.5: the drops "
-              f"come whole frames, and a measured period a hair over 20 ms adds rate drops)",
+              f"come whole frames)",
               at is not None and 30 <= at <= 50 and (-6.5 if decimates else -5.5) <= slope <= -4.5,
               f"trough {st['fill-trough-ns'] / MS:.0f} ms, margin {st['drain-margin-ns'] / MS:.0f} ms")
         if decimates:
-            # A measured period a hair over 20 ms makes the shadow drop too: those count as rate drops.
-            both = st["drain-drops"] + st["rate-drops"]
-            check(f"drain 50 Hz: on a display at the content rate it skips 1 frame in 200 while draining "
-                  f"({st['drain-drops']} drain drops and {st['rate-drops']} rate drops for {frames} frames, want "
-                  f"{want:.1f} -1.5 +2 in all)", want - 1.5 <= both <= want + 2)
+            # The sink's wait is read on the cadence at delta 0: the drain's own skips are drain drops (fix 2).
+            check(f"drain 50 Hz: on a display at the content rate it skips 1 frame in 200 while draining, "
+                  f"drain drops all ({st['drain-drops']} drain drops and {st['rate-drops']} rate drops for "
+                  f"{frames} frames, want {want:.1f} -1.5 +2 drain drops, 0 rate drops)",
+                  want - 1.5 <= st["drain-drops"] <= want + 2 and st["rate-drops"] == 0)
         else:
             check(f"drain 60 Hz: on a display with headroom nothing drops ({st['drain-drops']} drain drops, "
                   f"{st['rate-drops']} rate drops): it loses repeats only",

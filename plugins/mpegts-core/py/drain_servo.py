@@ -152,6 +152,7 @@ class DrainServo:
             return
         self.started = True
         self.warm_from = self.last = now
+        self.sampled = False        # a slack sample since the last clear
         self.slack.clear(now)
         self.queue.clear(now)
         self.m_at = now + M_EVERY_NS
@@ -187,6 +188,9 @@ class DrainServo:
 
     def sample(self, now, slack_ns):
         self._touch(now)
+        if self.sampled and self.slack.min(now) is None:
+            self.warm_from = now    # a hole emptied the window: warm-up again (B-179 fix 2)
+        self.sampled = True
         self.slack.add(now, max(slack_ns, 0))
 
     def queue_level(self, now, level_ns):
@@ -236,6 +240,7 @@ class DrainServo:
         self.slack.clear(now)
         self.queue.clear(now)
         self.warm_from = now
+        self.sampled = False
         self.ppb = 0
         self.engaged = False
         if self.draining:

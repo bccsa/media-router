@@ -528,7 +528,8 @@ static void vp_report(GstMrVideoPace* self, gint64 now) {
 static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 running, gint64 now, bool discont,
                      bool have_free, gint64 free_at) {
     const gint64 tc = self->pace->content_period();
-    if (self->drain && tc > 0 && tc != self->drain_period) {   // another frame rate: margins in its frames
+    // Another frame rate (past 1 %: a median flipping between tick values is not): margins in its frames.
+    if (self->drain && tc > 0 && std::llabs(tc - self->drain_period) * 100 > self->drain_period) {
         delete self->drain;
         self->drain = NULL;
     }

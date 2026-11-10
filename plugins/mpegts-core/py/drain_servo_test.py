@@ -466,12 +466,32 @@ def case_live():
     ]
 
 
+def case_hole():
+    """13. B-179 fix 2: a 35 s hole in a video servo's samples (an input outage) empties its window;
+    the next sample starts warm-up again, so nothing drains for 30 s on a one-sample window."""
+    s = DrainServo(True, 40 * MS, 20 * MS)
+    ppb = []
+    for k in range(1, 1201):
+        t = k * TICK
+        if 40 * SEC < t < 75 * SEC:
+            continue
+        s.sample(t, 300 * MS)
+        s.update(t, 500 * MS, True)
+        ppb.append((t, s.ppb))
+    before = [p for t, p in ppb if t <= 40 * SEC]
+    quiet = [p for t, p in ppb if 75 * SEC <= t < 105 * SEC]
+    after = [p for t, p in ppb if t >= 105 * SEC]
+    return [("hole: it drained before the hole", max(before) > 0),
+            ("hole: warm-up again after it, nothing drains for 30 s", max(quiet) == 0),
+            ("hole: then it drains", max(after) > 0)]
+
+
 CASES = {
     "backlog": case_backlog, "steady": case_steady, "steady_raise": case_steady_raise,
     "step": case_step, "starve": case_starve, "dip": case_dip, "creep": case_creep,
     "outage": case_outage, "discont": case_discont, "paced": case_paced, "group": case_group,
     "group_cap": case_group_cap, "video_late": case_video_late, "hysteresis": case_hysteresis,
-    "live": case_live,
+    "live": case_live, "hole": case_hole,
 }
 
 
@@ -561,6 +581,15 @@ def m_negative_target():
     return _patch(DrainServo, "update", update)
 
 
+def m_warm_across_hole():
+    orig = DrainServo.sample
+
+    def sample(self, now, slack_ns):
+        self.sampled = False
+        return orig(self, now, slack_ns)
+    return _patch(DrainServo, "sample", sample)
+
+
 def m_no_hysteresis():
     a = _patch(ds, "ENGAGE_NS", 0)
     b = _patch(ds, "LETGO_NS", -1)
@@ -631,6 +660,7 @@ MUTANTS = [
     ("a negative delta alone", m_negative_alone, "steady"),
     ("engage at 0 ms, no let-go band", m_no_hysteresis, "hysteresis"),
     ("the target carrying a negative excess (r3)", m_negative_target, "live"),
+    ("warm across a hole (fix 2)", m_warm_across_hole, "hole"),
 ]
 
 

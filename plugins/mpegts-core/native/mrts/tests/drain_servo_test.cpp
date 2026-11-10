@@ -448,6 +448,23 @@ void case_live() {
           a.s.underruns() == 0 && b.s.underruns() == 0 && a.starved_ns == 0 && b.starved_ns == 0);
 }
 
+// B-179 fix 2: a 35 s hole in a video servo's samples empties its window; warm-up again, nothing drains for 30 s.
+void case_hole() {
+    DrainServo s(true, 40 * MS, 20 * MS);
+    int64_t before = 0, quiet = 0, after = 0;
+    for (int k = 1; k <= 1200; k++) {
+        const int64_t t = k * TICK;
+        if (t > 40 * SEC && t < 75 * SEC) continue;
+        s.sample(t, 300 * MS);
+        s.update(t, 500 * MS, true);
+        int64_t& m = t <= 40 * SEC ? before : t < 105 * SEC ? quiet : after;
+        m = std::max(m, s.ppb());
+    }
+    CHECK("hole: it drained before the hole", before > 0);
+    CHECK("hole: warm-up again after it, nothing drains for 30 s", quiet == 0);
+    CHECK("hole: then it drains", after > 0);
+}
+
 // The window: three buckets, the oldest leaving at each rotation, all of them after 30 s.
 void case_window() {
     mrts::DrainWindow w;
@@ -480,5 +497,6 @@ int main() {
     case_video_late();
     case_hysteresis();
     case_live();
+    case_hole();
     return test_summary("drain_servo");
 }

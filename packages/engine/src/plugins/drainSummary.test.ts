@@ -76,6 +76,16 @@ describe('the Latency target row', () => {
         );
     });
 
+    it('a negative excess (a clean link under its margin): the target is now, never above it (fix 2)', () => {
+        const live = drainSummary(
+            fields({ ppm: 0, state: 'idle', excessMs: -20, publishedMs: 2 }),
+            2,
+            undefined,
+        );
+        expect(live.targetMs).toBe(2);
+        expect(latencyTargetText(live)).toBe('2 ms (measured), now 2 ms');
+    });
+
     it('no display rate: not measured (M4); warming up: measuring', () => {
         const v = drainSummary(fields({ ppm: 0, state: 'warm-up', excessMs: 0 }), 240, undefined, {
             rateKnown: false,

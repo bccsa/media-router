@@ -724,6 +724,43 @@ def test_drain():
               (abs(s.drain_drops - n // 200) <= 1 if decimates else s.drain_drops == 0))
         check("drain %s: the shown lateness moves %+.1f ms (0.5 %% of the content: %+.1f, +-10 %%)" %
               (name, moved / MS, want / MS), abs(moved - want) <= abs(want) // 10)
+    # A sink blocking to its next 20 ms refresh (mrtestvideosink, kmssink), the drain from its 1000th
+    # push, the thread back 100 us after each flip: the sink's wait grows by the drain's own lead, which the lag foresees (B-179 fix 2).
+    class KmsDrainAt(Kms):
+        def __init__(self, period, phase, pace, stall_at=0):
+            super().__init__(period, phase)
+            self.pace, self.pushes, self.stall_at = pace, 0, stall_at
+
+        def push(self, t):
+            self.pushes += 1
+            if self.pushes == 1000:
+                self.pace.set_drain(5000000)
+            shown = self.refresh_after(t)
+            if self.pushes == self.stall_at:
+                shown += 5 * self.period                    # a display frozen 100 ms
+            return shown + 100 * US, shown                  # the thread wakes 100 us after the flip
+
+    for phase in (0, 5 * MS, 13 * MS, 19900 * US):
+        pace = new_pace("drain blocking %d" % phase)
+        pace.set_display(P50, "measured")
+        drive(pace, [(p, P50, 0, False, False) for p in cadence(n + 1000, 50, 1)],
+              KmsDrainAt(P50, phase, pace))
+        s = pace.take()
+        check("drain 50p into a blocking 50 Hz sink at phase %.1f ms, +0.5 %%: %d drain drops (n / 200 +-1),"
+              " rate drops %d, behind %d" % (phase / MS, s.drain_drops, s.rate_drops, s.behind),
+              abs(s.drain_drops - n // 200) <= 1 and s.rate_drops == 0 and s.behind == 0)
+    pace = new_pace("drain blocking stall")
+    pace.set_display(P50, "measured")
+    rec = drive(pace, [(p, P50, 0, False, False) for p in cadence(n + 1000, 50, 1)],
+                KmsDrainAt(P50, 5 * MS, pace, stall_at=4000))
+    s = pace.take()
+    shown = [(i, r[4] - r[0]) for i, r in enumerate(rec) if not r[3]]
+    k = next(k for k in range(1, len(shown)) if shown[k][1] - shown[k - 1][1] > 50 * MS)
+    back = shown[k + 1][1] - shown[k - 1][1]
+    check("drain into that sink frozen 100 ms at its 4000th push: the freeze's 5 frames are rate drops "
+          "(%d), the drain's are not (%d drain drops), the shown lateness back within a frame (%+.1f ms)"
+          % (s.rate_drops, s.drain_drops, back / MS),
+          s.rate_drops == 5 and abs(s.drain_drops - n // 200) <= 1 and abs(back) <= P50)
     pace = new_pace("drain fields")
     pace.set_display(P50, "measured")
     pace.on_frame(0, P50, 100 * MS, False)
@@ -775,7 +812,7 @@ CASES = (test_50p_on_60hz, test_60p_on_50hz, test_60_on_5994, test_50p_on_slow_d
          test_replay_format)
 
 # (name, the case it must fail, video_pace.py text, its replacement). The first six are the
-# brief's (p4-3a), the next nine B-161's, the last seven p4-3c's (B-175).
+# brief's (p4-3a), the next nine B-161's, then p4-3c's (B-175) with B-179's three among them.
 LAG_LINE = "self.lag = max(self.lag - delta, 0 if collapsed else -whole)"
 ACHIEVED_FIRST = '        achieved = self.achieved()\n        if achieved:\n            return achieved, "measured"\n'
 MUTANTS = (
@@ -816,13 +853,17 @@ MUTANTS = (
      "        return _round_div(*self.windows[-1])"),
     ("the sink's wait moves the cadence", 17, "self.prev_release = slot if sink_late else release",
      "self.prev_release = release"),
-    ("no skip a display period behind", 17, "if sink_late and arrival_ns - slot > grid + whole:",
+    ("no skip a display period behind", 17, "if sink_late and waited > grid + whole:",
      "if False:"),
-    ("the skip leaves the lag", 16, "self.lag = max(self.lag, arrival_ns - slot - grid)",
+    ("the skip leaves the lag", 16, "self.lag = max(self.lag, waited - grid)",
      "self.lag = max(self.lag, whole)"),
     ("delta' in the slot only, not the lag", 21,
      "            whole = self._drained(whole0)\n            self.lag = max(self.lag - delta, 0 if collapsed",
      "            whole = whole0\n            self.lag = max(self.lag - delta0, 0 if collapsed"),
+    ("the sink's wait on the drained slot", 21, "waited = arrival_ns - slot0", "waited = arrival_ns - slot"),
+    ("the delta-0 cadence kept through a drop", 21,
+     "self.prev_slot0 = slot0 if sink_late and not drop else self.prev_release",
+     "self.prev_slot0 = slot0 if sink_late else self.prev_release"),
     ("every push read as the sink's pace", 19,
      "if pressed and self.prev_return is not None and returned_ns > self.prev_return:",
      "if self.prev_return is not None and returned_ns > self.prev_return:"),

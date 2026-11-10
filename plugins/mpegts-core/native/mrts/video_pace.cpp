@@ -93,7 +93,7 @@ PaceDecision VideoPace::on_frame(int64_t pts_ns, int64_t dur_ns, int64_t arrival
         nominal > 0 && nominal <= gap_threshold_ns_ / 4 ? 4 * nominal : gap_threshold_ns_;
     bool collapsed = false, sink_late = false;
     int64_t delta = 0, delta0 = 0;
-    __int128 slot = arrival_ns;
+    __int128 slot = arrival_ns, slot0 = arrival_ns;
     PaceDecision out{0, false};
     if (have_prev_) {
         const __int128 d = (__int128)pts_ns - prev_pts_;
@@ -110,6 +110,7 @@ PaceDecision VideoPace::on_frame(int64_t pts_ns, int64_t dur_ns, int64_t arrival
         delta0 = delta;
         delta = drained(delta);
         slot = (__int128)prev_release_ + delta;
+        slot0 = (__int128)prev_slot0_ + delta0;
         // Past its slot behind the sink's own push: the sink's wait, not the input's lateness.
         sink_late = held && !collapsed && arrival_ns > slot;
         if (arrival_ns > slot && !collapsed && !sink_late) {
@@ -137,7 +138,8 @@ PaceDecision VideoPace::on_frame(int64_t pts_ns, int64_t dur_ns, int64_t arrival
         const bool foreseen = whole > 0 && lag >= whole;
         // The sink's own wait past a frame; a display period behind, the lag is what it shows.
         const __int128 grid = std::max<__int128>((__int128)display_period_ - whole, 0);
-        const __int128 waited = (__int128)arrival_ns - slot;
+        // The wait on the cadence at delta 0: the drain's own lead is the lag's to foresee (B-179 fix 2).
+        const __int128 waited = (__int128)arrival_ns - slot0;
         if (sink_late && waited > grid + whole) {
             lag = std::max<__int128>(lag, waited - grid);
             behind = !foreseen;
@@ -160,6 +162,8 @@ PaceDecision VideoPace::on_frame(int64_t pts_ns, int64_t dur_ns, int64_t arrival
     }
     prev_pts_ = pts_ns;
     prev_release_ = sink_late ? clamp64(slot) : release;
+    // A drop or a release on time puts the delta-0 cadence back on the real one.
+    prev_slot0_ = sink_late && !drop ? clamp64(slot0) : prev_release_;
     have_prev_ = true;
     gap_pending_ = false;
     if (drop && !behind && !sdrop && owed_ == 0) {

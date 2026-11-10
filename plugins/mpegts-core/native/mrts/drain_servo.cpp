@@ -136,6 +136,9 @@ void DrainServo::outage(int64_t now, int64_t length) {
 
 void DrainServo::sample(int64_t now, int64_t slack_ns) {
     touch(now);
+    int64_t any = 0;
+    if (sampled_ && !slack_.min(now, &any)) warm_from_ = now;   // a hole emptied the window: warm-up again
+    sampled_ = true;
     slack_.add(now, std::max<int64_t>(slack_ns, 0));
 }
 
@@ -185,6 +188,7 @@ void DrainServo::clear(int64_t now) {
     slack_.clear(now);
     queue_.clear(now);
     warm_from_ = now;
+    sampled_ = false;
     ppb_ = 0;
     engaged_ = false;
     if (draining_) events_.push_back(DrainEvent{DrainEvent::Kind::drain_done, now, drained_});

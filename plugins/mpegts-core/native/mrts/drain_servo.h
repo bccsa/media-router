@@ -105,6 +105,7 @@ class DrainServo {
     int64_t learned_ = 0;
     DrainWindow slack_, queue_;
     bool started_ = false;
+    bool sampled_ = false;   // a slack sample since the last clear
     int64_t warm_from_ = 0, last_ = 0, m_at_ = 0, l_at_ = 0;
     int64_t ppb_ = 0;
     bool engaged_ = false, draining_ = false, brk_ = false;

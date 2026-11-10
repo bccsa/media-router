@@ -17,7 +17,7 @@ export function drainSummary(
     group: DrainGroupView | undefined,
     video?: { rateKnown: boolean; drainDropsPerMin?: number },
 ): DrainSummary {
-    const own = nowMs - f.excessMs;
+    const own = nowMs - Math.max(f.excessMs, 0); // as the element: T = L - max(E, 0)
     const following = f.groupTargetMs > 0 && f.state !== 'warm-up' && !!group?.with?.length;
     const d: DrainSummary = {
         targetMs: following ? Math.min(f.groupTargetMs, own + 1000) : own,

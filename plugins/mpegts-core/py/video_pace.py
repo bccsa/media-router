@@ -76,7 +76,9 @@ rules above take a frame's delta or its nominal duration (the slot and the lag; 
 stays the content's). A display with headroom loses repeats only; one at the content rate
 decimates δ of the frames, `drain_drops`: a shadow lag at δ = 0 runs beside the real one, and a drop
 it would not make counts there, not in `rate_drops` (a later drop of the shadow's that the real one
-does not make pays one back); at δ = 0 the shadow is the real lag. δ < 0 lengthens the slots. Each
+does not make pays one back); at δ = 0 the shadow is the real lag. The sink's wait (the display a
+period behind, above) is read on the cadence at δ = 0, put back on the real one at each drop and each
+release not held: the drain's own lead is the lag's to foresee. δ < 0 lengthens the slots. Each
 frame leaves `last_late_by` (arrival - slot', None unless late) and `last_slack` (slot' - arrival,
 None for a first, collapsed or sink-late frame) for the drain servo.
 
@@ -129,6 +131,7 @@ class VideoPace:
         self.gap_threshold_ns = gap_threshold_ns
         self.prev_pts = None                  # the previous frame's PTS, kept or dropped
         self.prev_release = 0
+        self.prev_slot0 = 0                   # the cadence at δ = 0, the sink's wait measured on it
         self.gap_pending = False
         self.window = deque()                 # the last PERIOD_WINDOW clean deltas, in order
         self.ordered = []                     # the same, sorted
@@ -188,7 +191,7 @@ class VideoPace:
         delta0 = 0
         if self.prev_pts is None:
             delta = 0
-            slot = arrival_ns
+            slot = slot0 = arrival_ns
         else:
             d = pts_ns - self.prev_pts
             collapsed = self.gap_pending or discont or d < 0 or d > threshold
@@ -202,6 +205,7 @@ class VideoPace:
                 self._add_clean(d)
             delta0, delta = delta, self._drained(delta)
             slot = self.prev_release + delta
+            slot0 = self.prev_slot0 + delta0
             # Past its slot behind the sink's own push: the sink's wait, not the input's lateness.
             sink_late = held and not collapsed and arrival_ns > slot
             if arrival_ns > slot and not collapsed and not sink_late:
@@ -221,9 +225,11 @@ class VideoPace:
             self.lag = max(self.lag - delta, 0 if collapsed else -whole)
             foreseen = whole > 0 and self.lag >= whole
             grid = max(self.display_period - whole, 0)     # the sink's own wait past a frame
-            if sink_late and arrival_ns - slot > grid + whole:
+            # The wait on the cadence at δ = 0: the drain's own lead is the lag's to foresee (B-179 fix 2).
+            waited = arrival_ns - slot0
+            if sink_late and waited > grid + whole:
                 # A display period behind: the lag is what the sink shows, drop until within one.
-                self.lag = max(self.lag, arrival_ns - slot - grid)
+                self.lag = max(self.lag, waited - grid)
                 behind = not foreseen
             drop = whole > 0 and self.lag >= whole
             if not drop:
@@ -232,8 +238,8 @@ class VideoPace:
                 # The shadow: the same frame at δ = 0, the sink's wait as the real lag saw it.
                 self.shadow = max(self.shadow - delta0, 0 if collapsed else -whole0)
                 grid0 = max(self.display_period - whole0, 0)
-                if sink_late and arrival_ns - slot > grid0 + whole0:
-                    self.shadow = max(self.shadow, arrival_ns - slot - grid0)
+                if sink_late and waited > grid0 + whole0:
+                    self.shadow = max(self.shadow, waited - grid0)
                 sdrop = whole0 > 0 and self.shadow >= whole0
                 if not sdrop:
                     self.shadow += self.display_period
@@ -242,6 +248,8 @@ class VideoPace:
                 self.shadow = self.lag
         self.prev_pts = pts_ns
         self.prev_release = slot if sink_late else release   # the cadence the next frame follows
+        # A drop (the drain's or the rate's) or a release on time puts the δ = 0 cadence back on the real one.
+        self.prev_slot0 = slot0 if sink_late and not drop else self.prev_release
         self.gap_pending = False
         if drop and not behind and not sdrop and self.owed == 0:
             self.drain_drops += 1

@@ -69,6 +69,7 @@ class VideoPace {
     bool have_prev_ = false;
     int64_t prev_pts_ = 0;        // the previous frame's PTS, kept or dropped
     int64_t prev_release_ = 0;    // the cadence: its release, or its slot when the sink held it
+    int64_t prev_slot0_ = 0;      // the cadence at delta 0, the sink's wait read on it (B-179)
     bool gap_pending_ = false;
     int64_t window_[PERIOD_WINDOW] = {};    // the last clean deltas, a ring from window_head_
     int64_t ordered_[PERIOD_WINDOW] = {};   // the same, sorted

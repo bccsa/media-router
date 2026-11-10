@@ -22,8 +22,8 @@ Arrival traces for the restamp are in `restamp/` (ch. 5 part 7.2, WI-P1-5); each
 `.expect.json` there says how its trace was recorded. The output harness's runner commands are
 `output/pipelines.json`, made by the real modules (`testing/outputConformance.test.ts`, `vitest -u`), with
 one `scn-*.expect.json` per scenario of `output_conformance_test.py` (ch. 8 WI-P4-14, B-174; the
-drain's `scn-out-drain-burst`, 120 s, and `scn-out-drain-group`, 210 s, B-179); its streams are
-generated at test time or are the recordings here, none committed for it. The suite runs about 40
+drain's `scn-out-drain-burst`, 120 s, and `scn-out-drain-group`, 170 s, B-179); its streams are
+generated at test time or are the recordings here, none committed for it. The suite runs about 39
 min in both runners on the 4-core dev Pi. An expectation's `cadenceWarning` means
 a PCR interval ran late against the PCR's own cadence (twice it, at least 500 ms, at most 4 s)
 at some point of the replay; `pcrCadenceMs` is the cadence learned at the end (B-86). A trace

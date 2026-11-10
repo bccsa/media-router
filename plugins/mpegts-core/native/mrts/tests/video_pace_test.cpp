@@ -808,6 +808,49 @@ void test_drain() {
                       "+-10 %%)", r.name, moved / 1e6, want / 1e6);
         CHECK(name, std::llabs(moved - want) <= std::llabs(want) / 10);
     }
+    // A sink blocking to its next 20 ms refresh (mrtestvideosink, kmssink), the drain from its 1000th push, the
+    // thread back 100 us after each flip: the sink's wait grows by the drain's own lead, the lag foresees it.
+    struct KmsDrainAt : Kms {
+        VideoPace* pace;
+        int64_t pushes = 0, stall_at;
+        KmsDrainAt(int64_t p, int64_t ph, VideoPace* v, int64_t stall = 0) : Kms(p, ph), pace(v), stall_at(stall) {}
+        std::pair<int64_t, int64_t> push(int64_t t) override {
+            if (++pushes == 1000) pace->set_drain(5000000);
+            int64_t shown = refresh_after(t);
+            if (pushes == stall_at) shown += 5 * period;   // a display frozen 100 ms
+            return {shown + 100 * US, shown};
+        }
+    };
+    std::vector<Frame> backlog;
+    for (int64_t p : cadence(n + 1000, 50, 1)) backlog.push_back({p, P50, 0, false, false});
+    for (int64_t phase : {(int64_t)0, 5 * MS, 13 * MS, 19900 * US}) {
+        VideoPace pace;
+        pace.set_display(P50, DisplaySource::measured);
+        KmsDrainAt k(P50, phase, &pace);
+        drive(pace, backlog, &k);
+        const PaceSummary s = pace.take();
+        CHECK(fmt("drain 50p into a blocking 50 Hz sink at phase %.1f ms, +0.5 %%: %llu drain drops (n / 200 +-1),"
+                  " rate drops %llu, behind %llu", phase / 1e6, (unsigned long long)s.drain_drops,
+                  (unsigned long long)s.rate_drops, (unsigned long long)s.behind).c_str(),
+              std::llabs((int64_t)s.drain_drops - n / 200) <= 1 && s.rate_drops == 0 && s.behind == 0);
+    }
+    {
+        VideoPace pace;
+        pace.set_display(P50, DisplaySource::measured);
+        KmsDrainAt k(P50, 5 * MS, &pace, 4000);
+        const std::vector<Rec> rec = drive(pace, backlog, &k);
+        const PaceSummary s = pace.take();
+        std::vector<int64_t> shown;
+        for (const Rec& r : rec)
+            if (!r.drop) shown.push_back(r.shown - r.pts);
+        size_t j = 1;
+        while (j + 1 < shown.size() && shown[j] - shown[j - 1] <= 50 * MS) j++;
+        const int64_t back = shown[j + 1] - shown[j - 1];
+        CHECK(fmt("drain into that sink frozen 100 ms at its 4000th push: the freeze's 5 frames are rate drops "
+                  "(%llu), the drain's are not (%llu drain drops), the shown lateness back within a frame (%+.1f ms)",
+                  (unsigned long long)s.rate_drops, (unsigned long long)s.drain_drops, back / 1e6).c_str(),
+              s.rate_drops == 5 && std::llabs((int64_t)s.drain_drops - n / 200) <= 1 && std::llabs(back) <= P50);
+    }
     VideoPace pace;
     pace.set_display(P50, DisplaySource::measured);
     pace.on_frame(0, P50, 100 * MS, false);
