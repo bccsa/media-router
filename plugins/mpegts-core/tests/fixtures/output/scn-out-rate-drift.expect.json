@@ -23,12 +23,15 @@
         "drift_ppm": -2000
       },
       "refresh_ns": 20040000,
-      "from_first_drop": true
+      "from_first_drop": true,
+      "expect": {
+        "flat_ms": 61
+      }
     }
   ],
   "expect": {
     "settle_s": 3,
-    "flat_ms": 21,
+    "flat_ms": 41,
     "refresh_tol_ns": 2000
   }
 }

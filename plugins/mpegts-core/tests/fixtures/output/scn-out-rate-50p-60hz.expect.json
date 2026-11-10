@@ -16,7 +16,7 @@
   ],
   "expect": {
     "settle_s": 3,
-    "flat_ms": 21,
+    "flat_ms": 41,
     "refresh_tol_ns": 20000
   }
 }

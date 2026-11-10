@@ -6,6 +6,7 @@
   "expect": {
     "settle_s": 5,
     "av_ms": 45,
-    "flat_ms": 22
+    "flat_ms": 22,
+    "video_flat_ms": 41
   }
 }

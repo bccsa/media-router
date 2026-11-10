@@ -160,19 +160,6 @@ class MarkerProducer(rig.Producer):
             self.delivered.append((sent, b.pts, bytes(data)))
 
 
-class KeepStamp(rig.IdentityStamper):
-    """IdentityStamp that keeps its last stamp for a buffer whose PES reads a minute or more off its
-    arrival: the stale PES reaches the output's demux on a sane bus (IdentityStamp itself has no
-    such rule: B-174 Found)."""
-
-    def stamp(self, data, arrival):
-        last = self.last
-        st = super().stamp(data, arrival)
-        if abs(st - arrival) > 60 * S:
-            self.last = last if last is not None else arrival
-        return self.last
-
-
 class Marker(bytes):
     """An OQ-12 marker buffer's bytes, with the gap's end on house time."""
     end_ns = 0
@@ -241,7 +228,7 @@ def video_ok(label, o, x, frames_lo=None):
 
 
 # --------------------------------------------------------------------------- scenarios
-def av_run(argv, exp, knobs=None, ts=None, markers=False, keys=None, stamper=None):
+def av_run(argv, exp, knobs=None, ts=None, markers=False, keys=None):
     """The player and the audio decoder on one generated H.264 + AAC feed."""
     keys = keys or ("player", "decoder")
     run = Run(argv)
@@ -250,8 +237,6 @@ def av_run(argv, exp, knobs=None, ts=None, markers=False, keys=None, stamper=Non
     run.producer("feed", (["vp"] if "player" in keys else []) + (["ad"] if "decoder" in keys else []),
                  ts=ts or (lambda t0: orig.at_house(rel, t0)), stop_s=exp["seconds"], knobs=knobs,
                  markers=markers)
-    if stamper:
-        run.producers[-1].stamper = stamper()
     if "player" in keys:
         run.output("player", exp.get("player", "player50"), video=orig.display(**exp.get("display", {})))
     if "decoder" in keys:
@@ -280,10 +265,14 @@ def scn_out_stall(tag, argv, exp):
     pl, dec, t0 = run.outputs["player"], run.outputs["decoder"], run.t0
     video_ok(f"{label} player", pl, x)
     b, a = paces(pl, t0, 2, at), paces(pl, t0, at + length + 2, exp["seconds"] + 1)
-    step = orig.mid(a) - orig.mid(b) if a and b else None
-    check(f"{label} player: lateness up by the stall and flat after ({orig.mid(b)} -> {orig.mid(a)} ms, "
-          f"+{step}; spread after {orig.spread(a)} ms; want +{length * 1000} ± {x['video_step_ms']})",
-          step is not None and abs(step - length * 1000) <= x["video_step_ms"] and orig.spread(a) <= x["flat_ms"])
+    # Base to base, but a window can sit on the pace's hold throughout: up to two frames over before,
+    # one under after (1940 seen with medians): +2000 less three frames to plus two.
+    step = round(min(a) - min(b), 1) if a and b else None
+    check(f"{label} player: lateness up by the stall and flat after (base {b and round(min(b), 1)} -> "
+          f"{a and round(min(a), 1)} ms, +{step}, median {orig.mid(b)} -> {orig.mid(a)}; spread after "
+          f"{orig.spread(a)} ms, within {x['video_flat_ms']}; want +{x['video_step_ms'][0]} to +{x['video_step_ms'][1]})",
+          step is not None and x["video_step_ms"][0] <= step <= x["video_step_ms"][1]
+          and orig.spread(a) <= x["video_flat_ms"])
     rb, ra = renders(dec, t0, 2, at), renders(dec, t0, at + length + 2, exp["seconds"] + 1)
     st = last(dec.asrc_stats())
     astep = orig.mid(ra) - orig.mid(rb) if ra and rb else None
@@ -340,10 +329,12 @@ def scn_out_gap_recovers(tag, argv, exp):
                     out.append((whole[i:i + len(d)], r))
                     i += len(d)
                 return out
-        run = av_run(argv, exp, knobs=knobs, ts=ts, markers=markers,
-                     stamper=KeepStamp if arm["name"] == "stale" else None)
+        run = av_run(argv, exp, knobs=knobs, ts=ts, markers=markers)
         run.on_time(label)
         run.clean(label)
+        off = run.producers[0].stamper.off_clock
+        check(f"{label}: the bus stamp's B-203 rule: {off} off-clock PES (want {arm.get('stale', 0)}), "
+              "a stale one timing nothing, its buffer stamped at arrival", off == arm.get("stale", 0))
         pl, dec, t0 = run.outputs["player"], run.outputs["decoder"], run.t0
         b, a = paces(pl, t0, 2, at), paces(pl, t0, at + length + 2, exp["seconds"] + 1)
         ps, dm = pl.reads.get("pace") or {}, demux_last(pl)
@@ -405,10 +396,11 @@ def scn_out_device_stall(tag, argv, exp):
     pl, dec, t0 = run.outputs["player"], run.outputs["decoder"], run.t0
     ds = run.reads.get(("player", "sink", "display-stats")) or {}
     b, a = paces(pl, t0, 2, at), paces(pl, t0, at + length + 2, exp["seconds"] + 1)
-    check(f"{label} player: back live, not later than before within a frame ({orig.mid(b)} -> {orig.mid(a)} ms; "
-          f"spread after {orig.spread(a)}), the outage counted (not-presented {ds.get('not-presented')}, "
-          f"timeouts {ds.get('present-timeouts')}), vp_esq never full ({overruns(pl)})",
-          a and b and orig.mid(a) <= orig.mid(b) + x["frame_ms"] + 1 and orig.spread(a) <= x["flat_ms"]
+    check(f"{label} player: back live, its base not later than before within a frame (base "
+          f"{b and round(min(b), 1)} -> {a and round(min(a), 1)} ms, median {orig.mid(b)} -> {orig.mid(a)}; "
+          f"spread after {orig.spread(a)}, within {x['video_flat_ms']}), the outage counted (not-presented "
+          f"{ds.get('not-presented')}, timeouts {ds.get('present-timeouts')}), vp_esq never full ({overruns(pl)})",
+          a and b and min(a) <= min(b) + x["frame_ms"] + 1 and orig.spread(a) <= x["video_flat_ms"]
           and (ds.get("not-presented") or 0) > 0 and not overruns(pl))
     rb, ra = renders(dec, t0, 2, at), renders(dec, t0, at + length + 2, exp["seconds"] + 1)
     evs = [p for _t, p in dec.asrc_events()]
@@ -449,7 +441,7 @@ def scn_out_rate(tag, argv, exp):
     """A content rate into a display rate: the measured refresh, the drops the ratio gives (none when
     the display is faster), the release lateness flat."""
     for arm in exp["arms"]:
-        label, x = f"{exp['scenario']} {arm['name']} {tag}", exp["expect"]
+        label, x = f"{exp['scenario']} {arm['name']} {tag}", dict(exp["expect"], **arm.get("expect", {}))
         e = dict(exp, kind=arm.get("kind", exp["kind"]), player=arm.get("player", exp.get("player")),
                  display=arm["display"], seconds=arm.get("seconds", exp["seconds"]))
         run = player_run(argv, e, [(a, ("sink", "present-max-mhz", v)) for a, v in arm.get("present_max_mhz", [])])
@@ -575,8 +567,9 @@ def scn_out_av_after_mux(tag, argv, exp):
     a = renders(dec, t0, x["settle_s"], exp["seconds"] + 1)
     skew = orig.mid(v) - orig.mid(a) if v and a else None
     check(f"{label}: video {orig.mid(v)} ms and audio {orig.mid(a)} ms late at their devices after the muxer: "
-          f"A/V {skew} ms (within ±{x['av_ms']}), each flat ({orig.spread(v)}, {orig.spread(a)} ms)",
-          skew is not None and abs(skew) <= x["av_ms"] and orig.spread(v) <= x["flat_ms"]
+          f"A/V {skew} ms (within ±{x['av_ms']}), each flat ({orig.spread(v)}, {orig.spread(a)} ms; within "
+          f"{x['video_flat_ms']}, {x['flat_ms']})",
+          skew is not None and abs(skew) <= x["av_ms"] and orig.spread(v) <= x["video_flat_ms"]
           and orig.spread(a) <= x["flat_ms"])
     pl.reads = {"pace": run.reads.get(("player", "vp_pace", "stats")),
                 "display": run.reads.get(("player", "sink", "display-stats"))}
@@ -833,8 +826,8 @@ def scn_out_wrap(tag, argv, exp):
         moves[name_] = [(sec(b_[0], t0), round(b_[1] - a_[1], 1), a_[0] < tw + x["near_wrap_s"] * S <= b_[0]
                          or a_[0] <= tw < b_[0]) for a_, b_ in zip(rows, rows[1:]) if abs(b_[1] - a_[1]) > 1]
     at_wrap = [m[:2] for v in moves.values() for m in v if m[2]]
-    # The shared host's one-unit steps (a frame; an AU and a card segment) fall anywhere, the wrap's
-    # report too; a wrap fault is a gap, a relock or a move past a unit.
+    # The shared host's one-unit steps (the pace's hold, up to two frames; an AU and a card segment)
+    # fall anywhere, the wrap's report too; a wrap fault is a gap, a relock or a move past a unit.
     big = [(n, m[:2]) for n, v in moves.items() for m in v if abs(m[1]) > x["unit_ms"][n]]
     steps = sum(len(v) for v in moves.values())
     listed = {n: [m[:2] for m in v] for n, v in moves.items()}

@@ -8,7 +8,10 @@
     2
   ],
   "expect": {
-    "video_step_ms": 41,
+    "video_step_ms": [
+      1939,
+      2041
+    ],
     "audio_step_ms": [
       1930,
       2020
@@ -16,6 +19,7 @@
     "flat_ms": 22,
     "decoder_full": [
       "prefill"
-    ]
+    ],
+    "video_flat_ms": 41
   }
 }

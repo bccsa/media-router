@@ -178,6 +178,8 @@ describe('the output conformance runner commands', () => {
             expect(s).toMatch(/queue name=vp_esq leaky=0 /);
             expect(s).toMatch(/mrvideopace name=vp_pace /);
             expect(s).toMatch(/kmssink name=sink [^!]*sync=false/);
+            // The harness names the ts-probe tap by its unnamed queues' order (probe_tap): queue1.
+            expect(s.slice(0, s.indexOf('! appsink name=tsprobe')).match(/! queue (?!name=)/g)).toHaveLength(2);
         }
         expect(String(out.decoder.start.pipeline)).toMatch(/queue name=ad_esq leaky=0 .* queue name=prefill /);
         expect(String(out.aout302m.start.pipeline)).toMatch(/queue name=prefill .*pulsesink name=sink /);

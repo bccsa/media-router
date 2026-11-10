@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""The output conformance rig (plan ch. 8 WI-P4-14): the outputs' runner commands of
-`fixtures/output/pipelines.json` (the real modules', see testing/outputConformance.test.ts) on either
-runner, their display and sound card swapped for the test sinks (`mrtestvideosink`,
-`mrtestaudiosink`) or kept with MR_GATE=1, fed by aligner_rig's producers at real time on the house
-clock. Shared by output_conformance_test.py. Not shipped.
-"""
+"""The output conformance rig (WI-P4-14): the real modules' runner commands (fixtures/output/pipelines.json)
+on either runner, display and card swapped for mrtestvideosink/mrtestaudiosink (kept with MR_GATE=1),
+fed by aligner_rig's producers on the house clock. Shared by output_conformance_test.py; not shipped."""
 import atexit
 import json
 import os

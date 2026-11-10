@@ -9,10 +9,10 @@
   ],
   "expect": {
     "frame_ms": 20,
-    "flat_ms": 21,
     "audio_back_ms": 40,
     "decoder_full": [
       "prefill"
-    ]
+    ],
+    "video_flat_ms": 41
   }
 }

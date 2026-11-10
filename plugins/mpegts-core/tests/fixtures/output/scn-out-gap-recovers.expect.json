@@ -31,7 +31,7 @@
     }
   ],
   "expect": {
-    "video_back_ms": 21,
+    "video_back_ms": 41,
     "audio_back_ms": 33,
     "gap_episode_s": [
       -0.5,

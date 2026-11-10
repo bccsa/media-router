@@ -273,18 +273,23 @@ class Content:
 
 # --------------------------------------------------------------------------- producers
 class IdentityStamper:
-    """mrts::IdentityStamp for one producer: a buffer's first timing PES (a video or audio stream
-    id, or on the first PCR PID) - 1 h, else its arrival (a PES none timing, or the first
-    buffer), else the last stamp; never below the last."""
+    """mrts::IdentityStamp for one producer: a buffer's first timing PES (video/audio stream id, or on
+    the first PCR PID) - 1 h, else its arrival (a PES none timing, or the first buffer), else the last
+    stamp; never below the last. B-203: one over 10 s ahead or 1 h behind times nothing (off_clock)."""
+    AHEAD_MAX_NS = 10_000_000_000
+    BEHIND_MAX_NS = 3_600_000_000_000
 
     def __init__(self):
-        self.last, self.timing_pid = None, None
+        self.last, self.timing_pid, self.off_clock = None, None, 0
 
     def stamp(self, data, arrival):
         pkts = list(ts_psi.iter_packets(data))
         if self.timing_pid is None:
             self.timing_pid = next((ts_psi.ts_pid(p) for p in pkts if ts_psi.read_pcr(p) is not None),
                                    None)
+        if self.last is not None and self.last - arrival > self.AHEAD_MAX_NS:
+            self.off_clock += 1
+            self.last = arrival
         st, any_pes = None, False
         for pkt in pkts:
             pts = ts_psi.read_pes_pts(pkt)
@@ -293,7 +298,11 @@ class IdentityStamper:
             any_pes = True
             sid = pkt[ts_psi.payload_offset(pkt) + 3]
             if (sid & 0xF0) == 0xE0 or (sid & 0xE0) == 0xC0 or ts_psi.ts_pid(pkt) == self.timing_pid:
-                st = ts_timeline.house_from_mux_pts(pts, arrival)
+                h = ts_timeline.house_from_mux_pts(pts, arrival)
+                if h - arrival > self.AHEAD_MAX_NS or arrival - h > self.BEHIND_MAX_NS:
+                    self.off_clock += 1
+                    continue
+                st = h
                 break
         if st is None:
             st = arrival if any_pes or self.last is None else self.last
