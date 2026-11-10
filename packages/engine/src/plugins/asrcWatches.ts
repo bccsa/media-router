@@ -1,7 +1,8 @@
 // The consumer ASRCs' `mrasrc-stats` and `mrasrc-event` messages (house-clock WI-P3-6): a decode
 // term's clock correction, an output's device clock, the out-of-bounds warning, and the events
-// for the log; a device term's render lateness, relocks and stalls (WI-P4-12). A capture ASRC (an
-// ingest's: neither term) is its ingest card's alone.
+// for the log; a device term's render lateness, relocks and stalls (WI-P4-12), and its drain back
+// to its latency target (WI-P4-18). A capture ASRC (an ingest's: neither term) is its ingest
+// card's alone.
 import type { ClockCorrection } from '@media-router/shared-types';
 import { ASRC_EVENT, ASRC_STATS } from './ingestTiming.js';
 import { launchElements } from './launchElements.js';
@@ -49,8 +50,56 @@ export interface AsrcWatch {
     deviceRelocks?: number;
     deviceStalls?: number;
     stalled?: boolean;
+    /** A device term: its drain (B-179). */
+    drain?: DrainFields;
     /** Changes at every relock, gap and stall the element counts, and at a new element. */
     gapMark: string;
+}
+
+/** The drain's stats fields (`mrasrc-stats`, `mrvideopace`), in ms and ppm. */
+export interface DrainFields {
+    ppm: number;
+    excessMs: number;
+    marginMs: number;
+    learnedMs?: number;
+    troughMs: number;
+    drainedMs: number;
+    raises: number;
+    underruns: number;
+    outages: number;
+    /** The target it publishes (ms); absent while it publishes none (`drain-member` false). */
+    publishedMs?: number;
+    groupTargetMs: number;
+    state: 'warm-up' | 'idle' | 'draining' | 'rising';
+    capped: boolean;
+}
+
+const DRAIN_STATES: ReadonlySet<string> = new Set(['warm-up', 'idle', 'draining', 'rising']);
+
+/** The drain's fields of a stats payload; undefined where the element has none (an older one). */
+export function drainFieldsOf(p: Record<string, unknown>): DrainFields | undefined {
+    if (!('drain-ppm' in p)) return undefined;
+    const n = (k: string): number => {
+        const v = Number(p[k]);
+        return Number.isFinite(v) ? v : 0;
+    };
+    const state = String(p['drain-state'] ?? '');
+    const f: DrainFields = {
+        ppm: n('drain-ppm'),
+        excessMs: n('drain-excess-ns') / 1e6,
+        marginMs: n('drain-margin-ns') / 1e6,
+        troughMs: n('fill-trough-ns') / 1e6,
+        drainedMs: n('drained-ns') / 1e6,
+        raises: n('drain-raises'),
+        underruns: n('underruns'),
+        outages: n('drain-outages'),
+        groupTargetMs: n('group-target-ns') / 1e6,
+        state: (DRAIN_STATES.has(state) ? state : 'warm-up') as DrainFields['state'],
+        capped: p['drain-capped'] === true,
+    };
+    if (n('drain-learned-ns') >= 0) f.learnedMs = n('drain-learned-ns') / 1e6;
+    if (p['drain-member'] === true) f.publishedMs = n('drain-target-lateness-ns') / 1e6;
+    return f;
 }
 
 /** An `mrasrc-event` of a consumer ASRC, for the module's log. */
@@ -83,6 +132,7 @@ interface Entry {
     /** 0 while the device term does not know it (the element's rule). */
     renderLatenessNs: number;
     stalled: boolean;
+    drain?: DrainFields;
     generation: number;
 }
 
@@ -172,6 +222,7 @@ export class AsrcWatches {
             deviceStalls: num(p, 'device-stalls'),
             renderLatenessNs: num(p, 'render-lateness-ns'),
             stalled: kept ? old.stalled : false,
+            drain: drainFieldsOf(p),
             generation: (old?.generation ?? 0) + (again ? 1 : 0),
         };
         // Back in bounds once the locked source rate is below the element's hysteresis.
@@ -214,6 +265,7 @@ export class AsrcWatches {
                 w.deviceRelocks = e.deviceRelocks;
                 w.deviceStalls = e.deviceStalls;
                 w.stalled = e.stalled;
+                if (e.drain) w.drain = e.drain;
             }
             if (e.outOfBoundsPpb !== undefined) w.outOfBoundsPpm = e.outOfBoundsPpb / 1000;
             out.push(w);

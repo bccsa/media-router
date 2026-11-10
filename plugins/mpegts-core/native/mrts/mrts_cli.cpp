@@ -27,6 +27,7 @@
 
 #include "asrc_servo.h"
 #include "demux_core.h"
+#include "drain_servo.h"
 #include "ts_dump.h"
 #include "ts_house.h"
 #include "ts_packet.h"
@@ -1630,7 +1631,7 @@ const char kAsrcUsage[] =
     "usage: mrts_cli asrc seq.txt|-\n"
     "  Replays a call sequence and prints what py/asrc_bypass_ref.py's replay() prints for it:\n"
     "    cfg IN OUT BYPASS_PPB DEVICE DELAY [FIRST_FIT]   the servo (DEVICE 0/1)\n"
-    "    b PTS FRAMES DISCONT DEV_PPB                     push(); prints the command\n"
+    "    b PTS FRAMES DISCONT DEV_PPB [DRAIN_PPB]         push(); prints the command\n"
     "    o K / t K                                        produced(K) / tail_produced(K)\n"
     "    g                                                end_epoch(); prints its result\n"
     "    s DEV MONO                                       a timer read of the device sink's clock\n"
@@ -1690,8 +1691,8 @@ int asrc_main(int argc, char** argv) {
             sv.reset(new AsrcServo((int32_t)v[1], (int32_t)v[2], c));
             sv->set_delay((uint32_t)v[5]);
             term.reset(new AsrcDeviceTerm());
-        } else if (k == "b" && f.size() == 5) {
-            const AsrcServo::Command c = sv->push(v[1], (uint32_t)v[2], v[3] != 0, v[4]);
+        } else if (k == "b" && (f.size() == 5 || f.size() == 6)) {
+            const AsrcServo::Command c = sv->push(v[1], (uint32_t)v[2], v[3] != 0, v[4], -1, f.size() == 6 ? v[5] : 0);
             const AsrcServo::Stats s = sv->stats();
             std::snprintf(line, sizeof line,
                           "b %llu %s in=%d out=%d relock=%d skip=%u pass=%d engage=%d drain=%d gap=%d t0=%lld "
@@ -1731,13 +1732,13 @@ int asrc_main(int argc, char** argv) {
             std::snprintf(line, sizeof line,
                           "p state=%s ratio-ppb=%lld phase-err-ns=%lld relocks=%llu in-frames=%llu out-frames=%llu "
                           "discont-in=%llu dropped-frames=%llu mode=%s source-ppb=%lld gaps=%llu lost-frames=%lld "
-                          "rate-known=%d dev-ppb=%lld dev-rate=%lld dev-lock=%s dev-relocks=%llu\n",
+                          "rate-known=%d drain-ppb=%lld dev-ppb=%lld dev-rate=%lld dev-lock=%s dev-relocks=%llu\n",
                           asrc_state_name(s.state), (long long)s.ratio_ppb, (long long)s.phase_err_ns,
                           (unsigned long long)s.relocks, (unsigned long long)s.in_frames,
                           (unsigned long long)s.out_frames, (unsigned long long)s.discont_in,
                           (unsigned long long)s.dropped_frames, asrc_mode_name(s.mode), (long long)s.source_ppb,
                           (unsigned long long)s.gaps, (long long)s.lost_frames, (int)s.rate_known,
-                          (long long)term->device_ppb(), (long long)asrc_rate_of(term->device_ppb()),
+                          (long long)s.drain_ppb, (long long)term->device_ppb(), (long long)asrc_rate_of(term->device_ppb()),
                           asrc_device_lock_state_name(term->lock_state()),
                           (unsigned long long)(term->stats().relocks_restart + term->stats().relocks_step));
             out += line;
@@ -1804,6 +1805,10 @@ bool pace_op(const Json& op, VideoPace* pace, DisplayRate* rate,
         pace->set_display(period, source);
     } else if (k == "gap") {
         pace->on_gap();
+    } else if (k == "drain") {
+        int64_t ppb = 0;
+        if (!op_i64(op, "ppb", &ppb, err)) return false;
+        pace->set_drain(ppb);
     } else if (k == "frame") {
         int64_t pts = 0, dur = 0, arrival = 0;
         bool discont = false, held = false;
@@ -1817,12 +1822,12 @@ bool pace_op(const Json& op, VideoPace* pace, DisplayRate* rate,
         const PaceSummary s = pace->take();
         std::printf("{\"released\":%llu,\"late\":%llu,\"rate_drops\":%llu,\"gaps_collapsed\":%llu,"
                     "\"behind\":%llu,\"content_period\":%lld,\"display_period\":%lld,"
-                    "\"display_source\":\"%s\",\"mean_hold\":%lld}\n",
+                    "\"display_source\":\"%s\",\"mean_hold\":%lld,\"drain_drops\":%llu}\n",
                     (unsigned long long)s.released, (unsigned long long)s.late,
                     (unsigned long long)s.rate_drops, (unsigned long long)s.gaps_collapsed,
                     (unsigned long long)s.behind, (long long)s.content_period,
                     (long long)s.display_period, display_source_name(s.display_source),
-                    (long long)s.mean_hold);
+                    (long long)s.mean_hold, (unsigned long long)s.drain_drops);
     } else if (k == "rate_prior" || k == "rate_refresh") {
         int64_t period = 0;
         if (!op_i64(op, "period", &period, err)) return false;
@@ -2107,6 +2112,101 @@ int asrc_device_main(int argc, char** argv) {
     return 0;
 }
 
+// --- drain: a call sequence through mrts::DrainServo (WI-P4-18, B-179), py/drain_servo.py's lines --------
+
+// One op; the lines it prints are drain_servo.py's replay(), byte for byte.
+bool drain_op(const Json& op, DrainServo* s, std::string* err) {
+    const Json* kind = op.get("op");
+    if (!kind || kind->type != Json::Type::string) return *err = "no \"op\"", false;
+    const std::string& k = kind->s;
+    int64_t now = 0, v = 0;
+    bool flag = false;
+    if (k == "config") {
+        int64_t start = DrainServo::AUDIO_START_NS, floor = DrainServo::AUDIO_FLOOR_NS;
+        bool video = false;
+        if ((op.get("video") && !op_flag(op, "video", &video, err)) ||
+            (op.get("start") && !op_i64(op, "start", &start, err)) ||
+            (op.get("floor") && !op_i64(op, "floor", &floor, err)))
+            return false;
+        *s = DrainServo(video, start, floor);
+    } else if (k == "sample" || k == "queue") {
+        if (!op_i64(op, "now", &now, err) || !op_i64(op, k == "sample" ? "slack" : "level", &v, err)) return false;
+        if (k == "sample") s->sample(now, v);
+        else s->queue_level(now, v);
+    } else if (k == "starve") {
+        if (!op_i64(op, "now", &now, err) || !op_flag(op, "on", &flag, err)) return false;
+        s->starve(now, flag);
+    } else if (k == "late") {
+        if (!op_i64(op, "now", &now, err) || !op_i64(op, "by", &v, err)) return false;
+        s->late(now, v);
+    } else if (k == "clear") {
+        if (!op_i64(op, "now", &now, err)) return false;
+        s->clear(now);
+    } else if (k == "break") {
+        s->epoch_break();
+    } else if (k == "group") {
+        if (!op_i64(op, "now", &now, err) || !op_i64(op, "target", &v, err)) return false;
+        s->set_group(now, v);
+    } else if (k == "update") {
+        if (!op_i64(op, "now", &now, err) || !op_i64(op, "render", &v, err) || !op_flag(op, "can", &flag, err))
+            return false;
+        s->update(now, v, flag);
+        for (const DrainEvent& e : s->take_events())
+            std::printf("{\"event\":\"%s\",\"at\":%lld,\"value\":%lld}\n", drain_event_name(e.kind), (long long)e.at,
+                        (long long)e.value);
+        std::printf("{\"ppb\":%lld,\"excess\":%lld,\"margin\":%lld,\"learned\":%lld,\"trough\":%lld,\"target\":%lld,"
+                    "\"drained\":%lld,\"raises\":%llu,\"underruns\":%llu,\"outages\":%llu,\"state\":\"%s\","
+                    "\"capped\":%d}\n",
+                    (long long)s->ppb(), (long long)s->excess(), (long long)s->margin(),
+                    (long long)(s->has_learned() ? s->learned() : -1), (long long)s->trough(), (long long)s->target(),
+                    (long long)s->drained(), (unsigned long long)s->raises(), (unsigned long long)s->underruns(),
+                    (unsigned long long)s->outages(), drain_state_name(s->state()), s->capped() ? 1 : 0);
+    } else {
+        return *err = "unknown op \"" + k + "\"", false;
+    }
+    return true;
+}
+
+int drain_main(int argc, char** argv) {
+    if (argc != 2) {
+        std::fprintf(stderr, "usage: mrts_cli drain seq.jsonl|-\n");
+        return 2;
+    }
+    const std::string path = argv[1];
+    std::FILE* f = path == "-" ? stdin : std::fopen(path.c_str(), "rb");
+    if (!f) {
+        std::perror(argv[1]);
+        return 1;
+    }
+    static char out[1 << 16];
+    std::setvbuf(stdout, out, _IOFBF, sizeof out);
+    DrainServo servo;
+    std::string line, err;
+    char buf[1 << 16];
+    size_t lineno = 0;
+    int rc = 0;
+    while (rc == 0) {
+        line.clear();
+        bool got = false;
+        while (std::fgets(buf, sizeof buf, f)) {
+            got = true;
+            line += buf;
+            if (!line.empty() && line.back() == '\n') break;
+        }
+        if (!got) break;
+        lineno++;
+        if (line.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+        Json op;
+        if (!parse_json(line, &op, &err) || !drain_op(op, &servo, &err)) {
+            std::fflush(stdout);
+            std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", argv[1], lineno, err.c_str());
+            rc = 1;
+        }
+    }
+    if (f != stdin) std::fclose(f);
+    return rc;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2119,6 +2219,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "asrc") == 0) return asrc_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "pace") == 0) return pace_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "asrc-device") == 0) return asrc_device_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "drain") == 0) return drain_main(argc - 1, argv + 1);
     std::fprintf(stderr,
                  "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
@@ -2130,6 +2231,7 @@ int main(int argc, char** argv) {
                  "[--house-ns T] [--bus in.bus.jsonl]\n"
                  "       mrts_cli asrc seq.txt|-\n"
                  "       mrts_cli pace seq.jsonl|-\n"
-                 "       mrts_cli asrc-device seq.jsonl|-\n");
+                 "       mrts_cli asrc-device seq.jsonl|-\n"
+                 "       mrts_cli drain seq.jsonl|-\n");
     return 2;
 }

@@ -67,6 +67,9 @@ def drift_over(g, eps_ppb):
     return floor_div(g * eps_ppb, E9 + eps_ppb)
 
 
+DRAIN_MAX_PPB = 5000000   # the drain's own clamp (B-179): 0.5 %
+
+
 class AsrcServoConfig:
     def __init__(self, **kw):
         self.lock = asrc_lock_config()
@@ -138,6 +141,8 @@ class AsrcServo:
         self.start2 = 0
         self.eps_cmd = 0
         self.dev_ppb = 0       # the device eps the last command carried
+        self.drain_ppb = 0     # the drain it carried (B-179, device modes): input consumed (1 + drain) faster
+        self.run_ppb = 0       # (1 + eps_dev)(1 + drain) - 1: house-rate frames per output frame
         self.phase_err = 0
         self.relocks = self.discont_in = self.gaps = 0
         self.oob = False
@@ -192,7 +197,7 @@ class AsrcServo:
         return sat_sub(self.lock.house_of(self._pos_ns(self._next_pos2())), self._house_pts())
 
     def _in_rate(self):
-        num = self.in_hz * 1000 * (E9 + self.dev_ppb)
+        num = self.in_hz * 1000 * (E9 + self.run_ppb)
         den = E9 + self.eps_cmd
         r = (2 * num + den) // (2 * den)
         if r == self.out_hz * 1000:
@@ -375,11 +380,14 @@ class AsrcServo:
         cont, self.cont = self.cont, -bound <= d <= bound
         return d if cont and (bound < d <= self.LOST_MAX_NS or d < -bound) else 0
 
-    def push(self, pts_ns, frames, discont, device_ppb=0):
+    def push(self, pts_ns, frames, discont, device_ppb=0, drain_ppb=0):
         """Per buffer, before resampling: the command. `device_ppb`: the device lock's eps,
-        read by the caller from the device term (DeviceTerm.device_ppb; 0 without one)."""
+        read by the caller from the device term (DeviceTerm.device_ppb; 0 without one).
+        `drain_ppb`: drain_servo's rate (B-179), device modes only, clamped to +-0.5 %."""
         lim = self.cfg.ratio_max_ppm * 1000
         self.dev_ppb = clamp(device_ppb, -lim, lim) if self.cfg.device else 0
+        self.drain_ppb = clamp(drain_ppb, -DRAIN_MAX_PPB, DRAIN_MAX_PPB) if self.cfg.device else 0
+        self.run_ppb = ((E9 + self.dev_ppb) * (E9 + self.drain_ppb) + E9 // 2) // E9 - E9
         sigma = self._pos_ns(2 * (self.n_in + self.lost))
         relocked = drain = gapped = False
         if self.capture:
@@ -476,8 +484,8 @@ class AsrcServo:
         return cmd
 
     def _house_advance(self, frames):
-        """House-rate frames: each output frame is 1 + eps_dev of them."""
-        f = self.mh_frac + frames * self.dev_ppb
+        """House-rate frames: each output frame is (1 + eps_dev)(1 + drain) of them (B-179)."""
+        f = self.mh_frac + frames * self.run_ppb
         self.mh += frames + floor_div(f, E9)
         self.mh_frac = f - floor_div(f, E9) * E9
 
@@ -495,6 +503,7 @@ class AsrcServo:
             "source-ppb": rate_of(self.lock.ppb()) if self.has_lock else 0,
             "gaps": self.gaps, "lost-frames": self.lost,
             "rate-known": int(self.has_lock and self.lock.rate_known),
+            "drain-ppb": self.drain_ppb,
         }
 
     def take_events(self):
@@ -545,7 +554,7 @@ def _event_lines(sv):
 def replay(lines):
     """Runs a call sequence; returns the output lines `mrts_cli asrc` prints for it.
       cfg IN OUT BYPASS_PPB DEVICE DELAY [FIRST_FIT]   the servo (DEVICE 0/1)
-      b PTS FRAMES DISCONT DEV_PPB                     push(); prints the command
+      b PTS FRAMES DISCONT DEV_PPB [DRAIN_PPB]         push(); prints the command
       o K / t K                                        produced(K) / tail_produced(K)
       g                                                end_epoch(); prints its result
       s DEV MONO                                       a timer read of the device sink's clock
@@ -566,7 +575,7 @@ def replay(lines):
             sv.set_delay(delay)
             term = DeviceTerm()
         elif f[0] == "b":
-            c = sv.push(int(f[1]), int(f[2]), f[3] == "1", int(f[4]))
+            c = sv.push(int(f[1]), int(f[2]), f[3] == "1", int(f[4]), int(f[5]) if len(f) > 5 else 0)
             out.append(_cmd_line(n, sv, c))
             out.extend(_event_lines(sv))
             n += 1

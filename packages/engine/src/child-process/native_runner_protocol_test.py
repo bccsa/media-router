@@ -4502,6 +4502,67 @@ def test_catch_up_render():
             r.kill()
 
 
+def test_drain_rpc():
+    """DR (B-179, WI-P4-18), both runners: the drain's fields forwarded in mrasrc-stats and mrvideopace in the
+    engine's shape (forwarded-messages.json), and `group-target-ns` set over the RPC as the engine sets it every
+    2 s (GstPluginBase.applyLatencyGroupTarget): read back, and in the stats once the servo took it. The drain's
+    events wait 30 s past the device lock (the element suites run them); a runner forwards every mrasrc-event."""
+    test_dir = os.path.join(_PLUGINS, "mpegts-core", "native", "mrtshouse", "tests")
+    if not os.path.exists(os.path.join(test_dir, "libgstmrtest.so")):
+        print("SKIP DR — tests/libgstmrtest.so not built")
+        return
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    env = {"GST_PLUGIN_PATH": os.environ.get("GST_PLUGIN_PATH", "") + ":" + test_dir,
+           "GST_REGISTRY": os.path.join(tmp, "registry.bin")}
+    shapes = _engine_shapes()
+    audio = ("audiotestsrc is-live=true samplesperbuffer=1024 ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! "
+             "mrasrc name=asrc device-sink=sink ! queue name=prefill min-threshold-time=40000000 "
+             "max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! mrtestaudiosink name=sink sync=false "
+             "buffer-time=100000 latency-time=10000")
+    video = ("videotestsrc is-live=true ! video/x-raw,width=64,height=48,framerate=50/1 ! queue name=vp_esq ! "
+             "mrvideopace name=vp_pace backlog-queue=vp_esq refresh-mhz=50000 ! fakesink sync=false")
+    seen = {}
+    for tag, argv in (("native", None), ("python", _PY_RUNNER)):
+        sets = [(t, {"cmd": "set_property", "id": f"g{t}", "element": "asrc", "property": "group-target-ns",
+                     "value": 123_000_000}) for t in (1.0, 3.0)]
+        get = (4.0, {"cmd": "get_property", "id": "gt", "element": "asrc", "property": "group-target-ns"})
+        stats, events, snap, ok, _logs = _mrasrc_device_run(tag, argv, env, audio, 5.5, actions=(*sets, get))
+        off = [p for p in stats if _shape(p) != _shape(shapes["mrasrc-stats"])] + _off_shape(
+            events, shapes["mrasrc-event"], "kind")
+        late = [p for p in stats[-2:] if p.get("group-target-ns") == 123_000_000]
+        check(f"DR {tag}: mrasrc-stats carry the drain in the engine's shape ({len(stats)} posts; off: {off[:1]}), "
+              f"group-target-ns set over the RPC reads back {snap.get('gt')} and reaches the servo ({len(late)} of the "
+              "last posts)", ok and bool(stats) and not off and snap.get("gt") == 123_000_000 and bool(late))
+        r = RunnerProc(argv, env=env)
+        try:
+            r.wait_event(ev_is("ready"))
+            r.send({"cmd": "start", "pipeline": video, "useStdioForData": False, "linkOnPadAdded": [],
+                    "decoderThreadType": "auto"})
+            playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+            for k in range(3):
+                time.sleep(1.0)
+                r.send({"cmd": "set_property", "id": f"v{k}", "element": "vp_pace", "property": "group-target-ns",
+                        "value": 456_000_000})
+            time.sleep(1.5)
+            r.send({"cmd": "get_property", "id": "vg", "element": "vp_pace", "property": "group-target-ns"})
+            got = r.wait_event(lambda e: e.get("id") == "vg" and e.get("event") in ("property", "command_error"))
+            r.pump()
+            msgs = [ev["payload"] for ev in r.events if ev.get("event") == "plugin_event"
+                    and ev.get("channel") == "mrvideopace:vp_pace"]
+            code = r.stop_and_wait()
+        finally:
+            r.kill()
+        offv = [p for p in msgs if _shape(p) != _shape(shapes["mrvideopace"])]
+        check(f"DR {tag}: mrvideopace carries the drain in the engine's shape ({len(msgs)} messages; off: {offv[:1]}), "
+              f"group-target-ns over the RPC reads back {got.get('value') if got else None} and reaches the servo",
+              playing and code == 0 and bool(msgs) and not offv and got and got.get("value") == 456_000_000
+              and msgs[-1].get("group-target-ns") == 456_000_000)
+        seen[tag] = (sorted(stats[-1]) if stats else [], sorted(msgs[-1]) if msgs else [])
+    shutil.rmtree(tmp, ignore_errors=True)
+    if len(seen) == 2:
+        check("DR: both runners forward the same fields", seen["native"] == seen["python"])
+
+
 test_runner_gone()
 test_plain_pipeline()
 test_identity_egress()
@@ -4538,6 +4599,7 @@ test_video_leg_pace()
 test_render_watch_pace()
 test_mrasrc_device()
 test_mrasrc_device_hole()
+test_drain_rpc()
 test_decoder_hole()
 test_subtitle_overlay_formula()
 test_ttx_formula()

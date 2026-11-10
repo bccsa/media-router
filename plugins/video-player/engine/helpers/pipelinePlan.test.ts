@@ -132,7 +132,7 @@ describe('the live string, every rung on every sink', () => {
                     ' max-size-bytes=40000000 ! ',
             );
             expect(p, label).toContain(
-                ' ! mrvideopace name=vp_pace refresh-mhz=50000 ! ' +
+                ' ! mrvideopace name=vp_pace backlog-queue=vp_esq refresh-mhz=50000 ! ' +
                     `mrlateness name=lat_render reference=running-time ! ${sinks[sink]} vp_ts. ! `,
             );
             expect(p, label).toContain('mrtsdemux name=vpdemux media=video');
@@ -300,7 +300,7 @@ describe('planLivePipeline', () => {
         expect(withSubs.pipeline).toContain(
             '! videoconvert ! videoscale ! textoverlay name=subov wait-text=false text="" valignment=top ' +
                 'halignment=center font-desc="Sans Bold 48" ypad=40 shaded-background=true shading-value=153 ! ' +
-                'mrvideopace name=vp_pace ! mrlateness name=lat_render reference=running-time ! kmssink name=sink',
+                'mrvideopace name=vp_pace backlog-queue=vp_esq ! mrlateness name=lat_render reference=running-time ! kmssink name=sink',
         );
         // the subtitle TS comes in on its own bus edge into a named demux
         expect(withSubs.pipeline).toContain('/tmp/mr-bus-5600-edge.sock');
@@ -330,7 +330,7 @@ describe('planLivePipeline', () => {
     it('taps render lateness after the pace, right before the sink, and names it for the timing section', () => {
         const desc = planLivePipeline(base);
         expect(desc.pipeline).toContain(
-            'mrvideopace name=vp_pace ! mrlateness name=lat_render reference=running-time ! kmssink name=sink',
+            'mrvideopace name=vp_pace backlog-queue=vp_esq ! mrlateness name=lat_render reference=running-time ! kmssink name=sink',
         );
         expect(desc.timingSink).toEqual({ element: 'sink', kind: 'video' });
         expect(
@@ -341,13 +341,17 @@ describe('planLivePipeline', () => {
     it('carries the output mode refresh to the timing sink, and to the pace as its prior', () => {
         const desc = planLivePipeline({ ...base, refreshHz: 50 });
         expect(desc.timingSink).toEqual({ element: 'sink', kind: 'video', refreshHz: 50 });
-        expect(desc.pipeline).toContain('mrvideopace name=vp_pace refresh-mhz=50000 ! ');
+        expect(desc.pipeline).toContain(
+            'mrvideopace name=vp_pace backlog-queue=vp_esq refresh-mhz=50000 ! ',
+        );
         // The Pi 5 box's DSI, 60.038 Hz to the 0.01 Hz the mode resolver gives.
         expect(planLivePipeline({ ...base, refreshHz: 60.04 }).pipeline).toContain(
-            'mrvideopace name=vp_pace refresh-mhz=60040 ! ',
+            'mrvideopace name=vp_pace backlog-queue=vp_esq refresh-mhz=60040 ! ',
         );
         // Unknown: no prior, the pace measures the display itself (B-175).
-        expect(planLivePipeline(base).pipeline).toContain('mrvideopace name=vp_pace ! ');
+        expect(planLivePipeline(base).pipeline).toContain(
+            'mrvideopace name=vp_pace backlog-queue=vp_esq ! ',
+        );
     });
 
     it('rebuilds a failing pipeline at most every 30 s, from 1 s', () => {

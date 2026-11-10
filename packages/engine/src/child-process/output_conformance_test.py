@@ -256,7 +256,8 @@ def av_run(argv, exp, knobs=None, ts=None, markers=False, keys=None):
 
 def scn_out_stall(tag, argv, exp):
     """A 2 s stall of the input, its backlog sent at the end: each output plays the backlog at the
-    content's rate, nothing lost, its lateness up by the stall and flat after (no catch-up: §15)."""
+    content's rate, nothing lost, its lateness up by the stall and flat after while the drain warms up
+    (its 30 s; B-179): scn-out-drain-burst drains it back to the target at <= 0.5 %."""
     label, x = f"{exp['scenario']} {tag}", exp["expect"]
     at, length = exp["stall"]
     run = av_run(argv, exp, knobs=rig.Knobs(silence=[(at, length, "hold")]))
@@ -880,6 +881,152 @@ def in_time_namespace(name, tag):
         return
 
 
+# --------------------------------------------------------------------------- the drain (WI-P4-18, B-179)
+def device_stats(o):
+    """The output's own ASRC's stats (its device term's), the decode ASRCs of its inputs apart."""
+    return [(t, p) for t, p in o.asrc_stats() if p.get("mode") in ("device", "decode+device")]
+
+
+def falling(series, key, t0, lo, hi):
+    """The slope (ms per s) of `key` over the posts in [lo, hi) s while they drain at the cap."""
+    pts = [((t - t0) / S, p[key] / 1e6) for t, p in series
+           if t0 + lo * S <= t < t0 + hi * S and p.get("drain-ppm", 0) >= 5000 and p.get(key)]
+    if len(pts) < 5:
+        return None
+    n = len(pts)
+    mx, my = sum(x for x, _ in pts) / n, sum(y for _, y in pts) / n
+    sxx = sum((x - mx) ** 2 for x, _ in pts)
+    return round(sum((x - mx) * (y - my) for x, y in pts) / sxx, 2) if sxx else None
+
+
+def scn_out_drain_burst(tag, argv, exp):
+    """V-P4-12 at CI length: a 2 s stall's backlog plays behind, +2 s read within 30 s of the resume (V-P4-2),
+    then drains back to its target at 0.5 % once 30 s are sampled (the audio's after its device term locked):
+    the lateness falls 5 ms/s, nothing lost, no underrun, drain drops within 1 in 200 on the 50 Hz display."""
+    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+    at, length = exp["stall"]
+    run = av_run(argv, exp, knobs=rig.Knobs(silence=[(at, length, "hold")]))
+    run.on_time(label)
+    run.clean(label)
+    pl, dec, t0 = run.outputs["player"], run.outputs["decoder"], run.t0
+    b, a = paces(pl, t0, 2, at), paces(pl, t0, at + length + 2, at + length + 25)
+    step = round(min(a) - min(b), 1) if a and b else None
+    check(f"{label} player: +2 s read within 30 s of the resume (base {b and round(min(b), 1)} -> "
+          f"{a and round(min(a), 1)} ms, +{step}; want {x['video_step_ms']})",
+          step is not None and x["video_step_ms"][0] <= step <= x["video_step_ms"][1])
+    vp = pl.paces()
+    slope = falling(vp, "present-lateness-ns", t0, at + length, exp["seconds"])
+    ps = last(vp)
+    frames = sum(1 for t, p in vp if p.get("drain-ppm", 0) > 0) * 100   # 2 s posts at 50 fps
+    check(f"{label} player: drains at 0.5 % ({slope} ms/s, want {x['slope_ms_s']}), drain drops "
+          f"{ps.get('drain-drops')} (<= 1 in 200 of about {frames} frames while draining), rate drops "
+          f"{ps.get('rate-drops')}; margin raises {ps.get('drain-raises')} (a frame its software decode left late "
+          f"while draining raises, by design; Found F2 in B-179)",
+          slope is not None and x["slope_ms_s"][0] <= slope <= x["slope_ms_s"][1]
+          and (ps.get("drain-drops") or 0) <= frames / 200 + 1 and ps.get("rate-drops") == 0)
+    ds = device_stats(dec)
+    st = last(ds)
+    aslope = falling(ds, "render-lateness-ns", t0, at + length, exp["seconds"])
+    starts = [p for _t, p in dec.asrc_events() if p.get("kind") == "drain-start"]
+    check(f"{label} decoder: drains at 0.5 % once its device term locked and 30 s were sampled ({aslope} ms/s, "
+          f"want {x['slope_ms_s']}; {len(starts)} drain-start), nothing lost (dropped {st.get('dropped-frames')}, "
+          f"lost {st.get('lost-frames')}, stalls {st.get('device-stalls')}), no underrun ({st.get('underruns')})",
+          aslope is not None and x["slope_ms_s"][0] <= aslope <= x["slope_ms_s"][1] and len(starts) == 1
+          and st.get("dropped-frames") == 0 and st.get("lost-frames") == 0 and st.get("device-stalls") == 0
+          and st.get("underruns") == 0)
+
+
+class GroupRole:
+    """The engine's role (drainGroups.ts) every 2 s: P = the max of the members' published targets, set on each
+    as group-target-ns; `ignore`: the mutant 'the group target ignored' (nothing set)."""
+
+    def __init__(self, run, members, ignore=False):
+        self.run, self.members, self.ignore, self.p = run, members, ignore, []
+
+    def latest(self, key):
+        o = self.run.outputs[key]
+        series = o.paces() if key == "player" else device_stats(o)
+        return last(series)
+
+    def __call__(self):
+        pub = [self.latest(k)["drain-target-lateness-ns"] for k, _el in self.members
+               if self.latest(k).get("drain-member")]
+        p = max(pub) if pub else 0
+        self.p.append((rig.now_ns(), p))
+        if self.ignore:
+            return
+        for k, el in self.members:
+            self.run.outputs[k].set_prop(el, "group-target-ns", int(p))
+
+
+def renders_of(o, key):
+    """(t, render lateness ms) of a member: the pace's presented, an ASRC's render."""
+    if key == "player":
+        return [(t, p["present-lateness-ns"] / 1e6) for t, p in o.paces() if p.get("released")]
+    return [(t, p["render-lateness-ns"] / 1e6) for t, p in device_stats(o) if p.get("render-lateness-ns")]
+
+
+def group_spread(run, keys, t0, lo, hi):
+    """The worst spread between the members' render lateness over [lo, hi) s, each member's median in 4 s
+    bins (posts come every 2 s, each its own)."""
+    worst = 0.0
+    for b in range(int(lo), int(hi), 4):
+        mids = []
+        for k in keys:
+            v = [ms for t, ms in renders_of(run.outputs[k], k) if t0 + b * S <= t < t0 + (b + 4) * S]
+            if not v:
+                return None
+            mids.append(rig.median(v))
+        worst = max(worst, max(mids) - min(mids))
+    return round(worst, 1)
+
+
+def scn_out_drain_group(tag, argv, exp):
+    """-group (design part 12 item 7): a Video Player and an Audio Decoder of one muxed source and an Audio Output
+    302M on the same house timeline, the rig playing the engine (P = the max every 2 s). The 302M side takes one
+    underrun (its input held 200 ms once drained), then a shared 2 s stall (the 302M side's backlog 100 ms after the other's, so
+    the rig's two feeds never push a burst at once): every two members within 45 ms at the end and from
+    60 s after the stall. MR_DRAIN_MUTANT=ignore: the group target never set, and the check must fail."""
+    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+    at, length = exp["stall"]
+    jolt_at, jolt = exp["jolt"]
+    run = Run(argv)
+    rel = rig.generated(exp["kind"], exp["seconds"] + 2)
+    run.rel, run.pids = rel, orig.stream_pids(rel)
+    stall = rig.Knobs(silence=[(at, length, "hold")])
+    run.producer("feed", ["vp", "ad"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"], knobs=stall)
+    whole = orig.chunked(orig.looped(*loop_of(orig.fixture(exp["fixture"]), exp["pid"], exp["seconds"] + 2)))
+    run.producer("ao", ["ao"], ts=lambda t0: orig.at_house(whole, t0), stop_s=exp["seconds"],
+                 knobs=rig.Knobs(silence=[(jolt_at, jolt, "hold"), (at, length + 0.1, "hold")]))
+    run.output("player", "player50", video=orig.display())
+    run.output("decoder", "decoder", audio=orig.card())
+    run.output("aout", "aout302m", audio=orig.card())
+    members = [("player", "vp_pace"), ("decoder", "asrc"), ("aout", "outasrc")]
+    role = GroupRole(run, members, ignore=os.environ.get("MR_DRAIN_MUTANT") == "ignore")
+    run.go(exp["seconds"] + 1, [(s, role) for s in range(2, exp["seconds"], 2)], [])
+    run.on_time(label)
+    run.clean(label)
+    t0, keys = run.t0, [k for k, _ in members]
+    ao = last(device_stats(run.outputs["aout"]))
+    end = exp["seconds"]
+    after = group_spread(run, keys, t0, at + length + 60, end)
+    tail = group_spread(run, keys, t0, end - 8, end)
+    check(f"{label}: the 302M side took its underrun and raised its margin ({ao.get('underruns')} underrun, "
+          f"{ao.get('drain-raises')} raise, margin {ao.get('drain-margin-ns', 0) / 1e6} ms)",
+          ao.get("underruns") == 1 and ao.get("drain-raises") == 1)
+    ends = {k: orig.mid([ms for t, ms in renders_of(run.outputs[k], k) if t >= t0 + (end - 8) * S]) for k in keys}
+    pubs = {k: round(role.latest(k).get("drain-target-lateness-ns", 0) / 1e6, 1) for k in keys}
+    check(f"{label}: every two members within {x['spread_ms']} ms from 60 s after the shared stall ({after} ms) and "
+          f"at the end ({tail} ms; render {ends}, published {pubs}); P "
+          f"{round(role.p[-1][1] / 1e6, 1) if role.p else None} ms",
+          after is not None and tail is not None and after <= x["spread_ms"] and tail <= x["spread_ms"])
+    for k in keys:
+        st = last(run.outputs[k].paces() if k == "player" else device_stats(run.outputs[k]))
+        check(f"{label} {k}: drained within the cap (drain-ppm {st.get('drain-ppm')}), nothing dropped "
+              f"(dropped {st.get('dropped-frames', 0)}, rate drops {st.get('rate-drops', 0)})",
+              abs(st.get("drain-ppm") or 0) <= 5000 and not st.get("dropped-frames") and not st.get("rate-drops"))
+
+
 SCENARIOS = {
     "scn-out-stall": scn_out_stall,
     "scn-out-gap-recovers": scn_out_gap_recovers,
@@ -894,6 +1041,8 @@ SCENARIOS = {
     "scn-out-device-stall": scn_out_device_stall,
     "scn-out-stop-backpressure": scn_out_stop_backpressure,
     "scn-burnin-late-cues": scn_burnin_late_cues,
+    "scn-out-drain-burst": scn_out_drain_burst,
+    "scn-out-drain-group": scn_out_drain_group,
 }
 _NEEDS = ("unixfdsrc", "unixfdsink", "mpegtsmux", "x264enc", "avdec_h264", "h264parse", "avenc_aac", "avdec_aac",
           "aacparse", "avdec_s302m", "textoverlay")

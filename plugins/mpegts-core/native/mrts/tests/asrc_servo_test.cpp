@@ -1331,6 +1331,7 @@ struct DOut {
     bool discont;
     int64_t pos;          // input position of its first frame, 1/SUB frames of the global index
     int64_t buf;          // the push it came from; -1 a drained tail
+    int64_t content = 0;  // next_content_pts() before it: its content time on the house-rate counter
 };
 
 // mrasrc's flow (gstmrasrc.cpp) on the servo and the resampler model.
@@ -1369,7 +1370,7 @@ class Driver {
     AsrcServo::Command push(int64_t pts, uint32_t frames, bool discont) {
         if (discont && !cmds.empty()) gap();   // the element ends the epoch before a DISCONT buffer
         const int64_t dppb = sv.config().device ? term.device_ppb() : 0;
-        const AsrcServo::Command c = sv.push(pts, frames, discont, dppb);
+        const AsrcServo::Command c = sv.push(pts, frames, discont, dppb, -1, drain_ppb);
         if (locked_at < 0 && sv.lock().phase() == ClockLock::Phase::locked) locked_at = pts;
         const int64_t i = (int64_t)cmds.size();
         cmds.push_back(c);
@@ -1418,9 +1419,9 @@ class Driver {
         const int64_t d = std::min(discard_, k);
         discard_ -= d;
         pos += d * SUB * rs->in() / rs->out();   // the first kept output: d outputs on
-        const int64_t label = sv.next_pts();
+        const int64_t label = sv.next_pts(), content = sv.next_content_pts();
         sv.produced((uint32_t)(k - d));
-        if (k - d) outputs.push_back({label, sv.next_pts(), k - d, c.relock || c.gap, pos, i});
+        if (k - d) outputs.push_back({label, sv.next_pts(), k - d, c.relock || c.gap, pos, i, content});
         g_dec.add(label);
         g_dec.add(k - d);
         n_ += frames;
@@ -1440,6 +1441,7 @@ class Driver {
     std::vector<int64_t> pts, dppbs, ratios;
     std::vector<std::pair<int64_t, AsrcEvent>> events;
     int64_t locked_at = -1;   // the PTS of the first buffer the lock was locked after
+    int64_t drain_ppb = 0;    // the drain each push carries (B-179)
 
   private:
     void drain() {
@@ -3345,6 +3347,85 @@ int sweep(int n) {
 
 }  // namespace
 
+// --- B-179: the drain at +-0.5 % (WI-P4-18) -------------------------------------------------------------
+
+struct DrainRun {
+    std::unique_ptr<Driver> d;
+    double consumed_ppm = 0;   // input per output over 10..60 s, minus 1
+    int64_t label_err = 0;     // max |content label - the content at the output's input position|, from 2 s
+    int64_t ratio_ppb = 0;
+    int64_t phase_max = 0;     // max |phase error| from 10 s
+    std::vector<int64_t> phases;
+};
+
+// A house-rate source (fast by src_ppb) into a device mode at drain_ppb for 60 s, the device 40 ppm fast.
+DrainRun drain_run(int64_t drain_ppb, int64_t bypass_ppb, int64_t src_ppb) {
+    DrainRun r;
+    r.d.reset(new Driver(48000, 48000, bypass_ppb, true));
+    Driver& d = *r.d;
+    d.drain_ppb = drain_ppb;
+    DeviceClock clock(40000);
+    int64_t in10 = -1, out10 = 0, n = 0;
+    for (int64_t k = 0; n < 60 * 48000; k++, n += 1024) {
+        const int64_t t = source_time(T0, 48000, src_ppb, n);
+        clock(d, t);
+        d.push(bypass_ppb ? formula_pts(t) : t, 1024, k == 0);
+        if (in10 < 0 && t - T0 >= 10 * S) {
+            in10 = (int64_t)d.sv.stats().in_frames;
+            out10 = (int64_t)d.sv.stats().out_frames;
+        }
+        if (t - T0 >= 10 * S) {
+            r.phase_max = std::max(r.phase_max, iabs(d.sv.stats().phase_err_ns));
+            r.phases.push_back(d.sv.stats().phase_err_ns);
+        }
+    }
+    const AsrcServo::Stats st = d.sv.stats();
+    r.consumed_ppm = ((double)((int64_t)st.in_frames - in10) / (double)((int64_t)st.out_frames - out10) - 1) * 1e6;
+    for (const DOut& o : d.outputs) {
+        if (o.content - T0 < 2 * S) continue;
+        r.label_err = std::max(r.label_err, iabs(o.content - content_of(o.pos, 48000, src_ppb)));
+    }
+    r.ratio_ppb = st.ratio_ppb;
+    return r;
+}
+
+void test_drain() {
+    std::printf("\n  B-179: the drain at +-5,000 ppm, device-only and decode + device\n");
+    const int64_t drains[] = {5000000, -5000000};
+    for (int64_t dr : drains) {
+        const DrainRun a = drain_run(dr, 0, 0), z = drain_run(0, 0, 0);
+        char name[300];
+        const double faster = ((1 + a.consumed_ppm / 1e6) / (1 + z.consumed_ppm / 1e6) - 1) * 1e6;
+        std::snprintf(name, sizeof name, "device-only, drain %+lld ppm: input consumed %+.3f ppm faster than without "
+                      "(to 1 ppm)", (long long)dr / 1000, faster);
+        CHECK(name, std::fabs(faster - dr / 1000.0) <= 1.0);
+        std::snprintf(name, sizeof name, "device-only, drain %+lld ppm: each output's content label within a frame "
+                      "of its input's content (max %.2f us)", (long long)dr / 1000, a.label_err / 1e3);
+        CHECK(name, a.label_err <= S / 48000 + 1);
+        std::snprintf(name, sizeof name, "device-only, drain %+lld ppm: ratio_ppb the device term alone (%lld = %lld)",
+                      (long long)dr / 1000, (long long)a.ratio_ppb, (long long)z.ratio_ppb);
+        CHECK(name, a.ratio_ppb == z.ratio_ppb && a.d->sv.stats().drain_ppb == dr);
+        const DrainRun e = drain_run(dr, 500, 200000), e0 = drain_run(0, 500, 200000);
+        int64_t diff = 0;
+        for (size_t i = 0; i < std::min(e.phases.size(), e0.phases.size()); i++)
+            diff = std::max(diff, iabs(e.phases[i] - e0.phases[i]));
+        std::snprintf(name, sizeof name, "decode + device (source +200 ppm, engaged), drain %+lld ppm: the phase "
+                      "unchanged within 50 us (max difference %.2f us)", (long long)dr / 1000, diff / 1e3);
+        CHECK(name, e.d->sv.mode() == AsrcServo::Mode::decode_device && diff <= 50 * US);
+        std::snprintf(name, sizeof name, "decode + device, drain %+lld ppm: input consumed %+.3f ppm faster than "
+                      "without (to 1 ppm)", (long long)dr / 1000, (1 + e.consumed_ppm / 1e6) / (1 + e0.consumed_ppm / 1e6) * 1e6 - 1e6);
+        CHECK(name, std::fabs(((1 + e.consumed_ppm / 1e6) / (1 + e0.consumed_ppm / 1e6) - 1) * 1e6 - dr / 1000.0) <= 1.0);
+    }
+    Driver cap(48000, 48000, 0, true);
+    cap.drain_ppb = 9000000;
+    cap.push(T0, 1024, true);
+    CHECK("the drain clamped to 0.5 %", cap.sv.stats().drain_ppb == 5000000);
+    Driver dec(48000, 48000, 500, false);
+    dec.drain_ppb = 5000000;
+    dec.push(T0, 1024, true);
+    CHECK("no drain outside the device modes", dec.sv.stats().drain_ppb == 0);
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && !std::strcmp(argv[1], "--sweep")) return sweep(std::atoi(argv[2]));
     if (const char* e = std::getenv("MRTS_FIXTURES")) {
@@ -3398,5 +3479,6 @@ int main(int argc, char** argv) {
     test_dev_render_lateness_ring();
     test_dev_replay_format();
     test_dev_recalibrated();
+    test_drain();
     return test_summary("asrc_servo");
 }

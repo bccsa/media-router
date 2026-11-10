@@ -114,6 +114,11 @@ export class AudioDecoderModule extends GstPluginBase {
         return { source: `${this.pwNodeName}.monitor` };
     }
 
+    /** Its ASRC's device term drains the output's built-up latency (WI-P4-18). */
+    drainElementNames(): string[] {
+        return [ASRC_NAME];
+    }
+
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
         // Respect audioEnabled on start — otherwise a muted module unmutes
         // itself when restarted (gst volume element starts at config.volume).

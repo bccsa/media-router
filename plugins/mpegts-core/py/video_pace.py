@@ -63,12 +63,22 @@ API:
     pace.on_frame(pts_ns, dur_ns, arrival_ns, discont, held=False) -> (release_ns, rate_drop)
     pace.on_gap()                         a GAP event: the next frame's delta collapses
     pace.set_display(period_ns, source)   source in SOURCES; period <= 0 reads as `none`
+    pace.set_drain(ppb)                   the drain's rate (B-179), +-5,000,000 at most
     pace.take() -> Summary                counters since construction, mean hold since the last take
 The element waits until release_ns and pushes the frame, or drops a rate_drop frame at once
 (release_ns is then its slot). Untimed buffers are the element's to pass through unpaced.
 
 The display period (p4-3c, B-175): DisplayRate below gives set_display the period the sink
 achieves while it sets the pace, else S12's refresh, else the mode's (the prior).
+
+The drain (B-179, WI-P4-18): set_drain(ppb) runs the cadence on Δ' = Δ·1e9 / (1e9 + δ) wherever the
+rules above take a frame's delta or its nominal duration (the slot and the lag; the gap threshold
+stays the content's). A display with headroom loses repeats only; one at the content rate
+decimates δ of the frames, `drain_drops`: a shadow lag at δ = 0 runs beside the real one, and a drop
+it would not make counts there, not in `rate_drops` (a later drop of the shadow's that the real one
+does not make pays one back); at δ = 0 the shadow is the real lag. δ < 0 lengthens the slots. Each
+frame leaves `last_late_by` (arrival - slot', None unless late) and `last_slack` (slot' - arrival,
+None for a first, collapsed or sink-late frame) for the drain servo.
 
 Display period helpers (plan S12): display_period_from_feedback(pairs) from
 wp_presentation_feedback.presented samples (presented ns, MSC seq), and
@@ -80,14 +90,14 @@ Run as a script it replays a recorded sequence (the format `mrts_cli pace` reads
     video_pace.py seq.jsonl|-
 one JSON object per line: {"op":"config","gap_threshold":ns} starts a new pace and display rate
 (other keys, such as the suite's "case", are labels), {"op":"display","period":ns,"source":s},
-{"op":"gap"}, {"op":"frame","pts":ns,"dur":ns,"arrival":ns,"discont":0|1,"held":0|1} ("held"
+{"op":"gap"}, {"op":"drain","ppb":n}, {"op":"frame","pts":ns,"dur":ns,"arrival":ns,"discont":0|1,"held":0|1} ("held"
 may be left out: 0), {"op":"take"}, {"op":"feedback","pairs":[[ns,seq],...]},
 {"op":"returns","times":[ns,...],"prior":ns}, and the display rate's {"op":"rate_prior",
 "period":ns}, {"op":"rate_refresh","period":ns}, {"op":"rate_push","returned":ns,"pressed":0|1},
 {"op":"rate_restart"} and {"op":"rate"}.
 Out, one compact line per frame, take, feedback, returns and rate (keys in this order):
 {"release":ns,"drop":0|1}; {"released":n,"late":n,"rate_drops":n,"gaps_collapsed":n,"behind":n,
-"content_period":ns,"display_period":ns,"display_source":s,"mean_hold":ns};
+"content_period":ns,"display_period":ns,"display_source":s,"mean_hold":ns,"drain_drops":n};
 {"period":ns,"short":0|1}; {"rate":ns,"source":s,"achieved":ns}.
 """
 import bisect
@@ -110,7 +120,8 @@ HICCUP_DEN = 200                      # a window 0.5 % over the windows' median 
 RESTART_DEN = 100                     # the refresh or the prior moving 1 % measures again
 
 Summary = namedtuple("Summary", "released late rate_drops gaps_collapsed behind content_period "
-                                "display_period display_source mean_hold")
+                                "display_period display_source mean_hold drain_drops")
+DRAIN_MAX_PPB = 5000000               # the drain's clamp (B-179): 0.5 %
 
 
 class VideoPace:
@@ -126,6 +137,22 @@ class VideoPace:
         self.lag = 0                          # L: the display's lag behind the content, ns
         self.released = self.late = self.rate_drops = self.gaps_collapsed = self.behind = 0
         self.hold_sum = self.hold_count = 0
+        self.drain = 0                        # δ, ppb (B-179)
+        self.shadow = 0                       # the lag at δ = 0
+        self.owed = 0                         # shadow drops the real lag has not made
+        self.drain_drops = 0
+        self.last_late_by = None
+        self.last_slack = None
+
+    def set_drain(self, ppb):
+        self.drain = max(-DRAIN_MAX_PPB, min(DRAIN_MAX_PPB, ppb))
+
+    def _drained(self, d):
+        """Δ' = Δ·1e9 / (1e9 + δ), to the nearest ns."""
+        if not self.drain or d <= 0:
+            return d
+        den = SEC + self.drain
+        return (2 * d * SEC + den) // (2 * den)
 
     def set_display(self, period_ns, source):
         if source not in SOURCES:
@@ -157,6 +184,8 @@ class VideoPace:
         nominal = dur_ns if dur_ns > 0 else tc
         threshold = min(self.gap_threshold_ns, 4 * nominal) if nominal > 0 else self.gap_threshold_ns
         collapsed = sink_late = False
+        self.last_late_by = self.last_slack = None
+        delta0 = 0
         if self.prev_pts is None:
             delta = 0
             slot = arrival_ns
@@ -171,17 +200,24 @@ class VideoPace:
             else:
                 delta = d
                 self._add_clean(d)
+            delta0, delta = delta, self._drained(delta)
             slot = self.prev_release + delta
             # Past its slot behind the sink's own push: the sink's wait, not the input's lateness.
             sink_late = held and not collapsed and arrival_ns > slot
             if arrival_ns > slot and not collapsed and not sink_late:
                 self.late += 1
+                self.last_late_by = arrival_ns - slot
+            if not collapsed and not sink_late:
+                self.last_slack = slot - arrival_ns
         release = max(arrival_ns, slot)
-        drop = behind = False
+        drop = behind = sdrop = False
         if not self._decimating(tc):
-            self.lag = 0
+            self.lag = self.shadow = self.owed = 0
         else:
-            whole = nominal if nominal > 0 else delta
+            if not self.drain:
+                self.shadow, self.owed = self.lag, 0
+            whole0 = nominal if nominal > 0 else delta0
+            whole = self._drained(whole0)
             self.lag = max(self.lag - delta, 0 if collapsed else -whole)
             foreseen = whole > 0 and self.lag >= whole
             grid = max(self.display_period - whole, 0)     # the sink's own wait past a frame
@@ -192,13 +228,31 @@ class VideoPace:
             drop = whole > 0 and self.lag >= whole
             if not drop:
                 self.lag += self.display_period
+            if self.drain:
+                # The shadow: the same frame at δ = 0, the sink's wait as the real lag saw it.
+                self.shadow = max(self.shadow - delta0, 0 if collapsed else -whole0)
+                grid0 = max(self.display_period - whole0, 0)
+                if sink_late and arrival_ns - slot > grid0 + whole0:
+                    self.shadow = max(self.shadow, arrival_ns - slot - grid0)
+                sdrop = whole0 > 0 and self.shadow >= whole0
+                if not sdrop:
+                    self.shadow += self.display_period
+            else:
+                sdrop = drop
+                self.shadow = self.lag
         self.prev_pts = pts_ns
         self.prev_release = slot if sink_late else release   # the cadence the next frame follows
         self.gap_pending = False
-        if drop:
+        if drop and not behind and not sdrop and self.owed == 0:
+            self.drain_drops += 1
+        elif drop:
             self.rate_drops += 1
             self.behind += behind
-        else:
+            if not behind and not sdrop:
+                self.owed -= 1
+        elif sdrop:
+            self.owed += 1
+        if not drop:
             self.released += 1
             self.hold_sum += release - arrival_ns
             self.hold_count += 1
@@ -208,7 +262,8 @@ class VideoPace:
         mean_hold = self.hold_sum // self.hold_count if self.hold_count else 0
         self.hold_sum = self.hold_count = 0
         return Summary(self.released, self.late, self.rate_drops, self.gaps_collapsed, self.behind,
-                       self.content_period(), self.display_period, self.display_source, mean_hold)
+                       self.content_period(), self.display_period, self.display_source, mean_hold,
+                       self.drain_drops)
 
 
 def _moved(old, new):
@@ -374,7 +429,8 @@ def summary_line(s):
     return line({"released": s.released, "late": s.late, "rate_drops": s.rate_drops,
                  "gaps_collapsed": s.gaps_collapsed, "behind": s.behind,
                  "content_period": s.content_period, "display_period": s.display_period,
-                 "display_source": s.display_source, "mean_hold": s.mean_hold})
+                 "display_source": s.display_source, "mean_hold": s.mean_hold,
+                 "drain_drops": s.drain_drops})
 
 
 def period_line(period, short):
@@ -402,6 +458,8 @@ def replay(lines, out):
             pace.set_display(op["period"], op["source"])
         elif kind == "gap":
             pace.on_gap()
+        elif kind == "drain":
+            pace.set_drain(op["ppb"])
         elif kind == "frame":
             release, drop = pace.on_frame(op["pts"], op["dur"], op["arrival"], bool(op["discont"]),
                                           bool(op.get("held", 0)))

@@ -87,6 +87,22 @@ describe('the removed timing settings and mechanisms (B-171, OQ-33)', () => {
         expect(found).toEqual([]);
     });
 
+    it('the drain (WI-P4-18, B-179) is no setting: no manifest declares a drain, margin or group target', () => {
+        const found: string[] = [];
+        for (const { id, schema } of all) {
+            const props = (schema.properties ?? {}) as Record<string, { title?: unknown }>;
+            for (const [key, prop] of Object.entries(props)) {
+                const text = `${key} ${String(prop.title ?? '')}`;
+                if (
+                    /drain|catch.?up rate|latency ?target|group ?target|latency ?margin/i.test(text)
+                ) {
+                    found.push(`${id}.${key}`);
+                }
+            }
+        }
+        expect(found).toEqual([]);
+    });
+
     it('a stored config carrying them passes the start check with them unchanged', () => {
         for (const { id, schema } of all) {
             const stored = removedFor(id);

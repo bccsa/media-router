@@ -371,7 +371,7 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).toContain('mrtsdemux name=vpdemux media=video');
             expect(s).not.toMatch(/\btsdemux\b/);
             expect(s).toContain('decodebin');
-            expect(s).toContain(`mrvideopace name=vp_pace ! ${KMS}`);
+            expect(s).toContain(`mrvideopace name=vp_pace backlog-queue=vp_esq ! ${KMS}`);
             // No UDP ingress remains — unixfd is the only bus transport.
             expect(s).not.toContain('udpsrc');
             // No fallback branch when a source is connected.
@@ -400,10 +400,10 @@ describe('VideoPlayerModule helpers', () => {
 
         it('paces after the convert stage and right before the sink, the mode refresh its prior', () => {
             expect(buildLivePipeline(KMS, busSource)).toContain(
-                `videoconvert ! videoscale ! mrvideopace name=vp_pace ! ${KMS}`,
+                `videoconvert ! videoscale ! mrvideopace name=vp_pace backlog-queue=vp_esq ! ${KMS}`,
             );
             expect(buildLivePipeline(KMS, busSource, false, undefined, undefined, 60038)).toContain(
-                `videoscale ! mrvideopace name=vp_pace refresh-mhz=60038 ! ${KMS}`,
+                `videoscale ! mrvideopace name=vp_pace backlog-queue=vp_esq refresh-mhz=60038 ! ${KMS}`,
             );
         });
 
@@ -411,7 +411,9 @@ describe('VideoPlayerModule helpers', () => {
             // kmssink/autovideosink negotiate the size they want and there is
             // nothing downstream to resize for them, so the scaler stays.
             const s = buildLivePipeline(KMS, busSource);
-            expect(s).toContain('videoconvert ! videoscale ! mrvideopace name=vp_pace ! kmssink');
+            expect(s).toContain(
+                'videoconvert ! videoscale ! mrvideopace name=vp_pace backlog-queue=vp_esq ! kmssink',
+            );
             // Still uncapped: a native-res broadcast panel must not be rescaled.
             expect(s).not.toContain('width=');
         });
@@ -422,7 +424,7 @@ describe('VideoPlayerModule helpers', () => {
             // frames reach waylandsink at SOURCE resolution.
             const s = buildLivePipeline(WAYLAND, busSource, true);
             expect(s).toContain(
-                `decodebin3 ! videoconvert ! mrvideopace name=vp_pace ! ${WAYLAND}`,
+                `decodebin3 ! videoconvert ! mrvideopace name=vp_pace backlog-queue=vp_esq ! ${WAYLAND}`,
             );
             expect(s).not.toContain('videoscale');
             expect(s).not.toContain('width=');
@@ -525,7 +527,7 @@ describe('VideoPlayerModule helpers', () => {
                 const s = buildLivePipeline(WAYLAND, busSource, true);
                 expect(s).toContain(
                     `mrtsdemux name=vpdemux media=video ! ${ES_QUEUE} ! decodebin3 ! videoconvert ! ` +
-                        `mrvideopace name=vp_pace ! ${WAYLAND}`,
+                        `mrvideopace name=vp_pace backlog-queue=vp_esq ! ${WAYLAND}`,
                 );
                 expect(s).not.toContain('capsfilter');
                 expect(s).not.toContain('h264parse');
@@ -541,7 +543,7 @@ describe('VideoPlayerModule helpers', () => {
                 );
                 expect(s).toContain(
                     `mrtsdemux name=vpdemux media=video ! capsfilter caps="video/x-h264" ! ${ES_QUEUE} ! ` +
-                        `h264parse ! v4l2h264dec name=vpdec ! videoconvert ! mrvideopace name=vp_pace ! ${WAYLAND}`,
+                        `h264parse ! v4l2h264dec name=vpdec ! videoconvert ! mrvideopace name=vp_pace backlog-queue=vp_esq ! ${WAYLAND}`,
                 );
                 expect(s).not.toContain('decodebin');
                 expect(s).not.toContain('videoscale');
@@ -556,7 +558,7 @@ describe('VideoPlayerModule helpers', () => {
                 );
                 expect(s).toContain(
                     `capsfilter caps="video/x-h265" ! ${ES_QUEUE} ! h265parse ! v4l2slh265dec name=vpdec ! ` +
-                        `videoconvert ! videoscale ! mrvideopace name=vp_pace ! ${KMS}`,
+                        `videoconvert ! videoscale ! mrvideopace name=vp_pace backlog-queue=vp_esq ! ${KMS}`,
                 );
             });
 
@@ -862,7 +864,7 @@ describe('VideoPlayerModule helpers', () => {
                 expect(desc.renderWatch, JSON.stringify(stored)).toEqual(plain.renderWatch);
             }
             expect(plain.pipeline).toContain(' ! queue name=vp_esq leaky=0 ');
-            expect(plain.pipeline).toContain(' ! mrvideopace name=vp_pace ! ');
+            expect(plain.pipeline).toContain(' ! mrvideopace name=vp_pace backlog-queue=vp_esq ! ');
             // The connector id is the host's, from sysfs.
             expect(plain.pipeline).toMatch(
                 / kmssink name=sink (connector-id=\d+ )?sync=false qos=false /,
@@ -1498,7 +1500,7 @@ describe('VideoPlayerModule helpers', () => {
             const module = makeModule();
             (module as any).services.mediaRouter.getModuleBusSources = () => [];
             const desc = build(module);
-            expect(desc.pipeline).toContain('mrvideopace name=vp_pace');
+            expect(desc.pipeline).toContain('mrvideopace name=vp_pace backlog-queue=vp_esq');
             const timing = (module as any).timing;
             const deliver = (c: string, p: unknown) => (module as any).dispatchPluginEvent(c, p);
             timing.start(desc);
@@ -1689,7 +1691,9 @@ describe('VideoPlayerModule helpers', () => {
                     refreshHz: 50,
                 });
                 // And to the pace, as its prior until it measures the display (B-175).
-                expect(desc.pipeline).toContain('mrvideopace name=vp_pace refresh-mhz=50000 ! ');
+                expect(desc.pipeline).toContain(
+                    'mrvideopace name=vp_pace backlog-queue=vp_esq refresh-mhz=50000 ! ',
+                );
             } finally {
                 fs.rmSync(sysfs, { recursive: true, force: true });
             }

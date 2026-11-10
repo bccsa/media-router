@@ -206,6 +206,11 @@ export class AudioOutput302mModule extends GstPluginBase {
         await this.applyVolumeLiveUpdate(changes);
     }
 
+    /** The output ASRC's device term drains the output's built-up latency (WI-P4-18). */
+    drainElementNames(): string[] {
+        return [OUT_ASRC];
+    }
+
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
         // With no runner yet this is a start's build, the pipeline that runs; a refresh has one.
         const launch = !this.childProcess;

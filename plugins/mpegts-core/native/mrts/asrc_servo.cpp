@@ -152,9 +152,9 @@ void AsrcServo::device_recalibrated() {
     if (cfg_.device) cal_off_ = sat_sub(label_next(), house_pts());
 }
 
-// House-rate frames: each output frame is 1 + ε_dev of them.
+// House-rate frames: each output frame is (1 + ε_dev)(1 + drain) of them (B-179).
 void AsrcServo::house_advance(uint32_t frames) {
-    const int64_t f = mh_frac_ + (int64_t)frames * dev_ppb_;
+    const int64_t f = mh_frac_ + (int64_t)frames * run_ppb_;
     mh_ += (uint64_t)((int64_t)frames + floor_div(f, E9));
     mh_frac_ = f - floor_div(f, E9) * E9;
 }
@@ -185,11 +185,11 @@ int64_t AsrcServo::ratio_ppb() const {
     return floor_div((E9 + eps_cmd_) * E9 + d / 2, d) - E9;
 }
 
-// round(in_hz * 1000 * (1 + ε_dev) / (1 + ε_cmd)): ratio steps of 1 / (in_hz * 1000). Never
+// round(in_hz * 1000 * (1 + ε_dev)(1 + drain) / (1 + ε_cmd)): ratio steps of 1 / (in_hz * 1000). Never
 // out_rate itself: at equal rates GStreamer copies samples unfiltered (setup_functions), 31
 // frames off the filtered path; one unit (0.02 ppm at 48 kHz) keeps the filter in place.
 int32_t AsrcServo::in_rate() const {
-    const int64_t num = in_hz_ * 1000 * (E9 + dev_ppb_), den = E9 + eps_cmd_;
+    const int64_t num = in_hz_ * 1000 * (E9 + run_ppb_), den = E9 + eps_cmd_;
     int64_t r = (2 * num + den) / (2 * den);
     if (r == out_hz_ * 1000) r += ratio_ppb() < 0 ? 1 : -1;
     return (int32_t)r;
@@ -408,9 +408,11 @@ bool AsrcServo::check_cycle(int64_t pts_ns, uint32_t frames, int64_t dur_ns) {
 }
 
 AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont, int64_t device_ppb,
-                                   int64_t dur_ns) {
+                                   int64_t dur_ns, int64_t drain_ppb) {
     const int64_t lim = cfg_.ratio_max_ppm * 1000;
     dev_ppb_ = cfg_.device ? clamp64(device_ppb, -lim, lim) : 0;
+    drain_ppb_ = cfg_.device ? clamp64(drain_ppb, -DRAIN_MAX_PPB, DRAIN_MAX_PPB) : 0;
+    run_ppb_ = floor_div((E9 + dev_ppb_) * (E9 + drain_ppb_) + E9 / 2, E9) - E9;
     const int64_t sigma = pos_ns(2 * (n_in_ + lost_));
     const int64_t step = !capture_ && started_ && !discont && !ended_ ? content_step(pts_ns) : 0;
     bool relocked = false, drain = false, gapped = false;
@@ -548,6 +550,7 @@ AsrcServo::Stats AsrcServo::stats() const {
     s.source_ppb = has_lock_ ? asrc_rate_of(lock_.ppb()) : 0;
     s.decode_ppb = eps_cmd_;
     s.rate_known = has_lock_ && lock_.rate_known();
+    s.drain_ppb = drain_ppb_;
     return s;
 }
 

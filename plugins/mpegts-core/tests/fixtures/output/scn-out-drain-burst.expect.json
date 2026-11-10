@@ -1,0 +1,20 @@
+{
+  "scenario": "scn-out-drain-burst",
+  "graph": "generated 720p50 H.264 + AAC, a 2 s input stall at 8 s (hold) -> player50 (mrtestvideosink 50 Hz) and the audio decoder (mrtestaudiosink): +2 s, then drained back at 0.5 % (V-P4-12 at CI length, B-179)",
+  "kind": "h264-aac-720p50",
+  "seconds": 150,
+  "stall": [
+    8,
+    2
+  ],
+  "expect": {
+    "video_step_ms": [
+      1939,
+      2041
+    ],
+    "slope_ms_s": [
+      -5.5,
+      -4.5
+    ]
+  }
+}

@@ -75,6 +75,38 @@ export interface RateMatch {
     dropsPerMin: number;
 }
 
+/** An output's drain back to its latency target (house-clock WI-P4-18, B-179): `mrasrc`'s or
+ *  `mrvideopace`'s servo. No setting, no alarm. */
+export interface DrainSummary {
+    /** What it holds to: its own target, or its group's while it follows one (ms). */
+    targetMs: number;
+    /** Its render lateness now (ms). */
+    nowMs: number;
+    /** What it would drain alone: the trough of its buffer less its margin (ms). */
+    excessMs: number;
+    /** Signed rate: > 0 drains (plays faster), < 0 rises to its group (plays slower). */
+    ppm: number;
+    /** The margin it keeps, measured (ms). */
+    marginMs: number;
+    drainedMs: number;
+    /** Short starvations (audio) or late frames (video) counted, and those that raised the margin. */
+    underruns: number;
+    raises: number;
+    state: 'warm-up' | 'idle' | 'draining' | 'rising';
+    /** The target it publishes to its group (ms); absent: none (a device stalled, a display off). */
+    publishedMs?: number;
+    /** No display rate is known: nothing drains (video). */
+    notMeasured?: true;
+    /** Held 1 s above its own target, its group's higher. */
+    capped?: true;
+    /** The other modules of its A/V group. */
+    groupWith?: string[];
+    /** Its origins touch two groups: it drains alone (two programmes). */
+    neither?: true;
+    /** Video: frames the drain skipped, per minute. */
+    drainDropsPerMin?: number;
+}
+
 /** Built by the engine's LatenessReporter; display only, no alarm (OQ-8). */
 export interface ModuleTimingSummary {
     output?: LatenessStatsMs;
@@ -121,6 +153,8 @@ export interface ModuleTimingSummary {
     /** An audio output's device term: its relocks and stalls since the element started. */
     deviceRelocks?: number;
     deviceStalls?: number;
+    /** Device outputs: the drain back to the latency target (WI-P4-18). */
+    drain?: DrainSummary;
     /** False when libgstmrlateness.so is not installed. */
     instrument: boolean;
 }

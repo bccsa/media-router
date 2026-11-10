@@ -1,0 +1,19 @@
+{
+  "scenario": "scn-out-drain-group",
+  "graph": "generated 720p50 H.264 + AAC -> player50 and the audio decoder, cap-mixer-302m-house.ts looped -> Audio Output (302M), on one house timeline; the rig sets group-target-ns to the max every 2 s; the 302M input held 200 ms at 140 s, once drained (one underrun), all inputs stalled 2 s at 180 s (B-179)",
+  "kind": "h264-aac-720p50",
+  "fixture": "cap-mixer-302m-house.ts",
+  "pid": 65,
+  "seconds": 270,
+  "jolt": [
+    140,
+    0.2
+  ],
+  "stall": [
+    180,
+    2
+  ],
+  "expect": {
+    "spread_ms": 45
+  }
+}

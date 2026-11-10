@@ -12,7 +12,7 @@ line, on
     content or at another rate, measured, nominal or none and changed mid-run, through the suite's
     sink models; or, in about 4 of 10, through the display rate into a sink with a presentation
     cap (50 to 99 % of its refreshes) or kmssink's wait, a prior right, off or none, and the
-    rate restarted mid-run; with their feedback (output off, MSC still or reset) and returns
+    rate restarted mid-run; in about 4 of 10 chunks a drain (B-179) of -0.6 to +0.6 %; with their feedback (output off, MSC still or reset) and returns
     (jitter, a prior right or off).
 
 Then each of the reference's 22 mutants (video_pace_test.MUTANTS) replays the same sequences, and
@@ -251,6 +251,7 @@ def random_ops(out):
         period = den * SEC // num
         gap_threshold = r.pick((vp.GAP_THRESHOLD_NS, 100 * MS, 60 * MS, SEC))
         pace = vt.Recorded(out, None, "random-%d" % i, gap_threshold)
+        rd = Rnd(5000 + i)   # B-179's drains, drawn apart so the earlier runs stay as they were
         frames = random_frames(r, r.int(1500, 5000), num, den)
         if r.chance(40):
             rate = vt.RecordedRate(out, None)
@@ -258,6 +259,8 @@ def random_ops(out):
             prior = r.pick((0, true, r.pick(REFRESHES)))
             at = 0
             while at < len(frames):
+                if rd.chance(40):
+                    pace.set_drain(rd.int(-6000, 6000) * 1000)
                 chunk = frames[at:at + r.int(200, len(frames))]
                 vt.drive_rate(pace, rate, chunk, display, prior)
                 at += len(chunk)
@@ -276,6 +279,8 @@ def random_ops(out):
         at = 0
         while at < len(frames):
             pace.set_display(given, source)
+            if rd.chance(40):
+                pace.set_drain(rd.int(-6000, 6000) * 1000)
             chunk = frames[at:at + r.int(200, len(frames))]
             vt.drive(pace, chunk, display)
             at += len(chunk)

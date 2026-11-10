@@ -1,5 +1,7 @@
 // The Lateness trend row (house-clock WI-P4-12, OQ-34): the least-squares slope of an output's
 // render lateness over the last 3 min with no gap. Shown with a label; no alarm, no setting.
+import type { DrainSummary } from '@media-router/shared-types';
+import { DRAIN_MAX_PPM } from './drainSummary.js';
 
 export const TREND_WINDOW_MS = 180_000;
 
@@ -59,10 +61,19 @@ export class LatenessTrend {
     }
 }
 
-/** `+12 ms/min — decode or device slower than real time`, `−3 ms/min`, `0 ms/min`, `measuring`. */
-export function latenessTrendText(t: { msPerMin?: number }): string {
+/** `+12 ms/min — decode or device slower than real time`, `−3 ms/min`, `0 ms/min`, `measuring`;
+ *  by the drain's state (WI-P4-18): `−300 ms/min — draining to its target`, and at its cap
+ *  `+40 ms/min — growing faster than it can drain (0.5 %)`. */
+export function latenessTrendText(
+    t: { msPerMin?: number },
+    drain?: Pick<DrainSummary, 'state' | 'ppm'>,
+): string {
     if (t.msPerMin === undefined) return 'measuring';
     const r = Math.round(t.msPerMin);
+    if (r < 0 && drain?.state === 'draining') return `−${-r} ms/min — draining to its target`;
+    if (r > 0 && drain && drain.ppm >= DRAIN_MAX_PPM - 1) {
+        return `+${r} ms/min — growing faster than it can drain (0.5 %)`;
+    }
     if (r > 0) return `+${r} ms/min — decode or device slower than real time`;
     return r < 0 ? `−${-r} ms/min` : '0 ms/min';
 }

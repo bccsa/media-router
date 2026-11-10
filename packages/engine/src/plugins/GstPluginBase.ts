@@ -16,6 +16,7 @@ import { START_WAITS_FOR_PIPEWIRE } from './pipeWireLoss.js';
 import { VuStallWatch } from './VuStallWatch.js';
 import { STAMP_OFF_CLOCK_EVENT, stampOffClockText, type StampOffClock } from './offClock.js';
 import { ModuleTiming } from './moduleTiming.js';
+import type { DrainGroupView } from './drainGroups.js';
 import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
 import type { DemuxInputRef } from './demuxWatches.js';
 import type { StreamWarning } from './latenessReporter.js';
@@ -146,6 +147,30 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     /** The timing summary last published (`PluginModule.getTimingSummary`). */
     getTimingSummary(): ModuleTimingSummary | undefined {
         return this.timing.summary();
+    }
+
+    /** The elements that drain this output's latency (`mrasrc`, `mrvideopace`; WI-P4-18, B-179):
+     *  the engine groups the modules that have any. None by default. */
+    drainElementNames(): string[] {
+        return [];
+    }
+
+    /** A Video Player anchors an A/V group (design 7.1); the audio outputs join one. */
+    isLatencyGroupAnchor(): boolean {
+        return false;
+    }
+
+    /** The engine's group target (ns; 0: alone) on every drain element, refreshed every 2 s while
+     *  grouped; the group, for the Latency target row. */
+    async applyLatencyGroupTarget(targetNs: number, group?: DrainGroupView): Promise<void> {
+        this.timing.setDrainGroup(group);
+        for (const name of this.drainElementNames()) {
+            await this.setElementProperty(
+                name,
+                'group-target-ns',
+                Math.max(0, Math.round(targetNs)),
+            );
+        }
     }
 
     /** Subclasses define their GStreamer pipeline here. Return null to skip pipeline (idle module). */

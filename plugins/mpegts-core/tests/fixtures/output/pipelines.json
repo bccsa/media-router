@@ -1,7 +1,7 @@
 {
   "player50": {
     "start": {
-      "pipeline": "unixfdsrc socket-path=@SOCK@/vp.sock ! watchdog name=buswd_40500 timeout=5000 ! mrlateness name=lat_busin_40500_431d2a reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! capsfilter caps=\"video/x-h264\" ! queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! h264parse ! avdec_h264 name=vpdec thread-type=frame max-threads=3 ! videoconvert ! videoscale ! mrvideopace name=vp_pace refresh-mhz=50000 ! mrlateness name=lat_render reference=running-time ! kmssink name=sink connector-id=32 sync=false qos=false vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
+      "pipeline": "unixfdsrc socket-path=@SOCK@/vp.sock ! watchdog name=buswd_40500 timeout=5000 ! mrlateness name=lat_busin_40500_431d2a reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! capsfilter caps=\"video/x-h264\" ! queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! h264parse ! avdec_h264 name=vpdec thread-type=frame max-threads=3 ! videoconvert ! videoscale ! mrvideopace name=vp_pace backlog-queue=vp_esq refresh-mhz=50000 ! mrlateness name=lat_render reference=running-time ! kmssink name=sink connector-id=32 sync=false qos=false vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
       "useStdioForData": false,
       "linkOnPadAdded": [],
       "readKlvNames": false,
@@ -24,7 +24,7 @@
   },
   "player60": {
     "start": {
-      "pipeline": "unixfdsrc socket-path=@SOCK@/vp.sock ! watchdog name=buswd_40500 timeout=5000 ! mrlateness name=lat_busin_40500_431d2a reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! capsfilter caps=\"video/x-h264\" ! queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! h264parse ! avdec_h264 name=vpdec thread-type=frame max-threads=3 ! videoconvert ! videoscale ! mrvideopace name=vp_pace refresh-mhz=60000 ! mrlateness name=lat_render reference=running-time ! kmssink name=sink connector-id=32 sync=false qos=false vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
+      "pipeline": "unixfdsrc socket-path=@SOCK@/vp.sock ! watchdog name=buswd_40500 timeout=5000 ! mrlateness name=lat_busin_40500_431d2a reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! capsfilter caps=\"video/x-h264\" ! queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! h264parse ! avdec_h264 name=vpdec thread-type=frame max-threads=3 ! videoconvert ! videoscale ! mrvideopace name=vp_pace backlog-queue=vp_esq refresh-mhz=60000 ! mrlateness name=lat_render reference=running-time ! kmssink name=sink connector-id=32 sync=false qos=false vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
       "useStdioForData": false,
       "linkOnPadAdded": [],
       "readKlvNames": false,
@@ -47,7 +47,7 @@
   },
   "playerHevc": {
     "start": {
-      "pipeline": "unixfdsrc socket-path=@SOCK@/vp.sock ! watchdog name=buswd_40500 timeout=5000 ! mrlateness name=lat_busin_40500_431d2a reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! capsfilter caps=\"video/x-h265\" ! queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! h265parse ! avdec_h265 name=vpdec thread-type=frame max-threads=3 ! videoconvert ! videoscale ! mrvideopace name=vp_pace refresh-mhz=50000 ! mrlateness name=lat_render reference=running-time ! kmssink name=sink connector-id=32 sync=false qos=false vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
+      "pipeline": "unixfdsrc socket-path=@SOCK@/vp.sock ! watchdog name=buswd_40500 timeout=5000 ! mrlateness name=lat_busin_40500_431d2a reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! capsfilter caps=\"video/x-h265\" ! queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! h265parse ! avdec_h265 name=vpdec thread-type=frame max-threads=3 ! videoconvert ! videoscale ! mrvideopace name=vp_pace backlog-queue=vp_esq refresh-mhz=50000 ! mrlateness name=lat_render reference=running-time ! kmssink name=sink connector-id=32 sync=false qos=false vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
       "useStdioForData": false,
       "linkOnPadAdded": [],
       "readKlvNames": false,

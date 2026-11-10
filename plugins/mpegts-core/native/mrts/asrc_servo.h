@@ -101,6 +101,7 @@ class AsrcServo {
         int64_t source_ppb = 0;     // the source clock against house (asrc_rate_of); 0 without a lock
         int64_t decode_ppb = 0;     // the decode term of ratio_ppb (ε_cmd); ratio_ppb without a device term
         bool rate_known = false;    // the lock has measured the source's rate (a fit since its relock)
+        int64_t drain_ppb = 0;      // the drain the last command carried (B-179); not in ratio_ppb
     };
 
     // A relock drops at most this much: a fall past it is no capture-latency change,
@@ -115,6 +116,8 @@ class AsrcServo {
     // Decode modes (B-148): a fit past the ratio bound this long while locked before ratio-out-of-bounds:
     // a relock's first short fit and an upstream slew are no source's rate.
     static constexpr int64_t OOB_HOLD_NS = 30 * DROP_MAX_NS;
+    // The drain's own clamp (B-179): 0.5 %.
+    static constexpr int64_t DRAIN_MAX_PPB = 5000000;
 
     // Rates in Hz, clamped to [1000, 768000] so every product fits 64 bits.
     AsrcServo(int32_t in_hz, int32_t out_hz, const AsrcServoConfig& cfg = AsrcServoConfig());
@@ -123,9 +126,10 @@ class AsrcServo {
     void set_delay(uint32_t frames) { delay_ = frames; }
     // pts_ns: the capture time (capture) or content time (decode) of the buffer's first frame;
     // every buffer carries one. device_ppb: AsrcDeviceTerm::device_ppb(), with cfg.device only. dur_ns:
-    // the buffer's duration as its source stamped it (a cycle's size), < 0 when it has none.
+    // the buffer's duration as its source stamped it (a cycle's size), < 0 when it has none. drain_ppb:
+    // DrainServo's rate (B-179), device modes only: input consumed (1 + drain) times faster, clamped to +-0.5 %.
     Command push(int64_t pts_ns, uint32_t frames, bool discont, int64_t device_ppb = 0,
-                 int64_t dur_ns = -1);
+                 int64_t dur_ns = -1, int64_t drain_ppb = 0);
     void produced(uint32_t frames);
     // Decode and device modes: the content breaks at a GAP, or before a DISCONT buffer (so the tail leaves
     // before the relock's jump is measured); the next push opens an epoch. True when the resampler holds a
@@ -194,6 +198,8 @@ class AsrcServo {
     int64_t start2_ = 0;         // input position of the epoch's first output, half frames
     int64_t eps_cmd_ = 0;        // ppb
     int64_t dev_ppb_ = 0;        // the device ε the last command carried
+    int64_t drain_ppb_ = 0;      // the drain the last command carried (device modes)
+    int64_t run_ppb_ = 0;        // (1 + ε_dev)(1 + drain) - 1: the output's house-rate frames per frame
     int64_t phase_err_ = 0;
     uint64_t relocks_ = 0, discont_in_ = 0, gaps_ = 0;
     bool oob_ = false;           // out-of-bounds raised and not yet back inside

@@ -33,6 +33,11 @@ runners:
   kms-wait    60p (refresh-mhz=60038) and 50p (none) into mrtestkmssink vblanks=2, one frame per
               two refreshes as kmssink on that DSI: 30 and 20 drops a second, lateness flat;
   properties  defaults and the stats fields;
+  drain       B-179: 50p whose first 2 s arrive at once into a queue named by backlog-queue, then
+              live: once 30 s are sampled it drains at 0.5 %, release lateness falling 5 ms/s; into
+              mrtestvideosink at 60 Hz with no drop, at 50 Hz skipping 1 frame in 200 (drain drops);
+              into fakesink (no display rate) nothing drains; without backlog-queue the backlog is
+              not seen;
   clock-rule  the runners' clock rule (base time 0, start time none; B-169): a flushing seek's
               flush and the PLAYING after it hold no frame, where a default pipeline re-bases its
               running time and holds the frames after it by the time played before the seek;
@@ -137,16 +142,19 @@ class Rig:
     what mrvideopace took in (clock - base at entry), what left it and when, and what reached the
     sink, recorded in order."""
 
-    def __init__(self, sink=FAKE, props="", base=0, caps=CAPS50):
+    def __init__(self, sink=FAKE, props="", base=0, caps=CAPS50, pre=""):
         self.pipe = Gst.Pipeline.new(None)
-        self.pipe.add(Gst.parse_bin_from_description(f"mrvideopace name=vp {props} ! {sink}", False))
+        self.pipe.add(Gst.parse_bin_from_description(
+            f"{pre + ' ! ' if pre else ''}mrvideopace name=vp {props} ! {sink}", False))
         house(self.pipe, base)
         self.base, self.caps = base, caps
         self.frame_dur = self.caps_period(caps)
         self.vp = self.pipe.get_by_name("vp")
         self.out = self.pipe.get_by_name("out")
         self.feed = Gst.Pad.new("feed", Gst.PadDirection.SRC)
-        self.feed.link(self.vp.get_static_pad("sink"))
+        # With `pre` (a backlog queue named bq), the feed goes into it.
+        first = self.pipe.get_by_name("bq") if pre else self.vp
+        self.feed.link(first.get_static_pad("sink"))
         self.seen, self.left, self.down = [], [], []
         self.messages, self.errors = [], []
         self.results = []
@@ -352,7 +360,12 @@ def case_pacing():
     fields = set(rig.messages[-1][1]) if rig.messages else set()
     want = {"released", "late", "rate-drops", "gaps-collapsed", "unpaced", "content-fps-x100",
             "refresh-ns", "refresh-source", "achieved-ns", "display-behind", "mean-hold-ns",
-            "present-lateness-ns", "display-presenting"}
+            "present-lateness-ns", "display-presenting",
+            # B-179's drain
+            "drain-ppm", "drain-excess-ns", "drain-margin-ns", "drain-learned-ns", "fill-trough-ns",
+            "drained-ns", "drain-raises", "underruns", "drain-outages", "drain-target-lateness-ns",
+            "group-target-ns", "drain-state", "drain-capped", "drain-member", "drain-rate-known",
+            "drain-drops"}
     last = rig.messages[-1][1] if rig.messages else {}
     check("pacing: the message carries the plan's fields, display-presenting, unpaced, achieved-ns "
           "and display-behind",
@@ -799,6 +812,12 @@ def case_properties():
           el.get_property("refresh-mhz") == 0 and el.get_property("gap-threshold-ms") == 250
           and specs["refresh-mhz"].maximum == 1000000
           and not specs["stats"].flags & GObject.ParamFlags.WRITABLE)
+    check("properties (B-179): backlog-queue \"\" by default (found at READY to PAUSED), group-target-ns 0 "
+          "(alone, live); the stats' drain at rest",
+          el.get_property("backlog-queue") == "" and specs["backlog-queue"].flags & Gst.PARAM_MUTABLE_READY
+          and el.get_property("group-target-ns") == 0 and specs["group-target-ns"].flags & Gst.PARAM_MUTABLE_PLAYING
+          and st["drain-ppm"] == 0 and st["drain-drops"] == 0 and st["drain-state"] == "warm-up"
+          and st["drain-learned-ns"] == -1 and st["drain-member"] is False, f"{st}")
     check("properties: stats before a start: zeros, refresh-source none, presenting",
           st["released"] == st["rate-drops"] == st["unpaced"] == 0 and st["refresh-source"] == "none"
           and st["display-presenting"] is True, f"{st}")
@@ -975,12 +994,74 @@ def case_runners():
                     r.stop()
 
 
+# --------------------------------------------------------------------------- the drain (B-179)
+BQ = "queue name=bq max-size-time=0 max-size-buffers=0 max-size-bytes=0"
+
+
+def drain_run(sink, props="", seconds=58, pre=BQ, held=2 * S):
+    """50p whose first `held` arrive at once (a stall's backlog in the queue named bq), then live:
+    the stats every 0.5 s, and what left."""
+    rig = Rig(sink=sink, props=props, pre=pre).start()
+    t0 = rig.now() + 50 * MS
+    plan = [[max(r, t0 + held), p, d, dc, g] for r, p, d, dc, g in live(int(seconds * 50), 50, 1, t0 - LATENCY)]
+    feeder = rig.play([tuple(p) for p in plan])
+    samples = poll(rig, seconds, 0.5)
+    feeder.join(5)
+    rig.stop()
+    rig.t0 = t0
+    return rig, samples
+
+
+def case_drain():
+    if not HAVE_SINKS:
+        skip("drain", f"{TESTVIDEO} not built (make native-test)")
+        return
+    for hz, period, decimates in ((60, P60, False), (50, P50, True)):
+        rig, samples = drain_run(f"mrtestvideosink name=out period-ns={period} async=false",
+                                 "backlog-queue=bq")
+        st = samples[-1][1]
+        draining = [(t, x) for t, x, _ in samples if x["drain-ppm"] >= 5000]
+        t_full = draining[0][0] if draining else None
+        late = [(t, l) for t, l in ((tt, tt - p) for p, tt in rig.left) if t_full and t >= t_full + 2 * S]
+        n = len(late)
+        slope = ((late[-1][1] - late[0][1]) / (late[-1][0] - late[0][0]) * 1000) if n > 50 else 0
+        frames = sum(1 for p, tt in rig.left if t_full and tt >= t_full)
+        want = frames / 200
+        at = (t_full - rig.t0) / S if t_full else None
+        check(f"drain {hz} Hz: the backlog in bq drains at 0.5 % once 30 s are sampled (drain-ppm 5,000 at "
+              f"{at or 0:.1f} s); release lateness falls {slope:+.2f} ms/s (5 +-10 %; at 50 Hz to 6.5: the drops "
+              f"come whole frames, and a measured period a hair over 20 ms adds rate drops)",
+              at is not None and 30 <= at <= 50 and (-6.5 if decimates else -5.5) <= slope <= -4.5,
+              f"trough {st['fill-trough-ns'] / MS:.0f} ms, margin {st['drain-margin-ns'] / MS:.0f} ms")
+        if decimates:
+            # A measured period a hair over 20 ms makes the shadow drop too: those count as rate drops.
+            both = st["drain-drops"] + st["rate-drops"]
+            check(f"drain 50 Hz: on a display at the content rate it skips 1 frame in 200 while draining "
+                  f"({st['drain-drops']} drain drops and {st['rate-drops']} rate drops for {frames} frames, want "
+                  f"{want:.1f} -1.5 +2 in all)", want - 1.5 <= both <= want + 2)
+        else:
+            check(f"drain 60 Hz: on a display with headroom nothing drops ({st['drain-drops']} drain drops, "
+                  f"{st['rate-drops']} rate drops): it loses repeats only",
+                  st["drain-drops"] == 0 and st["rate-drops"] == 0)
+    # Without a display rate nothing drains (M4); without backlog-queue the backlog is not seen.
+    rig, samples = drain_run(FAKE, "backlog-queue=bq", 45)
+    st = samples[-1][1]
+    check("drain, no display rate (fakesink, no refresh-mhz): drain-ppm held at 0 whatever the backlog, "
+          "drain-rate-known false", all(x["drain-ppm"] == 0 for _, x, _ in samples)
+          and st["drain-rate-known"] is False and st["refresh-source"] == "none", f"{st['drain-state']}")
+    rig, samples = drain_run("mrtestvideosink name=out period-ns=16666667 async=false", "", 45)
+    st = samples[-1][1]
+    check("drain, backlog-queue not given (the mutant 'backlog-queue ignored'): the frames' own slack is "
+          f"one frame, so the 2 s in the queue never drains (trough {st['fill-trough-ns'] / MS:.0f} ms)",
+          all(x["drain-ppm"] == 0 for _, x, _ in samples) and st["fill-trough-ns"] <= 60 * MS)
+
+
 CASES = {"pacing": case_pacing, "base-time": case_base_time, "flush": case_flush,
          "ready": case_ready, "gap": case_gap, "dmabuf": case_dmabuf, "nominal": case_nominal,
          "measured": case_measured, "drift": case_drift, "kms": case_kms, "outage": case_outage,
          "capped": case_capped, "keeps-up": case_keeps_up, "kms-wait": case_kms_wait,
          "properties": case_properties, "clock-rule": case_clock_rule,
-         "runners": case_runners}
+         "runners": case_runners, "drain": case_drain}
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """A stall's backlog at the video output plays at content rate and is never shed (WI-P4-14, in place of
-the ratchet test): arms A fakesink, B mrtestvideosink at 50 Hz, C B then a 2 s gap. Its mutant:
-mrvideopace with release = arrival, via MR_PLUGINS_DIR. Skips (exit 0) without GStreamer or the plugin.
+the ratchet test), then drains to its target at <= 0.5 % (B-179) once 30 s are sampled: arms A fakesink
+(no display rate: nothing drains, M4), B mrtestvideosink at 50 Hz (drain drops <= 1 in 200), C B then a
+2 s gap, D at 60 Hz (headroom: no drop). Its mutant: mrvideopace with release = arrival, via
+MR_PLUGINS_DIR. Skips (exit 0) without GStreamer or the plugin.
 """
 import os
 import sys
@@ -31,6 +33,7 @@ CAPS = "video/x-raw,format=I420,width=16,height=16,framerate=50/1"
 FRAME = 20 * MS
 LATENCY = 60 * MS            # each frame ready this long after its PTS (a decoder's)
 SECONDS, STALL, GAP = 16, (4.0, 2.0), (10.0, 2.0)
+DRAIN_SECONDS = 75           # B and D run on past the drain's 30 s warm-up (B-179)
 
 if not os.path.exists(SO):
     print(f"SKIP gst_output_backlog_test.py — {SO} not built (make native)")
@@ -53,13 +56,13 @@ def sdict(st):
     return {st.nth_field_name(i): st.get_value(st.nth_field_name(i)) for i in range(st.n_fields())}
 
 
-def run_arm(sink, gap):
+def run_arm(sink, gap, seconds=SECONDS):
     """One arm: [(arrival at the sink, PTS)] of every frame rendered, the frames pushed, the pace's
     stats and the vp_esq overruns; the feed's t0 is its first PTS."""
     pipe = Gst.parse_launch(
         f'appsrc name=src is-live=true format=time do-timestamp=false caps="{CAPS}" '
         "! queue name=vp_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 "
-        f"! mrvideopace name=vp_pace ! {sink}")
+        f"! mrvideopace name=vp_pace backlog-queue=vp_esq ! {sink}")
     clock = Gst.SystemClock.obtain()
     clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
     pipe.use_clock(clock)
@@ -74,7 +77,7 @@ def run_arm(sink, gap):
     pipe.set_state(Gst.State.PLAYING)
     t0 = (clock.get_time() + 500 * MS) // FRAME * FRAME
     frames = []
-    for k in range(SECONDS * 50):
+    for k in range(seconds * 50):
         pts = t0 + k * FRAME
         rel = (pts - t0) / S
         if gap and gap[0] <= rel < gap[0] + gap[1]:
@@ -106,26 +109,47 @@ def lateness(seen, t0, lo, hi):
     return [(at - pts) / 1e6 for at, pts in seen if t0 + int(lo * S) <= pts < t0 + int(hi * S)]
 
 
-def arm(label, sink, gap=None):
-    t0, seen, pushed, stats, overruns = run_arm(sink, gap)
+def arm(label, sink, gap=None, seconds=SECONDS, drains=None):
+    """`drains`: None (16 s, no drain yet), or the drops allowed while it drains (B-179): 'none' with
+    headroom, 'one in 200' at the content rate, 'never' without a display rate."""
+    t0, seen, pushed, stats, overruns = run_arm(sink, gap, seconds)
     before = lateness(seen, t0, 1, STALL[0])
     backlog = lateness(seen, t0, STALL[0], STALL[0] + STALL[1])
-    after = lateness(seen, t0, STALL[0] + STALL[1], gap[0] if gap else SECONDS - 1)
+    # Flat until the drain's warm-up has run (30 s sampled from the first frame).
+    after = lateness(seen, t0, STALL[0] + STALL[1], gap[0] if gap else min(seconds - 1, 28))
     b, a = (sum(v) / len(v) if v else None for v in (before, after))
     step = a - b if a is not None and b is not None else None
     # The backlog's releases: the frames held by the stall leave on the content's 20 ms cadence.
     at = sorted(t for t, pts in seen if t0 + int(STALL[0] * S) <= pts < t0 + int((STALL[0] + STALL[1]) * S))
     deltas = sorted((y - x) / 1e6 for x, y in zip(at, at[1:]))
     median = deltas[len(deltas) // 2] if deltas else None
-    check(f"{label}: nothing shed: every frame pushed reached the sink ({len(seen)} of {pushed}), the pace "
-          f"dropped none ({stats.get('rate-drops')}), vp_esq never full ({len(overruns)} overruns)",
-          len(seen) == pushed and stats.get("rate-drops") == 0 and not overruns)
+    drops = stats.get("drain-drops") or 0
+    check(f"{label}: nothing shed: every frame pushed reached the sink ({len(seen)} of {pushed}, {drops} drain "
+          f"drops), the pace dropped none for its rate ({stats.get('rate-drops')}), vp_esq never full "
+          f"({len(overruns)} overruns)",
+          len(seen) + drops == pushed and stats.get("rate-drops") == 0 and not overruns)
     check(f"{label}: the stall's backlog plays at content rate (its releases {median and round(median, 1)} ms "
           f"apart, median), its lateness up by the stall ({b and round(b, 1)} -> {a and round(a, 1)} ms, "
           f"+{step and round(step)}; want +{STALL[1] * 1000:.0f} ± 25) and flat after "
           f"({round(max(after) - min(after), 1) if after else None} ms)",
           median is not None and abs(median - 20) <= 1 and step is not None
           and abs(step - STALL[1] * 1000) <= 25 and after and max(after) - min(after) <= 21 and len(backlog) > 90)
+    if drains:
+        late = [((at - t0) / S, (at - pts) / 1e6) for at, pts in seen if at >= t0 + 40 * S]
+        n = len(late)
+        mx, my = (sum(x for x, _ in late) / n, sum(y for _, y in late) / n) if n else (0, 0)
+        sxx = sum((x - mx) ** 2 for x, _ in late)
+        slope = sum((x - mx) * (y - my) for x, y in late) / sxx if sxx else 0
+        frames = n
+        if drains == "never":
+            check(f"{label}: no display rate, so nothing drains (M4): drain-ppm {stats.get('drain-ppm')}, the "
+                  f"lateness flat ({slope:+.2f} ms/s), {drops} drain drops",
+                  stats.get("drain-ppm") == 0 and abs(slope) <= 0.2 and drops == 0)
+        else:
+            allowed = 0 if drains == "none" else frames / 200 + 1
+            check(f"{label}: then drains to its target at <= 0.5 % ({slope:+.2f} ms/s from 40 s), zero samples "
+                  f"lost, {drops} drain drops (<= {allowed:.0f}: {drains})",
+                  -5.5 <= slope <= -4.0 and drops <= allowed and (drains != "none" or drops == 0))
     if gap:
         back = lateness(seen, t0, gap[0] + gap[1] + 0.5, SECONDS - 1)
         c = sum(back) / len(back) if back else None
@@ -135,15 +159,18 @@ def arm(label, sink, gap=None):
 
 
 def main():
-    print("\n--- A: an unpaced sink (fakesink sync=false)")
-    arm("A unpaced", "fakesink name=out sync=false async=false")
+    print("\n--- A: an unpaced sink (fakesink sync=false): no display rate")
+    arm("A unpaced", "fakesink name=out sync=false async=false", seconds=DRAIN_SECONDS, drains="never")
     if not HAVE_DISPLAY:
-        print("SKIP B, C — mrtshouse/tests/mrtestvideo not built (make native-test)")
+        print("SKIP B, C, D — mrtshouse/tests/mrtestvideo not built (make native-test)")
     else:
         print("\n--- B: a media-rate display (mrtestvideosink at 50 Hz)")
-        arm("B media-rate", "mrtestvideosink name=out period-ns=20000000")
+        arm("B media-rate", "mrtestvideosink name=out period-ns=20000000", seconds=DRAIN_SECONDS,
+            drains="one in 200")
         print("\n--- C: B, then a 2 s content gap")
         arm("C then a gap", "mrtestvideosink name=out period-ns=20000000", gap=GAP)
+        print("\n--- D: a display with headroom (mrtestvideosink at 60 Hz)")
+        arm("D headroom", "mrtestvideosink name=out period-ns=16666667", seconds=DRAIN_SECONDS, drains="none")
     if _failures:
         print(f"\n{len(_failures)} FAILED: {_failures}")
         return 1

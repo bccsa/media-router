@@ -1,7 +1,7 @@
 // A module's timing summary as status sections and a face badge (ADR-0007: the plugin
 // computes, the UI renders). Every row is labelled with its unit, so the operator reads a
 // number, not a colour. House-clock plan WI-P0-9; the aligner rows WI-P2-13; the demux and
-// ASRC rows WI-P3-6; the output rows WI-P4-12.
+// ASRC rows WI-P3-6; the output rows WI-P4-12; the drain's rows WI-P4-18.
 import type {
     ClockCorrection,
     LatenessStatsMs,
@@ -11,6 +11,7 @@ import type {
     StatusValue,
 } from '@media-router/shared-types';
 import { clockCorrectionText, signedPpm } from './asrcWatches.js';
+import { drainedText, latencyTargetText, underrunsText } from './drainSummary.js';
 import { latenessTrendText } from './latenessTrend.js';
 import { rateMatchText } from './videoPaceWatches.js';
 
@@ -112,10 +113,21 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
         rows.push(['deviceLatencyMs', `Device latency${note}`, ms(s.deviceLatencyMs), 'ms']);
     }
     if (s.renderMs !== undefined) rows.push(['renderMs', 'Render lateness', ms(s.renderMs), 'ms']);
-    if (s.latenessTrend) {
-        rows.push(['latenessTrend', 'Lateness trend', latenessTrendText(s.latenessTrend)]);
+    if (s.drain) {
+        rows.push(['latencyTarget', 'Latency target', latencyTargetText(s.drain)]);
+        rows.push(['drained', 'Drained', drainedText(s.drain)]);
+        rows.push(['underruns', 'Buffer underruns', underrunsText(s.drain)]);
     }
-    if (s.rateMatch) rows.push(['rateMatch', 'Rate match', rateMatchText(s.rateMatch)]);
+    if (s.latenessTrend) {
+        rows.push(['latenessTrend', 'Lateness trend', latenessTrendText(s.latenessTrend, s.drain)]);
+    }
+    if (s.rateMatch) {
+        rows.push([
+            'rateMatch',
+            'Rate match',
+            rateMatchText(s.rateMatch, s.drain?.drainDropsPerMin),
+        ]);
+    }
     if (s.lateReleasesPerMin !== undefined) {
         rows.push(['lateReleases', 'Late releases', Math.round(s.lateReleasesPerMin), '/min']);
     }
@@ -179,6 +191,14 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     put('hold', s.paceHoldMs);
     put('relocks', s.deviceRelocks);
     put('stalls', s.deviceStalls);
+    // The drain's rows as shown: the texts carry their own rounding (WI-P4-18).
+    if (s.drain) {
+        put('drain.target', latencyTargetText(s.drain));
+        put('drain.drained', drainedText(s.drain));
+        put('drain.underruns', underrunsText(s.drain));
+        put('drain.drops', s.drain.drainDropsPerMin);
+        put('drain.state', s.drain.state);
+    }
     // ppm in tenths, its display step; a correction's `none` and `measuring` are values of their own.
     const tenths = (c: ClockCorrection | undefined): number | string | undefined =>
         c && (c.measuring ? 'measuring' : c.sourcePpm === undefined ? 'none' : c.sourcePpm * 10);

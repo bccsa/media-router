@@ -3,6 +3,7 @@ import type { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { BusAttachTarget, LiveSwapTarget } from '../child-process/UnixFdFanoutController.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
+import type { DrainGroupView } from './drainGroups.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
 import type { HouseClock } from '../clock/HouseClock.js';
@@ -178,6 +179,13 @@ export interface PluginModule {
      *  aligner input starts its pace at this producer's output lateness (`seedLatenessMs` in
      *  `MediaRouter.getModuleBusSources`, WI-P2-13). */
     getTimingSummary?(): ModuleTimingSummary | undefined;
+    /** The elements that drain this output's built-up latency (WI-P4-18, B-179): the engine's A/V
+     *  groups take the modules that name any (GstPluginBase). */
+    drainElementNames?(): string[];
+    /** A Video Player anchors an A/V group; audio outputs join one. */
+    isLatencyGroupAnchor?(): boolean;
+    /** The group's target (ns, 0: alone) for the drain elements, and the group for the display. */
+    applyLatencyGroupTarget?(targetNs: number, group?: DrainGroupView): Promise<void>;
     /**
      * Target of the tracked `bus_reinput` RPC that executes a live input swap.
      * Defaults to the gst child process; a native (non-GStreamer) sink

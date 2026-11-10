@@ -53,6 +53,15 @@ void VideoPace::set_display(int64_t period_ns, DisplaySource source) {
     display_source_ = source;
 }
 
+void VideoPace::set_drain(int64_t ppb) { drain_ = std::min(DRAIN_MAX_PPB, std::max(-DRAIN_MAX_PPB, ppb)); }
+
+// Δ' = Δ·1e9 / (1e9 + δ), to the nearest ns.
+int64_t VideoPace::drained(int64_t d) const {
+    if (!drain_ || d <= 0) return d;
+    const __int128 den = (__int128)1000000000 + drain_;
+    return clamp64(round_div((__int128)d * 1000000000, den));
+}
+
 // The window keeps the last PERIOD_WINDOW deltas; the sorted copy is the same multiset.
 void VideoPace::add_clean(int64_t delta) {
     if (window_n_ == PERIOD_WINDOW) {
@@ -83,8 +92,9 @@ PaceDecision VideoPace::on_frame(int64_t pts_ns, int64_t dur_ns, int64_t arrival
     const int64_t threshold =
         nominal > 0 && nominal <= gap_threshold_ns_ / 4 ? 4 * nominal : gap_threshold_ns_;
     bool collapsed = false, sink_late = false;
-    int64_t delta = 0;
+    int64_t delta = 0, delta0 = 0;
     __int128 slot = arrival_ns;
+    PaceDecision out{0, false};
     if (have_prev_) {
         const __int128 d = (__int128)pts_ns - prev_pts_;
         collapsed = gap_pending_ || discont || d < 0 || d > threshold;
@@ -97,17 +107,32 @@ PaceDecision VideoPace::on_frame(int64_t pts_ns, int64_t dur_ns, int64_t arrival
             delta = (int64_t)d;
             add_clean(delta);
         }
+        delta0 = delta;
+        delta = drained(delta);
         slot = (__int128)prev_release_ + delta;
         // Past its slot behind the sink's own push: the sink's wait, not the input's lateness.
         sink_late = held && !collapsed && arrival_ns > slot;
-        if (arrival_ns > slot && !collapsed && !sink_late) late_++;
+        if (arrival_ns > slot && !collapsed && !sink_late) {
+            late_++;
+            out.late = true;
+            out.late_by_ns = clamp64((__int128)arrival_ns - slot);
+        }
+        if (!collapsed && !sink_late) {
+            out.has_slack = true;
+            out.slack_ns = clamp64(slot - arrival_ns);
+        }
     }
     const int64_t release = clamp64(std::max<__int128>(arrival_ns, slot));
-    bool drop = false, behind = false;
+    bool drop = false, behind = false, sdrop = false;
     if (!decimating(tc)) {
-        lag_ = 0;
+        lag_ = shadow_ = owed_ = 0;
     } else {
-        const int64_t whole = nominal > 0 ? nominal : delta;
+        if (!drain_) {
+            shadow_ = lag_;
+            owed_ = 0;
+        }
+        const int64_t whole0 = nominal > 0 ? nominal : delta0;
+        const int64_t whole = drained(whole0);
         __int128 lag = std::max<__int128>((__int128)lag_ - delta, collapsed ? 0 : -(__int128)whole);
         const bool foreseen = whole > 0 && lag >= whole;
         // The sink's own wait past a frame; a display period behind, the lag is what it shows.
@@ -120,20 +145,40 @@ PaceDecision VideoPace::on_frame(int64_t pts_ns, int64_t dur_ns, int64_t arrival
         drop = whole > 0 && lag >= whole;
         if (!drop) lag += display_period_;
         lag_ = clamp64(lag);
+        if (drain_) {
+            // The shadow: the same frame at δ = 0, the sink's wait as the real lag saw it.
+            __int128 sh = std::max<__int128>((__int128)shadow_ - delta0, collapsed ? 0 : -(__int128)whole0);
+            const __int128 grid0 = std::max<__int128>((__int128)display_period_ - whole0, 0);
+            if (sink_late && waited > grid0 + whole0) sh = std::max<__int128>(sh, waited - grid0);
+            sdrop = whole0 > 0 && sh >= whole0;
+            if (!sdrop) sh += display_period_;
+            shadow_ = clamp64(sh);
+        } else {
+            sdrop = drop;
+            shadow_ = lag_;
+        }
     }
     prev_pts_ = pts_ns;
     prev_release_ = sink_late ? clamp64(slot) : release;
     have_prev_ = true;
     gap_pending_ = false;
-    if (drop) {
+    if (drop && !behind && !sdrop && owed_ == 0) {
+        drain_drops_++;
+    } else if (drop) {
         rate_drops_++;
         if (behind) behind_++;
-    } else {
+        if (!behind && !sdrop) owed_--;
+    } else if (sdrop) {
+        owed_++;
+    }
+    if (!drop) {
         released_++;
         hold_sum_ += (__int128)release - arrival_ns;
         hold_count_++;
     }
-    return PaceDecision{release, drop};
+    out.release_ns = release;
+    out.rate_drop = drop;
+    return out;
 }
 
 PaceSummary VideoPace::peek() const {
@@ -143,6 +188,7 @@ PaceSummary VideoPace::peek() const {
     s.rate_drops = rate_drops_;
     s.gaps_collapsed = gaps_collapsed_;
     s.behind = behind_;
+    s.drain_drops = drain_drops_;
     s.content_period = content_period();
     s.display_period = display_period_;
     s.display_source = display_source_;

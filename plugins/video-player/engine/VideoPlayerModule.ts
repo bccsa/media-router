@@ -25,7 +25,12 @@ import {
     processStartMs,
     waitForWaylandSocket,
 } from './helpers/wayland.js';
-import { resolveFallbackImagePath, RESUME_SINK_NAME, VP_DEMUX_NAME } from './helpers/pipelines.js';
+import {
+    resolveFallbackImagePath,
+    RESUME_SINK_NAME,
+    VIDEO_PACE_NAME,
+    VP_DEMUX_NAME,
+} from './helpers/pipelines.js';
 import {
     decoderDemotionNote,
     probeDecoderAvailability,
@@ -1106,6 +1111,15 @@ export class VideoPlayerModule extends GstPluginBase {
             (err, property) => this.log.debug({ err, property }, 'Failed to update subtitle overlay'),
         );
         this.updateStatusData();
+    }
+
+    /** The pace drains the player's built-up latency and anchors its A/V group (WI-P4-18). */
+    drainElementNames(): string[] {
+        return [VIDEO_PACE_NAME];
+    }
+
+    isLatencyGroupAnchor(): boolean {
+        return true;
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {

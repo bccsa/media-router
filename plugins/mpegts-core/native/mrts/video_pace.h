@@ -16,12 +16,17 @@ bool parse_display_source(const char* name, DisplaySource* out);
 
 struct PaceDecision {
     int64_t release_ns;   // the element clock's ns (base time 0) the frame leaves at; a drop's slot
-    bool rate_drop;       // dropped at once to match the display
+    bool rate_drop;       // dropped at once to match the display (or the drain's, B-179)
+    // For the drain servo (B-179): late: arrival past its drained slot by late_by_ns (not collapsed, not the
+    // sink's wait); has_slack: slack_ns = slot' - arrival (neither a first, a collapsed nor a sink-late frame).
+    bool late = false, has_slack = false;
+    int64_t late_by_ns = 0, slack_ns = 0;
 };
 
 struct PaceSummary {
     uint64_t released = 0, late = 0, rate_drops = 0, gaps_collapsed = 0;
     uint64_t behind = 0;          // rate drops of a display a period behind, not foreseen
+    uint64_t drain_drops = 0;     // drops the drain made, a shadow lag at delta 0 would not (B-179)
     int64_t content_period = 0;   // the median of the last 120 clean deltas; 0 before the first
     int64_t display_period = 0;
     DisplaySource display_source = DisplaySource::none;
@@ -33,6 +38,7 @@ class VideoPace {
     static constexpr int64_t GAP_THRESHOLD_NS = 250000000;
     static constexpr int PERIOD_WINDOW = 120;   // clean deltas in the content period's median
     static constexpr int64_t NOMINAL_BAND_DEN = 2000;   // the 0.05 % band on a nominal refresh
+    static constexpr int64_t DRAIN_MAX_PPB = 5000000;   // the drain's clamp (B-179): 0.5 %
 
     explicit VideoPace(int64_t gap_threshold_ns = GAP_THRESHOLD_NS);
 
@@ -45,6 +51,9 @@ class VideoPace {
     void on_gap() { gap_pending_ = true; }
     // period <= 0 reads as none.
     void set_display(int64_t period_ns, DisplaySource source);
+    // The drain's rate (B-179): the cadence on Δ' = Δ·1e9 / (1e9 + δ), clamped to +-0.5 %.
+    void set_drain(int64_t ppb);
+    int64_t drain() const { return drain_; }
     // Counters since construction and the mean hold since the last take, which restarts it.
     PaceSummary take();
     // The same without restarting the mean hold (the element's stats between its messages).
@@ -54,6 +63,7 @@ class VideoPace {
   private:
     void add_clean(int64_t delta);
     bool decimating(int64_t tc) const;
+    int64_t drained(int64_t d) const;
 
     int64_t gap_threshold_ns_;
     bool have_prev_ = false;
@@ -67,6 +77,10 @@ class VideoPace {
     DisplaySource display_source_ = DisplaySource::none;
     int64_t lag_ = 0;             // L: the display's lag behind the content, ns
     uint64_t released_ = 0, late_ = 0, rate_drops_ = 0, gaps_collapsed_ = 0, behind_ = 0;
+    int64_t drain_ = 0;           // δ, ppb
+    int64_t shadow_ = 0;          // the lag at δ = 0
+    int64_t owed_ = 0;            // shadow drops the real lag has not made
+    uint64_t drain_drops_ = 0;
     __int128 hold_sum_ = 0;
     uint64_t hold_count_ = 0;
 };

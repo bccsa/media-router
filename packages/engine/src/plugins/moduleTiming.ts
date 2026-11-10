@@ -2,13 +2,15 @@
 // the sink read for the device latency stand-in, the aligners' warnings and events (WI-P2-13),
 // the demuxes' and ASRCs' (WI-P3-6), and the queue-full warning (WI-P4-12). GstPluginBase owns
 // one and merges it into `getState()`.
-import type { ModuleTimingSummary } from '@media-router/shared-types';
+import type { DrainSummary, ModuleTimingSummary } from '@media-router/shared-types';
 import type { PipelineDescription, TimingInputRef, TimingSink } from './PluginModule.js';
 import { readNodeLatency } from '../audio/pipeWireLatency.js';
 import { busSrcTapName, latInName, shortHash } from './busHelpers.js';
 import { reanchorEventText, type AlignerInputRef, type AlignerWatchRef } from './alignerWatches.js';
 import { DEMUX_EVENT, type DemuxInputRef } from './demuxWatches.js';
 import { signedPpm } from './asrcWatches.js';
+import type { DrainGroupView } from './drainGroups.js';
+import { drainDoneText, drainStartText } from './drainSummary.js';
 import {
     LatenessReporter,
     type LabelledAlignerEvent,
@@ -123,6 +125,8 @@ const visible = (p: TimingPublication): boolean => p.sections.length > 0 || p.ba
 
 export class ModuleTiming {
     private readonly reporter: LatenessReporter;
+    /** The drain's state at the last publish, for its log lines (WI-P4-18). */
+    private drainWas: { state: DrainSummary['state']; capped: boolean } | undefined;
     private pub: TimingPublication = EMPTY;
     private last: ModuleTimingSummary | null = null;
     private timer: ReturnType<typeof setInterval> | null = null;
@@ -241,6 +245,11 @@ export class ModuleTiming {
 
     /** What the module's processing delays its content by, past its PTS (OQ-22): the module
      *  reads it off its elements; shown from the next tick. Call after start (it clears it). */
+    /** The module's A/V group as the engine set it (WI-P4-18), for the Latency target row. */
+    setDrainGroup(view: DrainGroupView | undefined): void {
+        this.reporter.setDrainGroup(view);
+    }
+
     setProcessingLatency(ms: number | undefined): void {
         this.reporter.setProcessingLatency(ms);
     }
@@ -306,6 +315,7 @@ export class ModuleTiming {
     /** The display when it changed (≥ 1 ms or a row), then the warnings. */
     private publish(now = Date.now()): void {
         const s = this.reporter.summary(now);
+        this.logDrain(s.drain);
         if (timingChanged(this.last, s)) {
             const next = timingPublication(s);
             const show = visible(next) || visible(this.pub);
@@ -452,6 +462,22 @@ export class ModuleTiming {
         );
     }
 
+    /** One INFO line as a drain starts and ends, and as a member is first held at its 1 s cap
+     *  (WI-P4-18); the summary's, so the video outputs log as the audio ones do. */
+    private logDrain(d: DrainSummary | undefined): void {
+        const was = this.drainWas;
+        this.drainWas = d && { state: d.state, capped: !!d.capped };
+        if (!d) return;
+        if (d.state === 'draining' && was?.state !== 'draining') {
+            this.host.log?.('info', { drain: d }, drainStartText(d));
+        } else if (was?.state === 'draining' && d.state !== 'draining') {
+            this.host.log?.('info', { drain: d }, drainDoneText(d));
+        }
+        if (d.capped && !was?.capped) {
+            this.host.log?.('info', { drain: d }, 'Latency 1 s behind its group: held there');
+        }
+    }
+
     /** A demux's new program; a consumer ASRC's event (an engage worded as part 10 words it). */
     private logStream(e: StreamLogEvent): void {
         if (e.source === 'display') {
@@ -472,6 +498,18 @@ export class ModuleTiming {
             return;
         }
         const { kind, reason, payload, sourcePpm, offMs } = e.event;
+        // The drain's start and end are logged from the summary (logDrain), the video's alike.
+        if (kind === 'drain-start' || kind === 'drain-done') return;
+        if (kind === 'underrun') {
+            const len = Number(payload['length-ns']) / 1e6;
+            const margin = Number(payload['margin-ns']) / 1e6;
+            this.host.log?.(
+                'info',
+                { asrcEvent: { name: e.event.name, ...payload } },
+                `Buffer underrun (${Math.round(len)} ms): its latency margin raised to ${Math.round(margin)} ms`,
+            );
+            return;
+        }
         const who = e.label ? `Input ${e.label}: ` : '';
         const source = e.label ? `${who}source clock` : 'Source clock';
         const timeline = e.label ? `${who}source timeline` : 'Source timeline';

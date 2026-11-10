@@ -358,6 +358,8 @@ elements" below do not start.
   what follows plays at once. On the box's PipeWire up to about a tenth of a
   second after a pause can be lost as well (100 to 127 ms after a 300 ms
   pause, measured before this release).
+- **After a stall in its sources it plays behind, then catches up to its
+  latency target by itself** (up to 0.5 % faster); nothing is dropped.
 
 **Audio Decoder plays as soon as it can (Phase 4)**
 
@@ -365,9 +367,9 @@ elements" below do not start.
   buffer and 100 ms ring as Audio Output (302M), instead of waiting for a
   playout offset: its input's own delay plus about a tenth of a second. A
   route's Playout Offset no longer moves it.
-- **After a stall in its input it plays on behind.** What the input sends
-  late is kept (up to 5 s) and plays that much later, until a gap in the
-  input or a restart; nothing is dropped to catch up.
+- **After a stall in its input it plays behind, then catches up to its
+  latency target by itself** (up to 0.5 % faster). What the input sends late
+  is kept (up to 5 s); nothing is dropped to catch up.
 - **No relaunch after a source's stale burst.** The one relaunch a source's
   return used to cause (v2.0.0.98's fix for a burst of stale packets) is gone:
   the output plays on. (MR-011)
@@ -386,9 +388,10 @@ elements" below do not start.
 - **A display slower than the stream drops frames evenly to keep up,**
   instead of falling behind: a 60 frames-a-second source on a 50 Hz display
   shows five frames in six.
-- **After a stall in its input it plays on behind.** What the input sends
-  late is kept (up to 5 s) and plays that much later, until a gap in the
-  input or a restart; nothing is dropped to catch up.
+- **After a stall in its input it plays behind, then catches up to its
+  latency target by itself.** What the input sends late is kept (up to 5 s);
+  on a display that runs at the video's own rate it skips at most one frame
+  in 200 while it catches up, on a faster display none.
 - **A pipeline that keeps failing is restarted less often:** after 1 s, then
   backing off to every 30 s, where it was every 5 s. Each restart opens the
   video decoder again, and in testing rapid reopening stopped a Pi 4's
@@ -454,8 +457,45 @@ elements" below do not start.
   its route's playout offset or re-anchors itself: there is no **Playout
   re-anchor** section, badge or "Playout re-anchored" warning on a route's
   input or its outputs, and no "Backlog shed" lines in the journal. Nothing is
-  dropped to catch up: an output that falls behind plays on behind until a
-  gap in its input or a restart.
+  dropped to catch up: an output that falls behind catches up by itself once
+  the box can (below).
+
+**Outputs catch up by themselves (Phase 4)**
+
+- **An output that has fallen behind catches up by itself once the box can:**
+  audio plays up to 0.5 % faster (well under a tenth of a semitone), video
+  skips at most one frame in 200 while it catches up on a display that runs
+  at the video's own rate, until it is back at the smallest delay it has
+  measured it can play cleanly. A video output and the audio outputs of the
+  same programme on the box end at the same delay. Nothing to set.
+- **While the box cannot keep up, the delay grows,** as before, but never past
+  what the output's queues hold (about 6 s on Audio Output (302M) with one
+  source, 10 to 11 s elsewhere); past that the input queue loses content and
+  the queue-full warning says so. Once the box keeps up, the delay comes back
+  down: 1 s of it in about 4 minutes, 2 s in about 7.
+- **It probes for the smallest delay that plays clean.** A dropout of up to a
+  quarter of a second raises that output's margin at once; the margin comes
+  back down over about 2 hours, so a source with a recurring short dip gives
+  one dropout about every 2 hours, not one per dip. A late video frame raises
+  nothing unless the output was catching up.
+- **The Timing section shows it:** **Latency target**, for example "95 ms
+  (measured), now 2.41 s · draining at 0.50 % (about 8 min) · in sync with
+  Video Player"; **Drained**, the delay taken off so far; **Buffer
+  underruns**, for example "3, 3 raised the target"; the Rate match row adds
+  the frames skipped to catch up ("… 15 drain drops/min"); and the Lateness
+  trend reads "−300 ms/min — draining to its target" while it catches up, or
+  "+40 ms/min — growing faster than it can drain (0.5 %)". Without a known
+  display rate a Video Player shows "not measured (no display rate)" and does
+  not catch up. The journal says "Draining 2.30 s of built-up latency at up to
+  0.5 % (about 8 min)" and "Back at its latency target (95 ms): drained
+  2.30 s".
+- **A member of a programme waits for the slowest, at most 1 s:** an output
+  of the programme that is ahead of the others plays up to 0.5 % slower until
+  it is level with them, and stays at most 1 s behind its own target for it
+  ("1 s behind its group: held there"). An audio output fed from two
+  programmes' sources keeps its own delay ("in sync with neither (two
+  programmes)"). Outputs on different boxes, and outputs whose path crosses
+  PipeWire, are not matched. (#862)
 
 **Needs the image's native elements (Phase 2)**
 

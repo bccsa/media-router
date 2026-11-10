@@ -60,6 +60,10 @@ class Recorded(vp.VideoPace):
         self.sink.write('{"op":"gap"}\n')
         super().on_gap()
 
+    def set_drain(self, ppb):
+        self.sink.write(vp.line({"op": "drain", "ppb": ppb}) + "\n")
+        super().set_drain(ppb)
+
     def on_frame(self, pts_ns, dur_ns, arrival_ns, discont, held=False):
         self.sink.write(vp.line({"op": "frame", "pts": pts_ns, "dur": dur_ns, "arrival": arrival_ns,
                                   "discont": int(discont), "held": int(held)}) + "\n")
@@ -692,6 +696,44 @@ def test_hiccup_window():
           and abs(len(drop_indices(rec)) - want) * 100 <= want)
 
 
+
+# --- 21: the drain (B-179) -----------------------------------------------------------------
+
+def test_drain():
+    """B-179: the drain at +-5,000 ppm on a backlog (every frame ready at once, as from vp_esq):
+    50p on a measured 60 Hz loses repeats only, no drop; on a measured 50 Hz it decimates 1 frame
+    in 200 (+-1), counted as drain drops, rate_drops 0; at -5,000 ppm nothing drops and the
+    lateness grows; the servo's fields: a late frame's lateness past its slot, a frame's slack."""
+    n = 4000
+    for name, period, drain in (("50p on 60 Hz, +0.5 %", 16666667, 5000000),
+                                ("50p on 50 Hz, +0.5 %", P50, 5000000),
+                                ("50p on 50 Hz, -0.5 %", P50, -5000000),
+                                ("50p on 60 Hz, -0.5 %", 16666667, -5000000)):
+        pace = new_pace("drain " + name)
+        pace.set_display(period, "measured")
+        pace.set_drain(drain)
+        rec = drive(pace, [(p, P50, 0, False, False) for p in cadence(n, 50, 1)],
+                    Wayland(period, 3700 * US))
+        s = pace.take()
+        moved = shown_lateness(rec)[-1] - shown_lateness(rec)[100]
+        want = -drain * (rec[-1][0] - rec[100][0]) // SEC
+        decimates = period == P50 and drain > 0
+        check("drain %s: %d drain drops (%s), rate drops %d, behind %d" %
+              (name, s.drain_drops, "n / 200 +-1" if decimates else "none", s.rate_drops, s.behind),
+              s.rate_drops == 0 and s.behind == 0 and
+              (abs(s.drain_drops - n // 200) <= 1 if decimates else s.drain_drops == 0))
+        check("drain %s: the shown lateness moves %+.1f ms (0.5 %% of the content: %+.1f, +-10 %%)" %
+              (name, moved / MS, want / MS), abs(moved - want) <= abs(want) // 10)
+    pace = new_pace("drain fields")
+    pace.set_display(P50, "measured")
+    pace.on_frame(0, P50, 100 * MS, False)
+    pace.on_frame(P50, P50, 105 * MS, False)
+    early = pace.last_slack
+    pace.on_frame(2 * P50, P50, 180 * MS, False)
+    check("drain fields: a frame's slack is its slot less its arrival (15 ms), a late frame's lateness"
+          " past it (40 ms, its slack -40 ms)",
+          early == 15 * MS and pace.last_late_by == 40 * MS and pace.last_slack == -40 * MS)
+
 # --- the replay format (the reference's own) ------------------------------------------------
 
 def test_replay_format():
@@ -729,7 +771,8 @@ CASES = (test_50p_on_60hz, test_60p_on_50hz, test_60_on_5994, test_50p_on_slow_d
          test_discont_and_gap_collapse, test_idr_spikes, test_wrap_point, test_display_period,
          test_60p_on_slow_50hz, test_foreign_clock_source, test_faster_display_banks_one_frame,
          test_stamp_jitter, test_slow_presenting_display, test_kms_every_other_refresh,
-         test_display_rate, test_keeps_up_as_before, test_hiccup_window, test_replay_format)
+         test_display_rate, test_keeps_up_as_before, test_hiccup_window, test_drain,
+         test_replay_format)
 
 # (name, the case it must fail, video_pace.py text, its replacement). The first six are the
 # brief's (p4-3a), the next nine B-161's, the last seven p4-3c's (B-175).
@@ -747,18 +790,18 @@ MUTANTS = (
      "collapsed = self.gap_pending or d < 0"),
     ("T_d from the mean of presented deltas", 11, "             if t1 > t0 and s1 > s0]\n",
      "             if t1 > t0 and s1 > s0]\n    steps = [(dt, 1) for dt, ds in steps]\n"),
-    ("the accumulator reset to 0 at a drop", 3, "        if drop:\n            self.rate_drops += 1",
-     "        if drop:\n            self.lag = 0\n            self.rate_drops += 1"),
-    ("the residue lost at a drop", 12, "        if drop:\n            self.rate_drops += 1",
-     "        if drop:\n            self.lag = whole\n            self.rate_drops += 1"),
+    ("the accumulator reset to 0 at a drop", 3, "        elif drop:\n            self.rate_drops += 1",
+     "        elif drop:\n            self.lag = 0\n            self.rate_drops += 1"),
+    ("the residue lost at a drop", 12, "        elif drop:\n            self.rate_drops += 1",
+     "        elif drop:\n            self.lag = whole\n            self.rate_drops += 1"),
     ("the median in the accumulator", 13, LAG_LINE,
      "self.lag = max(self.lag - (tc or delta), 0 if collapsed else -whole)"),
     ("no floor: a faster display banks", 14, LAG_LINE,
      "self.lag = self.lag - delta"),
     ("the floor at 0: jitter ratchets the lag", 15, LAG_LINE,
      "self.lag = max(self.lag - delta, 0)"),
-    ("a whole frame by the frame's own delta", 15, "whole = nominal if nominal > 0 else delta",
-     "whole = delta"),
+    ("a whole frame by the frame's own delta", 15, "whole0 = nominal if nominal > 0 else delta0",
+     "whole0 = delta0"),
     ("the credit kept across a collapse", 14, "0 if collapsed else -whole)", "-whole)"),
     ("late counts a collapsed frame", 7, "if arrival_ns > slot and not collapsed and not sink_late:",
      "if arrival_ns > slot and not sink_late:"),
@@ -777,6 +820,9 @@ MUTANTS = (
      "if False:"),
     ("the skip leaves the lag", 16, "self.lag = max(self.lag, arrival_ns - slot - grid)",
      "self.lag = max(self.lag, whole)"),
+    ("delta' in the slot only, not the lag", 21,
+     "            whole = self._drained(whole0)\n            self.lag = max(self.lag - delta, 0 if collapsed",
+     "            whole = whole0\n            self.lag = max(self.lag - delta0, 0 if collapsed"),
     ("every push read as the sink's pace", 19,
      "if pressed and self.prev_return is not None and returned_ns > self.prev_return:",
      "if self.prev_return is not None and returned_ns > self.prev_return:"),

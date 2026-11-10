@@ -2,7 +2,8 @@
 // summary (`lat_busin…` in; `lat_render`/`lat_egress`/`lat_busout…` out), no threshold (OQ-8) but
 // the off-clock warning (B-203); aligner modules add their `mralignwatch` reports and warnings
 // (WI-P2-13), consumers their demuxes' counters and their ASRCs' clocks (WI-P3-6), outputs their
-// presentation's own render lateness, rate match and trend (WI-P4-12).
+// presentation's own render lateness, rate match and trend (WI-P4-12), and their drain back to
+// their latency target (WI-P4-18).
 import type {
     AlignerInputState,
     ClockCorrection,
@@ -47,6 +48,8 @@ import {
 } from './videoPaceWatches.js';
 import { LatenessTrend } from './latenessTrend.js';
 import { launchElements } from './launchElements.js';
+import type { DrainGroupView } from './drainGroups.js';
+import { drainSummary } from './drainSummary.js';
 import { OFF_CLOCK_MS, offClockText } from './offClock.js';
 
 export interface LatenessWindowMs extends LatenessStatsMs {
@@ -263,6 +266,8 @@ export class LatenessReporter {
     private processingLatencyMs: number | undefined;
     private instrument = true;
     private readonly intervalMs: number;
+    /** The A/V group the engine last put the module in (WI-P4-18). */
+    private drainGroup: DrainGroupView | undefined;
 
     constructor(private readonly opts: LatenessReporterOptions = {}) {
         this.intervalMs = opts.intervalMs ?? 2000;
@@ -393,6 +398,11 @@ export class LatenessReporter {
 
     setInstrument(present: boolean): void {
         this.instrument = present;
+    }
+
+    /** The module's A/V group as the engine set it (WI-P4-18); undefined: none. */
+    setDrainGroup(view: DrainGroupView | undefined): void {
+        this.drainGroup = view;
     }
 
     reset(): void {
@@ -706,6 +716,17 @@ export class LatenessReporter {
         if (devices.length) {
             out.deviceRelocks = devices.reduce((n, a) => n + a.deviceRelocks!, 0);
             out.deviceStalls = devices.reduce((n, a) => n + a.deviceStalls!, 0);
+        }
+        // The drain (WI-P4-18): the pace's, else the first device term's.
+        const fields = pace?.drain ?? devices.find((a) => a.drain)?.drain;
+        if (fields && reading) {
+            const video = pace?.drain ? pace : undefined;
+            out.drain = drainSummary(
+                fields,
+                reading.ms,
+                this.drainGroup,
+                video && { rateKnown: video.rateKnown, drainDropsPerMin: video.drainDropsPerMin },
+            );
         }
         if (out.renderMs !== undefined) {
             this.trend.add(now, out.renderMs, reading?.mark ?? 'tap');

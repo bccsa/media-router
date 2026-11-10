@@ -409,8 +409,11 @@ export function buildLivePipeline(
         ` ! appsink name=${TS_PROBE_SINK_NAME}`;
     // The pace after the convert stage and the overlay, right before the render lateness tap
     // and the sink: each frame leaves on the content's cadence, never before it arrives, and a
-    // display slower than the content drops frames to keep up (B-162, B-175).
-    const pace = `mrvideopace name=${VIDEO_PACE_NAME}${refreshMhz ? ` refresh-mhz=${refreshMhz}` : ''}`;
+    // display slower than the content drops frames to keep up (B-162, B-175). It drains what
+    // waits in the ES queue back to its target (B-179).
+    const pace =
+        `mrvideopace name=${VIDEO_PACE_NAME} backlog-queue=${VP_ES_QUEUE_NAME}` +
+        `${refreshMhz ? ` refresh-mhz=${refreshMhz}` : ''}`;
     return (
         `${busDemux} ! ${caps}${esQueue} ! ${decoder.chain} ! ${convert} ! ` +
         `${overlay ? `${overlay} ! ` : ''}${pace} ! ${sinkElement}${probeTap}`

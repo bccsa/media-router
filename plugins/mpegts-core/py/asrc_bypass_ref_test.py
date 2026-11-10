@@ -203,13 +203,15 @@ def capture_run(ppb=0, secs=3600, jitter=MS, buf=1024, gap_s=-1, gap_ns=20 * MS,
 # --- mrasrc's per-buffer flow on the servo -----------------------------------------------------
 
 class Out:
-    __slots__ = ("label", "frames", "discont", "pos", "buf", "end")
+    __slots__ = ("label", "frames", "discont", "pos", "buf", "end", "content")
 
-    def __init__(self, label, frames, discont, pos, buf):
+    def __init__(self, label, frames, discont, pos, buf, content=None):
         # pos: the input position of the first frame, 1/SUB frames of the global input index;
-        # buf: the push it came from (-1: a drained tail); end: the counter's label after it.
+        # buf: the push it came from (-1: a drained tail); end: the counter's label after it;
+        # content: its label on the house-rate counter (next_content_pts, B-166).
         self.label, self.frames, self.discont, self.pos, self.buf = label, frames, discont, pos, buf
         self.end = None
+        self.content = content
 
 
 class Driver:
@@ -241,6 +243,7 @@ class Driver:
         self.dppbs = []
         self.ratios = []
         self.locked_at = None  # the PTS of the first buffer the lock was locked after
+        self.drain = 0         # the drain each push carries (B-179)
 
     def device_sample(self, dev, mono):
         """A timer read of the device sink's clock; a relock-device tells the servo (B-148's A1)."""
@@ -274,8 +277,8 @@ class Driver:
         if discont and self.cmds:   # the element ends the epoch before a DISCONT buffer
             self.gap()
         dppb = self.term.device_ppb() if self.sv.cfg.device else 0
-        self.seq.append(f"b {pts} {frames} {int(discont)} {dppb}")
-        c = self.sv.push(pts, frames, discont, dppb)
+        self.seq.append(f"b {pts} {frames} {int(discont)} {dppb}" + (f" {self.drain}" if self.drain else ""))
+        c = self.sv.push(pts, frames, discont, dppb, self.drain)
         i = len(self.cmds)
         self.cmds.append(c)
         self.pts.append(pts)
@@ -318,7 +321,8 @@ class Driver:
         self.discard -= d
         pos += d * SUB * self.rs.in_ // self.rs.out   # the first kept output: d outputs on
         if k - d:
-            self.outputs.append(Out(self.sv.next_pts(), k - d, c.relock or c.gap, pos, i))
+            self.outputs.append(Out(self.sv.next_pts(), k - d, c.relock or c.gap, pos, i,
+                                    self.sv._house_pts()))
         self.seq.append(f"o {k - d}")
         self.sv.produced(k - d)
         if k - d:
@@ -940,6 +944,46 @@ def sweep_lost_print():
         print(f"  {name}\n      before: {row(b)}\n      after:  {row(a)}")
 
 
+# --- B-179: the drain at +-0.5 % ------------------------------------------------------------------------
+
+def drain_run(drain, bypass=0, src_ppb=0):
+    """A source fast by src_ppb into a device mode at `drain` for 60 s, the device 40 ppm fast: (input per
+    output over 10..60 s minus 1 in ppm, the worst content label's error from 2 s, the stats)."""
+    drv = Driver(48000, 48000, bypass, device=True)
+    drv.drain = drain
+    clock = DeviceClock(40000)
+    n, mark = 0, None
+    while n < 60 * 48000:
+        t = source_time(T0, 48000, src_ppb, n)
+        clock(drv, t)
+        drv.push(formula_pts(t) if bypass else t, 1024, n == 0)
+        if mark is None and t - T0 >= 10 * S:
+            st = drv.sv.stats()
+            mark = (st["in-frames"], st["out-frames"])
+        n += 1024
+    st = drv.sv.stats()
+    used = ((st["in-frames"] - mark[0]) / (st["out-frames"] - mark[1]) - 1) * 1e6
+    err = max(abs(o.content - content_of(o.pos, 48000, src_ppb)) for o in drv.outputs
+              if o.content is not None and o.content - T0 >= 2 * S)
+    return used, err, st
+
+
+def test_drain():
+    """B-179: the drain carries (1 + drain) into in_rate and the house-rate counter in device modes:
+    input consumed 0.5 % faster or slower to 1 ppm, content labels within a frame, ratio_ppb the
+    clock terms alone."""
+    print("\n--- B-179: the drain at +-5,000 ppm ---")
+    base, _e, st0 = drain_run(0)
+    for drain in (5000000, -5000000):
+        used, err, st = drain_run(drain)
+        faster = ((1 + used / 1e6) / (1 + base / 1e6) - 1) * 1e6
+        check(f"drain {drain // 1000:+d} ppm: input consumed {faster:+.3f} ppm faster (to 1 ppm)",
+              abs(faster - drain / 1000) <= 1)
+        check(f"drain {drain // 1000:+d} ppm: content labels within a frame ({err / 1e3:.2f} us)",
+              err <= S // 48000 + 1)
+        check(f"drain {drain // 1000:+d} ppm: ratio-ppb the device term alone",
+              st["ratio-ppb"] == st0["ratio-ppb"] and st["drain-ppb"] == drain)
+
 # --- parity with the C++ ----------------------------------------------------------------------------
 
 def parity_sequences():
@@ -1000,6 +1044,17 @@ def parity_sequences():
         if k % 300 == 0:
             drv.stats()
     out.append(("capture, 1 ms jitter, a +60 ms step", drv.seq))
+    drv = Driver(48000, 48000, 0, device=True)
+    clock = DeviceClock(-30000, jitter_us=300, seed=5, start=H0)
+    for k in range(3000):   # B-179: the drain ramped up and down, and down past its clamp
+        clock(drv, H0 + k * 21333333)
+        drv.drain = min(k, 3000 - k) * 5000 if k < 2800 else -9000000
+        if k == 2200:
+            drv.gap()
+        drv.push(H0 + k * 21333333, 1024, k in (0, 1500))
+        if k % 250 == 0:
+            drv.stats()
+    out.append(("device alone, a drain ramp to +-0.5 % and past the clamp, a DISCONT, a GAP", drv.seq))
     out.extend(b148_sequences())
     return out
 
@@ -1128,6 +1183,10 @@ REF_MUTANTS = [
     ("a relock-device leaves the servo's offset", "    if term.take_recalibrated():\n        sv.device_recalibrated()\n",
      "    if term.take_recalibrated():\n        pass\n"),
     ("a restart not stopped first", "    term.stop(mono)\n    term.start(mono)\n", "    term.start(mono)\n"),
+    # B-179: the drain in the house-rate counter and in its clamp.
+    ("house_advance without the drain", "        f = self.mh_frac + frames * self.run_ppb\n",
+     "        f = self.mh_frac + frames * self.dev_ppb\n"),
+    ("the drain unclamped", "clamp(drain_ppb, -DRAIN_MAX_PPB, DRAIN_MAX_PPB) if", "drain_ppb if"),
 ]
 
 
@@ -1197,6 +1256,7 @@ if __name__ == "__main__":
     test_foreign_pes()
     test_decode_bounds()
     test_engage_rate_known()
+    test_drain()
     test_parity()
     if _failures:
         print(f"\n{len(_failures)} FAILURE(S) in asrc_bypass_ref_test.py")

@@ -338,7 +338,7 @@ def discont_at(out):
 
 # --- the property contract -------------------------------------------------------------------
 print("--- gst-inspect-1.0 and the property contract ---")
-PROPS = ["out-rate", "quality", "cycle-input", "stats", "bypass-below-ppm", "device-sink", "abi",
+PROPS = ["out-rate", "quality", "cycle-input", "stats", "bypass-below-ppm", "device-sink", "group-target-ns", "abi",
          "desync-bytes", "cc-lost", "pes-oversize", "pes-dropped-cc", "header-spans",
          "psi-unsupported-sections", "pes-no-pts", "dts-discarded"]
 _inspect = subprocess.run(["gst-inspect-1.0", f"--gst-plugin-load={_SO}", "mrasrc"],
@@ -364,15 +364,25 @@ check("out-rate: 0 (the input's rate) by default, 0..768000; quality 4 by defaul
       and all(p.flags & Gst.PARAM_MUTABLE_READY for p in (_or, _q, _ci)))
 _st = _el.find_property("stats")
 _s0 = _el.get_property("stats")
-STATS_FIELDS = ["state", "ratio-ppb", "phase-err-ns", "relocks", "in-frames", "out-frames",
-                "discont-in", "dropped-frames", "gaps", "lost-frames", "mode", "source-ppb", "device-ppb",
-                "rate-known", "device-relocks", "device-stalls", "render-lateness-ns"]
-COUNT_FIELDS = [k for k in STATS_FIELDS[1:] if k not in ("mode", "rate-known")]
+BASE_FIELDS = ["state", "ratio-ppb", "phase-err-ns", "relocks", "in-frames", "out-frames",
+               "discont-in", "dropped-frames", "gaps", "lost-frames", "mode", "source-ppb", "device-ppb",
+               "rate-known", "device-relocks", "device-stalls", "render-lateness-ns"]
+# B-179's drain, in every post (0 and "warm-up" without a device term).
+DRAIN_FIELDS = ["drain-ppm", "drain-excess-ns", "drain-margin-ns", "drain-learned-ns", "fill-trough-ns",
+                "drained-ns", "drain-raises", "underruns", "drain-outages", "drain-target-lateness-ns",
+                "group-target-ns", "drain-state", "drain-capped", "drain-member"]
+STATS_FIELDS = BASE_FIELDS + DRAIN_FIELDS
+COUNT_FIELDS = [k for k in BASE_FIELDS[1:] if k not in ("mode", "rate-known")]
+NO_DRAIN = {"drain-ppm": 0, "drain-excess-ns": 0, "drain-margin-ns": 0, "drain-learned-ns": -1,
+            "fill-trough-ns": 0, "drained-ns": 0, "drain-raises": 0, "underruns": 0, "drain-outages": 0,
+            "drain-target-lateness-ns": 0, "group-target-ns": 0, "drain-state": "warm-up",
+            "drain-capped": False, "drain-member": False}
 check("stats is read-only; a fresh element's: mrasrc-stats, acquiring, mode capture, no rate, every count 0",
       not _st.flags & GObject.ParamFlags.WRITABLE and _s0.get_name() == "mrasrc-stats"
       and [_s0.nth_field_name(i) for i in range(_s0.n_fields())] == STATS_FIELDS
       and _s0.get_value("state") == "acquiring" and _s0.get_value("mode") == "capture"
-      and _s0.get_value("rate-known") is False and all(_s0.get_value(k) == 0 for k in COUNT_FIELDS))
+      and _s0.get_value("rate-known") is False and all(_s0.get_value(k) == 0 for k in COUNT_FIELDS)
+      and all(_s0.get_value(k) == v for k, v in NO_DRAIN.items()))
 _bp, _ds = _el.find_property("bypass-below-ppm"), _el.find_property("device-sink")
 check("bypass-below-ppm: 0 (capture) by default, 0..1000; device-sink: \"\" by default; both apply at "
       "a start (WI-P3-5)",
@@ -693,11 +703,12 @@ _gaps = [b["out-frames"] - a["out-frames"] for a, b in zip(posts, posts[1:-1])]
 check(f"mrasrc-stats every 2 s of output ({len(posts)} posts, {sorted(set(_gaps))} frames "
       "apart) and once more at EOS", len(posts) == 6 and all(abs(g - 2 * FS) <= BUF for g in _gaps))
 check("each carries part 10's fields, WI-P3-5's mode and clocks, B-148's rate-known and B-166's device "
-      "relocks, stalls and render lateness, in order and typed (capture: mode capture, no device)",
+      "relocks, stalls and render lateness and B-179's drain, in order and typed (capture: mode capture, no "
+      "device, the drain at rest)",
       all(list(p) == STATS_FIELDS and isinstance(p["state"], str) and p["mode"] == "capture"
           and all(isinstance(p[k], int) for k in COUNT_FIELDS) and isinstance(p["rate-known"], bool)
           and p["device-ppb"] == 0 and p["device-relocks"] == 0 and p["device-stalls"] == 0
-          and p["render-lateness-ns"] == 0 for p in posts))
+          and p["render-lateness-ns"] == 0 and all(p[k] == v for k, v in NO_DRAIN.items()) for p in posts))
 _ev = h.messages("mrasrc-event")
 check(f"mrasrc-event relock: kind, reason, house-ns, jump-ns, dropped-ns "
       f"({sorted(_ev[0]) if _ev else []})",
@@ -1346,8 +1357,9 @@ else:
           and abs(_st.get("device-ppb", 0) - 40000) <= 100 and abs(_st.get("ratio-ppb", 0) - 40000) <= 200
           and _st.get("device-reads", 0) > 5000 and _st.get("source-ppb") == 0 and _st.get("device-relocks") == 0
           and _st.get("device-stalls") == 0 and _st.get("rate-known") is False)
-    check(f"the device term's events: none but the servo's relocks ({sorted({e['kind'] for _, e in _ev})})",
-          not [e for _, e in _ev if e["kind"] != "relock"])
+    # The input waits on the device: a backlog that never ends, so B-179's drain runs from its warm-up on.
+    check(f"the device term's events: none but the servo's relocks and the drain's ({sorted({e['kind'] for _, e in _ev})})",
+          not [e for _, e in _ev if e["kind"] not in ("relock", "drain-start")])
 
     # A device 100 ppm fast: the ratio follows it, the render lateness stays put. The input waits on the device
     # (a sped-up live source left the ring near empty, so its jitter realigned the writes; case C runs that shape).
@@ -1376,16 +1388,24 @@ else:
     _sk = {k: _p.get_by_name("sink").get_property(k) for k in ("underruns", "calibrations", "renders", "resyncs")}
     _st = sdict(_p.get_by_name("asrc").get_property("stats"))
     _p.set_state(Gst.State.NULL)
-    _late = [(t, s["render-lateness-ns"]) for t, s in _stats if t >= 120]
-    _lo, _hi = min(v for _, v in _late), max(v for _, v in _late)
-    check(f"render lateness from 120 s to {_late[-1][0] / 60:.0f} min within 2 ms ({_lo / MS:.3f} .. {_hi / MS:.3f} ms; "
-          f"100 ppm uncorrected drifts 180 ms in 30 min), {len(_late)} posts, no underrun ({_sk['underruns']}), no "
-          f"realign after the start ({_sk['resyncs'] - _rs.get('start', -1)}; {_rs.get('start')} with the first renders)",
-          not _errors and len(_late) > 500 and _hi - _lo < 2 * MS and _sk["underruns"] == 0
-          and 0 <= _rs.get("start", -1) <= 1 and _sk["resyncs"] == _rs["start"])
-    # The device's 1 s is what the reading holds (the ring and the quantum add a little): WI-P4-12 shows it.
-    check(f"... and it is the device's latency: {_lo / MS:.1f} .. {_hi / MS:.1f} ms for device-ns 1 s (900 .. 1100)",
-          900 * MS < _lo and _hi < 1100 * MS)
+    # The input waits on the device, a backlog that never ends: B-179's drain takes 0.5 % off it for good, so
+    # the render lateness falls on a line of -5 ms/s; the device term holds it on that line (100 ppm uncorrected
+    # bends it 0.1 ms/s, 180 ms in 30 min).
+    _t_drain = next((t for t, s in _stats if s["drain-ppm"] >= 5000), None)
+    _late = [(t, s["render-lateness-ns"]) for t, s in _stats if _t_drain and t >= max(120, _t_drain + 2)]
+    _fit = np.polyfit([t for t, _ in _late], [v for _, v in _late], 1) if len(_late) > 5 else (0, 0)
+    _res = [v - (_fit[0] * t + _fit[1]) for t, v in _late] or [0]
+    check(f"render lateness from 120 s to {_late[-1][0] / 60 if _late else 0:.0f} min on the drain's line within 10 ms "
+          f"({_fit[0] / MS:+.3f} ms/s of clock; residual {min(_res) / MS:+.3f} .. {max(_res) / MS:+.3f} ms), {len(_late)} "
+          f"posts, no underrun ({_sk['underruns']}), no realign after the start ({_sk['resyncs'] - _rs.get('start', -1)}; "
+          f"{_rs.get('start')} with the first renders)",
+          not _errors and len(_late) > 500 and abs(_fit[0] / MS + 5) <= 0.05 and max(_res) - min(_res) < 10 * MS
+          and _sk["underruns"] == 0 and 0 <= _rs.get("start", -1) <= 1 and _sk["resyncs"] == _rs["start"])
+    # The device's 1 s is what the reading holds before the drain (the ring and the quantum add a little).
+    _pre = [s["render-lateness-ns"] for t, s in _stats if 20 <= t and _t_drain and t < _t_drain - 10]
+    _lo, _hi = min(_pre, default=0), max(_pre, default=0)
+    check(f"... and before the drain it is the device's latency: {_lo / MS:.1f} .. {_hi / MS:.1f} ms for device-ns 1 s "
+          f"(900 .. 1100)", bool(_pre) and 900 * MS < _lo and _hi < 1100 * MS)
     check(f"... the device term locked at {_st.get('device-ppb', 0) / 1000:+.3f} ppm (+100), the ratio its term "
           f"({_st.get('ratio-ppb', 0) / 1000:+.3f} ppm), no relock-device, no stall, the sink never skewed "
           f"({_sk['calibrations']} calibrations)",
@@ -1493,6 +1513,99 @@ else:
           len(_eng) == 1 and abs(_eng[0]["source-ppb"] - 40000) <= 2000 and _st.get("mode") == "decode+device"
           and len(_late) > 10 and abs(_devp + 20000) <= 500 and abs(_ratio + 60000) <= 1000
           and _sk["calibrations"] == 0 and 0 <= _rs.get("start", -1) <= 1 and _sk["resyncs"] == _rs["start"])
+
+    # B-179: the drain. A live source that stalled 1.5 s at its start, then plays on: the backlog fills the
+    # prefill (1 s) and waits upstream; once the term is locked and 30 s sampled, it drains at up to 0.5 %.
+    def live_feeder(cap, held_s):
+        """appsrc as a live source: content running time p pushed at clock running time max(p, held_s)."""
+        def feed(p, stop):
+            src, clk, i = p.get_by_name("src"), p.get_clock(), 0
+            while not stop.is_set():
+                pts = i * S // FS
+                due = p.get_base_time() + max(pts, int(held_s * S))
+                if clk.get_time() < due:
+                    Gst.Clock.id_wait(clk.new_single_shot_id(due))
+                b = Gst.Buffer.new_wrapped(cap.render(i, BUF))
+                b.pts = pts
+                if i == 0:
+                    b.set_flags(Gst.BufferFlags.DISCONT)
+                if src.emit("push-buffer", b) != Gst.FlowReturn.OK:
+                    break
+                i += BUF
+        return feed
+
+    _DRAIN_DESC = ("appsrc name=src format=time is-live=true block=true max-bytes=1000000 caps={caps} ! "
+                   f"mrasrc name=asrc device-sink=sink ! {_PREFILL} ! mrtestaudiosink name=sink ppm=0 "
+                   "device-ns=40000000 sync=false buffer-time=100000 latency-time=10000")
+    _speed, _secs = 4, 150
+    print(f"\n--- B-179: a 1.5 s backlog drains at 0.5 % (the prefill full, a {_speed}x clock, {_secs} s) ---")
+    _dt, _ring = Capture(channels=2), {}
+
+    def _ring_on(p, now):
+        _ring["id"] = p.get_by_name("asrc").get_static_pad("src").add_probe(
+            Gst.PadProbeType.BUFFER, lambda pad, info: (_ring.setdefault("out", []).append(
+                info.get_buffer().extract_dup(0, info.get_buffer().get_size())), Gst.PadProbeReturn.OK)[1])
+
+    _at60 = {}
+    _ev, _stats, _errors, _lost, _p = clock_run(
+        _DRAIN_DESC.format(caps=_dt.caps()), _speed, _secs,
+        actions=((60, lambda p, now: _at60.setdefault("u", p.get_by_name("sink").get_property("underruns"))),
+                 (120, _ring_on)), feed=live_feeder(_dt, 1.5))
+    _sk = {k: _p.get_by_name("sink").get_property(k) for k in ("underruns", "renders")}
+    _st = sdict(_p.get_by_name("asrc").get_property("stats"))
+    _p.set_state(Gst.State.NULL)
+    _start = kinds(_ev, "drain-start")
+    _locked = next((t for t, s in _stats if s["state"] == "locked"), None)
+    _t0 = _start[0][0] if _start else None
+    _full = next((t for t, s in _stats if _t0 and t >= _t0 and s["drain-ppm"] >= 5000), None)
+    check(f"one drain-start, after the term locked ({_locked}) and 30 s sampled ({_t0}), the fill at its "
+          f"ceiling then: the prefill's 1 s and the ring ({_start[0][1].get('excess-ns', 0) / MS if _start else 0:.0f} ms "
+          f"of excess; the stats post the lock up to 2 s late)", len(_start) == 1 and _locked is not None
+          and _t0 >= _locked + 28
+          and _start[0][1]["excess-ns"] >= 900 * MS)
+    check(f"drain-ppm at 5,000 within 12 s of the warm-up's end ({(_full - _t0) if _full and _t0 else -1:.1f} s)",
+          _full is not None and _full - _t0 <= 12)
+    _fall = [(t, s["render-lateness-ns"]) for t, s in _stats if _full and t >= _full + 2 and s["drain-ppm"] >= 5000]
+    _slope = (np.polyfit([t for t, _ in _fall], [v for _, v in _fall], 1)[0] / MS) if len(_fall) > 5 else 0
+    check(f"render lateness falls 5 ms/s +-10 % while it drains ({_slope:+.2f} ms/s of clock, {len(_fall)} posts)",
+          -5.5 <= _slope <= -4.5)
+    check(f"nothing lost: no sample dropped ({_st.get('dropped-frames')}), no device stall ({_st.get('device-stalls')}), "
+          f"no underrun of the device from 60 s ({_sk['underruns'] - _at60.get('u', 0)}; {_at60.get('u')} at the "
+          f"held start) or of the servo ({_st.get('underruns')}), ratio-ppb the device term's alone, not the drain "
+          f"({_st.get('ratio-ppb')} against {_st.get('device-ppb')})",
+          not _errors and _st.get("dropped-frames") == 0 and _st.get("device-stalls") == 0
+          and _sk["underruns"] == _at60.get("u", -1) and _st.get("underruns") == 0
+          and abs(_st.get("ratio-ppb", 0) - _st.get("device-ppb", 0)) <= 1000)
+    _y = np.frombuffer(b"".join(_ring.get("out", [])), dtype="<f4").reshape(-1, 2)[:, 0].astype(np.float64)
+    _worst, _near = thdn(_y) if len(_y) > 2 * 65536 else (0.0, 0.0)
+    check(f"THD+N of the drained output below -90 dBFS ({_worst:.1f} dBFS over {len(_y) / FS:.1f} s at 0.5 %)",
+          len(_y) > 2 * 65536 and _worst < -90.0)
+
+    print(f"\n--- B-179: a group target 100 ms above its own: it rises at <= 0.5 %; not refreshed for 10 s, alone ---")
+    _gt = {}
+
+    def _group(p, now):
+        a = p.get_by_name("asrc")
+        if "own" not in _gt:
+            _gt["own"] = sdict(a.get_property("stats"))["drain-target-lateness-ns"]
+        a.set_property("group-target-ns", _gt["own"] + 100 * MS)
+        _gt["last"] = now
+
+    _acts = [(t, _group) for t in range(80, 140, 2)]
+    _ev, _stats, _errors, _lost, _p = clock_run(_DRAIN_DESC.format(caps=Capture(channels=2).caps()), 4, 200,
+                                                actions=_acts, feed=live_feeder(Capture(channels=2), 0))
+    _p.set_state(Gst.State.NULL)
+    _rise = [s for t, s in _stats if 82 <= t <= 140]
+    _r0 = next((s["render-lateness-ns"] for t, s in _stats if t >= 80), 0)
+    _r1 = next((s["render-lateness-ns"] for t, s in reversed(_stats) if t <= 140), 0)
+    _alone = [s for t, s in _stats if t >= _gt.get("last", 138) + 12]
+    check(f"it rises: drain-ppm down to {min((s['drain-ppm'] for s in _rise), default=0):+.0f} (>= -5,000), the render "
+          f"lateness up {(_r1 - _r0) / MS:+.1f} ms of the 100 (+-25), state rising",
+          _rise and min(s["drain-ppm"] for s in _rise) >= -5000 and min(s["drain-ppm"] for s in _rise) < -1000
+          and 75 * MS <= _r1 - _r0 <= 125 * MS and any(s["drain-state"] == "rising" for s in _rise)
+          and all(s["group-target-ns"] == _gt["own"] + 100 * MS for s in _rise[3:]))
+    check(f"not refreshed for 10 s, the target is dropped: alone again, delta never below 0 from 12 s after the "
+          f"last refresh ({len(_alone)} posts)", _alone and all(s["drain-ppm"] >= 0 for s in _alone) and not _errors)
 
 print("\n--- a device-sink that cannot be followed is an error naming it; no custom slaving left ---")
 for desc, what in (("fakesink name=sink", "not a GstAudioBaseSink"),

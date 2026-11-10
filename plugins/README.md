@@ -2270,6 +2270,26 @@ the aligners' `input-absent` and `aligner-full` warnings
   input queue loses next`, standing while its episode is open and 30 s after
   it closed; each episode is also one WARN line with that text and its
   counts.
+- **Outputs drain their built-up latency** (house-clock WI-P4-18, B-179,
+  issue #862), in the device elements, with no code of yours beyond naming
+  them: `drainElementNames()` on your `GstPluginBase` subclass returns the
+  `mrasrc` (device term) or `mrvideopace` names that drain (Audio Decoder
+  `asrc`, Audio Output (302M) `outasrc`, Video Player `vp_pace`, which also
+  answers `isLatencyGroupAnchor()` true), and a Video Player's pace takes
+  `backlog-queue=<its ES queue>`. Each plays its backlog up to 0.5 % faster
+  (`mrts::DrainServo`: the 30 s minimum of what was ready early, less a
+  measured margin) until it is back at its target. The engine groups the
+  running outputs of one bus origin (`plugins/drainGroups.ts`: Video Players
+  anchor, audio outputs join, one touching two programmes joins neither) and
+  every 2 s calls `applyLatencyGroupTarget(ns)`, which sets `group-target-ns`
+  on those elements: P = the largest published target, a member below it
+  playing up to 0.5 % slower to reach it, at most 1 s above its own. Rows:
+  `Latency target` (`95 ms (measured), now 2.41 s · draining at 0.50 %
+  (about 8 min) · in sync with Video Player`; `not measured (no display
+  rate)` without one), `Drained`, `Buffer underruns` (`3, 3 raised the
+  target`), Rate match's `… N drain drops/min`, and the trend's `— draining
+  to its target` and `— growing faster than it can drain (0.5 %)`. No
+  setting declares any of it (`removedTimingSettings.test.ts` holds that).
 - **Inputs whose taps are named per branch** (a source given its own name in
   `buildBusSrc({ name })` gets a tap named after it — `lat_busin_<i>` in
   mpegts-muxer — which the router's edge list cannot map to a source) are

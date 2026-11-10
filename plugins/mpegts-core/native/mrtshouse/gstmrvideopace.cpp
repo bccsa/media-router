@@ -3,13 +3,15 @@
  * allocation and scheduling are the neighbours'. The display period is mrts::DisplayRate's, from the
  * first GstBaseSink downstream: what it achieves while it sets the pace, else its refresh (0008's
  * `display-stats` or a vsync sink's returns), else `refresh-mhz`. A frame that waited for the last
- * push is `held`, the sink's wait. Frames pass unpaced while that sink presents nothing. */
+ * push is `held`, the sink's wait. Frames pass unpaced while that sink presents nothing. The drain
+ * (B-179): mrts::DrainServo on each frame's slack and `backlog-queue`'s level shortens the cadence. */
 #include <algorithm>
 #include <atomic>
 #include <new>
 
 #include <gst/base/gstbasesink.h>
 
+#include "mrts/drain_servo.h"
 #include "mrts/video_pace.h"
 #include "mrtshouse.h"
 
@@ -28,6 +30,8 @@ enum {
     PROP_REFRESH_MHZ,
     PROP_GAP_THRESHOLD_MS,
     PROP_STATS,
+    PROP_BACKLOG_QUEUE,
+    PROP_GROUP_TARGET_NS,
 };
 
 #define DEFAULT_GAP_THRESHOLD_MS 250
@@ -41,6 +45,8 @@ static const size_t SAMPLES = 64;
 static const size_t RETURNS = 4096;
 /* A frame that enters this soon after the last push returned waited for it: `held`. */
 static const gint64 HELD_NS = 2 * GST_MSECOND;
+/* The backlog queue's level, read at most this often (B-179). */
+static const gint64 QUEUE_READ_NS = 100 * GST_MSECOND;
 
 namespace {
 
@@ -88,6 +94,11 @@ struct Snapshot {
     DisplaySource source = DisplaySource::none;
     gint64 mean_hold = 0, present_lateness = 0;
     bool presenting = true;
+    /* The drain (B-179). */
+    gint64 drain_ppb = 0, excess = 0, margin = 0, learned = -1, trough = 0, drained = 0, target = 0, group = 0;
+    guint64 raises = 0, underruns = 0, outages = 0, drain_drops = 0;
+    const char* drain_state = "warm-up";
+    bool capped = false, member = false, rate_known = false;
 };
 
 }  // namespace
@@ -131,6 +142,18 @@ struct _GstMrVideoPace {
 
     GMutex snap_lock;
     Snapshot* snap;
+
+    /* The drain (B-179), streaming thread: made at the first content period (its margins are frames),
+     * kept across starts; the backlog queue (a ref from READY->PAUSED) and the engine's group target. */
+    mrts::DrainServo* drain;
+    gchar* backlog_name;              // object lock
+    GstElement* backlog;
+    gboolean have_queue_read, clear_pending;
+    gint64 queue_read_at;
+    std::atomic<gint64> group_target;
+    std::atomic<guint64> group_seq;
+    guint64 group_seen;
+    Snapshot* dsnap;                  // the drain's fields, copied into each published snapshot
 
     MrtsHouseCommon common;
 };
@@ -206,6 +229,7 @@ static void vp_fold(Snapshot* into, const PaceSummary& s) {
     into->rate_drops += s.rate_drops;
     into->gaps_collapsed += s.gaps_collapsed;
     into->behind += s.behind;
+    into->drain_drops += s.drain_drops;
 }
 
 /* A new cadence (a flush, an output presenting again): the next frame leaves at its arrival and
@@ -221,6 +245,7 @@ static void vp_restart_pace(GstMrVideoPace* self) {
     self->pace->set_display(was.display_period, was.display_source);
     self->have_kept = FALSE;
     self->have_free = FALSE;
+    self->clear_pending = TRUE;   // the drain's window again (B-179)
 }
 
 static gint64 vp_prior_ns(GstMrVideoPace* self) {
@@ -416,6 +441,22 @@ static void vp_publish(GstMrVideoPace* self, gint64 base) {
                            : DisplaySource::none;
     s.achieved = r.achieved();
     s.unpaced = self->unpaced;
+    const Snapshot& dr = *self->dsnap;
+    s.drain_ppb = dr.drain_ppb;
+    s.excess = dr.excess;
+    s.margin = dr.margin;
+    s.learned = dr.learned;
+    s.trough = dr.trough;
+    s.drained = dr.drained;
+    s.target = dr.target;
+    s.group = dr.group;
+    s.raises = dr.raises;
+    s.underruns = dr.underruns;
+    s.outages = dr.outages;
+    s.drain_state = dr.drain_state;
+    s.capped = dr.capped;
+    s.member = dr.member;
+    s.rate_known = dr.rate_known;
     const Display& d = *self->display;
     s.presenting = !d.outage;
     if (d.have_presented) {
@@ -431,7 +472,7 @@ static void vp_publish(GstMrVideoPace* self, gint64 base) {
 }
 
 static GstStructure* vp_structure(const Snapshot& s) {
-    return gst_structure_new(
+    GstStructure* st = gst_structure_new(
         "mrvideopace", "released", G_TYPE_UINT64, s.released, "late", G_TYPE_UINT64, s.late,
         "rate-drops", G_TYPE_UINT64, s.rate_drops, "gaps-collapsed", G_TYPE_UINT64,
         s.gaps_collapsed, "unpaced", G_TYPE_UINT64, s.unpaced, "content-fps-x100", G_TYPE_UINT,
@@ -441,6 +482,18 @@ static GstStructure* vp_structure(const Snapshot& s) {
         (guint64)std::max<gint64>(s.achieved, 0), "display-behind", G_TYPE_UINT64, s.behind,
         "mean-hold-ns", G_TYPE_INT64, s.mean_hold, "present-lateness-ns", G_TYPE_INT64,
         s.present_lateness, "display-presenting", G_TYPE_BOOLEAN, (gboolean)s.presenting, NULL);
+    /* B-179: the drain. */
+    gst_structure_set(st, "drain-ppm", G_TYPE_INT64,
+                      (gint64)((s.drain_ppb + (s.drain_ppb < 0 ? -500 : 500)) / 1000), "drain-excess-ns", G_TYPE_INT64,
+                      s.excess, "drain-margin-ns", G_TYPE_INT64, s.margin, "drain-learned-ns", G_TYPE_INT64,
+                      s.learned, "fill-trough-ns", G_TYPE_INT64, s.trough, "drained-ns", G_TYPE_INT64, s.drained,
+                      "drain-raises", G_TYPE_UINT64, s.raises, "underruns", G_TYPE_UINT64, s.underruns,
+                      "drain-outages", G_TYPE_UINT64, s.outages, "drain-target-lateness-ns", G_TYPE_INT64,
+                      s.target, "group-target-ns", G_TYPE_INT64, s.group, "drain-state", G_TYPE_STRING,
+                      s.drain_state, "drain-capped", G_TYPE_BOOLEAN, (gboolean)s.capped, "drain-member",
+                      G_TYPE_BOOLEAN, (gboolean)s.member, "drain-rate-known", G_TYPE_BOOLEAN,
+                      (gboolean)s.rate_known, "drain-drops", G_TYPE_UINT64, s.drain_drops, NULL);
+    return st;
 }
 
 /* The `mrvideopace` message: at the first frame, then every 2 s of arrivals; the mean hold
@@ -459,6 +512,75 @@ static void vp_report(GstMrVideoPace* self, gint64 now) {
 }
 
 /* --- pads ----------------------------------------------------------------------------- */
+
+/* The drain (B-179) after each paced frame: its slack (slot' - arrival, neither collapsed nor the sink's wait), a
+ * late release (by how much, unless the sink's last push returned past its slot), the backlog queue's level every
+ * 100 ms, the group target as the engine last set it;
+ * the law on the presented lateness, delta back into the pace. No display rate (none) or no display presenting:
+ * nothing drains, and a display presenting nothing publishes no target (M4, M14). */
+static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 now, bool discont, bool have_free,
+                     gint64 free_at) {
+    if (!self->drain) {
+        const gint64 tc = self->pace->content_period();
+        if (tc <= 0) return;
+        self->drain = new mrts::DrainServo(true, 2 * tc, tc);
+    }
+    mrts::DrainServo& s = *self->drain;
+    if (self->clear_pending) {
+        self->clear_pending = FALSE;
+        s.clear(now);
+    }
+    if (discont) s.epoch_break();
+    const guint64 seq = self->group_seq.load();
+    if (seq != self->group_seen) {
+        self->group_seen = seq;
+        s.set_group(now, self->group_target.load());
+    }
+    if (d.has_slack) s.sample(now, d.slack_ns);
+    // Late past a slot the sink's last push already held the thread beyond (a decode after its return):
+    // the sink's wait, as `held` is, not the input's; no raise from it (B-179, HELD_NS's limit).
+    if (d.late && !(have_free && free_at >= now - d.late_by_ns)) s.late(now, d.late_by_ns);
+    if (self->backlog && (!self->have_queue_read || now - self->queue_read_at >= QUEUE_READ_NS)) {
+        guint64 level = 0;
+        g_object_get(self->backlog, "current-level-time", &level, NULL);
+        s.queue_level(now, (int64_t)MIN(level, (guint64)G_MAXINT64));
+        self->have_queue_read = TRUE;
+        self->queue_read_at = now;
+    }
+    const PaceSummary p = self->pace->peek();
+    const bool rate_known = p.display_source != DisplaySource::none;
+    const bool presenting = !self->display->outage;
+    g_mutex_lock(&self->snap_lock);
+    const gint64 render = self->snap->present_lateness;
+    g_mutex_unlock(&self->snap_lock);
+    s.update(now, render, rate_known && presenting && self->have_kept);
+    self->pace->set_drain(rate_known && presenting ? s.ppb() : 0);
+    for (const mrts::DrainEvent& e : s.take_events()) {
+        if (e.kind == mrts::DrainEvent::Kind::drain_start)
+            GST_INFO_OBJECT(self, "draining %" G_GINT64_FORMAT " ms of built-up latency at up to 0.5 %%",
+                            (gint64)e.value / GST_MSECOND);
+        else if (e.kind == mrts::DrainEvent::Kind::drain_done)
+            GST_INFO_OBJECT(self, "back at its latency target: drained %" G_GINT64_FORMAT " ms in all",
+                            (gint64)e.value / GST_MSECOND);
+    }
+    Snapshot& t = *self->dsnap;
+    t.drain_ppb = self->pace->drain();
+    t.excess = s.excess();
+    t.margin = s.margin();
+    t.learned = s.has_learned() ? s.learned() : -1;
+    t.trough = s.trough();
+    t.drained = s.drained();
+    t.target = s.target();
+    t.group = s.group();
+    t.raises = s.raises();
+    t.underruns = s.underruns();
+    t.outages = s.outages();
+    t.drain_state = mrts::drain_state_name(s.state());
+    t.capped = s.capped();
+    t.member = presenting;
+    t.rate_known = rate_known;
+}
+
 
 static GstFlowReturn vp_push_unpaced(GstMrVideoPace* self, GstBuffer* buf, gint64 base) {
     self->unpaced++;
@@ -480,7 +602,11 @@ static GstFlowReturn vp_chain(GstPad*, GstObject* parent, GstBuffer* buf) {
         running > (guint64)G_MAXINT64)
         return vp_push_unpaced(self, buf, base);
     vp_update_display(self, now);
-    if (self->display->outage) return vp_push_unpaced(self, buf, base);
+    if (self->display->outage) {
+        self->dsnap->member = false;   // presents nothing: no target to its group (M14)
+        self->pace->set_drain(0);
+        return vp_push_unpaced(self, buf, base);
+    }
 
     const GstClockTime bdur = GST_BUFFER_DURATION(buf);
     const bool timed = GST_CLOCK_TIME_IS_VALID(bdur) && bdur <= (guint64)G_MAXINT64;
@@ -489,6 +615,7 @@ static GstFlowReturn vp_chain(GstPad*, GstObject* parent, GstBuffer* buf) {
     const bool held = self->have_free && now - self->free_at <= HELD_NS;
     const PaceDecision d =
         self->pace->on_frame((gint64)running, dur, now, GST_BUFFER_IS_DISCONT(buf), held);
+    vp_drain(self, d, now, GST_BUFFER_IS_DISCONT(buf), self->have_free, self->free_at);
     GST_LOG_OBJECT(self, "pts %" GST_TIME_FORMAT " arrival %" G_GINT64_FORMAT " release %"
                    G_GINT64_FORMAT "%s%s", GST_TIME_ARGS(pts), now, d.release_ns,
                    held ? " (held)" : "", d.rate_drop ? " (rate drop)" : "");
@@ -548,13 +675,17 @@ static gboolean vp_sink_event(GstPad* pad, GstObject* parent, GstEvent* event) {
             self->frame_dur = rate && num > 0 && den > 0
                                   ? (gint64)gst_util_uint64_scale_int_round(GST_SECOND, den, num)
                                   : 0;
-            /* Other content: what the display achieves is measured again. */
-            if (self->caps && caps && !gst_caps_is_equal(self->caps, caps)) self->rate->restart();
+            /* Other content: what the display achieves is measured again, the drain's window too. */
+            if (self->caps && caps && !gst_caps_is_equal(self->caps, caps)) {
+                self->rate->restart();
+                self->clear_pending = TRUE;
+            }
             gst_caps_replace(&self->caps, caps);
             break;
         }
         case GST_EVENT_GAP:
             if (self->pace) self->pace->on_gap();
+            if (self->drain) self->drain->epoch_break();
             break;
         default:
             break;
@@ -591,6 +722,31 @@ static void vp_start(GstMrVideoPace* self) {
     self->flushing = FALSE;
     g_mutex_unlock(&self->lock);
     self->common.reset();
+    /* The drain keeps its margin across a start; its window starts again, the backlog queue found anew. */
+    self->clear_pending = TRUE;
+    self->have_queue_read = FALSE;
+    gst_clear_object(&self->backlog);
+    GST_OBJECT_LOCK(self);
+    gchar* name = g_strdup(self->backlog_name);
+    GST_OBJECT_UNLOCK(self);
+    if (name && *name) {
+        GstObject* top = GST_OBJECT(gst_object_ref(self));
+        for (GstObject* up = gst_object_get_parent(top); up; up = gst_object_get_parent(top)) {
+            gst_object_unref(top);
+            top = up;
+        }
+        if (GST_IS_BIN(top)) self->backlog = gst_bin_get_by_name(GST_BIN(top), name);
+        gst_object_unref(top);
+        GParamSpec* ps = self->backlog ? g_object_class_find_property(G_OBJECT_GET_CLASS(self->backlog),
+                                                                      "current-level-time")
+                                       : NULL;
+        if (!ps) {
+            GST_WARNING_OBJECT(self, "backlog-queue \"%s\": no queue of that name: its level is not read", name);
+            gst_clear_object(&self->backlog);
+        }
+    }
+    g_free(name);
+    *self->dsnap = Snapshot();
 }
 
 static void vp_use_clock(GstMrVideoPace* self, GstClock* clock) {
@@ -623,6 +779,7 @@ static GstStateChangeReturn vp_change_state(GstElement* element, GstStateChange 
         }
         case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
             self->playing.store(false, std::memory_order_release);
+            self->clear_pending = TRUE;
             break;
         case GST_STATE_CHANGE_PAUSED_TO_READY:
             /* Before the pads deactivate: a chain waiting for a release returns at once. */
@@ -643,6 +800,7 @@ static GstStateChangeReturn vp_change_state(GstElement* element, GstStateChange 
         self->display->reset();
         delete self->pace;
         self->pace = NULL;
+        gst_clear_object(&self->backlog);
     }
     return ret;
 }
@@ -658,6 +816,16 @@ static void vp_set_property(GObject* object, guint prop_id, const GValue* value,
             GST_OBJECT_LOCK(self);
             self->gap_threshold_ms = g_value_get_uint(value);
             GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_BACKLOG_QUEUE:
+            GST_OBJECT_LOCK(self);
+            g_free(self->backlog_name);
+            self->backlog_name = g_value_dup_string(value);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_GROUP_TARGET_NS:
+            self->group_target.store(g_value_get_int64(value));
+            self->group_seq.fetch_add(1);   // a refresh, even of the same value
             break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -676,6 +844,14 @@ static void vp_get_property(GObject* object, guint prop_id, GValue* value, GPara
             GST_OBJECT_LOCK(self);
             g_value_set_uint(value, self->gap_threshold_ms);
             GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_BACKLOG_QUEUE:
+            GST_OBJECT_LOCK(self);
+            g_value_set_string(value, self->backlog_name ? self->backlog_name : "");
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_GROUP_TARGET_NS:
+            g_value_set_int64(value, self->group_target.load());
             break;
         case PROP_STATS: {
             g_mutex_lock(&self->snap_lock);
@@ -704,6 +880,10 @@ static void vp_finalize(GObject* object) {
     gst_caps_replace(&self->caps, NULL);
     delete self->folded;
     delete self->snap;
+    delete self->drain;
+    delete self->dsnap;
+    gst_clear_object(&self->backlog);
+    g_free(self->backlog_name);
     g_mutex_clear(&self->lock);
     g_mutex_clear(&self->snap_lock);
     G_OBJECT_CLASS(gst_mrvideopace_parent_class)->finalize(object);
@@ -744,6 +924,15 @@ static void gst_mrvideopace_init(GstMrVideoPace* self) {
     self->have_kept = self->have_post = self->have_free = FALSE;
     self->last_lateness = self->next_post = self->free_at = 0;
     self->unpaced = 0;
+    self->drain = NULL;
+    self->backlog_name = NULL;
+    self->backlog = NULL;
+    self->have_queue_read = self->clear_pending = FALSE;
+    self->queue_read_at = 0;
+    new (&self->group_target) std::atomic<gint64>(0);
+    new (&self->group_seq) std::atomic<guint64>(0);
+    self->group_seen = 0;
+    self->dsnap = new Snapshot();
 
     self->sinkpad = vp_new_pad(self, &vp_sink_tmpl, "sink");
     gst_pad_set_chain_function(self->sinkpad, GST_DEBUG_FUNCPTR(vp_chain));
@@ -788,9 +977,26 @@ static void gst_mrvideopace_class_init(GstMrVideoPaceClass* klass) {
                            "(the presentation period the sink achieves, which the pace takes "
                            "once measured; 0 before), display-behind (frames dropped as the "
                            "display fell a period behind), mean-hold-ns (the last message's), "
-                           "present-lateness-ns and display-presenting.",
+                           "present-lateness-ns and display-presenting; B-179's drain-ppm, "
+                           "drain-excess-ns, drain-margin-ns, drain-learned-ns, fill-trough-ns, drained-ns, "
+                           "drain-raises, underruns, drain-outages, drain-target-lateness-ns, group-target-ns, "
+                           "drain-state, drain-capped, drain-member, drain-rate-known and drain-drops.",
                            GST_TYPE_STRUCTURE,
                            (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
+    g_object_class_install_property(
+        gobject_class, PROP_BACKLOG_QUEUE,
+        g_param_spec_string("backlog-queue", "Backlog queue",
+                            "The name of the queue upstream whose current-level-time is content already "
+                            "waiting (vp_esq): its 30 s minimum adds to the frames' slack the drain reads "
+                            "(B-179). \"\": none. Found at READY to PAUSED.",
+                            "", at_start));
+    g_object_class_install_property(
+        gobject_class, PROP_GROUP_TARGET_NS,
+        g_param_spec_int64("group-target-ns", "Group target (ns)",
+                           "The render lateness its A/V group drains to (the engine's, B-179), set every 2 s; "
+                           "below it the pace runs up to 0.5 % slower to reach it, at most 1 s above its own "
+                           "target. 0: alone; not set again for 10 s: alone.",
+                           0, G_MAXINT64, 0, live));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */
     MrtsHouseCommon::install(gobject_class);
 

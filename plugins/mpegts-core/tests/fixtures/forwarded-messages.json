@@ -1,5 +1,5 @@
 {
-  "about": "The mrtsdemux and mrasrc messages as both runners forward them, unsubscribed, as `<structure>:<element>` plugin events (plan ch. 7 WI-P3-6, register B-126): one payload per reason or kind. The engine's demuxWatches and asrcWatches tests read these; native_runner_protocol_test.py's mrtsdemux-messages and mrasrc-device cases hold every payload the runners forward to its entry's fields and their types. Recorded 2026-10-27 on the dev Pi from those two cases (both runners gave the same payloads); no-stream and the servo's mrasrc events are as gstmrtsdemux.cpp and gstmrasrc.cpp post them, with values of a real run's kind; mrasrc-stats' gaps and lost-frames (B-180) were added when the capture fix line was carried in, as a run without cycle-input posts them (0). B-148 added mrasrc-stats' rate-known, the engaged event's rate-known and the decode lost-time gap event (a device-only run's rate-known is false: it has no source lock). p3-21 added the interval report's off-house (the PIDs whose last placed PES is off house time: that run's video, 2 h behind) and pes-dropped-stale, and not-house-time's stale, as gstmrtsdemux.cpp posts them. B-166 replaced the custom-slaving device-relock and device-resync events and device-resyncs with the timer term's relock-device, device-stalled and device-resumed events and mrasrc-stats' device-relocks, device-stalls and render-lateness-ns, as gstmrasrc.cpp posts them (values from a run on mrtestaudiosink sync=false with a 3 s stall and a restart). B-169 added the mrvideopace message, the Video Player's pace, as gstmrvideopace.cpp posts it (values from the protocol case video-leg-pace: a generated 1080p50 into mrtestvideosink at 50 Hz).",
+  "about": "The mrtsdemux and mrasrc messages as both runners forward them, unsubscribed, as `<structure>:<element>` plugin events (plan ch. 7 WI-P3-6, register B-126): one payload per reason or kind. The engine's demuxWatches and asrcWatches tests read these; native_runner_protocol_test.py's mrtsdemux-messages and mrasrc-device cases hold every payload the runners forward to its entry's fields and their types. Recorded 2026-10-27 on the dev Pi from those two cases (both runners gave the same payloads); no-stream and the servo's mrasrc events are as gstmrtsdemux.cpp and gstmrasrc.cpp post them, with values of a real run's kind; mrasrc-stats' gaps and lost-frames (B-180) were added when the capture fix line was carried in, as a run without cycle-input posts them (0). B-148 added mrasrc-stats' rate-known, the engaged event's rate-known and the decode lost-time gap event (a device-only run's rate-known is false: it has no source lock). p3-21 added the interval report's off-house (the PIDs whose last placed PES is off house time: that run's video, 2 h behind) and pes-dropped-stale, and not-house-time's stale, as gstmrtsdemux.cpp posts them. B-166 replaced the custom-slaving device-relock and device-resync events and device-resyncs with the timer term's relock-device, device-stalled and device-resumed events and mrasrc-stats' device-relocks, device-stalls and render-lateness-ns, as gstmrasrc.cpp posts them (values from a run on mrtestaudiosink sync=false with a 3 s stall and a restart). B-169 added the mrvideopace message, the Video Player's pace, as gstmrvideopace.cpp posts it (values from the protocol case video-leg-pace: a generated 1080p50 into mrtestvideosink at 50 Hz). B-179 added the drain: mrasrc-stats' and mrvideopace's drain-ppm (rounded), drain-excess-ns, drain-margin-ns, drain-learned-ns (-1 before a raise), fill-trough-ns, drained-ns, drain-raises, underruns, drain-outages, drain-target-lateness-ns, group-target-ns, drain-state, drain-capped and drain-member (mrvideopace also drain-rate-known and drain-drops), and mrasrc-event's drain-start, drain-done and underrun, as the elements post them (values of a run's kind: a 1.5 s backlog draining at 0.5 %).",
   "mrtsdemux": {
     "interval": {
       "cc-lost": 0,
@@ -76,7 +76,21 @@
     "relocks": 0,
     "render-lateness-ns": 0,
     "source-ppb": 0,
-    "state": "acquiring"
+    "state": "acquiring",
+    "drain-ppm": 5000,
+    "drain-excess-ns": 1012000000,
+    "drain-margin-ns": 60000000,
+    "drain-learned-ns": -1,
+    "fill-trough-ns": 1072000000,
+    "drained-ns": 41250000,
+    "drain-raises": 0,
+    "underruns": 0,
+    "drain-outages": 0,
+    "drain-target-lateness-ns": 98000000,
+    "group-target-ns": 0,
+    "drain-state": "draining",
+    "drain-capped": false,
+    "drain-member": true
   },
   "mrasrc-event": {
     "relock-device": {
@@ -125,6 +139,25 @@
       "house-ns": 3335530002325885,
       "kind": "ratio-out-of-bounds",
       "reason": ""
+    },
+    "drain-start": {
+      "kind": "drain-start",
+      "reason": "",
+      "house-ns": 91300000000,
+      "excess-ns": 1012000000
+    },
+    "drain-done": {
+      "kind": "drain-done",
+      "reason": "",
+      "house-ns": 402100000000,
+      "drained-ns": 1455000000
+    },
+    "underrun": {
+      "kind": "underrun",
+      "reason": "",
+      "house-ns": 120400000000,
+      "length-ns": 100000000,
+      "margin-ns": 120000000
     }
   },
   "mrvideopace": {
@@ -140,6 +173,22 @@
     "refresh-ns": 20000000,
     "refresh-source": "measured",
     "released": 392,
-    "unpaced": 0
+    "unpaced": 0,
+    "drain-ppm": 0,
+    "drain-excess-ns": 3000000,
+    "drain-margin-ns": 40000000,
+    "drain-learned-ns": -1,
+    "fill-trough-ns": 43000000,
+    "drained-ns": 0,
+    "drain-raises": 0,
+    "underruns": 0,
+    "drain-outages": 0,
+    "drain-target-lateness-ns": 243683777,
+    "group-target-ns": 0,
+    "drain-state": "idle",
+    "drain-capped": false,
+    "drain-member": true,
+    "drain-rate-known": true,
+    "drain-drops": 0
   }
 }

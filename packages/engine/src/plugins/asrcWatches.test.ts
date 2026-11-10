@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
     AsrcWatches,
+    drainFieldsOf,
     asrcWarningText,
     clockCorrectionText,
     DEVICE_STALLED_TEXT,
@@ -51,8 +52,8 @@ function watches(): AsrcWatches {
 const one = (w: AsrcWatches, name: string) => {
     const x = w.list().find((a) => a.name === name);
     if (!x) return x;
-    const { gapMark, renderLatenessMs, deviceRelocks, deviceStalls, stalled, ...p3 } = x;
-    void [gapMark, renderLatenessMs, deviceRelocks, deviceStalls, stalled];
+    const { gapMark, renderLatenessMs, deviceRelocks, deviceStalls, stalled, drain, ...p3 } = x;
+    void [gapMark, renderLatenessMs, deviceRelocks, deviceStalls, stalled, drain];
     return p3;
 };
 const device = (w: AsrcWatches, name: string) => {
@@ -364,5 +365,57 @@ describe('the device term (WI-P4-12)', () => {
             9,
         );
         expect(device(w, 'devasrc').gapMark).toBe(marks[marks.length - 1]);
+    });
+});
+
+describe('the drain (WI-P4-18, B-179)', () => {
+    const fixture = JSON.parse(
+        readFileSync(
+            join(process.cwd(), 'plugins/mpegts-core/tests/fixtures/forwarded-messages.json'),
+            'utf8',
+        ),
+    ) as { 'mrasrc-stats': Record<string, unknown>; 'mrasrc-event': Record<string, object> };
+
+    it("reads a device term's drain fields as recorded, in ms and ppm", () => {
+        const w = new AsrcWatches();
+        w.configure(`audiotestsrc ! ${BOTH} ! fakesink`);
+        w.take('mrasrc-stats', 'outasrc', fixture['mrasrc-stats'], 0);
+        expect(w.list()[0].drain).toEqual({
+            ppm: 5000,
+            excessMs: 1012,
+            marginMs: 60,
+            troughMs: 1072,
+            drainedMs: 41.25,
+            raises: 0,
+            underruns: 0,
+            outages: 0,
+            groupTargetMs: 0,
+            state: 'draining',
+            capped: false,
+            publishedMs: 98,
+        });
+    });
+
+    it('a member that publishes none (a stalled device) has no published target; a raise has its learned floor', () => {
+        const p = {
+            ...fixture['mrasrc-stats'],
+            'drain-member': false,
+            'drain-learned-ns': 60_000_000,
+        };
+        const f = drainFieldsOf(p)!;
+        expect(f.publishedMs).toBeUndefined();
+        expect(f.learnedMs).toBe(60);
+        expect(drainFieldsOf({ mode: 'device' })).toBeUndefined();
+    });
+
+    it('logs its events: drain-start, drain-done and underrun pass through as events', () => {
+        const w = new AsrcWatches();
+        w.configure(`audiotestsrc ! ${BOTH} ! fakesink`);
+        w.take('mrasrc-stats', 'outasrc', fixture['mrasrc-stats'], 0);
+        for (const kind of ['drain-start', 'drain-done', 'underrun']) {
+            expect(
+                w.take('mrasrc-event', 'outasrc', fixture['mrasrc-event'][kind], 1)!.event!.kind,
+            ).toBe(kind);
+        }
     });
 });

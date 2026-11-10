@@ -1,7 +1,9 @@
 // The video outputs' `mrvideopace` messages (house-clock WI-P4-12): the presented frame's
 // lateness, the rate match and its drops, late releases, the pace's hold, and whether the
-// display presents at all (S31). They warn; nothing drops.
+// display presents at all (S31). They warn; nothing drops. And the drain back to the latency
+// target (WI-P4-18): its fields and its drops per minute.
 import type { RateMatch } from '@media-router/shared-types';
+import { drainFieldsOf, type DrainFields } from './asrcWatches.js';
 
 /** The structure name; the runners forward it as `mrvideopace:<element>`. */
 export const VIDEO_PACE_EVENT = 'mrvideopace';
@@ -28,6 +30,11 @@ export interface VideoPaceWatch {
     lateReleasesPerMin: number;
     meanHoldMs: number;
     presenting: boolean;
+    /** The drain (B-179), and the frames it skipped per minute. */
+    drain?: DrainFields;
+    drainDropsPerMin?: number;
+    /** No display rate known: nothing drains. */
+    rateKnown: boolean;
     /** Changes at every gap the pace collapsed, a display outage and a new element. */
     gapMark: string;
 }
@@ -36,6 +43,7 @@ interface Sample {
     at: number;
     late: number;
     drops: number;
+    drainDrops: number;
 }
 
 interface Entry {
@@ -47,7 +55,7 @@ interface Entry {
 }
 
 /** Per minute over the samples kept: the newest against the oldest; 0 over no span. */
-function perMin(samples: Sample[], k: 'late' | 'drops'): number {
+function perMin(samples: Sample[], k: 'late' | 'drops' | 'drainDrops'): number {
     const a = samples[0];
     const b = samples[samples.length - 1];
     const span = b.at - a.at;
@@ -78,6 +86,7 @@ export class VideoPaceWatches {
             at: now,
             late: num(p, 'late'),
             drops: num(p, 'rate-drops') + num(p, 'display-behind'),
+            drainDrops: num(p, 'drain-drops'),
         };
         const kept = old && !again ? old.samples.filter((s) => now - s.at <= RATE_WINDOW_MS) : [];
         const generation = (old?.generation ?? 0) + (again ? 1 : 0);
@@ -105,8 +114,14 @@ export class VideoPaceWatches {
                 lateReleasesPerMin: perMin(e.samples, 'late'),
                 meanHoldMs: num(p, 'mean-hold-ns') / NS_PER_MS,
                 presenting,
+                rateKnown: p['drain-rate-known'] !== false,
                 gapMark: `${e.generation}/${num(p, 'gaps-collapsed')}/${presenting}`,
             };
+            const drain = drainFieldsOf(p);
+            if (drain) {
+                w.drain = drain;
+                w.drainDropsPerMin = perMin(e.samples, 'drainDrops');
+            }
             if (num(p, 'released') > 0) {
                 w.presentLatenessMs = num(p, 'present-lateness-ns') / NS_PER_MS;
             }
@@ -119,12 +134,14 @@ export class VideoPaceWatches {
     }
 }
 
-/** `50.00 fps → 50.00 Hz measured, 0 drops/min`. */
-export function rateMatchText(r: RateMatch): string {
+/** `50.00 fps → 50.00 Hz measured, 0 drops/min`; with the drain's (B-179) `, 15 drain drops/min`. */
+export function rateMatchText(r: RateMatch, drainDropsPerMin?: number): string {
     const fps = r.contentFps > 0 ? `${r.contentFps.toFixed(2)} fps` : 'content rate unknown';
     const hz =
         r.displayHz > 0
             ? `${r.displayHz.toFixed(2)} Hz ${r.displaySource}`
             : 'display rate unknown';
-    return `${fps} → ${hz}, ${Math.round(r.dropsPerMin)} drops/min`;
+    const drain =
+        drainDropsPerMin === undefined ? '' : `, ${Math.round(drainDropsPerMin)} drain drops/min`;
+    return `${fps} → ${hz}, ${Math.round(r.dropsPerMin)} drops/min${drain}`;
 }

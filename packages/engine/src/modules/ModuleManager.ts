@@ -10,8 +10,13 @@ import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js
 import type { HouseClock } from '../clock/HouseClock.js';
 import { ModuleInstance } from './ModuleInstance.js';
 import { checkStartSettings } from './startSettings.js';
+import { DrainGroupLoop, type DrainMember } from '../plugins/drainGroups.js';
 
 const log = createLogger('ModuleManager');
+
+/** The A/V groups' refresh (WI-P4-18): each member's target is taken every 2 s, the timing
+ *  summaries' own interval; an element holds a target 10 s. */
+export const DRAIN_GROUP_REFRESH_MS = 2000;
 
 /**
  * Manages all module instances.
@@ -30,6 +35,12 @@ export class ModuleManager extends EventEmitter {
     private processManager: ProcessManager | null = null;
     private deviceProviders: DeviceProviderRegistry | null = null;
     private houseClock: HouseClock | null = null;
+    private readonly drainGroups = new DrainGroupLoop({
+        members: () => this.drainMembers(),
+        edges: () => this.mediaRouter?.getConnections() ?? [],
+        log: (msg, obj) => log.info(obj, msg),
+    });
+    private drainTimer: ReturnType<typeof setInterval> | null = null;
 
     constructor(
         pluginLoader: PluginLoader,
@@ -130,6 +141,38 @@ export class ModuleManager extends EventEmitter {
         const mod = this.modules.get(instanceId);
         if (!mod) throw new Error(`Module not found: ${instanceId}`);
         await mod.start();
+        if (this.mediaRouter && !this.drainTimer) {
+            this.drainTimer = setInterval(() => this.drainGroups.tick(), DRAIN_GROUP_REFRESH_MS);
+            this.drainTimer.unref?.();
+        }
+    }
+
+    /** The running device outputs that drain (WI-P4-18): the A/V groups' members. */
+    private drainMembers(): DrainMember[] {
+        const out: DrainMember[] = [];
+        for (const [id, mod] of this.modules) {
+            if (!mod.running) continue;
+            const plugin = mod.getPlugin();
+            if (!plugin.drainElementNames?.().length) continue;
+            const drain = plugin.getTimingSummary?.()?.drain;
+            out.push({
+                id,
+                name: this.mediaRouter?.moduleName(id) ?? id,
+                anchor: plugin.isLatencyGroupAnchor?.() ?? false,
+                ...(drain?.publishedMs !== undefined ? { publishedMs: drain.publishedMs } : {}),
+                apply: (ns, view) => {
+                    plugin
+                        .applyLatencyGroupTarget?.(ns, view)
+                        .catch((err: unknown) => log.debug({ err, id }, 'group-target-ns not set'));
+                },
+            });
+        }
+        return out;
+    }
+
+    /** One refresh of the A/V groups now (the timer's; tests). */
+    refreshDrainGroups(): void {
+        this.drainGroups.tick();
     }
 
     /** Stop a module by instance ID. */
@@ -164,6 +207,8 @@ export class ModuleManager extends EventEmitter {
 
     /** Destroy all modules. */
     async destroyAll(): Promise<void> {
+        if (this.drainTimer) clearInterval(this.drainTimer);
+        this.drainTimer = null;
         const promises = Array.from(this.modules.values()).map((m) => m.destroy());
         await Promise.allSettled(promises);
         this.modules.clear();

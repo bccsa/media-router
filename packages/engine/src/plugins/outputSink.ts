@@ -11,7 +11,8 @@ export const OUTPUT_PREFILL_MS = 40;
 export const OUTPUT_PREFILL_NAME = 'prefill';
 
 /** The non-leaky prefill before an output's sink. A drained queue holds its delay again only on
- *  the image's patched queue (B-68); 1 s never fills in practice: a backlog waits upstream. */
+ *  the image's patched queue (B-68); a backlog fills its 1 s before it waits upstream, and the
+ *  drain reads that fill (B-179). */
 export function buildOutputPrefill(): string {
     return (
         `queue name=${OUTPUT_PREFILL_NAME} leaky=0 min-threshold-time=${OUTPUT_PREFILL_MS * 1_000_000}` +

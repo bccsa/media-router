@@ -773,6 +773,52 @@ void test_hiccup_window() {
           std::llabs(s.display_period - achieved) * 200 <= achieved && std::fabs((double)got - want) * 100 <= want);
 }
 
+// --- 21: the drain (B-179) ------------------------------------------------------------------
+
+void test_drain() {
+    const int64_t n = 4000;
+    struct Row {
+        const char* name;
+        int64_t period, drain;
+    };
+    const Row rows[] = {{"50p on 60 Hz, +0.5 %", 16666667, 5000000},
+                        {"50p on 50 Hz, +0.5 %", P50, 5000000},
+                        {"50p on 50 Hz, -0.5 %", P50, -5000000},
+                        {"50p on 60 Hz, -0.5 %", 16666667, -5000000}};
+    for (const Row& r : rows) {
+        VideoPace pace;
+        pace.set_display(r.period, DisplaySource::measured);
+        pace.set_drain(r.drain);
+        std::vector<Frame> frames;
+        for (int64_t p : cadence(n, 50, 1)) frames.push_back({p, P50, 0, false, false});
+        Wayland w(r.period, 3700 * US);
+        const std::vector<Rec> rec = drive(pace, frames, &w);
+        const PaceSummary s = pace.take();
+        const std::vector<int64_t> shown = shown_lateness(rec);
+        const int64_t moved = shown.back() - shown[100];
+        const int64_t want = -(int64_t)((__int128)r.drain * (rec.back().pts - rec[100].pts) / SEC);
+        const bool decimates = r.period == P50 && r.drain > 0;
+        char name[200];
+        std::snprintf(name, sizeof name, "drain %s: %llu drain drops (%s), rate drops %llu, behind %llu", r.name,
+                      (unsigned long long)s.drain_drops, decimates ? "n / 200 +-1" : "none",
+                      (unsigned long long)s.rate_drops, (unsigned long long)s.behind);
+        CHECK(name, s.rate_drops == 0 && s.behind == 0 &&
+                        (decimates ? std::llabs((int64_t)s.drain_drops - n / 200) <= 1 : s.drain_drops == 0));
+        std::snprintf(name, sizeof name, "drain %s: the shown lateness moves %+.1f ms (0.5 %% of the content: %+.1f, "
+                      "+-10 %%)", r.name, moved / 1e6, want / 1e6);
+        CHECK(name, std::llabs(moved - want) <= std::llabs(want) / 10);
+    }
+    VideoPace pace;
+    pace.set_display(P50, DisplaySource::measured);
+    pace.on_frame(0, P50, 100 * MS, false);
+    const PaceDecision a = pace.on_frame(P50, P50, 105 * MS, false);
+    const PaceDecision b = pace.on_frame(2 * P50, P50, 180 * MS, false);
+    CHECK("drain fields: a frame's slack is its slot less its arrival (15 ms), a late frame's lateness past it "
+          "(40 ms, its slack -40 ms)",
+          a.has_slack && a.slack_ns == 15 * MS && !a.late && b.late && b.late_by_ns == 40 * MS && b.has_slack &&
+              b.slack_ns == -40 * MS);
+}
+
 void (*const CASES[])() = {test_50p_on_60hz,         test_60p_on_50hz,
                            test_60_on_5994,          test_50p_on_slow_display_measured,
                            test_50p_on_matched_display, test_slow_display_nominal,
@@ -782,7 +828,8 @@ void (*const CASES[])() = {test_50p_on_60hz,         test_60p_on_50hz,
                            test_foreign_clock_source, test_faster_display_banks_one_frame,
                            test_stamp_jitter,        test_slow_presenting_display,
                            test_kms_every_other_refresh, test_display_rate,
-                           test_keeps_up_as_before,  test_hiccup_window};
+                           test_keeps_up_as_before,  test_hiccup_window,
+                           test_drain};
 
 }  // namespace
 
