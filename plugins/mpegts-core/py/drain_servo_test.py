@@ -466,6 +466,23 @@ def case_live():
     ]
 
 
+def case_group_early():
+    """14. B-177: a group whose members all play early (render lateness below 0, an ingest's PTS -
+    PCR lead) is held together all the same: the lower rises to the higher, both end within 20 ms."""
+    a = Link(DrainServo(), source(steady(20 * MS)), fill_ns=60 * MS, base_ns=-600 * MS)
+    b = Link(DrainServo(), source(steady(20 * MS)), fill_ns=60 * MS, base_ns=-150 * MS)
+    links = [a, b]
+    g = Group(links)
+    r = Run(links)
+    r.until(10 * MIN, g)
+    top = max(ln.render() for ln in links)
+    return [
+        ("early: P below 0", g.p < 0),
+        ("early: both end within 20 ms of the higher", all(abs(ln.render() - top) <= 20 * MS for ln in links)),
+        ("early: no underrun", all(ln.s.underruns == 0 and ln.starved_ns == 0 for ln in links)),
+    ]
+
+
 def case_hole():
     """13. B-179 fix 2: a 35 s hole in a video servo's samples (an input outage) empties its window;
     the next sample starts warm-up again, so nothing drains for 30 s on a one-sample window."""
@@ -491,7 +508,7 @@ CASES = {
     "step": case_step, "starve": case_starve, "dip": case_dip, "creep": case_creep,
     "outage": case_outage, "discont": case_discont, "paced": case_paced, "group": case_group,
     "group_cap": case_group_cap, "video_late": case_video_late, "hysteresis": case_hysteresis,
-    "live": case_live, "hole": case_hole,
+    "live": case_live, "hole": case_hole, "group_early": case_group_early,
 }
 
 
@@ -564,8 +581,8 @@ def m_negative_alone():
     orig = DrainServo.update
 
     def update(self, now, render, can):
-        if not self.group or self.group_at == getattr(self, "own_at", None):
-            self.group, self.group_at, self.own_at = max(render - self.excess, 1), now, now
+        if self.group == ds.GROUP_ALONE_NS or self.group_at == getattr(self, "own_at", None):
+            self.group, self.group_at, self.own_at = render - self.excess, now, now
         return orig(self, now, render, can)
     return _patch(DrainServo, "update", update)
 
@@ -616,6 +633,12 @@ def m_t_not_held():
     return _patch(DrainServo, "update", update)
 
 
+def m_group_by_sign():
+    orig = DrainServo.set_group
+    return _patch(DrainServo, "set_group",
+                  lambda self, now, t: orig(self, now, t if t > 0 else ds.GROUP_ALONE_NS))
+
+
 def m_no_rise_cap():
     return _patch(ds, "RISE_CAP_NS", 10 ** 15)
 
@@ -625,7 +648,7 @@ def m_abandon():
 
     def update(self, now, render, can):
         if self.group > self.target + ds.RISE_CAP_NS:
-            self.group = 0
+            self.group = ds.GROUP_ALONE_NS
         return orig(self, now, render, can)
     return _patch(DrainServo, "update", update)
 
@@ -661,6 +684,7 @@ MUTANTS = [
     ("engage at 0 ms, no let-go band", m_no_hysteresis, "hysteresis"),
     ("the target carrying a negative excess (r3)", m_negative_target, "live"),
     ("warm across a hole (fix 2)", m_warm_across_hole, "hole"),
+    ("grouped by the target's sign (B-177)", m_group_by_sign, "group_early"),
 ]
 
 

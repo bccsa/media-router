@@ -616,7 +616,7 @@ describe('AudioInput302mModule on house time (WI-P1-11)', () => {
         vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async () => {});
         const module = cardModule();
         await module.onStart();
-        // The base's own dynamic section (a route head's playout raise) shares the one list.
+        // The base's own dynamic section (another writer's) shares the one list.
         module.upsertStatusSection({ id: 'playout', label: 'Playout', fields: [] });
         module.dispatchPluginEvent(CH.asrc, asrcStats());
         module.dispatchPluginEvent(CH.pid, pidMsg(-120));

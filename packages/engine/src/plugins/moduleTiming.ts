@@ -27,6 +27,7 @@ import {
     type QueueOverrun,
 } from './queueOverrun.js';
 import { timingChanged, timingPublication, type TimingPublication } from './timingSections.js';
+import { DISPLAY_NOT_PRESENTING_TEXT } from './videoPaceWatches.js';
 
 const TICK_MS = 2000;
 /** A video output whose mode is unknown: one refresh at this rate stands in, and says so. */
@@ -175,6 +176,16 @@ export class ModuleTiming {
         this.timer = setInterval(() => this.tick(), TICK_MS);
         this.timer.unref?.();
         this.tick();
+    }
+
+    /** Whether `element`'s queue-full warning stands (open, or closed under 30 s ago). */
+    queueStanding(element: string, now = Date.now()): boolean {
+        return this.queues.standing(now).some((p) => p.element === element);
+    }
+
+    /** The pipeline stopped or failed (its runner may respawn it): its open queue episodes go. */
+    onPipelineGone(): void {
+        this.queues.dropOpen();
     }
 
     /** Every PLAYING: the sink is read, and the warnings go back over the health it reset. */
@@ -484,7 +495,7 @@ export class ModuleTiming {
             this.host.log?.(
                 e.presenting ? 'info' : 'warn',
                 { displayPresenting: { name: e.name, presenting: e.presenting } },
-                e.presenting ? 'Display presenting again' : 'Display not presenting (output off?)',
+                e.presenting ? 'Display presenting again' : DISPLAY_NOT_PRESENTING_TEXT,
             );
             return;
         }

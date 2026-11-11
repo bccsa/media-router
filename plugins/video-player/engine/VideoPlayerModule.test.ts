@@ -843,7 +843,8 @@ describe('VideoPlayerModule helpers', () => {
             expect(desc.env).toEqual({});
         });
 
-        it('plays as soon as it can: stored Sync, Buffer and Lip-Sync Trim build the same string (B-169)', () => {
+        // A stored Lip-Sync Trim: removedTimingSettings.test.ts (no file may name its key, S18).
+        it('plays as soon as it can: stored Sync and Buffer build the same string (B-169)', () => {
             VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
             const module = makeModule();
             (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue({
@@ -2493,6 +2494,92 @@ describe('renderWatch health messages', () => {
             'warning',
             'Stream under-delivering (41/50 fps) — check the source/link (display is keeping up)',
         );
+    });
+
+    it('equal fps with vp_esq holding or lateness rising 1 s/min: the chain, not the link (B-177)', () => {
+        const slow = { achievedFps: 33, expectedFps: 50, arrivalsFps: 33 };
+        const chain =
+            "Video output can't keep up (33/50 fps) — lower the stream or display resolution";
+        const held = makeModule();
+        (held as any).dispatchPluginEvent('queue_overrun', {
+            element: 'vp_esq',
+            leaky: 0,
+            levelTimeMs: 5000,
+            overruns: 40,
+            ongoing: true,
+        });
+        (held as any).onPluginEvent('renderwatch:lag', slow);
+        expect((held as any).setHealth).toHaveBeenLastCalledWith('warning', chain);
+        const rising = makeModule();
+        (rising as any).getTimingSummary = () => ({ latenessTrend: { msPerMin: 20_000 } });
+        (rising as any).onPluginEvent('renderwatch:lag', slow);
+        expect((rising as any).setHealth).toHaveBeenLastCalledWith('warning', chain);
+        const link = makeModule();
+        (link as any).getTimingSummary = () => ({ latenessTrend: { msPerMin: 170 } });
+        (link as any).onPluginEvent('renderwatch:lag', slow);
+        expect((link as any).setHealth).toHaveBeenLastCalledWith(
+            'warning',
+            'Stream under-delivering (33/50 fps) — check the source/link (display is keeping up)',
+        );
+    });
+
+    it('a live episode is re-attributed when vp_esq fills or the trend rises after its edge (B-177)', () => {
+        // The live order: the runner's lag edge comes ~6 s in, vp_esq's queue-full ~25 s in and a
+        // Lateness trend minutes in, so the edge alone always reads source.
+        vi.useFakeTimers();
+        try {
+            const slow = { achievedFps: 33, expectedFps: 50, arrivalsFps: 33 };
+            const source =
+                'Stream under-delivering (33/50 fps) — check the source/link (display is keeping up)';
+            const chain =
+                "Video output can't keep up (33/50 fps) — lower the stream or display resolution";
+            const tracked = () => {
+                const m = new VideoPlayerModule() as any;
+                m.setHealth = vi.fn((h: string, e?: string) => {
+                    m.health = h;
+                    m.error = e;
+                });
+                return m;
+            };
+            const held = tracked();
+            held.onPluginEvent('renderwatch:lag', slow);
+            expect(held.setHealth).toHaveBeenLastCalledWith('warning', source);
+            held.dispatchPluginEvent('queue_overrun', {
+                element: 'vp_esq',
+                leaky: 0,
+                levelTimeMs: 5000,
+                overruns: 40,
+                ongoing: true,
+            });
+            expect(held.setHealth).toHaveBeenLastCalledWith('warning', chain);
+            expect(held.renderLagLast.report.sourceShortfall).toBe(false);
+
+            const rising = tracked();
+            let msPerMin: number | undefined;
+            rising.getTimingSummary = () => ({ latenessTrend: { msPerMin } });
+            rising.onPluginEvent('renderwatch:lag', slow);
+            expect(rising.setHealth).toHaveBeenLastCalledWith('warning', source);
+            msPerMin = 20_000;
+            vi.advanceTimersByTime(15_000);
+            expect(rising.setHealth).toHaveBeenLastCalledWith('warning', chain);
+            rising.clearRenderLagState();
+
+            // Another owner's warning is not replaced; the episode's kind still moves.
+            const other = tracked();
+            other.onPluginEvent('renderwatch:lag', slow);
+            other.setHealth('warning', 'Display substituted');
+            other.dispatchPluginEvent('queue_overrun', {
+                element: 'vp_esq',
+                leaky: 0,
+                overruns: 40,
+                ongoing: true,
+            });
+            expect(other.setHealth).toHaveBeenLastCalledWith('warning', 'Display substituted');
+            expect(other.renderLagLast.report.kind).toBe('render-chain');
+            for (const m of [held, other]) m.clearRenderLagState();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('missing arrivalsFps (older runner) falls back to the render-lag message', () => {

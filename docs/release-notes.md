@@ -148,17 +148,19 @@ there is no in-app switch, and the stored values of the removed settings
   takes audio again, then it plays live" while an audio output's card stops
   taking sound; and on any module whose queue fills, "Queue <input> full at
   <n> ms — content lost at capacity" or, for a queue that holds rather than
-  drops, "<queue> holding <n> ms at capacity — the input queue loses next",
+  drops, "<queue> holding <n> ms at capacity — nothing lost, the queues before
+  it fill next",
   until 30 s after the queue drained.
 
 **Outputs catch up by themselves**
 
 - **An output that has fallen behind catches up by itself once the box can:**
-  audio plays up to 0.5 % faster (well under a tenth of a semitone), video
+  audio plays up to 0.5 % faster (under a tenth of a semitone), video
   skips at most one frame in 200 while it catches up on a display that runs
   at the video's own rate, until it is back at the smallest delay it has
   measured it can play cleanly. A video output and the audio outputs of the
-  same programme on the box end at the same delay. Nothing to set.
+  same programme on the box end at the same delay, after the start (below).
+  Nothing to set.
 - **While the box cannot keep up, the delay grows,** as before, but never past
   what the output's queues hold (about 6 s on Audio Output (302M) with one
   source, 10 to 11 s elsewhere); past that the input queue loses content and
@@ -187,6 +189,15 @@ there is no in-app switch, and the stored values of the removed settings
   programmes' sources keeps its own delay ("in sync with neither (two
   programmes)"). Outputs on different boxes, and outputs whose path crosses
   PipeWire, are not matched. (#862)
+- **Lip sync between a Video Player and an audio output fed straight from the
+  same input** (no muxer between) is not there at the start: each plays on
+  arrival, so the video can lead by up to the source's own lead (often 0.3 to
+  1 s on a network input). After about 30 s of measuring, the earlier output
+  slows by up to 0.5 % until it is level, about 3.5 minutes per second of
+  difference, at most 1 s. This holds for outputs that play early too (a
+  network input with no Ingest Offset). For lip sync from the first frame,
+  route both through a muxer. Two audio outputs with no Video Player in the
+  programme keep their own delays.
 
 **Removed settings, nothing migrated**
 
@@ -219,11 +230,11 @@ there is no in-app switch, and the stored values of the removed settings
   that presents every frame): on an older image its pipeline does not start
   ("no property present-every-frame").
 
-## Unreleased — house-clock timing, Phases 1–4 (draft: the Phase 1, 2 and 3 items, 2026-11-03)
+## Unreleased — house-clock timing, Phases 1–3 (draft: v2.0.0.102, 2026-11-03)
 
-Phases 1, 2, 3 and 4 ship together as one release. This draft holds the
-Phase 1, Phase 2 and Phase 3 items; the Phase 4 items join it as that phase
-lands, and the note is finished with Phase 4. One RAUC bundle carries the image and the
+Phases 1, 2 and 3 ship together as v2.0.0.102; Phase 4 ships after it on its
+own, as v2.0.0.103 (above). This draft holds the Phase 1, Phase 2 and
+Phase 3 items, true of v2.0.0.102. One RAUC bundle carries the image and the
 app: the new timing elements ship in the image, so do not hot-deploy this
 app onto an older image. On a box where they are missing, the GStreamer
 modules' cards say "Native TS module not loaded": the inputs and captures

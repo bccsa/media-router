@@ -411,8 +411,8 @@ export interface PipelineDescription {
      * in render_lag.py. Never affects routing.
      */
     renderWatch?: RenderWatchRunnerConfig;
-    /** The output's final (named) sink, read by the `timing` status section for presentation
-     *  delay (`ts-offset`) and device latency (WI-P0-9). Engine-side, never sent to the runner. */
+    /** The output's final (named) sink, read by the `timing` status section for the device
+     *  latency stand-in (WI-P0-9). Engine-side, never sent to the runner. */
     timingSink?: TimingSink;
     /** Inputs whose bus taps are named per branch (`lat_busin_<i>`), which the router's edge
      *  list cannot map: their numbers and labels for the `timing` sections. Engine-side. */

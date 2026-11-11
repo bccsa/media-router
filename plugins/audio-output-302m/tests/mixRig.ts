@@ -1,4 +1,4 @@
-// The .108 rig of the real-PipeWire tests (B-197, B-206): the engine's router, lifecycle and
+// The Pi 4 test box's rig of the real-PipeWire tests (B-197, B-206): the engine's router, lifecycle and
 // applier, the real Audio Mixer and Audio Output (302M) on the native runner, tones as 302M
 // sources. Two mic tones mix on the left channel (the Audio Mixer), the SRT leg's tone (a relay in
 // the Audio Transcoder's shape) on the right.
@@ -143,7 +143,7 @@ export interface Rig {
     srtIntoMixer?: boolean;
 }
 
-/** The .108 rig: Mic A and B (997, 1499 Hz) into the Mixer, SRT in (440 Hz) into its transcoder,
+/** The Pi 4 test box's rig: Mic A and B (997, 1499 Hz) into the Mixer, SRT in (440 Hz) into its transcoder,
  *  both into the Audio Output (302M), which plays them as they come (no playout offset, B-167). */
 export function engine(rig: Rig) {
     AudioMixerModule.setS302mSupported(true);

@@ -1,14 +1,10 @@
 /**
- * Render keep-up reporting — what the runner's `renderwatch:lag` event means
- * for the operator, and when it earns a free pipeline rebuild.
- *
- * Lag means fewer frames reach the display than the stream declares: the
- * decode/convert/render chain cannot sustain the source rate, or the source
- * sends fewer. `mrvideopace`'s rate drops for a slower display count as kept up
- * (the runner adds them). Nothing in the module can fix that, so the health
- * message has to tell the operator what to change — and getting the attribution
- * right is the whole job here.
+ * Render keep-up: what the runner's `renderwatch:lag` means for the operator (a slow decode/display
+ * chain or a source sending fewer frames), and when it earns a free rebuild.
  */
+
+/** A Lateness trend this steep is frames backing up before the decoder, not a link dip (B-177). */
+export const RENDER_CHAIN_TREND_MS_PER_MIN = 1000;
 
 /** How long after a stall-resume a renderwatch lag earns a free rebuild. */
 export const POST_RESUME_HEAL_WINDOW_MS = 120_000;
@@ -89,6 +85,11 @@ export interface RenderLagContext {
      * A genuinely dead source has therefore always latched the flag first.
      */
     sourceSilent?: boolean;
+    /**
+     * The module's own evidence that frames back up before the decoder (B-177): `vp_esq` holding at
+     * capacity (the queue watch) or render lateness rising 1 s a minute or more (the Lateness trend).
+     */
+    chainBehind?: boolean;
 }
 
 /**
@@ -108,8 +109,9 @@ export interface RenderLagContext {
  * and the stall is attributed from `context.sourceSilent`, honestly labelled as
  * unconfirmed when the module has no signal to offer.
  *
- * The ratchet's reading went with the shedder (B-169): a `sync=false` sink is
- * never late and throttles nothing, so the fps fields alone attribute.
+ * Both runners count arrivals at the SINK pad, and a `sync=false` sink renders all that reach it,
+ * so a slow decode/convert chain lowers arrivals and achieved alike: equal fps say source only
+ * without `context.chainBehind` (B-177).
  */
 export function describeRenderLag(
     payload: unknown,
@@ -154,7 +156,8 @@ export function describeRenderLag(
         !nothingRendered &&
         typeof p.achievedFps === 'number' &&
         typeof p.arrivalsFps === 'number' &&
-        p.achievedFps >= p.arrivalsFps - 1;
+        p.achievedFps >= p.arrivalsFps - 1 &&
+        context.chainBehind !== true;
     return {
         kind: sourceShortfall ? 'source-shortfall' : 'render-chain',
         sourceShortfall,

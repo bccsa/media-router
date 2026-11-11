@@ -3918,6 +3918,67 @@ def test_ingest_queue_sheds():
             r.kill()
 
 
+def test_queue_label_jump():
+    """IJ (B-177), both runners: the outputs' prefill (a 40 ms delay line, bound 1 s) fed over a bus
+    input whose labels jump 2 s (an outage's return): the one buffer that meets it full behind the
+    jump is no episode; a real backlog (drained at half its rate) to the bound still reports."""
+    sys.path.insert(0, _HERE)
+    from gst_lateness_protocol_test import TS_CAPS
+    data = bytes([0x47, 0x1F, 0xFF, 0x10] + [0xFF] * 184) * 7
+    for tag, argv in (("native", None), ("py", _PY_ENV_RUNNER)):
+        tmp = tempfile.mkdtemp(prefix="mrtest-")
+        sock = os.path.join(tmp, "in.sock")
+        feed = Gst.parse_launch(f'appsrc name=src format=time caps="{TS_CAPS}" ! unixfdsink socket-path={sock}'
+                                " sync=false async=false")
+        feed.set_state(Gst.State.PLAYING)
+        src, ts = feed.get_by_name("src"), [0]
+
+        def push(jump=0):
+            ts[0] += 10 * Gst.MSECOND + jump
+            b = Gst.Buffer.new_wrapped(data)
+            b.pts = b.dts = ts[0]
+            src.emit("push-buffer", b)
+
+        def paced(seconds):
+            t0 = time.monotonic()
+            for k in range(int(seconds * 100)):
+                time.sleep(max(0.0, t0 + k / 100 - time.monotonic()))
+                push()
+
+        push()
+        time.sleep(0.3)
+        r = RunnerProc(argv)
+        try:
+            r.send({"cmd": "start", "eosDrain": False,
+                    "pipeline": f"unixfdsrc name=busin socket-path={sock} ! queue name=prefill"
+                                " min-threshold-time=40000000 max-size-time=1000000000 max-size-buffers=0"
+                                " max-size-bytes=0 ! identity name=slow sleep-time=5000"
+                                " ! fakesink sync=false async=false"})
+            playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+            paced(2.0)
+            push(2 * Gst.SECOND)
+            paced(2.5)
+            r.pump()
+            jump = _overruns(r, "prefill")
+            r.send({"cmd": "set_property", "id": "slow", "element": "slow", "property": "sleep-time",
+                    "value": 20000})
+            paced(3.0)
+            r.send({"cmd": "set_property", "id": "fast", "element": "slow", "property": "sleep-time", "value": 0})
+            paced(2.5)
+            r.pump()
+            backlog = _overruns(r, "prefill")[len(jump):]
+            code = r.stop_and_wait()
+        finally:
+            r.kill()
+            feed.set_state(Gst.State.NULL)
+            shutil.rmtree(tmp, ignore_errors=True)
+        check(f"IJ {tag}: a 2 s label jump through the prefill reports no queue_overrun ({jump})",
+              playing and jump == [])
+        check(f"IJ {tag}: a backlog to the prefill's 1 s bound still does ({backlog})",
+              len(backlog) == 1 and backlog[0].get("overruns", 0) > 1 and backlog[0].get("levelTimeMs", 0) >= 900
+              and backlog[0].get("ongoing") is False and code == 0)
+
+
 # --------------------------------------------------------------------------- R: no-late-drop and the queue watch (B-170)
 _R_LINE = re.compile(r"^\[(?:mr-gst-runner|gst-runner\.py)\] no-late-drop: (.*)$")
 _R_DECODE = ("videotestsrc is-live=true ! video/x-raw,format=I420,width=320,height=240,framerate=25/1"
@@ -4505,7 +4566,7 @@ def test_catch_up_render():
 def test_drain_rpc():
     """DR (B-179, WI-P4-18), both runners: the drain's fields forwarded in mrasrc-stats and mrvideopace in the
     engine's shape (forwarded-messages.json), and `group-target-ns` set over the RPC as the engine sets it every
-    2 s (GstPluginBase.applyLatencyGroupTarget): read back, and in the stats once the servo took it. The drain's
+    2 s (GstPluginBase.applyLatencyGroupTarget), below 0 too (B-177): read back, and in the stats once the servo took it. The drain's
     events wait 30 s past the device lock (the element suites run them); a runner forwards every mrasrc-event."""
     test_dir = os.path.join(_PLUGINS, "mpegts-core", "native", "mrtshouse", "tests")
     if not os.path.exists(os.path.join(test_dir, "libgstmrtest.so")):
@@ -4542,7 +4603,7 @@ def test_drain_rpc():
             for k in range(3):
                 time.sleep(1.0)
                 r.send({"cmd": "set_property", "id": f"v{k}", "element": "vp_pace", "property": "group-target-ns",
-                        "value": 456_000_000})
+                        "value": -456_000_000})
             time.sleep(1.5)
             r.send({"cmd": "get_property", "id": "vg", "element": "vp_pace", "property": "group-target-ns"})
             got = r.wait_event(lambda e: e.get("id") == "vg" and e.get("event") in ("property", "command_error"))
@@ -4555,8 +4616,8 @@ def test_drain_rpc():
         offv = [p for p in msgs if _shape(p) != _shape(shapes["mrvideopace"])]
         check(f"DR {tag}: mrvideopace carries the drain in the engine's shape ({len(msgs)} messages; off: {offv[:1]}), "
               f"group-target-ns over the RPC reads back {got.get('value') if got else None} and reaches the servo",
-              playing and code == 0 and bool(msgs) and not offv and got and got.get("value") == 456_000_000
-              and msgs[-1].get("group-target-ns") == 456_000_000)
+              playing and code == 0 and bool(msgs) and not offv and got and got.get("value") == -456_000_000
+              and msgs[-1].get("group-target-ns") == -456_000_000)
         seen[tag] = (sorted(stats[-1]) if stats else [], sorted(msgs[-1]) if msgs else [])
     shutil.rmtree(tmp, ignore_errors=True)
     if len(seen) == 2:
@@ -4606,6 +4667,7 @@ test_ttx_formula()
 test_burnin_formula()
 test_transcode_formula()
 test_ingest_queue_sheds()
+test_queue_label_jump()
 test_no_late_drop()
 test_transcode_rate()
 test_stop_while_starting()

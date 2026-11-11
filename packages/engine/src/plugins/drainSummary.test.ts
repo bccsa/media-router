@@ -24,7 +24,6 @@ const fields = (o: Partial<DrainFields> = {}): DrainFields => ({
     raises: 0,
     underruns: 0,
     outages: 0,
-    groupTargetMs: 0,
     state: 'draining',
     capped: false,
     publishedMs: 95,
@@ -74,6 +73,29 @@ describe('the Latency target row', () => {
         expect(latencyTargetText(two)).toBe(
             '95 ms (measured), now 100 ms · in sync with neither (two programmes)',
         );
+    });
+
+    it('an early group (targets below 0) is followed and named; one alone is not in sync (B-177)', () => {
+        const early = drainSummary(
+            fields({
+                ppm: -2000,
+                state: 'rising',
+                groupTargetMs: -110,
+                excessMs: 0,
+                publishedMs: -520,
+            }),
+            -520,
+            { with: ['Audio Decoder'] },
+        );
+        expect(early.targetMs).toBe(-110);
+        expect(latencyTargetText(early)).toBe(
+            '-110 ms (measured), now -520 ms · rising to its group at 0.20 % · in sync with Audio Decoder',
+        );
+        const alone = drainSummary(fields({ ppm: 0, state: 'idle', excessMs: 0 }), -520, {
+            with: ['Audio Decoder'],
+        });
+        expect(alone.targetMs).toBe(-520);
+        expect(latencyTargetText(alone)).toBe('-520 ms (measured), now -520 ms');
     });
 
     it('a negative excess (a clean link under its margin): the target is now, never above it (fix 2)', () => {

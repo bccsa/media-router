@@ -85,7 +85,7 @@ export class VideoPaceWatches {
         const sample: Sample = {
             at: now,
             late: num(p, 'late'),
-            drops: num(p, 'rate-drops') + num(p, 'display-behind'),
+            drops: num(p, 'rate-drops'), // display-behind is a part of it
             drainDrops: num(p, 'drain-drops'),
         };
         const kept = old && !again ? old.samples.filter((s) => now - s.at <= RATE_WINDOW_MS) : [];

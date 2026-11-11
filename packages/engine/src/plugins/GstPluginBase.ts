@@ -17,6 +17,7 @@ import { VuStallWatch } from './VuStallWatch.js';
 import { STAMP_OFF_CLOCK_EVENT, stampOffClockText, type StampOffClock } from './offClock.js';
 import { ModuleTiming } from './moduleTiming.js';
 import type { DrainGroupView } from './drainGroups.js';
+import { DRAIN_GROUP_ALONE_NS } from './drainSummary.js';
 import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
 import type { DemuxInputRef } from './demuxWatches.js';
 import type { StreamWarning } from './latenessReporter.js';
@@ -160,15 +161,15 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         return false;
     }
 
-    /** The engine's group target (ns; 0: alone) on every drain element, refreshed every 2 s while
-     *  grouped; the group, for the Latency target row. */
+    /** The engine's group target (ns, below 0 too; DRAIN_GROUP_ALONE_NS: alone) on every drain
+     *  element, refreshed every 2 s while grouped; the group, for the Latency target row. */
     async applyLatencyGroupTarget(targetNs: number, group?: DrainGroupView): Promise<void> {
         this.timing.setDrainGroup(group);
         for (const name of this.drainElementNames()) {
             await this.setElementProperty(
                 name,
                 'group-target-ns',
-                Math.max(0, Math.round(targetNs)),
+                Math.max(DRAIN_GROUP_ALONE_NS, Math.round(targetNs)),
             );
         }
     }
@@ -395,10 +396,12 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 // control state here so a restart doesn't strand them.
                 this.onPipelinePlaying();
             } else if (data.state === 'error') {
+                this.timing.onPipelineGone();
                 // A reconnect-class exit keeps the warning the error event
                 // just set (see RECONNECT_ERROR_KINDS); anything else is a fault.
                 if (!RECONNECT_ERROR_KINDS.has(data.kind ?? '')) this.health = 'error';
             } else if (data.state === 'stopped') {
+                this.timing.onPipelineGone();
                 this.running = false;
                 this.ready = false;
                 this.health = 'stopped';
@@ -600,8 +603,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     /** The aligners' (WI-P2-13, B-205), demuxes', ASRCs' (WI-P3-6), off-clock (B-203), the
-     *  presentation's and full queues' (WI-P4-12) warnings as one health text owned by its first: only over ok or our own (ADR-0010 rule 2), never over
-     *  a stopped or failed module, so another writer's stands until it clears; none: withdrawn. */
+     *  presentation's and full queues' (WI-P4-12) warnings as one health text owned by its first:
+     *  only over ok or our own (ADR-0010 rule 2), never over a stopped or failed module. */
     private showTimingWarnings(): void {
         const { absent, full, reanchored, stream, offClock, queueFull } = this.timingWarnings;
         const parts: Array<{ kind: OwnedWarning; text: string }> = [

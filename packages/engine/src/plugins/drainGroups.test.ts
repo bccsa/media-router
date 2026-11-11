@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { GstPluginBase } from './GstPluginBase.js';
 import type { PipelineDescription } from './PluginModule.js';
+import { DRAIN_GROUP_ALONE_NS } from './drainSummary.js';
 import {
     busOrigins,
     drainGroups,
@@ -162,7 +163,7 @@ describe('DrainGroupLoop', () => {
         e('other', 'solo'),
     ];
 
-    it('P is the max of the published targets, to every member each refresh; one alone gets 0 once', () => {
+    it('P is the max of the published targets, to every member each refresh; one alone is told so once', () => {
         const vp = member('vp', true, 180);
         const dec = member('dec', false, 120);
         const out = member('out', false); // stalled: publishes none, still in its group
@@ -179,7 +180,31 @@ describe('DrainGroupLoop', () => {
             [180e6, { with: ['DEC', 'OUT'] }],
         ]);
         expect(out.applied[0][0]).toBe(180e6);
-        expect(solo.applied).toEqual([[0, {}]]);
+        expect(solo.applied).toEqual([[DRAIN_GROUP_ALONE_NS, {}]]);
+    });
+
+    it("early members (targets below 0, a network ingest's lead) are grouped at the max all the same (B-177)", () => {
+        const vp = member('vp', true, -520);
+        const dec = member('dec', false, -110);
+        const loop = new DrainGroupLoop({
+            members: () => [vp.m, dec.m],
+            edges: () => edges,
+            log: vi.fn(),
+        });
+        loop.tick();
+        expect(vp.applied).toEqual([[-110e6, { with: ['DEC'] }]]);
+        expect(dec.applied).toEqual([[-110e6, { with: ['VP'] }]]);
+    });
+
+    it('a group none of whose members publishes yet is sent alone, not a target of 0', () => {
+        const vp = member('vp', true);
+        const dec = member('dec', false);
+        new DrainGroupLoop({
+            members: () => [vp.m, dec.m],
+            edges: () => edges,
+            log: vi.fn(),
+        }).tick();
+        expect(vp.applied[0][0]).toBe(DRAIN_GROUP_ALONE_NS);
     });
 
     it('a stop removes a member, a restart adds it back (the group recomputed)', () => {
@@ -220,7 +245,7 @@ describe('DrainGroupLoop', () => {
         loop.tick();
         expect(log).toHaveBeenCalledOnce();
         expect(log.mock.calls[0][0]).toBe('MIX: in sync with neither V1 nor V2: two programmes');
-        expect(mix.applied).toEqual([[0, { neither: ['V1', 'V2'] }]]);
+        expect(mix.applied).toEqual([[DRAIN_GROUP_ALONE_NS, { neither: ['V1', 'V2'] }]]);
     });
 });
 
@@ -243,6 +268,8 @@ describe('GstPluginBase.applyLatencyGroupTarget', () => {
         };
         await mod.applyLatencyGroupTarget(250_400_000.4, { with: ['Video Player'] });
         expect(setProperty).toHaveBeenCalledWith('outasrc', 'group-target-ns', 250_400_000);
+        await mod.applyLatencyGroupTarget(-520_000_000, { with: ['Video Player'] });
+        expect(setProperty).toHaveBeenLastCalledWith('outasrc', 'group-target-ns', -520_000_000);
     });
 
     it('a module without drain elements sets nothing', async () => {

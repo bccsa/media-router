@@ -840,7 +840,7 @@ describe('VideoEncoderModule on house time (WI-P1-13)', () => {
         });
         const module = configured();
         await module.onStart();
-        // Another writer's section (a route head's playout raise) stays beside the card.
+        // Another writer's section stays beside the card.
         module.upsertStatusSection({ id: 'playout', label: 'Playout', fields: [] });
         module.dispatchPluginEvent(CH.stats, stats());
         module.dispatchPluginEvent(CH.pid, pidMsg({ 'shift-ns': -40 * MS }));

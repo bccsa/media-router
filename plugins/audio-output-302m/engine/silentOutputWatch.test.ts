@@ -6,7 +6,7 @@ import {
     SilentOutputWatch,
 } from './silentOutputWatch.js';
 
-/** B-197: .108's output showed ok while it played nothing. A fake host: a pipeline that may
+/** B-197: the Pi 4 test box's output showed ok while it played nothing. A fake host: a pipeline that may
  *  play, mix and deliver meter readings; the warning it shows. */
 function rig(opts: { mixes?: boolean } = {}) {
     const state = {

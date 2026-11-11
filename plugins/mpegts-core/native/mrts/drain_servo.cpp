@@ -224,7 +224,7 @@ int64_t DrainServo::update(int64_t now, int64_t render_ns, bool can) {
     const int64_t t_now = render_ns - std::max<int64_t>(excess, 0);
     if (ppb_ >= 0) held_ = t_now;
     target_ = ppb_ < 0 ? held_ : t_now;
-    const bool grouped = group_ > 0 && now - group_at_ <= GROUP_STALE_NS;
+    const bool grouped = group_ > GROUP_ALONE_NS && now - group_at_ <= GROUP_STALE_NS;
     capped_ = false;
     int64_t cmd;
     if (!warm || in_episode_) {

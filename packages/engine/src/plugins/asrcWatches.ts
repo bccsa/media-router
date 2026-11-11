@@ -4,6 +4,7 @@
 // to its latency target (WI-P4-18). A capture ASRC (an ingest's: neither term) is its ingest
 // card's alone.
 import type { ClockCorrection } from '@media-router/shared-types';
+import { DRAIN_GROUP_ALONE_NS } from './drainSummary.js';
 import { ASRC_EVENT, ASRC_STATS } from './ingestTiming.js';
 import { launchElements } from './launchElements.js';
 
@@ -69,7 +70,8 @@ export interface DrainFields {
     outages: number;
     /** The target it publishes (ms); absent while it publishes none (`drain-member` false). */
     publishedMs?: number;
-    groupTargetMs: number;
+    /** The group target it holds (ms); absent while alone (`DRAIN_GROUP_ALONE_NS`). */
+    groupTargetMs?: number;
     state: 'warm-up' | 'idle' | 'draining' | 'rising';
     capped: boolean;
 }
@@ -93,10 +95,11 @@ export function drainFieldsOf(p: Record<string, unknown>): DrainFields | undefin
         raises: n('drain-raises'),
         underruns: n('underruns'),
         outages: n('drain-outages'),
-        groupTargetMs: n('group-target-ns') / 1e6,
         state: (DRAIN_STATES.has(state) ? state : 'warm-up') as DrainFields['state'],
         capped: p['drain-capped'] === true,
     };
+    if ('group-target-ns' in p && n('group-target-ns') > DRAIN_GROUP_ALONE_NS)
+        f.groupTargetMs = n('group-target-ns') / 1e6;
     if (n('drain-learned-ns') >= 0) f.learnedMs = n('drain-learned-ns') / 1e6;
     if (p['drain-member'] === true) f.publishedMs = n('drain-target-lateness-ns') / 1e6;
     return f;
@@ -145,6 +148,8 @@ const str = (p: Payload, k: string): string => (typeof p[k] === 'string' ? (p[k]
 
 export class AsrcWatches {
     private readonly entries = new Map<string, Entry>();
+    /** A device event before the element's first stats (its first 2 s): held for its entry (B-177). */
+    private readonly pendingStall = new Map<string, boolean>();
     private configs = new Map<string, AsrcConfig>();
 
     /** The run's ASRCs as its description builds them: a decode term where `bypass-below-ppm` is
@@ -185,6 +190,10 @@ export class AsrcWatches {
         } else if (kind === 'engaged') {
             event.sourcePpm = num(p, 'source-ppb') / 1000;
         }
+        if ((kind === 'device-stalled' || kind === 'device-resumed') && !e) {
+            this.pendingStall.set(name, kind === 'device-stalled');
+            return { changed: false, event };
+        }
         if ((kind === 'device-stalled' || kind === 'device-resumed') && e) {
             const was = e.stalled;
             e.stalled = kind === 'device-stalled';
@@ -221,10 +230,11 @@ export class AsrcWatches {
             deviceRelocks: num(p, 'device-relocks'),
             deviceStalls: num(p, 'device-stalls'),
             renderLatenessNs: num(p, 'render-lateness-ns'),
-            stalled: kept ? old.stalled : false,
+            stalled: kept ? old.stalled : !old && this.pendingStall.get(name) === true,
             drain: drainFieldsOf(p),
             generation: (old?.generation ?? 0) + (again ? 1 : 0),
         };
+        this.pendingStall.delete(name);
         // Back in bounds once the locked source rate is below the element's hysteresis.
         if (e.state === 'locked' && Math.abs(e.sourcePpb) < BACK_PPB) e.outOfBoundsPpb = undefined;
         this.entries.set(name, e);
@@ -275,6 +285,7 @@ export class AsrcWatches {
 
     clear(): void {
         this.entries.clear();
+        this.pendingStall.clear();
     }
 }
 

@@ -30,6 +30,17 @@ describe('describeRenderLag', () => {
         });
     });
 
+    it("equal fps with the module's evidence of a backlog before the decoder: the chain (B-177)", () => {
+        // A sync=false sink renders all that reach it, so a slow decoder lowers both counts alike
+        // (50 fps through a 30 ms/frame element: arrivals 33, rendered 33).
+        const slow = { achievedFps: 33, expectedFps: 50, arrivalsFps: 33 };
+        expect(describeRenderLag(slow, { chainBehind: true })).toMatchObject({
+            kind: 'render-chain',
+            sourceShortfall: false,
+        });
+        expect(describeRenderLag(slow, { chainBehind: false }).kind).toBe('source-shortfall');
+    });
+
     it('omits the rate clause when the runner did not report both fps values', () => {
         expect(describeRenderLag({ achievedFps: 41 }).message).toBe(
             "Video output can't keep up — lower the stream or display resolution",

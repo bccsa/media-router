@@ -60,11 +60,11 @@ describe('VideoPaceWatches', () => {
         });
     });
 
-    it('drops (rate drops and frames behind) and late releases per minute over the last minute', () => {
+    it('drops (rate drops, those behind included once) and late releases per minute over the last minute', () => {
         const w = new VideoPaceWatches();
         w.take('p', pace(), 0);
         w.take('p', pace({ 'rate-drops': 300, 'display-behind': 10, late: 30 }), 30_000);
-        expect(one(w).rateMatch.dropsPerMin).toBe(620);
+        expect(one(w).rateMatch.dropsPerMin).toBe(600);
         expect(one(w).lateReleasesPerMin).toBe(60);
         // Past a minute the first report leaves the window.
         w.take('p', pace({ 'rate-drops': 300, 'display-behind': 10, late: 30 }), 70_000);

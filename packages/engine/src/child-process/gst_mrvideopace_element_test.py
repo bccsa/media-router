@@ -812,10 +812,11 @@ def case_properties():
           el.get_property("refresh-mhz") == 0 and el.get_property("gap-threshold-ms") == 250
           and specs["refresh-mhz"].maximum == 1000000
           and not specs["stats"].flags & GObject.ParamFlags.WRITABLE)
-    check("properties (B-179): backlog-queue \"\" by default (found at READY to PAUSED), group-target-ns 0 "
-          "(alone, live); the stats' drain at rest",
+    check("properties (B-179): backlog-queue \"\" by default (found at READY to PAUSED), group-target-ns "
+          "-1 h (alone, its minimum, B-177; live); the stats' drain at rest",
           el.get_property("backlog-queue") == "" and specs["backlog-queue"].flags & Gst.PARAM_MUTABLE_READY
-          and el.get_property("group-target-ns") == 0 and specs["group-target-ns"].flags & Gst.PARAM_MUTABLE_PLAYING
+          and el.get_property("group-target-ns") == -3600 * 10**9 == specs["group-target-ns"].minimum
+          and specs["group-target-ns"].flags & Gst.PARAM_MUTABLE_PLAYING
           and st["drain-ppm"] == 0 and st["drain-drops"] == 0 and st["drain-state"] == "warm-up"
           and st["drain-learned-ns"] == -1 and st["drain-member"] is False, f"{st}")
     check("properties: stats before a start: zeros, refresh-source none, presenting",

@@ -3,8 +3,8 @@
 The runner counts buffers reaching the sink pad and, once per window, feeds
 this monitor the count plus the framerate the stream *declares* in its
 negotiated caps. The monitor decides — with hysteresis — whether the pipeline
-is failing to keep up (frames are being shed upstream by the leaky queues /
-QoS) and reports state TRANSITIONS only:
+is failing to keep up (a slow decode/convert chain, or a source sending fewer
+frames) and reports state TRANSITIONS only:
 
     tick(...) -> None | ("lag", achieved_fps, expected_fps)
                       | ("recovered", achieved_fps, expected_fps)
@@ -17,8 +17,8 @@ Rules:
   stall watchdog's condition. They reset the streaks.
 - Zero-frame windows AFTER frames have flowed count as lag (achieved 0):
   a starving sink behind a still-flowing source is the worst lag there is —
-  a decoder that can't keep up sheds so much upstream that whole windows
-  come up empty, and treating those as "stall" would mask exactly the
+  a wedged decoder leaves whole windows empty, and treating those as
+  "stall" would mask exactly the
   condition this monitor exists to report.
 - Lag latches after `trip_windows` consecutive windows below
   `lag_ratio * expected`; recovery clears it after `trip_windows` consecutive

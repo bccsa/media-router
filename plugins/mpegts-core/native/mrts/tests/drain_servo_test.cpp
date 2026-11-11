@@ -448,6 +448,22 @@ void case_live() {
           a.s.underruns() == 0 && b.s.underruns() == 0 && a.starved_ns == 0 && b.starved_ns == 0);
 }
 
+// B-177: a group of early members (render lateness below 0) is held together: the lower rises to the higher.
+void case_group_early() {
+    Link a(DrainServo(), steady(20 * MS), 60 * MS, -600 * MS);
+    Link b(DrainServo(), steady(20 * MS), 60 * MS, -150 * MS);
+    std::vector<Link*> links{&a, &b};
+    Group g{links};
+    Run r{links};
+    r.until(10 * MIN, [&](int64_t t) { g(t); });
+    const int64_t top = std::max(a.render(), b.render());
+    CHECK("early: P below 0", g.p < 0);
+    CHECK("early: both end within 20 ms of the higher",
+          iabs64(a.render() - top) <= 20 * MS && iabs64(b.render() - top) <= 20 * MS);
+    CHECK("early: no underrun",
+          a.s.underruns() == 0 && b.s.underruns() == 0 && a.starved_ns == 0 && b.starved_ns == 0);
+}
+
 // B-179 fix 2: a 35 s hole in a video servo's samples empties its window; warm-up again, nothing drains for 30 s.
 void case_hole() {
     DrainServo s(true, 40 * MS, 20 * MS);
@@ -498,5 +514,6 @@ int main() {
     case_hysteresis();
     case_live();
     case_hole();
+    case_group_early();
     return test_summary("drain_servo");
 }

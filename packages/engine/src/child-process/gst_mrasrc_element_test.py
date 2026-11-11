@@ -367,7 +367,8 @@ _s0 = _el.get_property("stats")
 BASE_FIELDS = ["state", "ratio-ppb", "phase-err-ns", "relocks", "in-frames", "out-frames",
                "discont-in", "dropped-frames", "gaps", "lost-frames", "mode", "source-ppb", "device-ppb",
                "rate-known", "device-relocks", "device-stalls", "render-lateness-ns"]
-# B-179's drain, in every post (0 and "warm-up" without a device term).
+# B-179's drain, in every post (0 and "warm-up" without a device term; the group target alone, B-177).
+ALONE_NS = -3600 * 1000000000
 DRAIN_FIELDS = ["drain-ppm", "drain-excess-ns", "drain-margin-ns", "drain-learned-ns", "fill-trough-ns",
                 "drained-ns", "drain-raises", "underruns", "drain-outages", "drain-target-lateness-ns",
                 "group-target-ns", "drain-state", "drain-capped", "drain-member"]
@@ -375,7 +376,7 @@ STATS_FIELDS = BASE_FIELDS + DRAIN_FIELDS
 COUNT_FIELDS = [k for k in BASE_FIELDS[1:] if k not in ("mode", "rate-known")]
 NO_DRAIN = {"drain-ppm": 0, "drain-excess-ns": 0, "drain-margin-ns": 0, "drain-learned-ns": -1,
             "fill-trough-ns": 0, "drained-ns": 0, "drain-raises": 0, "underruns": 0, "drain-outages": 0,
-            "drain-target-lateness-ns": 0, "group-target-ns": 0, "drain-state": "warm-up",
+            "drain-target-lateness-ns": 0, "group-target-ns": ALONE_NS, "drain-state": "warm-up",
             "drain-capped": False, "drain-member": False}
 check("stats is read-only; a fresh element's: mrasrc-stats, acquiring, mode capture, no rate, every count 0",
       not _st.flags & GObject.ParamFlags.WRITABLE and _s0.get_name() == "mrasrc-stats"
@@ -1307,7 +1308,8 @@ def kinds(events, *names):
 
 def resyncs_at(t, into):
     """An action: the sink's write-position jumps by clock second `t`. A sync=false ring starts before its first
-    write, so one realign may come with the first renders (F7: no prefill there); none may come after."""
+    write, so up to two realigns may come with the first renders (F7: no prefill there; 2 at load, B-177); none
+    may come after."""
     return (t, lambda p, now: into.__setitem__("start", p.get_by_name("sink").get_property("resyncs")))
 
 
@@ -1339,7 +1341,7 @@ else:
           f"the first render ({_f['calibrations']} changes in {_f['renders']} renders), {_r0} realign with the first "
           f"renders and none at the {len(_holes)} lost cycles' DISCONTs ({_f['resyncs'] - _r0}: sync=false writes on), "
           f"no underrun ({_f['underruns']})",
-          not _errors and _f["renders"] > 25000 and _f["calibrations"] == 0 and 0 <= _r0 <= 1
+          not _errors and _f["renders"] > 25000 and _f["calibrations"] == 0 and 0 <= _r0 <= 2
           and _f["resyncs"] == _r0 and _f["underruns"] == 0 and len(_holes) == 10)
     _rel = {k: (_f[f"fill-{k}-ns"] - _f["fill-first-ns"]) / MS for k in ("p05", "p95", "last")}
     check(f"the ring stayed full: 5 s windows' top fills p05 {_rel['p05']:+.3f}, p95 {_rel['p95']:+.3f}, the last "
@@ -1395,12 +1397,12 @@ else:
     _late = [(t, s["render-lateness-ns"]) for t, s in _stats if _t_drain and t >= max(120, _t_drain + 2)]
     _fit = np.polyfit([t for t, _ in _late], [v for _, v in _late], 1) if len(_late) > 5 else (0, 0)
     _res = [v - (_fit[0] * t + _fit[1]) for t, v in _late] or [0]
-    check(f"render lateness from 120 s to {_late[-1][0] / 60 if _late else 0:.0f} min on the drain's line within 10 ms "
+    check(f"render lateness from 120 s to {_late[-1][0] / 60 if _late else 0:.0f} min on the drain's line within 2 ms "
           f"({_fit[0] / MS:+.3f} ms/s of clock; residual {min(_res) / MS:+.3f} .. {max(_res) / MS:+.3f} ms), {len(_late)} "
           f"posts, no underrun ({_sk['underruns']}), no realign after the start ({_sk['resyncs'] - _rs.get('start', -1)}; "
           f"{_rs.get('start')} with the first renders)",
-          not _errors and len(_late) > 500 and abs(_fit[0] / MS + 5) <= 0.05 and max(_res) - min(_res) < 10 * MS
-          and _sk["underruns"] == 0 and 0 <= _rs.get("start", -1) <= 1 and _sk["resyncs"] == _rs["start"])
+          not _errors and len(_late) > 500 and abs(_fit[0] / MS + 5) <= 0.05 and max(_res) - min(_res) < 2 * MS
+          and _sk["underruns"] == 0 and 0 <= _rs.get("start", -1) <= 2 and _sk["resyncs"] == _rs["start"])
     # The device's 1 s is what the reading holds before the drain (the ring and the quantum add a little).
     _pre = [s["render-lateness-ns"] for t, s in _stats if 20 <= t and _t_drain and t < _t_drain - 10]
     _lo, _hi = min(_pre, default=0), max(_pre, default=0)
@@ -1512,7 +1514,7 @@ else:
           f"{_rs.get('start')} with the first renders)",
           len(_eng) == 1 and abs(_eng[0]["source-ppb"] - 40000) <= 2000 and _st.get("mode") == "decode+device"
           and len(_late) > 10 and abs(_devp + 20000) <= 500 and abs(_ratio + 60000) <= 1000
-          and _sk["calibrations"] == 0 and 0 <= _rs.get("start", -1) <= 1 and _sk["resyncs"] == _rs["start"])
+          and _sk["calibrations"] == 0 and 0 <= _rs.get("start", -1) <= 2 and _sk["resyncs"] == _rs["start"])
 
     # B-179: the drain. A live source that stalled 1.5 s at its start, then plays on: the backlog fills the
     # prefill (1 s) and waits upstream; once the term is locked and 30 s sampled, it drains at up to 0.5 %.

@@ -5,7 +5,7 @@ drain_servo.py's, line for line, on
 
   - the suite's sequences: drain_servo_test.py's cases as a recording servo writes them;
   - 120 random ones (seeded): slack and queue samples, starvation episodes of 0.1 to 3 s, late
-    frames 0 to 400 ms late, clears, breaks, group targets (fresh, stale or 0) and updates with
+    frames 0 to 400 ms late, clears, breaks, group targets (fresh, stale, below 0 or alone) and updates with
     and without a lock, over 5 to 40 min with gaps in the ticks.
 
 Then each of the reference's servo mutants replays the same sequences, and parity must tell it from
@@ -114,13 +114,13 @@ def random_ops(seed):
     t = r.int(0, 1000) * SEC
     end = t + r.int(5, 40) * 60 * SEC
     fill = r.int(0, 3000) * MS
-    render = r.int(50, 500) * MS + fill
-    group = 0
+    render = r.int(-800, 500) * MS + fill
+    group = ds.GROUP_ALONE_NS
     while t < end:
         t += 100 * MS if r.int(0, 50) else r.int(1, 120) * SEC
         k = r.int(0, 99)
         fill = max(0, fill + r.int(-30, 30) * MS // 10 - (fill // 400 if k < 50 else 0))
-        render = max(0, render + r.int(-20, 20) * MS // 10)
+        render = max(-SEC, render + r.int(-20, 20) * MS // 10)
         ops.append({"op": "sample", "now": t, "slack": fill - r.int(0, 80) * MS})
         if video and k < 30:
             ops.append({"op": "queue", "now": t, "level": r.int(0, 2000) * MS})
@@ -135,7 +135,7 @@ def random_ops(seed):
         if k == 98:
             ops.append({"op": "break"})
         if k >= 90 or not r.int(0, 20):
-            group = 0 if k == 99 else render + r.int(-300, 1500) * MS
+            group = ds.GROUP_ALONE_NS if k == 99 else render + r.int(-300, 1500) * MS
             ops.append({"op": "group", "now": t, "target": group})
         ops.append({"op": "update", "now": t, "render": render, "can": int(r.int(0, 30) > 0)})
     return "".join(ds.line(o) + "\n" for o in ops)

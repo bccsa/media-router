@@ -50,6 +50,7 @@ class DrainServo {
     static constexpr int64_t M_EVERY_NS = 600 * SEC, L_EVERY_NS = 3600 * SEC, STEP_NS = 5 * MS;
     static constexpr int64_t ABOVE_L_NS = 10 * MS, UNDER_FLOOR_NS = 10 * MS, RAISE_MIN_NS = 20 * MS;
     static constexpr int64_t GROUP_STALE_NS = 10 * SEC, RISE_CAP_NS = SEC;
+    static constexpr int64_t GROUP_ALONE_NS = -3600 * SEC;   // alone; any other target, even <= 0, groups
     static constexpr int64_t AUDIO_START_NS = 20 * MS, AUDIO_FLOOR_NS = 20 * MS;
 
     enum class State { warm_up, idle, draining, rising };
@@ -70,7 +71,7 @@ class DrainServo {
     // A DISCONT or GAP: the next update steps delta to its command.
     void epoch_break() { brk_ = true; }
     bool break_pending() const { return brk_; }
-    // The engine's group target (0: alone), honoured while refreshed within GROUP_STALE_NS.
+    // The engine's group target (GROUP_ALONE_NS: alone), honoured while refreshed within GROUP_STALE_NS.
     void set_group(int64_t now, int64_t target_ns);
     // The law at now: render the render lateness, can: it can drain (locked, a display rate). Returns delta.
     int64_t update(int64_t now, int64_t render_ns, bool can);
@@ -111,7 +112,7 @@ class DrainServo {
     bool engaged_ = false, draining_ = false, brk_ = false;
     bool in_episode_ = false, have_late_ = false, have_positive_ = false, have_hold_ = false;
     int64_t episode_at_ = 0, late_at_ = 0, positive_at_ = 0, hold_until_ = 0;
-    int64_t group_ = 0, group_at_ = 0;
+    int64_t group_ = GROUP_ALONE_NS, group_at_ = 0;
     int64_t held_ = 0, target_ = 0, excess_ = 0, trough_ = 0;
     bool capped_ = false;
     State state_ = State::warm_up;

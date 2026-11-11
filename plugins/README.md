@@ -1626,7 +1626,8 @@ When the two disagree, the runtime `getLiveUpdatableParams()` result wins for be
 ### Outputs play on arrival (house-clock Phase 4)
 
 An output plays content as it arrives: every presentation sink runs
-`sync=false qos=false`, with no `ts-offset` and no `max-lateness`, and
+`sync=false` and `qos=false` (the audio outputs' `pulsesink` by the runners'
+hook), with no `ts-offset` and no `max-lateness`, and
 nothing on its path drops a buffer for being late (ADR-0029 Phase 4). There
 is no playout offset to read and no trim to add, so a presentation plugin
 writes no timing arithmetic of its own:
@@ -2237,7 +2238,7 @@ the aligners' `input-absent` and `aligner-full` warnings
   kept one plus a period), `Rate match` (`50.00 fps → 50.00 Hz measured, 0
   drops/min`: the content's rate, the display's as the pace sees it,
   `achieved`, else the mode's `measured` or `nominal` refresh, and its rate
-  drops plus the frames it dropped behind, per minute over the last minute),
+  drops, those made as the display fell behind included, per minute over the last minute),
   `Late releases` (/min) and `Pace hold` (its mean hold, ms). From an ASRC
   with a device term: Render lateness = `render-lateness-ns` once known (0:
   not yet), and `Device relocks` and `Device stalls` beside Device clock (no
@@ -2256,10 +2257,12 @@ the aligners' `input-absent` and `aligner-full` warnings
   `device-resumed`), and `queue-full` for every module, from the runners'
   `queue_overrun` (B-170): a leaky queue `Queue <input> full at <ms> ms —
   content lost at capacity` (the bus input it serves by its label, else the
-  queue's name), a non-leaky one `<name> holding <ms> ms at capacity — the
-  input queue loses next`, standing while its episode is open and 30 s after
-  it closed; each episode is also one WARN line with that text and its
-  counts.
+  queue's name), a non-leaky one `<name> holding <ms> ms at capacity —
+  nothing lost, the queues before it fill next`, standing while its episode
+  is open and 30 s after it closed (dropped if its pipeline stops or fails);
+  each episode is also one WARN line with that text and its counts. A
+  non-leaky queue met full once and below its bounds by the episode's end is
+  no episode: a label jump after an outage (B-177).
 - **Outputs drain their built-up latency** (house-clock WI-P4-18, B-179,
   issue #862), in the device elements, with no code of yours beyond naming
   them: `drainElementNames()` on your `GstPluginBase` subclass returns the
@@ -2272,8 +2275,10 @@ the aligners' `input-absent` and `aligner-full` warnings
   running outputs of one bus origin (`plugins/drainGroups.ts`: Video Players
   anchor, audio outputs join, one touching two programmes joins neither) and
   every 2 s calls `applyLatencyGroupTarget(ns)`, which sets `group-target-ns`
-  on those elements: P = the largest published target, a member below it
-  playing up to 0.5 % slower to reach it, at most 1 s above its own. Rows:
+  on those elements: P = the largest published target (below 0 too: an
+  output fed from a network input plays early), a member below it playing up
+  to 0.5 % slower to reach it, at most 1 s above its own; `DRAIN_GROUP_ALONE_NS`
+  (−1 h, the property's minimum and default) says alone (B-177). Rows:
   `Latency target` (`95 ms (measured), now 2.41 s · draining at 0.50 %
   (about 8 min) · in sync with Video Player`; `not measured (no display
   rate)` without one), `Drained`, `Buffer underruns` (`3, 3 raised the
@@ -3198,7 +3203,7 @@ worth copying:
 - **Pacing is not a playout delay.** The AES67 egress sink syncs against the
   house clock with a small `senderLatencyMs` (default 20 ms) so 1 ms packets
   leave evenly instead of in decode-sized bursts; RTP timestamps carry the
-  alignment. It is the one sink in the product that syncs, the no-late-drop
+  alignment. It is the one sink with an explicit `sync=true`, the no-late-drop
   lint's one exception (`max-lateness=-1`, C-9).
 
 ### Video Player — codec-aware decoder selection

@@ -894,7 +894,7 @@ Superseded by [[0029]] (Phase 4): the shedder, the re-anchor, the raise and
 the rebase are deleted with D in the engine and both runners, with
 `gst_latency_ratchet_test.py`, `gst_backlog_shed_test.py` and
 `backlog_shed_test.py`; `gst_output_backlog_test.py` (B-174) takes the
-ratchet suite's place. No sink runs `sync=true`, so a backlog is no longer
+ratchet suite's place. No presentation sink runs `sync=true`, so a backlog is no longer
 held at media rate for good: the device outputs drain it back at most 0.5 %
 faster (B-179).
 

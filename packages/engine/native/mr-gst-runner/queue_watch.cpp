@@ -144,6 +144,16 @@ void report(const Watch& w, guint64 total, gint64 last, bool ongoing) {
     runner().emit_plugin_event(EVENT, n);
 }
 
+/** Whether `q` is at a bound now: a level at its nonzero maximum. */
+bool at_bound(GstElement* q) {
+    guint buffers = 0, bytes = 0, max_buffers = 0, max_bytes = 0;
+    guint64 time = 0, max_time = 0;
+    g_object_get(q, "current-level-buffers", &buffers, "current-level-bytes", &bytes, "current-level-time", &time,
+                 "max-size-buffers", &max_buffers, "max-size-bytes", &max_bytes, "max-size-time", &max_time, nullptr);
+    return (max_buffers && buffers >= max_buffers) || (max_bytes && bytes >= max_bytes) ||
+           (max_time && time >= max_time);
+}
+
 /** Open an episode on a new overrun; close it after QUIET_MS without one (`now` past every
  *  bound: close it now); one report while it is open past LONG_MS. */
 void check(Watch& w, gint64 now) {
@@ -160,7 +170,10 @@ void check(Watch& w, gint64 now) {
         find_input(w.queue, seen, &w.input);
     }
     if (now - last >= (gint64)QUIET_MS * 1000) {
-        report(w, total, last, false);
+        // A non-leaky queue met full once and below its bound since: one buffer's label jump (an
+        // outage's), not a backlog, which meets it full on every buffer (B-177). A stop reports all.
+        const bool stop = now == std::numeric_limits<gint64>::max();
+        if (stop || w.leaky || total - w.base > 1 || (w.queue && at_bound(w.queue))) report(w, total, last, false);
         w.open = false;
         w.base = total;
         w.first_us.store(0, std::memory_order_relaxed);

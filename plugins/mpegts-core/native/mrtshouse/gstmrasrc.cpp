@@ -67,7 +67,8 @@ struct AsrcContent {
 
 /* The drain (B-179) as the stats carry it: a copy taken on the timer. */
 struct AsrcDrainStats {
-    int64_t ppb = 0, excess = 0, margin = 0, learned = -1, trough = 0, drained = 0, target = 0, group = 0;
+    int64_t ppb = 0, excess = 0, margin = 0, learned = -1, trough = 0, drained = 0, target = 0,
+            group = mrts::DrainServo::GROUP_ALONE_NS;
     uint64_t raises = 0, underruns = 0, outages = 0;
     const char* state = "warm-up";
     bool capped = false, member = false;
@@ -101,7 +102,7 @@ struct AsrcDevice {
     bool have_next = false;
     int64_t last_next = 0, last_frames = 0, skipped = 0, below_at = 0;
     int below_ticks = 0;
-    std::atomic<int64_t> drain_ppb{0}, group_target{0};
+    std::atomic<int64_t> drain_ppb{0}, group_target{mrts::DrainServo::GROUP_ALONE_NS};
     std::atomic<uint64_t> group_seq{0};
     uint64_t group_seen = 0;
     std::atomic<bool> clear_pending{false}, epoch_break{false};
@@ -1374,7 +1375,7 @@ static void gst_mrasrc_init(GstMrAsrc* self) {
     self->timer_id = NULL;
     new (&self->timer_stop) std::atomic<bool>(false);
     new (&self->own_flush) std::atomic<bool>(false);
-    new (&self->group_target_ns) std::atomic<gint64>(0);
+    new (&self->group_target_ns) std::atomic<gint64>(mrts::DrainServo::GROUP_ALONE_NS);
     self->parent_chain = GST_PAD_CHAINFUNC(GST_BASE_TRANSFORM_SINK_PAD(self));
     gst_pad_set_chain_function(GST_BASE_TRANSFORM_SINK_PAD(self), GST_DEBUG_FUNCPTR(asrc_chain));
     self->device_only = FALSE;
@@ -1469,9 +1470,10 @@ static void gst_mrasrc_class_init(GstMrAsrcClass* klass) {
         gobject_class, PROP_GROUP_TARGET_NS,
         g_param_spec_int64("group-target-ns", "Group target (ns)",
                            "The render lateness its A/V group drains to (the engine's, B-179), set every 2 s; a member "
-                           "below it plays up to 0.5 % slower to reach it, at most 1 s above its own target. 0: alone; "
-                           "not set again for 10 s: alone. Device modes only.",
-                           0, G_MAXINT64, 0,
+                           "below it plays up to 0.5 % slower to reach it, at most 1 s above its own target; below 0 for "
+                           "early outputs. The minimum (-1 h, the default): alone; not set again for 10 s: alone. "
+                           "Device modes only.",
+                           mrts::DrainServo::GROUP_ALONE_NS, G_MAXINT64, mrts::DrainServo::GROUP_ALONE_NS,
                            (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */
     MrtsHouseCommon::install(gobject_class);

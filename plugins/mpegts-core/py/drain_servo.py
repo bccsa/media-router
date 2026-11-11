@@ -14,7 +14,8 @@ samples over 3 buckets of 10 s, the newest open (CoDel's standing-queue test, us
 instead of drop); F is the slack's trough plus the level's where both are fed.
 
 The law. Excess E = F - m (m the margin). The command E' is E alone (never below 0: alone it only
-drains), or, in a group whose target P was refreshed within 10 s, E' = L - min(P, T + 1 s) where L
+drains), or, in a group whose target P (any value above -1 h: early outputs group below 0) was
+refreshed within 10 s, E' = L - min(P, T + 1 s) where L
 is the render lateness and T the published target: min(E, E') when that is >= 0 (never below its
 own target), else E' (it rises to the group). delta* = clamp(E' / 30 s, +-0.5 %) while engaged:
 it engages at |E'| >= 20 ms and lets go at |E'| <= 5 ms. delta slews at most 500 ppm/s, except at
@@ -73,6 +74,7 @@ UNDER_FLOOR_NS = 10 * MS              # L decays to floor - this
 RAISE_MIN_NS = 20 * MS
 GROUP_STALE_NS = 10 * SEC
 RISE_CAP_NS = SEC
+GROUP_ALONE_NS = -3600 * SEC          # the group target that means alone; any other, even <= 0, groups
 AUDIO_START_NS = 20 * MS
 AUDIO_FLOOR_NS = 20 * MS
 
@@ -135,7 +137,7 @@ class DrainServo:
         self.late_at = None         # video: the last late frame of the episode
         self.positive_at = None     # when delta last was > 0
         self.hold_until = None      # no drain before: a starvation's zeros are in the window
-        self.group = 0
+        self.group = GROUP_ALONE_NS
         self.group_at = 0
         self.held = 0
         self.target = 0
@@ -280,7 +282,7 @@ class DrainServo:
         if self.ppb >= 0:
             self.held = t_now
         self.target = self.held if self.ppb < 0 else t_now
-        grouped = self.group > 0 and now - self.group_at <= GROUP_STALE_NS
+        grouped = self.group > GROUP_ALONE_NS and now - self.group_at <= GROUP_STALE_NS
         self.capped = False
         if not warm or self.episode_at is not None:
             cmd = 0

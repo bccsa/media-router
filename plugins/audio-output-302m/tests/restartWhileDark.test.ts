@@ -48,7 +48,7 @@ const skip = existsSync(TIMING_PLUGIN)
  *  core's version plays on after that (B-167), so that drill runs on such an install alone. */
 const unmatched = skip === null ? pulsesinkUnmatched(registry) : null;
 
-/** The .108 rig on this test's sink (`mixRig.ts`). */
+/** The Pi 4 test box's rig on this test's sink (`mixRig.ts`). */
 const engine = (rig: Omit<Rig, 'sink'> = {}) => rigEngine({ sink: SINK, ...rig });
 
 describe.skipIf(skip !== null)(
@@ -107,7 +107,7 @@ describe.skipIf(skip !== null)(
             return e;
         }
 
-        it(".108's drill: restarted while the SRT leg is dark and down, re-linked with its last transient: the mics play within 2 s and on, the leg joins within 2 s of delivering, no relaunch", async () => {
+        it("the Pi 4 test box's drill: restarted while the SRT leg is dark and down, re-linked with its last transient: the mics play within 2 s and on, the leg joins within 2 s of delivering, no relaunch", async () => {
             const e = await start();
             expect(await soundsWithin(L, 20_000)).toBe(true);
             expect(await soundsWithin(R, 10_000)).toBe(true);

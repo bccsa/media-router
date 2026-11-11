@@ -64,7 +64,7 @@ describe('GstPluginBase queue-overrun logging (B-170)', () => {
         module.deliver('tsprobe:videoinfo', { codec: 'h265' });
         expect(log.warn).toHaveBeenCalledTimes(1);
         expect(log.warn.mock.calls[0][1]).toBe(
-            '? holding 0 ms at capacity — the input queue loses next: 0 buffers held back in 0 ms',
+            '? holding 0 ms at capacity — nothing lost, the queues before it fill next: 0 buffers held back in 0 ms',
         );
     });
 });
@@ -84,7 +84,8 @@ describe('GstPluginBase queue-full warning (WI-P4-12)', () => {
         ongoing: false,
     };
     const LEAKY = 'Queue ingestq full at 1140 ms — content lost at capacity';
-    const HELD = 'vp_esq holding 5000 ms at capacity — the input queue loses next';
+    const HELD =
+        'vp_esq holding 5000 ms at capacity — nothing lost, the queues before it fill next';
 
     function running() {
         vi.useFakeTimers();
@@ -100,7 +101,7 @@ describe('GstPluginBase queue-full warning (WI-P4-12)', () => {
         return { module, m, log, at };
     }
 
-    it('one text by leaky: content lost at a leaky queue, the input queue loses next at a held one', () => {
+    it('one text by leaky: content lost at a leaky queue, nothing lost at a held one', () => {
         const { module, m } = running();
         module.deliver(QUEUE_OVERRUN_EVENT, episode);
         expect([m.health, m.error]).toEqual(['warning', LEAKY]);

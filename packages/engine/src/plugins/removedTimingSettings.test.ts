@@ -30,9 +30,9 @@ const REMOVED: Record<string, Record<string, unknown>> = {
 /** The headings they showed, so a renamed key cannot bring one back. */
 const REMOVED_TITLES = ['Playout Offset', 'Lip-Sync Trim', 'Sync Trim', 'Subtitle Sync Delay'];
 
-/** The S18 acceptance grep: what the deleted mechanisms were called. */
+/** The S18 acceptance grep: what the deleted mechanisms were called, their camel-case kin too (B-177). */
 const GONE =
-    /playoutOffset|PLAYOUT_OFFSET|PlayoutRaise|playoutReanchor|PLAYOUT_REANCHOR|playout_reanchor|onLateness|backlogShed|backlog_shed|BacklogShed|BACKLOG_SHED|MR_PLAYOUT|onRoutePlayout|lipSyncMs|syncOffsetMs|mixLatencyMs|subtitleDelayMs|effectiveLatchRepair/;
+    /playoutOffset|PlayoutOffset|PlayoutLeg|notePlayout|HeadPlayout|PLAYOUT_OFFSET|PlayoutRaise|playoutReanchor|PLAYOUT_REANCHOR|playout_reanchor|onLateness|backlogShed|backlog_shed|BacklogShed|BACKLOG_SHED|MR_PLAYOUT|onRoutePlayout|lipSyncMs|syncOffsetMs|mixLatencyMs|subtitleDelayMs|effectiveLatchRepair/;
 const SCANNED = /\.(ts|py|cpp|h|json)$/;
 
 function removedFor(pluginId: string): Record<string, unknown> {

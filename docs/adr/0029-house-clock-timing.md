@@ -3615,8 +3615,8 @@ batches picked (C1 to C3), on the dev Pi 5 with GStreamer 1.28.2. On the boxes: 
 presentation clock, kmssink's returns) and DEV-P4b (2026-10-28, 0008 and
 `mrvideopace` on both test boxes). The plan's register rows are B-160 to
 B-175 and B-179 (chapter 15.4; B-P4-n = B-(159 + n)), and B-176 for this
-documentation pass; B-177 and B-178 are held for the phase review's fixes
-(p4-17) and the release gate (p4-16). Phase 4 ships alone as v2.0.0.103 and
+documentation pass, B-177 for the phase review's fixes (p4-17); B-178 is held
+for the release gate (p4-16). Phase 4 ships alone as v2.0.0.103 and
 its rollback is v2.0.0.102 (the refresh's T34, superseding Q3's "Phases 0–4
 as v2.0.0.100": v2.0.0.100 and v2.0.0.101 shipped from the release line, and
 Phase 3 ships as v2.0.0.102).
@@ -3858,7 +3858,7 @@ Phase 3 ships as v2.0.0.102).
 
 | Job | Queue | Size | When full |
 |---|---|---|---|
-| Capacity: hold a stall's backlog until it drains or a gap | `vp_esq`, `ad_esq` (compressed, after the demux); the aligners' FIFOs (Phase 2) | 5 s, `tsQueueByteCap(5000)` (ADR-0015), `leaky=0` | Blocks upstream; the bus ingress fills next; `queue-full` "… holding <ms> ms at capacity — the input queue loses next" |
+| Capacity: hold a stall's backlog until it drains or a gap | `vp_esq`, `ad_esq` (compressed, after the demux); the aligners' FIFOs (Phase 2) | 5 s, `tsQueueByteCap(5000)` (ADR-0015), `leaky=0` | Blocks upstream; the bus ingress fills next; `queue-full` "… holding <ms> ms at capacity — nothing lost, the queues before it fill next" (B-177) |
 | Capacity backstop: keep a stuck consumer from wedging its producer | The bus ingress (`buildBusSrc`) on every consumer; the producer's fan-out branch on every edge (the runners' own, in no module string) | 5 s, 40 MB, `leaky=2` (OQ-30) | Leaks from the head; `queue-full` "Queue <input> full at <ms> ms — content lost at capacity"; a resource fault, not a lateness policy |
 | Prefill | `prefill` (both audio outputs) | `min-threshold-time` 40 ms, 1 s | A delay line, not ring margin: it releases only what is above 40 ms (B-167 P2); behind a stall it holds the backlog the decoder's path leaves |
 | Device ring | pulsesink `buffer-time` | 100 ms | Back-pressure into the prefill |
@@ -3980,14 +3980,17 @@ Phase 3 ships as v2.0.0.102).
   a box. The `MR_GATE=1` arms pin the player's explicit software decoder, so
   `scn-out-capacity` on the Pi 4 box is a software-decode number only; those
   arms have never run, and DEV-P4c2 calibrates them.
-- **Found and open** (B-174 F1, F2, F4–F9; for the bug log and p4-17): the
-  decoder's prefill full for good after an input stall, with a "prefill
-  holding …" text while `ad_esq` has room; the player's probe tap overrunning
-  once after a gap and reading as content lost; B-175's cap set live never
-  measured; a 0.2 % slow display's first drop 18 s after the measurement; a
-  consumer holding a 5 s backlog silencing its edge's tap; the 302M device
-  term engaging 45–50 s in, then one +15 to +22 ms step with a card resync;
-  a false "prefill holding 2005 ms" at a content gap.
+- **Found** (B-174 F1, F2, F4–F9; p4-17's decisions in row B-177): the
+  decoder's prefill full after an input stall until the drain (B-179) plays
+  the backlog down, about 200 s a second of stall past its 1 s, its text now
+  "nothing lost" (F1, fixed); the player's probe tap overrunning once after a
+  gap and reading as content lost (F2, open); B-175's cap set live never
+  measured (F4, open, the owner's with DEV-P4c2); a 0.2 % slow display's
+  first drop 18 s after the measurement (F5); a consumer holding a 5 s backlog
+  silencing its edge's tap (F6); the 302M device term engaging 45–50 s in,
+  then one +15 to +22 ms step with a card resync (F7, F8: DEV-P4c2); a false
+  "prefill holding 2005 ms" at a content gap (F9, fixed by the queue watch's
+  one-overrun rule).
 
 ### The latency drain (WI-P4-18, B-179; issue #862)
 
@@ -4043,6 +4046,8 @@ Phase 3 ships as v2.0.0.102).
   P = the largest goes to every member as `group-target-ns`: a member above
   drains to it, one below plays up to 0.5 % slower to rise to it, clamped
   continuously at 1 s above its own target, so every member ends within 45 ms.
+  P may be below 0 (outputs fed from a network input with no Ingest Offset
+  play early); −1 h, the property's minimum and default, says alone (B-177).
 - **Bounds.** While the box cannot keep up nothing is early, nothing drains
   and lateness grows until the path's non-leaky queues fill; the leaky bus
   ingress then loses at capacity with `queue-full` (the queue table above).
@@ -4076,7 +4081,7 @@ epoch, B-148's A1), even when only one stream of a muxed programme has the
 gap, so A/V can shift by up to min(backlog, gap) (decided 2026-10-12, per
 output). Since p4-18 a grouped member's drain then takes the group's common
 target again, so such a shift lasts until the group's members drain or rise
-to P (at most 0.5 % a second of the difference).
+to P (the difference closed at up to 0.5 % of play time, about 5 ms a second).
 
 ### As-built deviations, by work item
 
@@ -4177,8 +4182,11 @@ ignored (OQ-29, OQ-33), held absent by `removedTimingSettings.test.ts`.
   V-P4-9, V-P4-12's drain on both boxes, the `MR_GATE=1` harness arms); DEV-P4d
   after p4-17; then the v2.0.0.103 gate (p4-16, B-178), V-P4-11 the rollback
   to v2.0.0.102. Nothing of WM1 to WM3c has been on a box.
-- **The phase review and its fixes** (p4-17, B-177): a Fable review of every
-  Phase 4 item against chapter 8 and the execution plan.
+- **The phase review and its fixes** (p4-17, B-177, 2026-11-11): a Fable review
+  of every Phase 4 item against chapter 8 and the execution plan, adversarially
+  verified; its 18 findings and the carried minors fixed or recorded in row
+  B-177 (an A/V group of early outputs now held together; a single label jump
+  through a held queue no longer a queue-full warning).
 - **The prefill's 40 ms** (OQ-31: revisited from V-P4-4's data before
   release): a GstQueue's `min-threshold-time` is a delay line, so the 40 ms
   adds latency and no ring margin; DEV-P4c1 measures the sink's fill and the
@@ -4190,8 +4198,9 @@ ignored (OQ-29, OQ-33), held absent by `removedTimingSettings.test.ts`.
   p3-23's stale-PES veto, which p4-14's `scn-out-gap-recovers` inherits.
 - **Found, not fixed** (their rows): B-174's harness findings; B-162 F1;
   B-172's leaky queue-full text naming the queue, not the input, on a
-  multi-input module whose `unixfdsrc` is auto-named, and a `device-stalled`
-  before the first `mrasrc-stats` dropped; a live input whose tail pushes
+  multi-input module whose `unixfdsrc` is auto-named (a `device-stalled`
+  before the first `mrasrc-stats` is held since B-177); B-174's F2 and F4 to
+  F8 (row B-177); a live input whose tail pushes
   straight into a mixer never finishing `bus_input_remove` (B-170, rigs only:
   the modules' branches end in `mralignwatch`); MR-041 on modules other than
   outputs.

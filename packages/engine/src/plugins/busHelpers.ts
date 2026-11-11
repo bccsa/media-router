@@ -251,10 +251,9 @@ export interface TsUdpInputOpts {
  *     LEAKY jitter queue smeared every moving object; 200 ms hid it; the
  *     leak is the fault, not the size. Raising the size was the previous
  *     answer (50→200 default) and merely moved the cliff. A full queue now
- *     pushes back into `buildBusSrc`'s 5 s ingress queue instead; a
- *     `sync=false` sink drains that backlog at max speed and a clock-paced
- *     sink hands it to the backlog shedder, which drops whole GOP tails
- *     (keyframe-aligned — never mid-slice). Same finding as the
+ *     pushes back into `buildBusSrc`'s 5 s ingress queue instead, which
+ *     loses content only at capacity and reports `queue-full` (Phase 4 plays
+ *     on arrival, nothing drops late). Same finding as the
  *     mpegts-muxer's input queues (leaky shed 11 % of audio, non-leaky zero).
  *   - No re-framer: the bus carries whole 188-byte packets (ADR-0011) and the demux
  *     re-frames any other split itself (`PacketWalker` carries a partial packet). The

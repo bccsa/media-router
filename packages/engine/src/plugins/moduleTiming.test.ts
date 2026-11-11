@@ -1120,7 +1120,7 @@ describe('the queue-full warning and the display log (WI-P4-12)', () => {
         });
         expect(queueFull).toHaveBeenLastCalledWith(
             'Queue srt-1 (mpegts-in) full at 5000 ms — content lost at capacity; ' +
-                'vp_esq holding 4990 ms at capacity — the input queue loses next',
+                'vp_esq holding 4990 ms at capacity — nothing lost, the queues before it fill next',
         );
         t.stop(false);
         expect(queueFull).toHaveBeenLastCalledWith(null);

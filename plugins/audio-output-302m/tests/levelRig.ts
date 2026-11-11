@@ -93,7 +93,6 @@ export function shapeLaunch(shape: Shape, prefix: string): string | null {
         instanceId: 'aout',
         mediaRouter: {
             getModuleBusSources: () => sources,
-            getRoutePlayoutOffsetMs: () => undefined,
         },
     };
     module.config = {};

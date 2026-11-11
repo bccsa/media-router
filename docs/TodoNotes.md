@@ -245,7 +245,7 @@
   IRQ rate BY NAME (glass fps — 50/s healthy on .42; `v3d` on .202-class), and
   `backlog_shed` lines in the journal (occasional = the guard working; every
   cooldown, for hours = a render chain that cannot sustain the source rate,
-  which is a different fault). **Moot (house-clock Phase 4):** no output sink runs `sync=true` and the
+  which is a different fault). **Moot (house-clock Phase 4):** no presentation sink runs `sync=true` and the
   shedder is deleted (B-171): a backlog plays late and the device outputs
   drain it back at most 0.5 % faster (B-179); a render chain that cannot keep
   up shows as a positive Lateness trend (B-172).

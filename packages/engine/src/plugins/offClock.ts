@@ -1,6 +1,6 @@
 // Timing off the house clock (B-203). An output window this far off is a fault while it lasts and
 // sets the module's health; an egress stamp guard's episode is one log line. Same bound as the
-// stamp guard's (mrts::IdentityStamp::AHEAD_MAX_NS) and the backlog shedder's sanity bound.
+// stamp guard's (mrts::IdentityStamp::AHEAD_MAX_NS).
 export const OFF_CLOCK_MS = 10_000;
 
 /** The plugin-event channel of an egress stamp guard's episode: the native runner's (from

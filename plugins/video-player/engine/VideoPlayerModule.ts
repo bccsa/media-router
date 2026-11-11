@@ -1,5 +1,6 @@
 import {
     GstPluginBase,
+    QUEUE_OVERRUN_EVENT,
     listDrmConnectors,
     onKernelLogSignal,
     probeGstElement,
@@ -30,6 +31,7 @@ import {
     RESUME_SINK_NAME,
     VIDEO_PACE_NAME,
     VP_DEMUX_NAME,
+    VP_ES_QUEUE_NAME,
 } from './helpers/pipelines.js';
 import {
     decoderDemotionNote,
@@ -70,6 +72,7 @@ import { pollResumeSignal } from './helpers/busResume.js';
 import { classifyDecoderFailure, planCodecReport } from './helpers/decoderRuntime.js';
 import {
     describeRenderLag,
+    RENDER_CHAIN_TREND_MS_PER_MIN,
     RENDER_LAG_SILENT_TICK_MS,
     shouldSelfHealAfterResume,
     shouldWarnRenderLag,
@@ -400,6 +403,58 @@ export class VideoPlayerModule extends GstPluginBase {
         this.startCogPollWatch();
     }
 
+    /** Frames back up before the decoder: `vp_esq` holding at capacity, or render lateness rising
+     *  1 s a minute or more (B-177; the render watch's fps alone cannot tell, renderLag.ts). */
+    private renderChainBehind(): boolean {
+        const trend = this.getTimingSummary()?.latenessTrend?.msPerMin;
+        return (
+            this.timing.queueStanding(VP_ES_QUEUE_NAME) ||
+            (trend !== undefined && trend >= RENDER_CHAIN_TREND_MS_PER_MIN)
+        );
+    }
+
+    /** The open lag episode read again on the module's evidence, which comes after its edge: a
+     *  `vp_esq` queue-full ~25 s in, a Lateness trend minutes in (B-177). A changed kind replaces
+     *  the health text while it is still the lag's own. */
+    private reattributeRenderLag(): void {
+        const last = this.renderLagLast;
+        if (!this.renderLagActive || !last) return;
+        const lag = describeRenderLag(last.payload, {
+            sourceSilent: this.busStallDetected,
+            chainBehind: this.renderChainBehind(),
+        });
+        if (lag.kind === last.report.kind) return;
+        this.log.warn(
+            { renderWatch: last.payload, kind: lag.kind, was: last.report.kind },
+            `Render keep-up degraded — ${lag.message}`,
+        );
+        if (this.health === 'warning' && this.error === last.report.message) {
+            this.setHealth('warning', lag.message);
+        }
+        this.renderLagLast = { payload: last.payload, report: lag };
+        this.maybeSelfHealAfterResume(lag, bootNowMs());
+    }
+
+    /** The one free rebuild after a stall-resume, for a lag that is not the source's. */
+    private maybeSelfHealAfterResume(lag: RenderLagReport, nowMs: number): void {
+        if (
+            !shouldSelfHealAfterResume({
+                sourceShortfall: lag.sourceShortfall,
+                healDone: this.postResumeHealDone,
+                lastStallResumeAt: this.lastStallResumeAt,
+                // Boot-relative on BOTH sides — see SelfHealInput.now.
+                now: nowMs,
+            })
+        ) {
+            return;
+        }
+        this.postResumeHealDone = true;
+        this.log.info('Render lag shortly after stall-resume — rebuilding pipeline once');
+        this.restartPipeline().catch(() => {
+            /* logged inside */
+        });
+    }
+
     /**
      * Runner plugin events. Two independent watches report here:
      *
@@ -415,7 +470,10 @@ export class VideoPlayerModule extends GstPluginBase {
             // `busStallDetected` is the only signal that separates "the source
             // went quiet" from "nothing gets through the decode/display chain"
             // when the sink pad sees zero arrivals — see RenderLagContext.
-            const lag = describeRenderLag(payload, { sourceSilent: this.busStallDetected });
+            const lag = describeRenderLag(payload, {
+                sourceSilent: this.busStallDetected,
+                chainBehind: this.renderChainBehind(),
+            });
             const nowMs = bootNowMs();
             // The EDGE, then once a minute while it lasts. Edge-only was right
             // for the transitions it was written for (the runner repeats them
@@ -445,20 +503,11 @@ export class VideoPlayerModule extends GstPluginBase {
             // its recovery or by onStop.
             this.startRenderLagSilentWatch();
             this.setHealth('warning', lag.message);
-            if (
-                shouldSelfHealAfterResume({
-                    sourceShortfall: lag.sourceShortfall,
-                    healDone: this.postResumeHealDone,
-                    lastStallResumeAt: this.lastStallResumeAt,
-                    // Boot-relative on BOTH sides — see SelfHealInput.now.
-                    now: nowMs,
-                })
-            ) {
-                this.postResumeHealDone = true;
-                this.log.info('Render lag shortly after stall-resume — rebuilding pipeline once');
-                this.restartPipeline().catch(() => {
-                    /* logged inside */
-                });
+            this.maybeSelfHealAfterResume(lag, nowMs);
+        } else if (channel === QUEUE_OVERRUN_EVENT) {
+            // The base class has taken it (the queue-full warning); `vp_esq` full is the chain's.
+            if ((payload as { element?: string } | null)?.element === VP_ES_QUEUE_NAME) {
+                this.reattributeRenderLag();
             }
         } else if (channel === 'renderwatch:recovered') {
             // The matching edge, so the journal carries both ends of every
@@ -576,6 +625,8 @@ export class VideoPlayerModule extends GstPluginBase {
 
     /** One silent-chain tick: re-state the episode if the runner has gone quiet. */
     private pollRenderLagSilence(nowMs: typeof bootNowMs = bootNowMs): void {
+        // Each tick also re-reads the episode: a Lateness trend exists only minutes in.
+        this.reattributeRenderLag();
         const now = nowMs();
         if (
             !shouldWarnSilentChain({

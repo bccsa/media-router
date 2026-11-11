@@ -95,7 +95,8 @@ struct Snapshot {
     gint64 mean_hold = 0, present_lateness = 0;
     bool presenting = true;
     /* The drain (B-179). */
-    gint64 drain_ppb = 0, excess = 0, margin = 0, learned = -1, trough = 0, drained = 0, target = 0, group = 0;
+    gint64 drain_ppb = 0, excess = 0, margin = 0, learned = -1, trough = 0, drained = 0, target = 0,
+           group = mrts::DrainServo::GROUP_ALONE_NS;
     guint64 raises = 0, underruns = 0, outages = 0, drain_drops = 0;
     const char* drain_state = "warm-up";
     bool capped = false, member = false, rate_known = false;
@@ -950,7 +951,7 @@ static void gst_mrvideopace_init(GstMrVideoPace* self) {
     self->backlog = NULL;
     self->have_queue_read = self->clear_pending = FALSE;
     self->queue_read_at = 0;
-    new (&self->group_target) std::atomic<gint64>(0);
+    new (&self->group_target) std::atomic<gint64>(mrts::DrainServo::GROUP_ALONE_NS);
     new (&self->group_seq) std::atomic<guint64>(0);
     self->group_seen = 0;
     self->dsnap = new Snapshot();
@@ -996,8 +997,8 @@ static void gst_mrvideopace_class_init(GstMrVideoPaceClass* klass) {
                            "gaps-collapsed and unpaced since the start, content-fps-x100, "
                            "refresh-ns and refresh-source (measured, nominal, none), achieved-ns "
                            "(the presentation period the sink achieves, which the pace takes "
-                           "once measured; 0 before), display-behind (frames dropped as the "
-                           "display fell a period behind), mean-hold-ns (the last message's), "
+                           "once measured; 0 before), display-behind (the rate drops made as the "
+                           "display fell a period behind, a part of rate-drops), mean-hold-ns (the last message's), "
                            "present-lateness-ns and display-presenting; B-179's drain-ppm, "
                            "drain-excess-ns, drain-margin-ns, drain-learned-ns, fill-trough-ns, drained-ns, "
                            "drain-raises, underruns, drain-outages, drain-target-lateness-ns, group-target-ns, "
@@ -1016,8 +1017,9 @@ static void gst_mrvideopace_class_init(GstMrVideoPaceClass* klass) {
         g_param_spec_int64("group-target-ns", "Group target (ns)",
                            "The render lateness its A/V group drains to (the engine's, B-179), set every 2 s; "
                            "below it the pace runs up to 0.5 % slower to reach it, at most 1 s above its own "
-                           "target. 0: alone; not set again for 10 s: alone.",
-                           0, G_MAXINT64, 0, live));
+                           "target; below 0 for early outputs. The minimum (-1 h, the default): alone; not set again "
+                           "for 10 s: alone.",
+                           mrts::DrainServo::GROUP_ALONE_NS, G_MAXINT64, mrts::DrainServo::GROUP_ALONE_NS, live));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */
     MrtsHouseCommon::install(gobject_class);
 

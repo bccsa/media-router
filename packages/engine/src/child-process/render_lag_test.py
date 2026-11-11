@@ -69,7 +69,7 @@ check("preroll windows never trip lag", evs == [] and not m.lagging)
 # --- zero-frame windows AFTER frames flowed are the worst lag ---------------
 # A starving sink behind a flowing source: decoder sheds so much upstream
 # that whole windows come up empty. Alternating 0/1-frame windows must
-# accumulate, not reset (the .211 grey-smear case that evaded detection).
+# accumulate, not reset (the TECH01 grey-smear case that evaded detection).
 m = RenderLagMonitor()
 ticks(m, [100])                 # started, keeping up
 evs = ticks(m, [0, 1, 0])

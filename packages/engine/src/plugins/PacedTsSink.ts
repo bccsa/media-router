@@ -195,9 +195,9 @@ export abstract class PacedTsSink {
                 // than PREFILL_MS permanently widened the producer's delivery
                 // lead by the difference — and a dry spell can be one 10 ms
                 // idle poll at a segment boundary. Field failure 2026-08-13 on
-                // .202: a transient `fetch failed` restart walked the lead from
-                // 2.2 s to 4.1 s (also seen: 5.9 s, 8.9 s), past the
-                // consumers' `leaky=2 max-size-time=bufferMs` window (3 s), so
+                // a field box: a transient `fetch failed` restart walked the lead from
+                // 2.2 s to 4.1 s (also seen: 5.9 s, 8.9 s), past the consumers'
+                // then `leaky=2` 3 s window (non-leaky since 2026-09-02), so
                 // the pre-decoder queue leaked a chunk EVERY GOP for as long as
                 // the route ran: DISCONT on a delta AU → the runner's keyframe
                 // gate re-armed → ~20 of 50 frames per GOP never reached the

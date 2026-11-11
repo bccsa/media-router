@@ -4,6 +4,10 @@ import type { DrainSummary } from '@media-router/shared-types';
 import type { DrainFields } from './asrcWatches.js';
 import type { DrainGroupView } from './drainGroups.js';
 
+/** The group target that means alone (`group-target-ns`' minimum, -1 h); any other groups, below 0
+ *  included: an output fed from a network ingest plays early (B-177). */
+export const DRAIN_GROUP_ALONE_NS = -3_600_000_000_000;
+
 /** The drain's cap (ppm) and the law's time constant and saturation (design part 5). */
 export const DRAIN_MAX_PPM = 5000;
 const TAU_S = 30;
@@ -18,9 +22,10 @@ export function drainSummary(
     video?: { rateKnown: boolean; drainDropsPerMin?: number },
 ): DrainSummary {
     const own = nowMs - Math.max(f.excessMs, 0); // as the element: T = L - max(E, 0)
-    const following = f.groupTargetMs > 0 && f.state !== 'warm-up' && !!group?.with?.length;
+    const grouped = f.groupTargetMs !== undefined && !!group?.with?.length;
+    const following = grouped && f.state !== 'warm-up';
     const d: DrainSummary = {
-        targetMs: following ? Math.min(f.groupTargetMs, own + 1000) : own,
+        targetMs: following ? Math.min(f.groupTargetMs!, own + 1000) : own,
         nowMs,
         excessMs: f.excessMs,
         ppm: f.ppm,
@@ -33,7 +38,7 @@ export function drainSummary(
     if (f.publishedMs !== undefined) d.publishedMs = f.publishedMs;
     if (video && !video.rateKnown) d.notMeasured = true;
     if (f.capped) d.capped = true;
-    if (group?.with?.length) d.groupWith = group.with;
+    if (grouped) d.groupWith = group!.with;
     if (group?.neither?.length) d.neither = true;
     if (video?.drainDropsPerMin !== undefined) d.drainDropsPerMin = video.drainDropsPerMin;
     return d;

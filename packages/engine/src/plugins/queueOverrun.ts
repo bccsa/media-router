@@ -12,7 +12,8 @@ export const QUEUE_OVERRUN_EVENT = 'queue_overrun';
 export const WATCHED_QUEUE_NAMES: readonly string[] = ['vp_esq', 'ad_esq', OUTPUT_PREFILL_NAME];
 
 /** The `queue_overrun` payload. An episode ends after 1 s without an overrun; one still open at
- *  10 s is reported once with `ongoing`, then again at its end, at a stop or at its removal. */
+ *  10 s is reported once with `ongoing`, then again at its end, at a stop or at its removal. A held
+ *  queue's one overrun, below its bounds at the end, is none: a label jump's (B-177). */
 export interface QueueOverrun {
     /** The queue's name. */
     element?: string;
@@ -35,14 +36,15 @@ export interface QueueOverrun {
 export const QUEUE_FULL_CLEAR_MS = 30_000;
 
 /** The warning by `leaky` (S15): a leaky queue loses content at its bound; a full non-leaky one
- *  loses nothing itself, it holds its upstream, so the leaky input queue before it loses next.
+ *  loses nothing, it holds its upstream (an Audio Decoder's `ad_esq` before its prefill, then the
+ *  leaky input queue: B-177, B-174's F1).
  *  `input`: the bus input it serves, by its label; none: the queue's own name. */
 export function queueFullText(p: QueueOverrun, input?: string): string {
     const ms = p.levelTimeMs ?? 0;
     const name = p.element ?? '?';
     return p.leaky
         ? `Queue ${input ?? name} full at ${ms} ms — content lost at capacity`
-        : `${name} holding ${ms} ms at capacity — the input queue loses next`;
+        : `${name} holding ${ms} ms at capacity — nothing lost, the queues before it fill next`;
 }
 
 /** The episode's WARN line: the warning's text (B-182's line folded into the leaky one), then
@@ -69,6 +71,12 @@ export class QueueFullWatch {
             if (!e.p.ongoing && now - e.at >= QUEUE_FULL_CLEAR_MS) this.episodes.delete(name);
         }
         return [...this.episodes.keys()].sort().map((k) => this.episodes.get(k)!.p);
+    }
+
+    /** The pipeline that held them is gone (a runner death or a bus error): an open episode can no
+     *  longer close, so it goes; a closed one keeps its 30 s (B-177). */
+    dropOpen(): void {
+        for (const [name, e] of this.episodes) if (e.p.ongoing) this.episodes.delete(name);
     }
 
     clear(): void {

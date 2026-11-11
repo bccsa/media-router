@@ -53,7 +53,6 @@ export function withIngestTimingSettings(
             'x-unit': 'ms',
             'x-live': true,
             title: 'Ingest Offset',
-            // R-P1-15: told apart from Playout Offset while both exist on development builds.
             description:
                 'Moves this input on the house timeline: positive later, negative earlier. A live edit leaves a gap or drops overlap.',
         },

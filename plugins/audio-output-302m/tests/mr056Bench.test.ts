@@ -25,7 +25,6 @@ function outputText(channels: number, first: number, count: number): string {
         instanceId: 'aout',
         mediaRouter: {
             getModuleBusSources: () => sources,
-            getRoutePlayoutOffsetMs: () => undefined,
         },
     };
     module.config = {};

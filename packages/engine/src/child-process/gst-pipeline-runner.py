@@ -1032,6 +1032,15 @@ def _queue_overrun_report(w, total, last, ongoing):
         "totalOverruns": total, "ongoing": ongoing})
 
 
+def _queue_at_bound(q):
+    """Whether `q` is at a bound now: a level at its nonzero maximum."""
+    for k in ("buffers", "bytes", "time"):
+        top = q.get_property("max-size-" + k)
+        if top and q.get_property("current-level-" + k) >= top:
+            return True
+    return False
+
+
 def _queue_watch_check(w, now):
     """Open an episode on a new overrun; close it after _QUEUE_QUIET_MS without one (`now` past
     every bound: close it now); one report while it is open past _QUEUE_LONG_MS."""
@@ -1043,7 +1052,11 @@ def _queue_watch_check(w, now):
         w.opened_us = w.first_us or last
         w.input = _first_unixfdsrc(w.queue, set()) if w.queue is not None else None
     if now - last >= _QUEUE_QUIET_MS * 1000:
-        _queue_overrun_report(w, total, last, False)
+        # A non-leaky queue met full once and below its bound since: one buffer's label jump (an
+        # outage's), not a backlog, which meets it full on every buffer (B-177). A stop reports all.
+        if (now >= _FOREVER or w.leaky or total - w.base > 1
+                or (w.queue is not None and _queue_at_bound(w.queue))):
+            _queue_overrun_report(w, total, last, False)
         w.open, w.base, w.first_us = False, total, 0
         w.level_us = w.level_ns = w.level_bytes = 0   # the next episode reads its own level
     elif not w.long_reported and now - w.opened_us >= _QUEUE_LONG_MS * 1000:
@@ -2416,7 +2429,7 @@ def _try_bus_attach(tee_name, socket):
         # at line rate. The burst momentarily outruns the client's ~208 KB
         # kernel sndbuf, unixfdsink blocks, and a 200 ms queue overflowed and
         # shed mid-burst — corrupting PAT/PMT/media on an otherwise LOSSLESS
-        # feed (measured on .211 bus 40000: 10 CC errors/min on the bus vs 1
+        # feed (measured on TECH01 bus 40000: 10 CC errors/min on the bus vs 1
         # on the wire, engine librist lost=0). 500 ms absorbs the worst
         # observed hold (~253 ms) with 2x headroom; memory cost is trivial
         # (≈340 KB at 5.4 Mbps). Still leaky=2 — a genuinely stalled consumer
@@ -2736,7 +2749,7 @@ def _teardown_bus_branch(socket):
     error, appsrc queue pins at max-bytes with leaky-drop, every edge on
     the bus goes dark until the module restarts. That is exactly what
     killed the live RIST producer when a consumer module was restarted
-    (.211, 2026-07-16 21:37). Reproduced 5/5 at ~500 pkt/s with the naked
+    (TECH01, 2026-07-16 21:37). Reproduced 5/5 at ~500 pkt/s with the naked
     teardown; 5/5 clean with this probe (repro5.py, 2026-07-17).
     BLOCK_DOWNSTREAM intercepts between buffers when flowing; IDLE fires
     immediately when the pad is quiet, so a dark producer detaches at once.
@@ -3676,12 +3689,11 @@ def _start_keyframe_gate(pipe, cfg):
 
     IT RE-ARMS, and that is the second half of the same bug. The gate used to
     pass the first keyframe and REMOVE itself, which left the decoder
-    unprotected against loss LATER in the stream — and the live chain loses
-    data by design: every jitter queue on the way here is `leaky=2`, most
-    sharply the 200 ms ES queue feeding the parser, which sheds its oldest
-    buffers whenever the decoder stalls (device open, CMA allocation and
-    DMABuf negotiation at startup are ~1 s of stream time). The AUs it sheds
-    are the ones right after the keyframe the gate just let through, so the
+    unprotected against loss LATER in the stream — a gap, or the bus
+    backstop's shed at its capacity (the ES queue has been non-leaky since
+    B-169; when this was written it shed its oldest buffers whenever the
+    decoder stalled at startup). The AUs lost are the ones right after the
+    keyframe the gate just let through, so the
     next delta AUs reference frames the decoder never saw. GStreamer submits
     them anyway with the missing references marked 0xff, and rpivid logs
     `Col ref index 255 >= N` and programs COLBASE=0 — the hardware then reads

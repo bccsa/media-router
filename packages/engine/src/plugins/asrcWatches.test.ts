@@ -344,6 +344,20 @@ describe('the device term (WI-P4-12)', () => {
         expect(DEVICE_STALLED_TEXT).toMatch(/^Audio device stalled/);
     });
 
+    it('a device-stalled before the first stats stands from them (a card absent from the start, B-177)', () => {
+        const w = watches();
+        expect(w.take('mrasrc-event', 'devasrc', event('device-stalled'), 0)!.changed).toBe(false);
+        expect(w.take('mrasrc-stats', 'devasrc', dev(), 1)!.changed).toBe(true);
+        expect(device(w, 'devasrc').stalled).toBe(true);
+        expect(w.take('mrasrc-event', 'devasrc', event('device-resumed'), 2)!.changed).toBe(true);
+        expect(device(w, 'devasrc').stalled).toBe(false);
+        const r = watches();
+        r.take('mrasrc-event', 'devasrc', event('device-stalled'), 0);
+        r.take('mrasrc-event', 'devasrc', event('device-resumed'), 1);
+        r.take('mrasrc-stats', 'devasrc', dev(), 2);
+        expect(device(r, 'devasrc').stalled).toBe(false);
+    });
+
     it('its gap mark moves at a relock, a gap, a device relock or stall and a new element', () => {
         const w = watches();
         const marks = [

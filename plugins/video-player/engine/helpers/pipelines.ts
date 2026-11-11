@@ -242,14 +242,9 @@ export function buildFallbackOnlyPipeline(
  * A DEAD producer needs no watchdog — its edge socket closes and unixfdsrc
  * errors out into the normal restart path.
  *
- * Inbound chain is `unixfdsrc ! watchdog ! mrlateness ! queue ! tee ! mrtsdemux`
- * on either sink, the bus ingress alone before the demux (no `tsparse` since
- * WI-P3-18, no jitter queue since B-169). The decoder is `decodebin3` until the
- * TS probe reports a codec and an explicit `<parser> ! <decoder>` chain takes its
- * place (see `decoder` below). It plays as soon as it can (house-clock part 4.2,
- * B-169): the non-leaky `vp_esq` after the demux holds what a stall leaves, and
- * `mrvideopace` releases each frame on the content's cadence to a sink that
- * never waits.
+ * Inbound: `unixfdsrc ! watchdog ! mrlateness ! queue ! tee ! mrtsdemux`, then the non-leaky
+ * `vp_esq`, the decoder (`decodebin3` until the TS probe names a codec) and `mrvideopace` to a sink
+ * that never waits: it plays as soon as it can (B-169).
  */
 const STREAM_STALL_TIMEOUT_MS = 5_000;
 
@@ -271,7 +266,7 @@ const PROBE_TEE_NAME = 'vp_ts';
 export const VP_DEMUX_NAME = 'vpdemux';
 
 /** `name=` of the ES queue after the demux: the queue watch names it (OQ-30). */
-const VP_ES_QUEUE_NAME = 'vp_esq';
+export const VP_ES_QUEUE_NAME = 'vp_esq';
 /** Its bound, as the bus ingress's: 5 s of compressed video, byte-capped (ADR-0015). */
 const ES_QUEUE_MS = 5_000;
 

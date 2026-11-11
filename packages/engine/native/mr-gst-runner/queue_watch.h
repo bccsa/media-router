@@ -11,7 +11,8 @@ namespace mr::queue_watch {
 constexpr const char* EVENT = "queue_overrun";
 /** queueOverrun.ts WATCHED_QUEUE_NAMES: watched though not leaky. */
 constexpr const char* NAMES[] = {"vp_esq", "ad_esq", "prefill"};
-/** An episode ends after this long without an overrun. */
+/** An episode ends after this long without an overrun (a non-leaky queue's one overrun, below
+ *  its bounds by then, is no episode: a label jump's, B-177). */
 constexpr int QUIET_MS = 1000;
 /** An episode still open this long is reported once as it stands, then again when it ends. */
 constexpr int LONG_MS = 10000;

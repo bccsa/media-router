@@ -2,6 +2,7 @@
 // box whose bus paths trace back to the same input drain to one shared target, the largest of the
 // members' own, so the same content plays at the same moment on each.
 import { BUS_STREAM_TYPES } from '../routing/MediaRouter.js';
+import { DRAIN_GROUP_ALONE_NS } from './drainSummary.js';
 
 /** One routing edge, as `MediaRouter.getConnections()` gives it. */
 export interface DrainEdge {
@@ -107,8 +108,8 @@ export interface DrainHost {
 }
 
 /** The engine's half: at each refresh (2 s) P = the max of each group's published targets, to
- *  every member; the groups again only when the members or the routing change. A member alone
- *  gets 0 once. */
+ *  every member, below 0 too (early outputs); the groups again only when the members or the routing
+ *  change. A member alone, or a group none of whose members publishes, gets DRAIN_GROUP_ALONE_NS. */
 export class DrainGroupLoop {
     private key = '';
     private grouping: DrainGrouping = { groups: [], neither: new Map() };
@@ -144,8 +145,10 @@ export class DrainGroupLoop {
                 grouped.add(m.id);
                 this.alone.delete(m.id);
                 const others = live.filter((o) => o !== m).map((o) => o.name);
-                const p = published.length ? Math.max(...published) : 0;
-                m.apply(Math.max(0, Math.round(p * 1e6)), { with: others });
+                const p = published.length
+                    ? Math.max(DRAIN_GROUP_ALONE_NS + 1, Math.round(Math.max(...published) * 1e6))
+                    : DRAIN_GROUP_ALONE_NS;
+                m.apply(p, { with: others });
             }
         }
         for (const m of members) {
@@ -163,7 +166,7 @@ export class DrainGroupLoop {
                     },
                 );
             }
-            m.apply(0, names ? { neither: names } : {});
+            m.apply(DRAIN_GROUP_ALONE_NS, names ? { neither: names } : {});
         }
         for (const id of [...this.alone]) if (!byId.has(id)) this.alone.delete(id);
     }

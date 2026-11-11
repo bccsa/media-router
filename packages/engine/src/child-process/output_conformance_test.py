@@ -951,7 +951,7 @@ class GroupRole:
     def __call__(self):
         pub = [self.latest(k)["drain-target-lateness-ns"] for k, _el in self.members
                if self.latest(k).get("drain-member")]
-        p = max(pub) if pub else 0
+        p = max(pub) if pub else -3600 * S   # none publishes: alone (DRAIN_GROUP_ALONE_NS, B-177)
         self.p.append((rig.now_ns(), p))
         if self.ignore:
             return
