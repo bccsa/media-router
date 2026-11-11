@@ -27,6 +27,12 @@ that term to the caller (`branchAsrc: false`, audio-output-302m, whose
 `slave-method=custom` behind `outasrc`, not `slave-method=skew` (the
 2026-09-03 addendum). Rules 2 and 3 are unchanged.
 
+Amended by [[0029]] (Phase 4): the output's sink runs `pulsesink sync=false`
+behind a 40 ms prefill (`queue name=prefill`) and a 100 ms ring, with no
+`ts-offset`, no shedder and no `lipSyncMs`; `outasrc` reads the card's clock
+on a 100 ms timer instead of the custom-slaving callback, and the
+`identity name=live_upstream sync=true` is gone. Rules 2 and 3 are unchanged.
+
 1. **A `force-live` mixer MUST be clock-paced.** Build it through `pacedMixer()`
    — `audiomixer force-live=true ! <caps> ! identity sync=true`. Never assemble
    the string by hand and never drop the trailing `identity`. (Superseded in
@@ -121,11 +127,16 @@ Two consequences for the three rules above:
   route plays `latencyMs` later through a mixer than through the bypass. Callers
   that end in an unsynced bus tee (the producer modules) ignore it.
 
+Superseded by [[0029]] (Phase 4): the contract-paced sink above (`sync=true
+ts-offset=D+trim`, the backlog shedder, the live D push, the `lipSyncMs`
+trim) is deleted; the sink runs `sync=false` and plays as the mix arrives.
+
 Superseded by [[0029]] (Phase 2), both bullets: there is no pacer and no
 `mixerLatencyNs`. audio-output-302m puts `identity name=live_upstream
 sync=true` after the continuation in both arms so that its sink sees a live
 upstream and counts its own ring, which the `ts-offset` cancels; that
-identity is a liveness marker, not this pacer, and never waits.
+identity is a liveness marker, not this pacer, and never waits. Deleted in
+Phase 4 (ADR-0029, B-167): with no `ts-offset` there is nothing to cancel.
 
 ## Addendum (2026-10-02): live inputs give up rule 3's bypass — and the drain
 

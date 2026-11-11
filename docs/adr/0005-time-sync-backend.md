@@ -31,6 +31,11 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    the route's D is raised for every leg at once (decision 4 amendment). No
    automatic shed remains (Stage 3c note, 2026-10-08).
 
+   **Superseded by [[0029]] (Phase 4).** Presentation sinks run
+   `sync=false`: an output plays content as it arrives, nothing drops it
+   for being late, and there is no budget to raise. What a stall leaves is
+   latency, shown on the output and drained back at most 0.5 % faster.
+
 2. **Producer-stamped timeline contract.** A producer latches its source's
    PES timeline once (the existing TimelineLatch machinery, moved to the
    producer side) and stamps bus buffer PTS with the mapped house-clock media
@@ -115,9 +120,11 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    **Superseded by [[0029]] (Phase 2).** In the house-clock design physical
    outputs play as soon as they can, with no D (§8). The mechanism (the
    route-head `playoutOffsetMs`, `effectivePlayoutOffsetMs`, the raise
-   overlay, `lipSyncMs` and `syncOffsetMs`) still runs and is removed in
-   Phase 4. Of the amendments below, the 302M output's `mixLatencyMs` and
-   `MR_LATCH_REPAIR` are gone in Phase 2.
+   overlay, `lipSyncMs` and `syncOffsetMs`) ran until Phase 4, which
+   deleted it with the amendments below (ADR-0029 Phase 4: no D, no route
+   head, no raise, no rebase, no trims; stored values ignored). Of the
+   amendments below, the 302M output's `mixLatencyMs` and
+   `MR_LATCH_REPAIR` went in Phase 2.
 
    **Delivered in Stage 3** (D plumbing in 3a; the drift-slewing anchor that
    keeps D from being eaten by clock drift in 3b, below). The engine-wide default is `EngineConfig.playoutOffsetMs` —
@@ -528,6 +535,9 @@ Corrections to the above, found while building the producer side:
 
 ## Implementation notes (Stage 3a — playout offset D)
 
+Superseded by [[0029]] (Phase 4): D, its route-head override, the resolver,
+the live push and the trims are deleted; these notes are history.
+
 Corrections and findings from building the presentation side. The drift-slewing
 anchor is *not* here; it is Stage 3b, below.
 
@@ -817,7 +827,9 @@ live test needs PTP on the devices and is a later phase.
   so it presents `sync=true max-lateness=-1 ts-offset=senderLatencyMs` (20 ms
   default) under the contract, and `sync=false` with the contract off, where
   there is no house timeline to pace against. The RX side, being a route head,
-  carries `playoutOffsetMs` normally.
+  carries `playoutOffsetMs` normally. Amended by ADR-0029 (Phase 4): no
+  module declares `playoutOffsetMs`; the egress keeps its pacing sink, the
+  no-late-drop lint's one exception (C-9).
 
 - **SAP is python, and both ends share it.** `aes67-core/py/aes67_sap.py` builds
   and parses the SDP and the RFC 2974 packet; `mr-sap.py` is I/O and lifecycle
@@ -877,6 +889,14 @@ shed there is a PTS jump without DISCONT that the ASRC's output counter runs
 through (a decode + device ASRC re-anchors its labels once the jump holds,
 B-127). The shedder, the re-anchor and the raise stay until Phase 4 deletes
 them with D.
+
+Superseded by [[0029]] (Phase 4): the shedder, the re-anchor, the raise and
+the rebase are deleted with D in the engine and both runners, with
+`gst_latency_ratchet_test.py`, `gst_backlog_shed_test.py` and
+`backlog_shed_test.py`; `gst_output_backlog_test.py` (B-174) takes the
+ratchet suite's place. No sink runs `sync=true`, so a backlog is no longer
+held at media rate for good: the device outputs drain it back at most 0.5 %
+faster (B-179).
 
 A fault the contract CREATED, found in the field on a Pi 400 ~16 h
 after Stage 3a shipped: 50 fps decoded (codec IRQ ~100/s), 2.5 fps on the glass
@@ -1142,6 +1162,10 @@ presentation legs' branch alignment (`alignBranchesToStamps` on `vpdemux`,
 `<mixer>_demux<i>` and `addemux`, deleted: every leg's demux is on the
 formula). D, the trim and the shedder stay until Phase 4.
 
+Superseded by ADR-0029 (Phase 4): D, the trim (`lipSyncMs`), the shedder and
+the `live_upstream` identity are deleted; the sink runs `sync=false` behind a
+40 ms prefill, `outasrc` reading the card's clock on a timer.
+
 The contract paired the video-player with the audio-decoder; the 302M fan-in
 path ([[0008]]) — `audio-transcoder → audio-output-302m`, the fleet's actual
 headphone/monitor leg — was still free-running, and the field showed exactly the
@@ -1309,7 +1333,7 @@ capture or file producer's bytes are never touched):
   source timing in silence.
 
 **Two consumer-side guards landed with it, both gated by the contract (they run
-only where the shedder is armed):**
+only where the shedder is armed; deleted with it, ADR-0029 Phase 4):**
 
 - **The backlog shedder refuses a shed with nothing queued.** The 20 s black
   screens were the shedder dropping a GOP-plus while the video was over budget
@@ -1423,6 +1447,8 @@ re-anchor.
   through a transcoder needs a playout offset that covers decode + encode
   (170 ms measured for 1080i50 → HEVC on the gate), which is the configured
   budget decision 1 always promised rather than a hidden re-anchor.
+  Superseded by ADR-0029 (Phase 4): there is no playout offset; the hop's
+  transit is lateness, shown on the outputs.
 
 - **Residual, deliberately left.** The transform producer's own input
   `tsdemux` still locks its zero point off one input buffer, ~80 ms ahead of

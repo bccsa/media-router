@@ -29,6 +29,8 @@ so no new `x-` extension was needed.
   that settings shared across plugins (`playoutOffsetMs`, `pcmBitDepth`,
   `mixLatencyMs`) carry identical wording. Amended by [[0029]] (Phase 2):
   `mixLatencyMs` is deleted from every manifest and from the shared keys.
+  Amended by [[0029]] (Phase 4): `playoutOffsetMs` is deleted too, so the
+  shared keys are `pcmBitDepth` and `lcpSortOrder`.
 - Long-form tuning knowledge lives in git history and, where it is an operating
   rule, in the plugin's README — not in the manifest.
 - Two tooltip idioms exist: `MrTooltip` (CSS hover, for chrome that never

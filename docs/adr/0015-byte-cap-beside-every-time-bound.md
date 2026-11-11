@@ -35,8 +35,10 @@ failure mode and the byte cap costs nothing on a healthy stream.
   `tsQueueByteCap(5000)`), which blocks upstream when full and raises the
   module's `aligner-full` warning; nothing restarts.
 - Raw video (1080p50 I420 ≈ 1.2 Gbit/s) would shed constantly under this cap,
-  hence the exemption. `buildLeakyQueue` / `buildBackpressureQueue` default to
-  `maxBytes = 0` so an unconverted caller stays exactly as it was.
+  hence the exemption. `buildBackpressureQueue` defaults to `maxBytes = 0` so
+  an unconverted caller stays exactly as it was (`buildLeakyQueue` was deleted
+  in house-clock Phase 4, B-173: its one caller, the transcoder's raw buffer,
+  is a backpressure queue).
 - A stalled consumer still pins up to 40 MB of payload per edge on the
   producer (unixfdsink holds each sent copy until the consumer's 5 s ingress
   lets it go). Bounded, but a per-consumer budget to remember on busy

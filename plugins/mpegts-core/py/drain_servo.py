@@ -24,7 +24,7 @@ window clear (a relock, a stall's flush, caps, a flush, PAUSED), nor while an ep
 0: the slack is what was early.
 
 The margin. Audio starts at its 20 ms floor (the live fill sits at the prefill's delay line: no
-ring margin to keep), video at 2 frames (floor 1); ceiling 500 ms. An
+ring margin to keep), video at its floor, 1 frame; ceiling 500 ms. An
 audio starvation of at most 250 ms raises it at its end, whatever the drain did (B3); a longer one
 is an outage, counted apart. A video late release raises it only while delta > 0 or within 30 s
 after delta last was (B4); other late releases are counted, and one more than 250 ms late is an

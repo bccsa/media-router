@@ -703,6 +703,8 @@ static void asrc_drain_tick(AsrcDevice* d, int64_t dev_ns, int64_t mono, int64_t
         const int64_t slack = (int64_t)((__int128)lo * GST_SECOND / rate) - d->prefill_ns;
         d->below_ticks = slack <= -ASRC_STARVE_NS ? d->below_ticks + 1 : 0;
         if (d->below_ticks == 1) d->below_at = now;
+        // The two detectors are exclusive by order: a skip before the second low tick is its own
+        // short episode (the anchor moves after it); one on a later tick folds into the running one.
         if (d->below_ticks >= 2) {
             s.starve(d->below_at, true);
         } else if (skipped_ns > 0 && !s.starving()) {   // too short for the fill to show it: its length skipped

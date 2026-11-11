@@ -3,6 +3,222 @@
 Operator-facing notes per release, newest first. What changed on the box,
 what to expect, what to do. Engineering detail is in `docs/adr/`.
 
+## v2.0.0.103 — house-clock timing, Phase 4
+
+Phase 4 of the house-clock timing work: every output now plays what it
+receives as soon as it arrives, and the playout offset, its automatic raises
+and the backlog shedder are gone. It ships on its own, after v2.0.0.102
+(Phase 3). One RAUC bundle carries the image and the app: Video Player needs
+this image's waylandsink (below), so do not hot-deploy this app onto an
+older image. **Rollback** is v2.0.0.102, installed from the Device Manager;
+there is no in-app switch, and the stored values of the removed settings
+(below) apply again after a rollback.
+
+**Outputs now play as soon as content arrives**
+
+- **Video Player, Audio Decoder and Audio Output (302M) no longer wait for a
+  playout offset.** Most outputs are earlier than before: by the engine's
+  60 ms default, by any Playout Offset set on an input or a TS Splitter, and
+  by any automatic raise the engine had added. Every output's Timing section
+  shows its lateness in ms, and that number is now when the picture is shown
+  or the sound heard.
+- **Nothing is dropped for being late.** After a network or processing stall
+  an output plays what was held up late, then catches up by itself (below).
+  Only a queue that reaches its capacity loses content, and it says so.
+- **Interpreter or commentator microphones** (talent loops): if a
+  microphone input's Ingest Offset was set from a monitor output's lateness,
+  read that output's lateness again after installing and set the offset
+  again at a pause in their speech: the monitor is now earlier.
+
+**Subtitles on a Video Player play on arrival**
+
+- **The picture never waits for its subtitles.** A subtitle that reaches a
+  Video Player after its picture shows from when it arrives: its start is
+  late, never lost (the playout offset used to hide small delays). Burn-in
+  on Video Transcoder still waits for its subtitles, as in v2.0.0.102.
+
+**When a display or a sound card stops, the output skips and comes back live**
+
+- **A display that stops showing frames** (a monitor switched off or
+  unplugged): Video Player shows "Display not presenting (output off?)", the
+  frames the display could not show are skipped, and when it shows frames
+  again the player is live, not late by the outage.
+- **A sound card that stops taking sound** (HDMI audio suspended, a USB
+  device removed): Audio Decoder and Audio Output (302M) show "Audio device
+  stalled — nothing plays until it takes audio again, then it plays live"
+  about a second after it stopped, skip what arrives meanwhile (counted in
+  **Device stalls**), and play live again within about a second of the card
+  taking sound.
+- **"Plays nothing: every buffer reaches the sink … past its playout time"
+  is gone** with the playout offset: no output is late at its sink any more.
+  A stopped card shows "Audio device stalled" instead, and Audio Output
+  (302M) still says "Plays nothing: its mixer delivers no audio" when its mix
+  sends no sound for 5 s.
+
+**Audio Output (302M) plays as soon as it can**
+
+- **It plays what its sources send as it comes,** through a 40 ms buffer and
+  the sound card's 100 ms ring, instead of waiting for a playout offset. Its
+  delay is its sources' own plus about 140 ms and the card's. A route's
+  Playout Offset no longer moves it.
+- **A start skips what its mix held back before it played.** When it mixes
+  two or more sources and one is connected but sends nothing yet, the mix waits
+  up to 2 s for it; the output now starts live after that wait instead of
+  playing that much behind for good. The start's INFO line names it: "Caught up
+  at the start: skipped 2.0 s of the mix, …".
+- **No relaunch after a source's stale burst.** The one relaunch a source's
+  return used to cause (v2.0.0.98's fix for a burst of stale packets) is gone:
+  the output plays on. (MR-011)
+- **A pause in its sources is a pause.** The card plays silence for it and
+  what follows plays at once. On the box's PipeWire up to about a tenth of a
+  second after a pause can be lost as well (100 to 127 ms after a 300 ms
+  pause, measured before this release).
+- **After a stall in its sources it plays behind, then catches up to its
+  latency target by itself** (up to 0.5 % faster); nothing is dropped.
+
+**Audio Decoder plays as soon as it can**
+
+- **It plays what its input sends as it comes,** through the same 40 ms
+  buffer and 100 ms ring as Audio Output (302M), instead of waiting for a
+  playout offset: its input's own delay plus about a tenth of a second. A
+  route's Playout Offset no longer moves it.
+- **After a stall in its input it plays behind, then catches up to its
+  latency target by itself** (up to 0.5 % faster). What the input sends late
+  is kept (up to 5 s); nothing is dropped to catch up.
+- **No relaunch after a source's stale burst.** The one relaunch a source's
+  return used to cause (v2.0.0.98's fix for a burst of stale packets) is gone:
+  the output plays on. (MR-011)
+- **A gap in its input is a gap.** Packets lost on the way or missing from
+  the stream: its sink plays silence for them and what follows plays at once,
+  no later than before. On the box's PipeWire up to about a tenth of a second
+  after a gap can be lost as well, as on Audio Output (302M).
+
+**Video Player plays as soon as it can**
+
+- **It shows each frame as it comes,** on the stream's own frame cadence,
+  instead of waiting for a playout offset: its input's own delay plus the
+  decoding. A route's Playout Offset no longer moves it.
+- **Video Player shows every frame the source sends:** a frame is no longer
+  replaced by the next when the display is a moment late.
+- **A display slower than the stream drops frames evenly to keep up,**
+  instead of falling behind: a 60 frames-a-second source on a 50 Hz display
+  shows five frames in six.
+- **After a stall in its input it plays behind, then catches up to its
+  latency target by itself.** What the input sends late is kept (up to 5 s);
+  on a display that runs at the video's own rate it skips at most one frame
+  in 200 while it catches up, on a faster display none.
+- **A pipeline that keeps failing is restarted less often:** after 1 s, then
+  backing off to every 30 s, where it was every 5 s. Each restart opens the
+  video decoder again, and in testing rapid reopening stopped a Pi 4's
+  hardware H.264 decoder until a reboot.
+
+**Video Transcoder keeps every frame it decodes**
+
+- **A rendition whose encoder cannot keep up no longer loses frames.** Its
+  frames wait instead, and since all renditions share one decode, every
+  rendition of that transcoder falls behind with it: its lateness grows by
+  the wait. The input holds what arrives meanwhile, up to 5 s; only past that
+  is content lost there, and the queue-full warning says so.
+- **Buffer's help now reads** "Jitter and decode-ahead buffer. A slow encoder
+  fills it before the input is held. Floored at 100 ms." The setting itself
+  is unchanged.
+
+**What the outputs show**
+
+- **Render lateness is when the picture is shown or the sound is heard,** as
+  the output measures it: Video Player from the frames its display presented,
+  Audio Decoder and Audio Output (302M) from the position their sound card
+  plays. **Device latency** is what the display or the card adds after the
+  decode. The **Presentation delay** row is gone: no output waits for one.
+- **Video Player's Timing section adds Rate match,** for example "50.00 fps →
+  50.00 Hz measured, 0 drops/min": the stream's frame rate, the rate the
+  display takes, and the frames dropped each minute to match it. **Late
+  releases** counts frames a minute shown after their slot, and **Pace hold**
+  how long a frame waits for its slot.
+- **The audio outputs' Timing section adds Device relocks and Device
+  stalls** under Device clock: how often the card's clock was taken afresh,
+  and how often the card stopped taking sound.
+- **Lateness trend, on every output that renders:** how fast its lateness
+  grows over the last 3 minutes, for example "+12 ms/min — decode or device
+  slower than real time". It reads "measuring" for 3 minutes after a start
+  or a gap. It is a number to read, with no alarm and no setting.
+- **New warnings, which only warn: nothing is dropped.** "Display not
+  presenting (output off?)" while Video Player's display shows nothing (a
+  monitor off or unplugged); "Audio device stalled — nothing plays until it
+  takes audio again, then it plays live" while an audio output's card stops
+  taking sound; and on any module whose queue fills, "Queue <input> full at
+  <n> ms — content lost at capacity" or, for a queue that holds rather than
+  drops, "<queue> holding <n> ms at capacity — the input queue loses next",
+  until 30 s after the queue drained.
+
+**Outputs catch up by themselves**
+
+- **An output that has fallen behind catches up by itself once the box can:**
+  audio plays up to 0.5 % faster (well under a tenth of a semitone), video
+  skips at most one frame in 200 while it catches up on a display that runs
+  at the video's own rate, until it is back at the smallest delay it has
+  measured it can play cleanly. A video output and the audio outputs of the
+  same programme on the box end at the same delay. Nothing to set.
+- **While the box cannot keep up, the delay grows,** as before, but never past
+  what the output's queues hold (about 6 s on Audio Output (302M) with one
+  source, 10 to 11 s elsewhere); past that the input queue loses content and
+  the queue-full warning says so. Once the box keeps up, the delay comes back
+  down: 1 s of it in about 4 minutes, 2 s in about 7.
+- **It probes for the smallest delay that plays clean.** A dropout of up to a
+  quarter of a second raises that output's margin at once; the margin comes
+  back down over about 2 hours, so a source with a recurring short dip gives
+  one dropout about every 2 hours, not one per dip. A late video frame raises
+  nothing unless the output was catching up.
+- **The Timing section shows it:** **Latency target**, for example "95 ms
+  (measured), now 2.41 s · draining at 0.50 % (about 8 min) · in sync with
+  Video Player"; **Drained**, the delay taken off so far; **Buffer
+  underruns**, for example "3, 3 raised the target"; the Rate match row adds
+  the frames skipped to catch up ("… 15 drain drops/min"); and the Lateness
+  trend reads "−300 ms/min — draining to its target" while it catches up, or
+  "+40 ms/min — growing faster than it can drain (0.5 %)". Without a known
+  display rate a Video Player shows "not measured (no display rate)" and does
+  not catch up. The journal says "Draining 2.30 s of built-up latency at up to
+  0.5 % (about 8 min)" and "Back at its latency target (95 ms): drained
+  2.30 s".
+- **A member of a programme waits for the slowest, at most 1 s:** an output
+  of the programme that is ahead of the others plays up to 0.5 % slower until
+  it is level with them, and stays at most 1 s behind its own target for it
+  ("1 s behind its group: held there"). An audio output fed from two
+  programmes' sources keeps its own delay ("in sync with neither (two
+  programmes)"). Outputs on different boxes, and outputs whose path crosses
+  PipeWire, are not matched. (#862)
+
+**Removed settings, nothing migrated**
+
+- **Lip-Sync Trim** on Audio Output (302M): with no playout offset there is
+  nothing to trim. Stored values are ignored; a rollback restores them.
+- **Sync Trim**, **Buffer**, **Sink Buffer** and **Low-Latency Sync** on Audio
+  Decoder: with no playout offset there is nothing to trim, its input queue
+  holds what a stall leaves (up to 5 s) and its sink's ring is fixed at
+  100 ms; Sink Buffer and Low-Latency Sync were already ignored. Stored values
+  are ignored; a rollback restores them.
+- **Lip-Sync Trim**, **Sync** and **Buffer** on Video Player: with no playout
+  offset there is nothing to trim, the picture is never timed by its sink, and
+  its input queue holds what a stall leaves (up to 5 s). Stored values are
+  ignored; a rollback restores them.
+- **Playout Offset** on SRT Input, RIST Input, MPEG-TS IP Input, AES67 Input
+  and TS Splitter: no output waits for a playout offset any more, so a route
+  has none to set. Stored values are ignored; a rollback restores them. The
+  engine also ignores `MR_PLAYOUT_OFFSET_MS` and `MR_PLAYOUT_REANCHOR` in its
+  unit file.
+- **The automatic playout raises are gone.** A late output no longer raises
+  its route's playout offset or re-anchors itself: there is no **Playout
+  re-anchor** section, badge or "Playout re-anchored" warning on a route's
+  input or its outputs, and no "Backlog shed" lines in the journal. Nothing is
+  dropped to catch up: an output that falls behind catches up by itself once
+  the box can (above).
+
+**Needs this image**
+
+- Video Player on a box's display needs this image's waylandsink (its patch
+  that presents every frame): on an older image its pipeline does not start
+  ("no property present-every-frame").
+
 ## Unreleased — house-clock timing, Phases 1–4 (draft: the Phase 1, 2 and 3 items, 2026-11-03)
 
 Phases 1, 2, 3 and 4 ship together as one release. This draft holds the
@@ -340,163 +556,6 @@ elements" below do not start.
   values are ignored (the OCC gate's burn-in transcoders ran 1,400 ms); a
   rollback restores them.
 
-**Audio Output (302M) plays as soon as it can (Phase 4)**
-
-- **It plays what its sources send as it comes,** through a 40 ms buffer and
-  the sound card's 100 ms ring, instead of waiting for a playout offset. Its
-  delay is its sources' own plus about 140 ms and the card's. A route's
-  Playout Offset no longer moves it.
-- **A start skips what its mix held back before it played.** When it mixes
-  two or more sources and one is connected but sends nothing yet, the mix waits
-  up to 2 s for it; the output now starts live after that wait instead of
-  playing that much behind for good. The start's INFO line names it: "Caught up
-  at the start: skipped 2.0 s of the mix, …".
-- **No relaunch after a source's stale burst.** The one relaunch a source's
-  return used to cause (v2.0.0.98's fix for a burst of stale packets) is gone:
-  the output plays on. (MR-011)
-- **A pause in its sources is a pause.** The card plays silence for it and
-  what follows plays at once. On the box's PipeWire up to about a tenth of a
-  second after a pause can be lost as well (100 to 127 ms after a 300 ms
-  pause, measured before this release).
-- **After a stall in its sources it plays behind, then catches up to its
-  latency target by itself** (up to 0.5 % faster); nothing is dropped.
-
-**Audio Decoder plays as soon as it can (Phase 4)**
-
-- **It plays what its input sends as it comes,** through the same 40 ms
-  buffer and 100 ms ring as Audio Output (302M), instead of waiting for a
-  playout offset: its input's own delay plus about a tenth of a second. A
-  route's Playout Offset no longer moves it.
-- **After a stall in its input it plays behind, then catches up to its
-  latency target by itself** (up to 0.5 % faster). What the input sends late
-  is kept (up to 5 s); nothing is dropped to catch up.
-- **No relaunch after a source's stale burst.** The one relaunch a source's
-  return used to cause (v2.0.0.98's fix for a burst of stale packets) is gone:
-  the output plays on. (MR-011)
-- **A gap in its input is a gap.** Packets lost on the way or missing from
-  the stream: its sink plays silence for them and what follows plays at once,
-  no later than before. On the box's PipeWire up to about a tenth of a second
-  after a gap can be lost as well, as on Audio Output (302M).
-
-**Video Player plays as soon as it can (Phase 4)**
-
-- **It shows each frame as it comes,** on the stream's own frame cadence,
-  instead of waiting for a playout offset: its input's own delay plus the
-  decoding. A route's Playout Offset no longer moves it.
-- **Video Player shows every frame the source sends:** a frame is no longer
-  replaced by the next when the display is a moment late.
-- **A display slower than the stream drops frames evenly to keep up,**
-  instead of falling behind: a 60 frames-a-second source on a 50 Hz display
-  shows five frames in six.
-- **After a stall in its input it plays behind, then catches up to its
-  latency target by itself.** What the input sends late is kept (up to 5 s);
-  on a display that runs at the video's own rate it skips at most one frame
-  in 200 while it catches up, on a faster display none.
-- **A pipeline that keeps failing is restarted less often:** after 1 s, then
-  backing off to every 30 s, where it was every 5 s. Each restart opens the
-  video decoder again, and in testing rapid reopening stopped a Pi 4's
-  hardware H.264 decoder until a reboot.
-
-**Video Transcoder keeps every frame it decodes (Phase 4)**
-
-- **A rendition whose encoder cannot keep up no longer loses frames.** Its
-  frames wait instead, and since all renditions share one decode, every
-  rendition of that transcoder falls behind with it: its lateness grows by
-  the wait. The input holds what arrives meanwhile, up to 5 s; only past that
-  is content lost there, and the queue-full warning says so.
-- **Buffer's help now reads** "Jitter and decode-ahead buffer. A slow encoder
-  fills it before the input is held." The setting itself is unchanged.
-
-**What the outputs show (Phase 4)**
-
-- **Render lateness is when the picture is shown or the sound is heard,** as
-  the output measures it: Video Player from the frames its display presented,
-  Audio Decoder and Audio Output (302M) from the position their sound card
-  plays. **Device latency** is what the display or the card adds after the
-  decode. The **Presentation delay** row is gone: no output waits for one.
-- **Video Player's Timing section adds Rate match,** for example "50.00 fps →
-  50.00 Hz measured, 0 drops/min": the stream's frame rate, the rate the
-  display takes, and the frames dropped each minute to match it. **Late
-  releases** counts frames a minute shown after their slot, and **Pace hold**
-  how long a frame waits for its slot.
-- **The audio outputs' Timing section adds Device relocks and Device
-  stalls** under Device clock: how often the card's clock was taken afresh,
-  and how often the card stopped taking sound.
-- **Lateness trend, on every output that renders:** how fast its lateness
-  grows over the last 3 minutes, for example "+12 ms/min — decode or device
-  slower than real time". It reads "measuring" for 3 minutes after a start
-  or a gap. It is a number to read, with no alarm and no setting.
-- **New warnings, which only warn: nothing is dropped.** "Display not
-  presenting (output off?)" while Video Player's display shows nothing (a
-  monitor off or unplugged); "Audio device stalled — nothing plays until it
-  takes audio again, then it plays live" while an audio output's card stops
-  taking sound; and on any module whose queue fills, "Queue <input> full at
-  <n> ms — content lost at capacity" or, for a queue that holds rather than
-  drops, "<queue> holding <n> ms at capacity — the input queue loses next",
-  until 30 s after the queue drained.
-
-**Removed settings (Phase 4), nothing migrated**
-
-- **Lip-Sync Trim** on Audio Output (302M): with no playout offset there is
-  nothing to trim. Stored values are ignored; a rollback restores them.
-- **Sync Trim**, **Buffer**, **Sink Buffer** and **Low-Latency Sync** on Audio
-  Decoder: with no playout offset there is nothing to trim, its input queue
-  holds what a stall leaves (up to 5 s) and its sink's ring is fixed at
-  100 ms; Sink Buffer and Low-Latency Sync were already ignored. Stored values
-  are ignored; a rollback restores them.
-- **Lip-Sync Trim**, **Sync** and **Buffer** on Video Player: with no playout
-  offset there is nothing to trim, the picture is never timed by its sink, and
-  its input queue holds what a stall leaves (up to 5 s). Stored values are
-  ignored; a rollback restores them.
-- **Playout Offset** on SRT Input, RIST Input, MPEG-TS IP Input, AES67 Input
-  and TS Splitter: no output waits for a playout offset any more, so a route
-  has none to set. Stored values are ignored; a rollback restores them. The
-  engine also ignores `MR_PLAYOUT_OFFSET_MS` and `MR_PLAYOUT_REANCHOR` in its
-  unit file.
-- **The automatic playout raises are gone.** A late output no longer raises
-  its route's playout offset or re-anchors itself: there is no **Playout
-  re-anchor** section, badge or "Playout re-anchored" warning on a route's
-  input or its outputs, and no "Backlog shed" lines in the journal. Nothing is
-  dropped to catch up: an output that falls behind catches up by itself once
-  the box can (below).
-
-**Outputs catch up by themselves (Phase 4)**
-
-- **An output that has fallen behind catches up by itself once the box can:**
-  audio plays up to 0.5 % faster (well under a tenth of a semitone), video
-  skips at most one frame in 200 while it catches up on a display that runs
-  at the video's own rate, until it is back at the smallest delay it has
-  measured it can play cleanly. A video output and the audio outputs of the
-  same programme on the box end at the same delay. Nothing to set.
-- **While the box cannot keep up, the delay grows,** as before, but never past
-  what the output's queues hold (about 6 s on Audio Output (302M) with one
-  source, 10 to 11 s elsewhere); past that the input queue loses content and
-  the queue-full warning says so. Once the box keeps up, the delay comes back
-  down: 1 s of it in about 4 minutes, 2 s in about 7.
-- **It probes for the smallest delay that plays clean.** A dropout of up to a
-  quarter of a second raises that output's margin at once; the margin comes
-  back down over about 2 hours, so a source with a recurring short dip gives
-  one dropout about every 2 hours, not one per dip. A late video frame raises
-  nothing unless the output was catching up.
-- **The Timing section shows it:** **Latency target**, for example "95 ms
-  (measured), now 2.41 s · draining at 0.50 % (about 8 min) · in sync with
-  Video Player"; **Drained**, the delay taken off so far; **Buffer
-  underruns**, for example "3, 3 raised the target"; the Rate match row adds
-  the frames skipped to catch up ("… 15 drain drops/min"); and the Lateness
-  trend reads "−300 ms/min — draining to its target" while it catches up, or
-  "+40 ms/min — growing faster than it can drain (0.5 %)". Without a known
-  display rate a Video Player shows "not measured (no display rate)" and does
-  not catch up. The journal says "Draining 2.30 s of built-up latency at up to
-  0.5 % (about 8 min)" and "Back at its latency target (95 ms): drained
-  2.30 s".
-- **A member of a programme waits for the slowest, at most 1 s:** an output
-  of the programme that is ahead of the others plays up to 0.5 % slower until
-  it is level with them, and stays at most 1 s behind its own target for it
-  ("1 s behind its group: held there"). An audio output fed from two
-  programmes' sources keeps its own delay ("in sync with neither (two
-  programmes)"). Outputs on different boxes, and outputs whose path crosses
-  PipeWire, are not matched. (#862)
-
 **Needs the image's native elements (Phase 2)**
 
 - Without the timing elements of this image, Audio Mixer, N-1 Audio Mixer
@@ -515,9 +574,6 @@ elements" below do not start.
   a stream from another module now does it with the same demux, so without
   the image's timing elements it refuses to start with "Native TS module not
   loaded". A Video Player with no input still shows its fallback card.
-- From Phase 4, Video Player on a box's display needs the image's waylandsink
-  as well (its patch that presents every frame): on an older image its
-  pipeline does not start ("no property present-every-frame").
 
 **Fixed**
 

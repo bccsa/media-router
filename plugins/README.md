@@ -337,7 +337,7 @@ Ports define what a module can connect to. Each port has a direction, stream typ
 
 Uses JSON Schema to define user-configurable settings. The Manager UI auto-generates a settings form.
 
-Each property renders as a heading plus a control. The heading is the JSON Schema `title` when given, otherwise the key split into words (`playoutOffsetMs` → "Playout Offset Ms"); set `title` whenever the key reads badly (units, acronyms). `description` is **not** shown inline — it appears in a "?" popover next to the heading, so keep it to one short sentence: what the setting does, plus at most one hint (when to raise or lower it). A manifest test caps descriptions at 120 characters and titles at 40. Longer background belongs in the plugin's README.
+Each property renders as a heading plus a control. The heading is the JSON Schema `title` when given, otherwise the key split into words (`ingestOffsetMs` → "Ingest Offset Ms"); set `title` whenever the key reads badly (units, acronyms). `description` is **not** shown inline — it appears in a "?" popover next to the heading, so keep it to one short sentence: what the setting does, plus at most one hint (when to raise or lower it). A manifest test caps descriptions at 120 characters and titles at 40. Longer background belongs in the plugin's README.
 
 ```json
 "configSchema": {
@@ -1043,8 +1043,6 @@ Health values: `'ok'` (green dot), `'warning'` (amber dot), `'error'` (red dot),
 
 The pipeline automatically sets health to `'ok'` when playing and `'stopped'` when null. Plugins override this for custom status (e.g. decoder with no connection → warning).
 
-Playout re-anchor (ADR-0005, 2026-10-08) is base-class behaviour, nothing to write: a late presentation leg and its route head both show an owned `warning` (taken only over `ok`, re-asserted on PLAYING), a `playout` status section, and on the head a `re-anchored +N ms` badge; an edit of the head's Playout Offset clears it.
-
 ### Clean Self-Stop (`requestSelfStop`)
 
 A module whose media ran to a **natural end** (e.g. hls-player finishing a VOD
@@ -1625,41 +1623,33 @@ Two paths exist for marking a setting as live-updatable (changeable without rest
 
 When the two disagree, the runtime `getLiveUpdatableParams()` result wins for behaviour, but the manifest flag still controls UI affordances. Keep them aligned unless you have a runtime reason to diverge.
 
-### Playout Offset D (`playoutOffsetMs`)
+### Outputs play on arrival (house-clock Phase 4)
 
-Under the engine-wide time-sync contract, producers stamp bus buffer PTS with house-clock media time and every **presentation sink schedules at `stamped-time + D`**, where D is the *playout offset* — a configured latency budget, not a best-effort. See ADR-0005 decision 4, which ADR-0029 (Phase 2) supersedes: outputs will play as soon as they can, and this mechanism stays until house-clock Phase 4 removes it.
+An output plays content as it arrives: every presentation sink runs
+`sync=false qos=false`, with no `ts-offset` and no `max-lateness`, and
+nothing on its path drops a buffer for being late (ADR-0029 Phase 4). There
+is no playout offset to read and no trim to add, so a presentation plugin
+writes no timing arithmetic of its own:
 
-Two knobs, and neither of them lives on the sink:
+- **Video** goes through `mrvideopace` before its sink: each frame on its
+  content's cadence, never before it arrives, a display slower than the
+  content matched by dropping frames evenly (Video Player, below).
+- **Audio** goes through `mrasrc` with `deviceSink` (its card's clock read on
+  a timer) and ends in `buildOutputPrefill()` and a `sync=false` sink at
+  `buffer-time=OUTPUT_RING_US` (`packages/engine/src/plugins/outputSink.ts`).
+- **Lateness is shown, not budgeted**: the output's Render lateness is when
+  its frame is presented or its sample heard, read from those elements, and
+  what a stall holds up shows as latency that the device elements drain back
+  at most 0.5 % faster (see "The time-sync contract" below).
 
-- **Engine-wide default** — `EngineConfig.playoutOffsetMs` (60 ms; `MR_PLAYOUT_OFFSET_MS` is the env fallback). Reaches every module as `services.playoutOffsetMs`.
-- **Per-route override** — a `playoutOffsetMs` property on the **route head**: the producer module the consumers take their bus from. Declare it in that plugin's `configSchema` (no `default` — an absent value means "inherit the engine default") and list it in `liveUpdatableParams`. The producer itself never reads it; the engine resolves it for the consumers and fans a change out to all of them live.
-
-**Consuming it.** A presentation plugin never does this arithmetic itself:
-
-```ts
-import { effectivePlayoutOffsetNs } from '@media-router/engine';
-
-// In buildPipeline: `trimMs` is the module's own per-sink trim, if it has one.
-const tsOffsetNs = effectivePlayoutOffsetNs(this.services, { trimMs: lipSyncMs });
-// → route override ?? engine default ?? 60, plus the engine's runtime raise, plus the trim
-```
-
-Then name the sink and re-push on the hot-update path:
-
-```ts
-async onRoutePlayoutOffsetChanged(): Promise<void> {
-    await this.setElementProperty('sink', 'ts-offset', effectivePlayoutOffsetNs(this.services));
-}
-```
-
-Two rules make this work:
-
-1. **One resolver.** Both legs of a route (e.g. a video-player and an audio-decoder split off one ts-splitter) call `effectivePlayoutOffsetMs` against the same route, so they get the same D by construction. Re-implementing the arithmetic in a plugin is the bug this exists to prevent.
-2. **Trims stack, they don't replace.** `lipSyncMs` / `syncOffsetMs` are deprecated as sync controls and survive as per-sink trims added on top of D — for skew a specific display or DAC chain adds, which D cannot know about.
-
-**Runtime raise — playout re-anchor (`EngineServices.playoutReanchor`).** With `MR_PLAYOUT_REANCHOR` not `0`, a late leg never drops: it asks the engine to raise its route head's D (in memory, up to +2000 ms), and `effectivePlayoutOffsetMs` already includes that raise, so `onRoutePlayoutOffsetChanged` is all a leg needs. An edit of the head's `playoutOffsetMs` clears the raise. ADR-0005 decision 4 amendment 2026-10-08.
-
-**Hooks `onRoutePlayoutRaised(raise | null)` / `onRoutePlayoutRebased(note)`.** The engine tells a route head its current raise (`null` = cleared) and a leg that asked a zero raise when an edit reset it; a head also hears when a leg below it rebased itself onto an implausible timeline. `GstPluginBase` implements both (warning, `playout` section, head badge) — override only to add to them.
+Removed in Phase 4, nothing migrated, stored values ignored (OQ-33): the
+playout offset D and its settings Playout Offset (`playoutOffsetMs`, on the
+inputs and the TS Splitter), Lip-Sync Trim (`lipSyncMs`) and Sync Trim
+(`syncOffsetMs`), `EngineServices.playoutOffsetMs` and `.playoutReanchor`,
+the `onRoutePlayout*` hooks, `MR_PLAYOUT_OFFSET_MS` and `MR_PLAYOUT_REANCHOR`,
+the playout re-anchor (raises and rebases) and the backlog shedder
+(`PipelineDescription.backlogShed`). `removedTimingSettings.test.ts` fails a
+manifest that declares any of them again.
 
 ### Interacting with the GStreamer Pipeline
 
@@ -2115,8 +2105,8 @@ entered the engine**: written once by an ingest's or a capture's restamp
 ("Ingest timing" below), or by a transform producer's own mux running on
 house-stamped input. Every bus egress then stamps each buffer by identity,
 wire PTS = `PES − 1 h`, so every consumer inherits identical timing by
-construction. Presentation sinks still schedule at `stamped-time + D` (see
-"Playout Offset D (`playoutOffsetMs`)" above) until house-clock Phase 4. Full
+construction. Outputs play as content arrives, with no playout offset (see
+"Outputs play on arrival" above). Full
 design: [`docs/adr/0029`](../docs/adr/0029-house-clock-timing.md) and the
 house-clock design it records; the history:
 [`docs/adr/0005`](../docs/adr/0005-time-sync-backend.md).
@@ -2276,7 +2266,7 @@ the aligners' `input-absent` and `aligner-full` warnings
   `mrasrc` (device term) or `mrvideopace` names that drain (Audio Decoder
   `asrc`, Audio Output (302M) `outasrc`, Video Player `vp_pace`, which also
   answers `isLatencyGroupAnchor()` true), and a Video Player's pace takes
-  `backlog-queue=<its ES queue>`. Each plays its backlog up to 0.5 % faster
+  `backlog-queue=<its ES queue>`. Each plays what it holds up to 0.5 % faster
   (`mrts::DrainServo`: the 30 s minimum of what was ready early, less a
   measured margin) until it is back at its target. The engine groups the
   running outputs of one bus origin (`plugins/drainGroups.ts`: Video Players
@@ -2356,22 +2346,12 @@ the aligners' `input-absent` and `aligner-full` warnings
 Reading the numbers: a network ingest reads negative, early by its source's
 PTS − PCR lead (its content lands source-natural, Phase 1); a capture reads
 its capture and encode latency; an aligner module reads its pace above its
-fastest input; outputs are D-dominated until Phase 4 makes them D-free. A
+fastest input; an output reads its input's lateness plus its decode and device. A
 box without `libgstmrlateness.so` gets no
 taps — the fragments omit the element, so nothing fails to parse — and the
 module's `timing` section reads `lateness instrument missing`. Pipeline-string
 tests pin the instrument present (`vitest.setup.ts`,
 `setLatenessTapAvailable`), so they do not depend on `make native` having run.
-
-**Playout offset D on producers.** The per-route override for D lives on the
-**route head** — the producer module the consumers take their bus from — as a
-`playoutOffsetMs` config key (declared so far by `srt-input`, `rist-input`,
-`mpegts-ip-input`, `ts-splitter`, `aes67-input`). Declare it with **no schema `default`**
-(absent means "inherit the engine default": `EngineConfig.playoutOffsetMs`,
-60 ms, `MR_PLAYOUT_OFFSET_MS` env fallback) and list it in
-`liveUpdatableParams`; your producer never reads it — the engine resolves it
-for the consumer legs and fans a change out to them live. The consuming side
-is covered in "Playout Offset D (`playoutOffsetMs`)" above.
 
 **A consumer on a dark bus waits, it does not restart.** `unixfdsrc` is not a
 live source, so a consumer whose producer is connected but silent (interlocked
@@ -2395,26 +2375,15 @@ rebuild genuinely helps — mpegts-ip-input and aes67-input do for MULTICAST
 (60 s) to re-join a dropped group; leave it 0 for unicast. The runner side of
 all this is `gst_source_gate.py`.
 
-**Never drop on lateness (`BacklogShedConfig.onLateness`).**
-`backlogShedConfig()` sets `onLateness: "reanchor"` when
-`services.playoutReanchor` is on: the runner then asks for a raise
-(`playout_reanchor {kind:"raise"}`) instead of shedding, and rebases an
-implausible leg in-thread. Its five keys: `reanchorToleranceMs` (40, floor
-excess that counts as late), `reanchorHoldMs` (15 000, how long it must
-hold), `reanchorRetryMs` (30 000, re-ask gap unless the budget moved),
-`rebaseHoldMs` (3 000, how long a past-stamped implausible reading holds
-before a rebase) and `rebaseCooldownMs` (60 000, at most one rebase per
-leg). Numbers live in `playoutReanchor.ts`; absent `onLateness` = shed.
-
-**A launch's catch-up and the playout watch (B-206, native runner).**
+**A launch's catch-up (B-206, native runner).**
 `PipelineDescription.catchUp: { prefix }` makes the runner probe the sink pad
 of every element whose name starts with `prefix` (the launch's and any added
 live) and drop the buffers and GAPs that end before the launch's first buffer
 there, until one does not: what an input sends at once after an outage
-(its producer's backlog) was due before the module played. Content that
+(what its producer queued) was due before the module played. Content that
 arrives about as fast as it plays (at most 1.5× over 1 s) is a stream behind
-the house clock, not a backlog, and passes after that second, for the
-re-anchor. `catchUp.render` names one more element, the output's render tap: its
+the house clock, not a queue, and passes after that second.
+`catchUp.render` names one more element, the output's render tap: its
 sink pad drops, once, what ends before its own first buffer less the most an input's
 first kept buffer lagged and 200 ms (`RENDER_SLACK_NS`), so what a mix queued before
 it first played (a non-live mixer waiting out a connected input that sends nothing,
@@ -2422,16 +2391,11 @@ for that input's silence limit) is skipped, not played that late for good (B-167
 One `catch_up` plugin event per launch, `{ inputs: [{ element,
 skippedMs, buffers }], skippedMs }` (`readCatchUp`, `catchUpText`): the launch's
 inputs together once all delivered or 3 s after its first buffer, a later or
-live one alone. `backlogShedConfig({ watchPlayout: true })` sets
-`BacklogShedConfig.missWatchMs` (`PLAYOUT_MISS_MS`, 1000): every buffer past
-the budget + `reanchorToleranceMs` that long reports `playout_watch`
-`{ playing: false, lateMs, budgetMs }`, 200 ms in budget `{ playing: true }`,
-on a change only (`readPlayoutWatch`). Audio Output (302M) sets the catch-up,
+live one alone. Audio Output (302M) sets the catch-up,
 on its inputs' ingress taps (`LAT_IN_PREFIX`; `busSrcTapName` names one), so
 the stale TS goes in the thread that reads the socket, undecoded, and on its
 render tap `lat_render` (named "the mix" in its INFO line); its sink runs
-`sync=false` and it arms no shedder, so no playout watch (B-166, B-167). The
-python runner ignores both.
+`sync=false` (B-166, B-167). The python runner ignores it.
 
 **Where stamper lines come from (debugging).** Each armed egress logs two
 lines from the runner's stamping subsystem (`stamper.cpp` in the native
@@ -3213,10 +3177,9 @@ worth copying:
   not add/remove deltas — mean a sidecar restart re-syncs the GUI instead of
   leaving a phantom entry. Discovery is owned by the RUNNING modules, so a box
   with no AES67 input joins no multicast group and runs no extra process.
-- **A route head like any other.** `aes67-input` restamps its capture onto the
+- **A producer like any other.** `aes67-input` restamps its capture onto the
   house clock after its 302M mux ("Ingest timing" above) and ends in
-  `buildBusSink`, whose egress stamps it by identity with no plugin work, and it
-  declares `playoutOffsetMs` (no schema `default`) for the players it feeds.
+  `buildBusSink`, whose egress stamps it by identity with no plugin work.
 - **The epoch is one integer: the engine's E.** GStreamer's
   payloader computes `rtptime = timestamp-offset + running_time x rate / 1e9`
   from ABSOLUTE running time (pinned against real elements in
@@ -3232,11 +3195,11 @@ worth copying:
   announcing a PTP media clock you do not have is undetectable at the receiver.
   The `clock` status section names the reason, kept current as the clock
   changes.
-- **Pacing is not playout offset D.** The AES67 egress sink syncs against the
+- **Pacing is not a playout delay.** The AES67 egress sink syncs against the
   house clock with a small `senderLatencyMs` (default 20 ms) so 1 ms packets
-  leave evenly instead of in decode-sized bursts. D is deliberately NOT applied
-  there: RTP timestamps carry the alignment, so delaying the egress by 300 ms
-  would only spend the receiver's link-offset budget.
+  leave evenly instead of in decode-sized bursts; RTP timestamps carry the
+  alignment. It is the one sink in the product that syncs, the no-late-drop
+  lint's one exception (`max-lateness=-1`, C-9).
 
 ### Video Player — codec-aware decoder selection
 

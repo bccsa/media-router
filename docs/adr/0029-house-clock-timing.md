@@ -9,8 +9,8 @@ not reopened here. This ADR is the living record the design calls for: it
 records the choices the design left to the engineer (§13.3 and the
 implementation plan's open-question register), one section per phase, and
 it marks what each phase supersedes in the older ADRs. Phase 0, the shared
-TS module (S0), Phase 1, Phase 2 and Phase 3 are below; Phases 4 and 5
-append to this file when they land
+TS module (S0), Phase 1, Phase 2, Phase 3 and Phase 4 are below; Phase 5
+appends to this file when it lands
 (`docs/house-clock-timing-implementation-plan.md`).
 
 Every phase is a cut-over (§13.1): the mechanism a phase replaces is deleted
@@ -2721,8 +2721,9 @@ twins, and the input stall watch end to end; the settings `mixLatencyMs`
   The ingress queue's first buffer after a silence (B-68) is the owner's
   decision (2026-10-22): a patch to GStreamer's queue in the image, so the
   fix reaches a box with that image.
-- The unixfdsink pool that keeps a stall's high-water mark for the life of
-  the edge (B-94): open for Phase 4, in meta-custom's unixfdsink patch.
+- The unixfdsink pool gives a stall's copies back 8–9 s after the consumer
+  has caught up (B-94): meta-custom's plugins-bad patch 0009, in the image
+  from v2.0.0.103 (Phase 4).
 - Engine follow-ups: part 10's demux rows (B-70; the `alignerInputOf` of
   the muxer, n1-mixer-302m and audio-processing are built, B-93); the pace
   estimator's third-share threshold, re-derived from real captures with a
@@ -3588,3 +3589,609 @@ reference (OQ-1); nothing at runtime imports `ts_timeline`.
   `tsHelpers.ts`'s and `busHelpers.ts`'s tsdemux, the player's `sync=false`
   "default", the frozen `ts_timeline` reference's pointers, plugins/README's
   pad-link examples on `tsparse ! tsdemux`) were reworded by p3-21.
+
+## Phase 4 (built 2026-10-26 to 2026-11-10; DEV-P4a and DEV-P4b ran, DEV-P4c1, DEV-P4c2 and DEV-P4d pending) — outputs play as soon as they can; D and the shedder deleted
+
+After Phase 4 no output waits for a playout offset. Every presentation sink
+runs `sync=false`: Video Player releases each frame through `mrvideopace` on
+the content's own cadence, never before it arrives, and Audio Decoder and
+Audio Output (302M) push into a 40 ms prefill and a 100 ms card ring while
+their `mrasrc` follows the card's clock read on a timer. Nothing in the chain
+drops a buffer for being late (P11): the runners switch QoS and late-drop off
+on every sink, decoder and transform, the leaky queues behind decoders are
+non-leaky, and the one leaky queue left on an output's path is the bus
+ingress backstop, which loses content only at capacity and warns. The playout
+offset D, the route-head walk, the playout raises, the rebase and the backlog
+shedder are deleted in the engine and both runners, with the settings that
+served them (OQ-29, OQ-33). What a stall leaves behind is latency, shown on
+every output, and p4-18 plays it back down to the smallest buffer that plays
+clean (issue #862). The build: WY1 (patches 0008 and 0009, 2026-10-26), the
+early track WE1 and WE2 (p4-1, p4-3a, p4-3b, p4-0, p4-4a, 2026-10-26 and 27),
+then on P4 main WM1 (p4-4b, p4-8, p4-7, 2026-11-05 and 06), WM2 (p4-3c, p4-6,
+p4-5, 2026-11-06), WM3a (p4-11, p4-12, 2026-11-07 to 09), WM3b (p4-13, p4-14,
+2026-11-09 and 10) and WM3c (p4-18, 2026-11-10), with Phase 3's head up to
+B-216 merged in (n1; n2, at v2.0.0.102's tag, is still to come) and the side
+batches picked (C1 to C3), on the dev Pi 5 with GStreamer 1.28.2. On the boxes: DEV-P4a (2026-10-27, the sink clocks, Weston's
+presentation clock, kmssink's returns) and DEV-P4b (2026-10-28, 0008 and
+`mrvideopace` on both test boxes). The plan's register rows are B-160 to
+B-175 and B-179 (chapter 15.4; B-P4-n = B-(159 + n)), and B-176 for this
+documentation pass; B-177 and B-178 are held for the phase review's fixes
+(p4-17) and the release gate (p4-16). Phase 4 ships alone as v2.0.0.103 and
+its rollback is v2.0.0.102 (the refresh's T34, superseding Q3's "Phases 0–4
+as v2.0.0.100": v2.0.0.100 and v2.0.0.101 shipped from the release line, and
+Phase 3 ships as v2.0.0.102).
+
+### Play on arrival (chapter 8 part 4.1; the owner's Q1 and Q2)
+
+- **The output strings** (as built, each a vitest snapshot):
+  - Video Player: `<bus ingress> ! tee name=vp_ts ! mrtsdemux name=vpdemux
+    media=video ! queue name=vp_esq leaky=0 (5 s, tsQueueByteCap) ! <decoder>
+    ! videoconvert [! videoscale] [! <subtitle overlay>] ! mrvideopace
+    name=vp_pace backlog-queue=vp_esq[ refresh-mhz=<mHz>] ! mrlateness
+    name=lat_render ! <sink sync=false qos=false>`, waylandsink with
+    `present-every-frame=true` (B-169). The jitter queue sized by Buffer, the
+    leaky 1 s ES queue, `sync=true max-lateness=1 s` and `ts-offset` are gone.
+  - Audio Decoder: `<bus ingress> ! mrtsdemux media=audio ! queue name=ad_esq
+    leaky=0 (5 s) ! <decoder> ! audioconvert ! mrlateness name=lat_render !
+    mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink ! … ! queue
+    name=prefill min-threshold-time=40 ms ! pulsesink name=sink sync=false
+    buffer-time=100000` (B-168).
+  - Audio Output (302M): the fan-in's continuation `! mrlateness
+    name=lat_render ! audioconvert ! mrasrc name=outasrc device-sink=sink ! …
+    [! placement] ! queue name=prefill … ! pulsesink sync=false
+    buffer-time=100000` (B-167); B-62's `identity name=live_upstream
+    sync=true`, `ts-offset`, `max-lateness` and `slave-method` are gone.
+  - `lat_render` sits before `mrasrc` on the audio outputs, where PTS is
+    still content time (S4). The 40 ms prefill and the 100 ms ring are engine
+    constants (`outputSink.ts`, OQ-31, E7), no setting.
+- **Q1 (2026-10-26), "Play on arrival".** The picture never waits for a
+  subtitle or an offset: a late subtitle on a Video Player shows from when it
+  arrives, its overlay's `cueLate` the cue path's lateness, reported and not
+  judged (S36). The player's subtitle wait (p4-6s) is not built and its row
+  placeholder B-P4-16 stays unused. The burn-in keeps Phase 3's wait (p3-13).
+- **Q2 (2026-10-26), "Skip, resume live".** An output whose display or audio
+  device stops skips what it could not play and resumes live, each skip
+  counted and warned as a device fault, never lateness: 0008's timeout rule
+  and `mrvideopace`'s unpaced pass for a display, `mrasrc`'s device-stall rule
+  for a card (below). Recorded consequence (review r0's M11): while a device
+  is stopped the output drops input, or commits frames no display shows,
+  against the owner's "we never should have packets dropping" (2026-10-08);
+  the answer covers device stops only.
+- **What a stall costs.** Content held up upstream plays late by the stall's
+  length when it comes (S10, Q17): at content rate through the drain's 30 s
+  warm-up, then back down at most 0.5 % faster (the latency drain, below), or
+  at the next gap (the gap rule, below). Nothing is dropped to catch up.
+- **The launch catch-up stays** (B-206, E28): a 302M output's runner skips,
+  once, what its inputs' ingress queued before the launch played and, since
+  B-167, what its mix queued before its render tap first played (a non-live
+  mixer waiting out a connected input that sends nothing), with one INFO
+  line ("Caught up at the start: skipped 2.0 s of the mix"). It is not D: its
+  line is the launch's first buffer. Without it a stale burst would play late
+  for good. The decoder keeps no start backlog and arms none (B-168 F4).
+- **An input hole's loss is accepted, not fed** (B-167, B-168; DEV-P4a case
+  6; engineering choice for the veto): the card plays the hole as silence,
+  the sink realigns behind it and what follows plays at once. On the image's
+  PipeWire up to about 100–127 ms after a 300 ms hole is lost as well
+  (pipewire-pulse's stale read index), and every underflow steps render
+  lateness by −10 to +12 ms where the base sink realigns. Keeping the ring fed
+  across a hole would avoid that loss, but a feeder on a 100 ms timer over a
+  100 ms ring must push silence ahead of content it cannot tell from a
+  delivery stall, and after a realign the ring holds about a segment (the
+  prefill is a delay line, not margin: B-167 P2), so a feed would collapse
+  the ring's margin to the feeder's timing; that is the trade the veto rests
+  on. A stall's length stays as lateness with or without a feed.
+
+### `mrvideopace`: video paced to its display (WI-P4-3, B-161, B-162, B-175; OQ-32)
+
+- **One element, two halves.** `mrts::VideoPace` (`video_pace.{h,cpp}`,
+  integer ns, no allocation per frame) decides; `mrvideopace`
+  (`gstmrvideopace.cpp`) waits on the element clock and proxies caps,
+  allocation and scheduling, so dmabuf passes untouched. Its Python
+  reference `py/video_pace.py` came first (OQ-1) and the C++ prints it line
+  for line (`mrts_cli pace`; 120 seeded random runs, about 4 in 10 through
+  the display rate, and the cases' 1.9 M frames; 22 of 22 mutants told
+  apart).
+- **The cadence.** Δ_k is the frame's own PTS delta while 0 < Δ_k ≤ min(250
+  ms, 4 × nominal) and no GAP or DISCONT came, else the nominal duration;
+  r_k = max(a_k, r_(k−1) + Δ_k). A frame never leaves before it arrives nor
+  faster than the content's own rate. A GAP, a DISCONT, a step back or a step
+  past the threshold collapses the cadence (`gaps-collapsed`), so a backlog
+  drains into the gap. A repeated PTS (a decoder holding a decreasing
+  timestamp, B-160 F7) takes the nominal.
+- **The rate match (S11).** Decimation by an accumulator of the display's
+  lag in ns, summed from each frame's own delta (a median would lose a
+  source's clock, B-161 D1), held within one frame below 0 and at 0 across a
+  collapse (D2), a drop at a whole nominal frame, read on content time only,
+  never on releases (D3); always on a measured period, on a nominal one past
+  0.05 %, never with none. A dropped frame keeps its slot. A display slower
+  than its content by 40 ppm drops 7 frames an hour at 50p and keeps
+  release lateness flat; a Pi's pixel clock is not the house clock.
+- **The display period (S12, B-175).** `DisplayRate`: the period the sink
+  achieves while it sets the pace (pushes each leaving at once on the last
+  push's return, windows of at least 10 s, 3 of the last 5 within 0.5 % of
+  their median, `achieved-ns`); else the refresh, from 0008's presented
+  samples (Δt/Δseq over at least 60 s) or kmssink's returns counted in
+  `refresh-mhz`, else in their 25th-percentile interval (B-162 F2); else
+  `refresh-mhz` as nominal; else none. A measurement always wins over the
+  prior; new caps or a 1 % move of the refresh or the prior measure again.
+  The engine passes `refresh-mhz` from `resolveOutputRefreshHz` as the prior
+  on every sink (S17).
+- **What the sink holds is not lateness** (B-175): a frame that entered
+  within 2 ms of the previous push's return (`HELD_NS`) is the sink's wait:
+  past its slot it leaves at once, the cadence stays, and it is not `late`.
+  While decimating, a held frame more than a display period past its slot
+  shows the display behind its own pace: the accumulator drops until it is
+  back within a period (`display-behind`). That is Q2's skip for a display
+  slower than its stated rate (the Pi 5 box's DSI took about 56.6 of 60.038
+  frames a second; kmssink shows one frame per two refreshes).
+- **A display that presents nothing** (B-162 F3): while the first sink's
+  `display-stats` shows frames not presented or a present timeout, frames
+  pass unpaced (`display-presenting` false); at the first read without, a new
+  pace starts from the next arrival. With the cadence hold alone each outage
+  left the output 1 s later.
+- **Seen**: the `mrvideopace` message every 2 s (`released`, `late`,
+  `rate-drops`, `gaps-collapsed`, `content-fps-x100`, `refresh-ns`,
+  `refresh-source`, `achieved-ns`, `display-behind`, `mean-hold-ns`,
+  `present-lateness-ns`, `unpaced`, `display-presenting`, and the drain's
+  fields), forwarded by both runners (T11).
+- **Engineering choices for the owner's veto:**
+  - **The cadence hold** (chapter 8 part 4.2; chapter 13.6). §8 says each
+    frame waits only for the display's next refresh; the hold r_k = max(a_k,
+    r_(k−1) + Δ_k) keeps video in step with audio that suffered the same
+    stall, and in steady state it ratchets the release phase to the latest
+    arrival. As built it has two exceptions: a frame the sink kept waiting
+    never moves the cadence (B-175), and since p4-18 the hold drains back to
+    its target once the arrival that raised it has left a 30 s window, a
+    periodic late arrival keeping its hold (B-179). Input lateness still
+    steps it.
+  - B-162 F1 is not fixed (parity with the reference as committed):
+    decimation that turns on mid-stream starts a frame in credit, so a
+    display slower than its content plays one frame later than it needs to
+    (20 ms at 50p); the fix is one line on both sides.
+  - `HELD_NS` is 2 ms: a streaming thread that re-enters the chain later than
+    that under load reads a held frame as late and steps the cadence (DEV-P4c1
+    measures it on kmssink).
+  - B-175's limits: kmssink with the prior falls about 0.5 s behind in its
+    first second, then skips it; an achieved period read high stays until new
+    caps or a mode change (more drops, not lateness); a display that misses
+    refreshes keeps up to one of its frames of backlog; behind a sink measured
+    by nothing, held frames no longer raise the cadence.
+  - B-169 F5: the cadence hold keeps the worst bunching of bus buffers since
+    the start or a gap, so a low-bitrate source on the ingests' 128-packet
+    buffers starts up to one buffer's span late (about +230 ms at 0.57
+    Mbit/s), until the drain takes it back (B-179); Pace hold shows it.
+
+### waylandsink presents every frame: Yocto patch 0008 (WI-P4-2, B-163)
+
+- **`present-every-frame`** (default false, 0007's path unchanged): set, the
+  sink waits before it takes `render_lock` until the window's last commit was
+  presented (its frame callback), outside every lock, so neither of 0007's two
+  field deadlocks returns. A wait that reaches 1 s commits the frame and
+  counts `present-timeouts`; until the next frame callback frames go at once,
+  counted `not-presented` (S13, Q2): a display switched off neither plays at
+  1 fps nor leaves a backlog. A flush returns FLUSHING; a pause waits for
+  PLAYING and goes on with the frame.
+- **`display-stats`** (`wayland-display-stats`, guint64 fields): `presented`,
+  `presented-seq` (the MSC), `discarded`, `replaced`, `present-timeouts`,
+  `not-presented`, `refresh-ns` (Δt/Δseq over at least 60 s), the last
+  presentation and its running time, `commit-to-present-ns` and
+  `clock-monotonic`; present lateness is `last-presented-ns` − (base time +
+  `last-running-time`), the runners' base time 0.
+- **Bench numbers** (WY1's headless test compositor; DEV-P4a and DEV-P4b on
+  the boxes): 10 frames inside one refresh all shown with the property set
+  (0007 alone showed 1 or 2: the compositor discarded 6 to 9, which the
+  sink's own counts never saw, B-160 F3); Weston's `wp_presentation` is
+  CLOCK_MONOTONIC with hardware vsync on both test boxes (Pi 4 1080p50
+  commit-to-present 33 ms; Pi 5 DSI 60.038 Hz, 0 missed in 3,601 frames); on
+  the Pi 4 box H.264 and HEVC 1080p50 for 30 min each replaced 0 and
+  discarded 0, the display −7.30 and −7.80 ppm against house time, 50
+  flush/state cycles passed; the Pi 5 box's panel runs +11.4 ppm slow, its
+  steady commit-to-present 15.5 ms at 50p and about 24 ms at 60p HEVC; a 1 h
+  restart stress ran 1,982 cycles with no failure; Weston's output off 30 s
+  left no wedge in 4 of 4, lateness after it not later than before (the
+  cadence hold restarting gave 81–91 ms lower in 3 of 4: T31's criterion
+  reads "not later than before, within one frame"). p4-1 case 9's
+  commit-to-present bound is two refreshes (1.5 failed 2 of 5 on both boxes,
+  T30).
+- **Engineering calls for the veto:** the pause rule; the refresh re-based
+  once per 60 s window and after a change or a 1 s gap; the 1/16 average; the
+  feedback and `display-stats` kept with the property off; a window's counters
+  living as long as the window; the 1 s timeout a constant.
+
+### `mrasrc` follows its card on a timer (WI-P4-4, B-165, B-166; C-6)
+
+- **The device term on a timer.** Phase 3's custom-slaving callback is gone
+  with `sync=true` (S32: both sinks `sync=false` in the commit that deleted
+  it, so no commit carries two evidence paths). A thread of `mrasrc`'s waits
+  on a 100 ms periodic id of the element clock and reads the card's own time
+  (`gst_audio_clock_get_time` of the named `device-sink`'s provided clock, in
+  the frame of its write positions), then house time. Reads run only from the
+  first buffer the sink renders after it acquired its ring to the ring's
+  release (a read during the acquire killed the stream in 14 of 15 starts on
+  the Pi 4 box, DEV-P4a); the timer stops at PLAYING to PAUSED and re-arms at
+  the next render. The reference `py/asrc_device_ref.py` came first and the
+  C++ agrees exactly (`mrts_cli asrc-device`; the ratio 0 ppb apart at every
+  read of 464 k lines).
+- **The lock** is `mrts::ClockLock` itself (device time against house time):
+  a 1000-bucket window and a 1200 s loop (`asrc_device_lock_config`; the
+  plan's 300 buckets and 60 s read the clock's interpolation as 5–20 ppm,
+  B-165 D1), `slew_track_ppm` 1000, a relock past 50 ms on two fed reads or
+  ClockLock's envelope step, the rate kept, then a 15 s settle; a restart
+  relocks the same way. A read whose clock moved less than a tenth of house
+  time is flat and never fed. Ratio = (1 + ε_in)/(1 + ε_dev) − 1, clamped to
+  ±1,000 ppm, no phase term.
+- **The traces' noise** (DEV-P4a, four 1 h sink clock traces, the fixtures
+  `tests/fixtures/clock/sink-clock-*.jsonl`): pulsesink's clock is
+  `pa_stream_get_time`, interpolated, with 4–7 ms corrections about every
+  1.5 s, flat for 100–500 ms at a start and 25–42 ms behind within 5 s on the
+  null sinks; it runs on through a 300 ms hole and a 1 s underrun; rates KT
+  USB −135 ppm, HDMI +9 ppm, null about 0. The chosen lock holds all four
+  within 1 ppm of their own slopes from 1000 s; a sub-50 ms slip reads as
+  rate (21 and 40 ms slips move it 31 and 60 ppm for about 20 min, B-166 F6).
+- **The device-stall rule (Q2).** Read on the render, never the clock (a
+  removed PipeWire node blocked the render while the clock ran on, B-165
+  D4): `device-stalled` when for 1 s the sink took nothing while more than
+  100 ms waited past the prefill; the timer then flushes downstream (FLUSH
+  from `mrasrc`'s src pad unblocks the sink) and keeps flushing every 500 ms;
+  `device-resumed` once the sink took 200 ms since a flush, with one more
+  flush, so live input plays. Counted: `device-stalls` and the frames
+  dropped. The prefill makes the rule live (B-166 F5); the 200 ms resume holds
+  for the 100 ms ring only (F4).
+- **Render lateness** is now less the content time of the sample at the
+  card's position, from a map of each buffer's write position to its content
+  time (B-165 D5): exact wherever a sample is heard, and a buffer written
+  wholly behind the device's position stays out. Its limit is the device's
+  own latency behind the server's read index.
+- **Deleted**: `AsrcDeviceLock`, the callback, `device-resync` and
+  `device-resyncs` (no alignment on a `sync=false` sink); there is no
+  underrun count from realigns (a realign is no underrun on the Pi 5). B-148's
+  device timeline is kept on the timer lock (A1: every relock recalibrates).
+  One Python ClockLock remains (`clock_lock.py`; `asrc_bypass_ref.py` imports
+  it, T10).
+- **Engineering choices for the veto:** the timer's stop at PLAYING to
+  PAUSED rather than PAUSED to READY; new caps at another rate as a new
+  device; the settle, the flat rule and the restart relock; 1000 as the fit
+  acceptance (the capture lock's 20 ppm let a short fit after a restart
+  replace a good rate, 125–286 ppm off).
+
+### The queue table (chapter 8 part 4.4, as built)
+
+| Job | Queue | Size | When full |
+|---|---|---|---|
+| Capacity: hold a stall's backlog until it drains or a gap | `vp_esq`, `ad_esq` (compressed, after the demux); the aligners' FIFOs (Phase 2) | 5 s, `tsQueueByteCap(5000)` (ADR-0015), `leaky=0` | Blocks upstream; the bus ingress fills next; `queue-full` "… holding <ms> ms at capacity — the input queue loses next" |
+| Capacity backstop: keep a stuck consumer from wedging its producer | The bus ingress (`buildBusSrc`) on every consumer; the producer's fan-out branch on every edge (the runners' own, in no module string) | 5 s, 40 MB, `leaky=2` (OQ-30) | Leaks from the head; `queue-full` "Queue <input> full at <ms> ms — content lost at capacity"; a resource fault, not a lateness policy |
+| Prefill | `prefill` (both audio outputs) | `min-threshold-time` 40 ms, 1 s | A delay line, not ring margin: it releases only what is above 40 ms (B-167 P2); behind a stall it holds the backlog the decoder's path leaves |
+| Device ring | pulsesink `buffer-time` | 100 ms | Back-pressure into the prefill |
+| Decode-ahead | the Video Transcoder's raw-frame buffer after its decoder, its decoder-pool queues | Buffer (raw, floored at 100 ms); 4 buffers | Blocks the shared decode: every rendition falls behind with a slow encoder (B-173, E8) |
+
+- **The image's patched queue (B-68)**: a drained queue starts its level
+  afresh, so a backstop that drained after a stall does not read its old
+  level as fullness, and the prefill holds its 40 ms again after it drains.
+  "About 10 s of stall before content is lost" (5 s capacity plus 5 s
+  backstop) holds on that queue only (S35); measured as built, the bus
+  ingress loses at capacity about 6 s into a stall on the 302M single arm and
+  10–11 s on the others (B-179).
+- **B-91's pages and B-94's cap**: a stalled consumer pins up to its ingress'
+  40 MB of payload on the producer, each copy in whole pages; patch 0009
+  (WY1) gives a stall's pool high-water mark back once the consumer drains
+  (the producer's fds within steady + 64 and its Pss_Shmem within steady + 2
+  MiB about 10 s after the drain, B-170's recovery read).
+- The ingest-side queues are exempt by place (SRT and RIST Input's `ingestq`,
+  B-182; the Video Encoder's two capture queues; the Audio Encoder's 50 ms
+  queue): they sit inside an ingest before its bus tee.
+
+### The runner glue (WI-P4-5, B-170)
+
+- **The no-late-drop hook**, in both runners, always on: on every element of
+  every pipeline and every element added later (`deep-element-added`: a
+  `decodebin3`'s decoder, autovideosink's child, a live input's branch), a
+  `GstBaseSink` gets `qos=false` and `max-lateness=-1`, and a
+  `GstVideoDecoder`, `GstAudioDecoder` or `GstBaseTransform` with a writable
+  `qos` gets `qos=false`; one log line at start (`no-late-drop: …`) and one
+  per later element changed. B-160's F1 is why it reaches the decoders: given
+  a QoS event, gst-libav's hurry-up skips non-reference frames whatever the
+  decoder's `qos` says, so no QoS event may reach an avdec.
+- **The queue watch** (B-182's shed count grown, E29): every GstQueue whose
+  `leaky` is not 0, and those named `vp_esq`, `ad_esq` and `prefill`, counts
+  its `overrun`s into episodes (1 s quiet ends one; reported once open at
+  10 s, at its end and at a stop), one `queue_overrun` an episode naming the
+  bus input upstream (the first `unixfdsrc` through sink and ghost pads), its
+  highest level kept per episode. GstQueue only, since `queue2` has neither
+  `overrun` nor `leaky` (S14).
+
+### The R10 checklist and the no-late-drop lint (WI-P4-13 with WI-P4-10, B-173; OQ-30)
+
+| Late-drop behaviour at the Phase 3 head | Fate |
+|---|---|
+| Video sink `max-lateness=1 s` | Removed: sinks `sync=false`; the hook sets −1 on every base sink |
+| Video sink QoS; decoder, `videoconvert` and `videoscale` QoS | Switched off: `qos=false` in the sink strings and the hook on every sink, decoder and transform |
+| waylandsink's staged-slot replace | Removed: 0008's `present-every-frame=true` |
+| Audio sink late-sample skipping | Removed: both audio outputs' sinks `sync=false` |
+| The backlog shedder | Removed (B-171) |
+| The video ES queue (`leaky=2`, 1 s) | Switched off: `vp_esq` `leaky=0`, 5 s, watched |
+| The bus ingress queue on every consumer; the producer's fan-out branch | Kept as the capacity backstop, alarmed (`queue-full`; OQ-30) |
+| The Video Transcoder's raw-frame buffer (`leaky=2` of Buffer; missed by chapter 8 part 3.6, S16) and its decoder-pool queues | Switched off: `buildBackpressureQueue(bufferMs)` and `leaky=0`; `buildLeakyQueue` deleted |
+| The keyframe gate | Exempt: decode safety |
+| The ingest-side queues (`ingestq`, the Video Encoder's capture queues, the Audio Encoder's encoder queue) | Exempt: inside an ingest, before its bus tee |
+| The diagnostic taps (Video Player's probe and resume taps, Teletext Subtitles' and MPEG-TS IP Input's probe taps) | Exempt: they carry no content to an output |
+| AES67 Output's `udpsink sync=true max-lateness=-1 ts-offset=<senderLatencyMs>` | Kept (C-9, WI-P4-10): the payloader's pacing against the house clock, not a playout offset |
+
+- **The lint** (`noLateDrop.test.ts`) builds every module with a launch
+  string through its own `buildPipeline` (24 modules in 45 strings, live
+  inputs and pad-added branches included) and fails a leaky queue outside the
+  whitelist (by shape: a probe or resume tap, `ingestq`, the bus ingress
+  backstop, a capture module's queue before its mux), `max-lateness` other
+  than −1, `qos=true`, `sync=true` on any sink, a presentation sink without an
+  explicit `sync=false`, `ts-offset` on any sink, `drop=true` on an appsink
+  that is no tap, and `silent=true` on a watched queue. AES67 Output is the
+  only module with an explicit `sync=true` or a `ts-offset`; egress sinks that
+  set no `sync=` (RIST Output's `mrristsink`) run GStreamer's default
+  `sync=true`, which the lint accepts (no presentation sink) and the hook
+  makes harmless (`max-lateness=-1`).
+- **Its limit**: the lint builds one configuration per module variant;
+  a branch that appears only under other settings (the player's subtitle
+  overlay input, a muxer with more inputs, other audio-decoder codecs) is not
+  built, so a hand-written leaky queue there would escape until that variant
+  is added. Every such branch uses the shared helpers today; a module that
+  gains a configuration-only branch adds its variant.
+- A drain drop (below) is no late drop: the pace's decimation is a rate
+  match before the sink, and `backlog-queue` is no sink property.
+
+### Lateness at the outputs (WI-P4-12, B-172; OQ-34)
+
+- **Render lateness** is the presentation's own reading: `mrvideopace`'s
+  `present-lateness-ns` (0008's presented time, else the kept frame plus a
+  period), else `mrasrc`'s `render-lateness-ns`, else Phase 0's λ(`lat_render`)
+  plus a stand-in. **Device latency** = Render lateness − λ(`lat_render`). The
+  Presentation delay row is gone (there is no D).
+- **Rows**: Video Player's Rate match ("50.00 fps → 50.00 Hz measured, 0
+  drops/min"), Late releases and Pace hold; the audio outputs' Device relocks
+  and Device stalls beside Phase 3's Device clock (S9); a Lateness trend on
+  every output that renders (the slope over 180 s, "measuring" until 3 min
+  ran with no gap), with no alarm and no setting: OQ-34's `capacity` alarm and
+  its setting are not built.
+- **Warnings, which only warn**: `queue-full` (two texts by `leaky`, S15),
+  `display-not-presenting` ("Display not presenting (output off?)", from the
+  pace's `display-presenting`, S31) and `device-stalled` ("Audio device
+  stalled — nothing plays until it takes audio again, then it plays live"),
+  which takes the place of the 302M output's late "Plays nothing" (T24).
+
+### The output conformance harness (WI-P4-14 with WI-P4-9's scenario, B-174)
+
+- The outputs' real strings (`fixtures/output/pipelines.json`, written from
+  the modules) on test sinks that model 0008 (`mrtestvideosink`) and a
+  clocked card (`mrtestaudiosink`), or the box's own under `MR_GATE=1`, fed at
+  real time on the house clock, judged by their elements' own messages in
+  both runners (`output_conformance_test.py`): a stall's backlog at content
+  rate, recovery at a gap (T8's lone stale PES among them), A/V after a muxer
+  (8–11 ms against V-P4-5's 45), video only, 50p on 60 Hz and 60p on 50 Hz
+  with B-175's live cap, a slow display (S11), the PES wrap in a time
+  namespace, a 302M card 100 ppm fast, capacity, both devices stopped 3 s,
+  the stop under backpressure (MR-041, T26) and the burn-in's late cues
+  (S29), plus p4-18's two drain scenarios. `gst_output_backlog_test.py`
+  replaces the latency ratchet suite. Two self-mutants (`vp_esq` leaky; a
+  pace releasing at arrival) each fail.
+- **MR-041 on the outputs**: no stop reached the engine's kill (Video Player
+  5.4–5.6 s with `vp_esq` full, Audio Decoder 6.0 s, Audio Output (302M)
+  3–15 ms, the burn-in 0.4 s); every output's bus ingress is leaky, so its
+  source thread is never the one held.
+- **Read with care**: `scn-out-rate-drift`'s CI arm (40 ppm over 27 s) pins
+  "no drop, refresh measured"; it is not S11's proof, which is V-P4-1's 1 h on
+  a box. The `MR_GATE=1` arms pin the player's explicit software decoder, so
+  `scn-out-capacity` on the Pi 4 box is a software-decode number only; those
+  arms have never run, and DEV-P4c2 calibrates them.
+- **Found and open** (B-174 F1, F2, F4–F9; for the bug log and p4-17): the
+  decoder's prefill full for good after an input stall, with a "prefill
+  holding …" text while `ad_esq` has room; the player's probe tap overrunning
+  once after a gap and reading as content lost; B-175's cap set live never
+  measured; a 0.2 % slow display's first drop 18 s after the measurement; a
+  consumer holding a 5 s backlog silencing its edge's tap; the 302M device
+  term engaging 45–50 s in, then one +15 to +22 ms step with a card resync;
+  a false "prefill holding 2005 ms" at a content gap.
+
+### The latency drain (WI-P4-18, B-179; issue #862)
+
+- **The owner's requirement and answers (9 Nov 2026).** An output's latency
+  may grow while the box cannot keep up, never grows without limit, and comes
+  back down to the smallest buffer that plays with quality once it can. Audio
+  catches up at 0.5 %, with no larger step (8.6 cents); video skips at most 1
+  frame in 200 while catching up, on a display at the content rate, counted
+  as drain drops; the buffer may probe below today's.
+- **Where.** Only the two device elements hold content at the content rate
+  (the card behind `mrasrc`, the display behind `mrvideopace`), so the drain
+  is in them, in the one resampler or pacer each already has: no new element,
+  setting, flag or alarm. The aligners' pace already falls by itself (B-82);
+  transcoders, the audio transcoder and the TS, SRT and RIST outputs are
+  unpaced and drain at CPU speed, so #862's field reading on those legs is
+  answered by construction, not diagnosed. The HLS Player's pacer stays out
+  (a follow-up for #862's inputs).
+- **The law** (`mrts::DrainServo`; its reference `py/drain_servo.py` first):
+  the slack is content that was ready before it was needed (audio: the frames
+  `mrasrc` pushed that the card has not played, lowest just before each push,
+  less the prefill's delay; video: a frame's drained slot less its arrival,
+  plus the 30 s minimum of `vp_esq`'s level); the trough F is its minimum over
+  three 10 s buckets (CoDel's standing-queue test, used to speed up, never to
+  drop). E = F − margin; δ = clamp(E / 30 s, 0, 0.5 %), slewed at 0.05 %/s,
+  engaged at 20 ms and let go at 5 ms; nothing drains until 30 s were sampled
+  after a window clear, nor while an audio starvation runs or for 30 s after.
+- **The learned margin.** It starts at its floor (audio 20 ms, video 1
+  frame), ceiling 500 ms. An audio starvation (the sink's own underflow, or
+  the slack under −30 ms on two ticks) of at most 250 ms raises it whatever
+  the drain did; longer is an outage, counted, no raise. A late video release
+  raises it only while δ > 0 or within 30 s after; a release under a quarter
+  frame late is jitter, one more than 250 ms late an outage. A raise sets L =
+  the margin that underran and m = min(500 ms, max(2L, L + 20 ms)); m falls 5
+  ms every 10 min without a raise, never under the floor or L + 10 ms, and L
+  falls 5 ms an hour to floor − 10 ms: a raise costs about 2 h, and a need
+  that stays re-probes about every 2 h.
+- **The actuators.** Audio: `mrasrc` consumes (1 + ε_dev)(1 + δ) faster in
+  its resampler and house-rate counter, so render lateness stays exact and no
+  sample is dropped. Video: `VideoPace` runs its cadence on Δ / (1 + δ); a
+  display with headroom loses repeats only (50p on 60 Hz: no drop), one at the
+  content rate decimates δ of the frames (19 of 4,000 at 50p on 50 Hz),
+  counted as `drain-drops` apart from rate drops by a shadow lag at δ = 0. No
+  video drain without a display rate.
+- **A/V groups by common origin** (`drainGroups.ts`, the engine every 2 s):
+  a running device output's origins are the modules its bus path starts from
+  (through transcoders, audio transcoders and 302M mixers; a PipeWire edge
+  starts an origin of its own); Video Players sharing an origin form a group,
+  each audio output joins the one group its origins touch (a 302M mixer of a
+  gate feed and a mic joins the gate's), and one touching two groups joins
+  neither, logged once ("in sync with neither … two programmes");
+  audio-only components are not grouped; per box. Each member publishes its
+  target (render lateness less its excess, never above now), and the group's
+  P = the largest goes to every member as `group-target-ns`: a member above
+  drains to it, one below plays up to 0.5 % slower to rise to it, clamped
+  continuously at 1 s above its own target, so every member ends within 45 ms.
+- **Bounds.** While the box cannot keep up nothing is early, nothing drains
+  and lateness grows until the path's non-leaky queues fill; the leaky bus
+  ingress then loses at capacity with `queue-full` (the queue table above).
+- **Seen**: Latency target ("95 ms (measured), now 2.41 s · draining at 0.50 %
+  (about 8 min) · in sync with Video Player"), Drained, Buffer underruns,
+  Rate match's drain drops, the trend's "— draining to its target"; INFO lines
+  at a drain's start and end.
+- **Engineering choices for the owner's veto** (E21–E23 and the design's
+  owner-level items): any short audio dropout raises the margin, which decays
+  5 ms/h (a source with a recurring short dip gets one re-probe dropout about
+  every 2 h; 5 ms per 4 h would make it 8 h); a late video frame raises the
+  margin only while draining or within 30 s after; grouping by common origin,
+  audio-only outputs not grouped; the 1 s rise cap; a member of two programmes
+  joins neither; a restarted output rises to its group's latency on purpose
+  (a member below the target plays up to 0.5 % slower: audio pitch down by up
+  to 8.6 cents, video a repeated refresh); a starvation is the sink's own
+  underflow; the audio trough read just before each push; the 30 s after a
+  starvation or outage publishing the render lateness.
+- **For the owner's veto, the as-built two-origin Video Player rule**: a
+  Video Player with two origins (a muxer combining gate A's video with gate
+  B's audio) that touches exactly one existing group joins it, its other
+  origin left out; the design (its r3 review carry) had it form its own
+  group. Neither chains two groups; as built, that player is held to gate A's
+  latency. The owner has been asked.
+
+### The gap rule (OQ-32)
+
+At a content gap each output lets its lateness fall by up to the gap's
+length on its own (`mrvideopace` collapses its cadence; `mrasrc` opens a new
+epoch, B-148's A1), even when only one stream of a muxed programme has the
+gap, so A/V can shift by up to min(backlog, gap) (decided 2026-10-12, per
+output). Since p4-18 a grouped member's drain then takes the group's common
+target again, so such a shift lasts until the group's members drain or rise
+to P (at most 0.5 % a second of the difference).
+
+### As-built deviations, by work item
+
+Each item recorded these against its brief for the owner's veto; the
+sections above give the reasons, the register rows the details.
+
+- **p4-1** (WI-P4-1): CI cases 1 to 5 and gate cases 6 to 10, with the GAP,
+  `overrun`, clock and device-stop pins added (E18); F1, gst-libav's
+  hurry-up under `qos=false` (B-160).
+- **p4-3a, p4-3b** (WI-P4-3): the accumulator by the frame's own delta,
+  floored a frame below 0 (D1, D2, D7); `set_display(ns, source)`; the
+  element's unpaced pass for a display not presenting (F3) and the returns'
+  25th-percentile base (F2) (B-161, B-162).
+- **p4-3c** (E26): the achieved period, the sink's wait, the behind skip
+  (B-175).
+- **p4-2** (WI-P4-2): the pause rule, the refresh re-basing (B-163).
+- **p4-0**: v2.0.0.99's MPEG-2 AAC classifier ported; FF9 not (B-164),
+  though it reached this line as the release line's B-184 and p4-7 and p4-8
+  deleted it (MR-011 closed).
+- **p4-4a, p4-4b** (WI-P4-4): D1 to D6 of B-165; the timer stopping at
+  PLAYING to PAUSED; `device-resync` deleted; no underrun count (B-166).
+- **p4-8, p4-7** (WI-P4-8, WI-P4-7): the render catch-up (B-167); the hole's
+  loss accepted on both outputs (B-167, B-168).
+- **p4-6** (WI-P4-6): `autovideosink sync=false` (F1); `renderWatch.pace`
+  (F2); the KMS driver named; restarts backed off to 30 s (B-169).
+- **p4-5** (WI-P4-5): one watch with B-182's episode rule (B-170).
+- **p4-11** (WI-P4-11): the guard test; `contentLatenessMs` gone with the
+  decay; the engine's tests type-checked (B-171).
+- **p4-12** (WI-P4-12): no alarm and no setting for the trend; Pace hold
+  added (B-172).
+- **p4-13** (WI-P4-13): the whitelist by shape; the stricter
+  presentation-sink rule; the ingests linted too (B-173).
+- **p4-14** (WI-P4-14): T8's half-wrap outage left at element level; the
+  stale-PES arm waiting on the owner's p3-23 veto (B-174).
+- **p4-18** (WI-P4-18): margins from their floors; the starvation as the
+  sink's own; the two-origin Video Player rule (B-179).
+
+### What this phase supersedes
+
+- **ADR-0005**: decision 1's `sync=true` presentation against a playout
+  budget and its "never drop on lateness" amendment (nothing drops late now,
+  and there is no budget to raise); decision 4's mechanism, which Phase 2
+  superseded in principle and which is now deleted; Stage 3a whole; the
+  AES67 RX's route-head `playoutOffsetMs`; Stage 3c whole (the ratchet, the
+  shedder, the raise and the rebase; `gst_latency_ratchet_test.py` replaced
+  by `gst_output_backlog_test.py`); the 302M output leg's D, trim and
+  shedder; Stage 3f's two guards that ran where the shedder was armed; the
+  house-timeline note's "a route through a transcoder needs a playout offset
+  that covers decode + encode" (the hop's transit is lateness, shown).
+- **ADR-0008**: the 2026-09-03 addendum's contract-paced sink (`sync=true
+  ts-offset=D+trim`, the shedder, the live D push, `lipSyncMs`) and Phase 3's
+  custom slaving; Phase 2's `identity name=live_upstream`.
+- **ADR-0016**: "independent of playout offset D" (there is none); a late
+  cue on a Video Player shows from when it arrives (Q1).
+- **ADR-0022**: the shared keys are `pcmBitDepth` and `lcpSortOrder`;
+  `playoutOffsetMs` is gone from every manifest.
+- **ADR-0015**: `buildLeakyQueue` is deleted; `buildBackpressureQueue` alone
+  defaults to `maxBytes = 0`.
+- **This ADR's earlier sections.** Phase 0's Presentation delay row and
+  `renderMs = max(λ, D) + device` are gone; Phase 3's device term on the
+  custom-slaving callback runs on a timer, and its `device-resync` is
+  deleted; Phase 3's "D, the trim and the shedder stay until Phase 4" is
+  done.
+
+### Deleted in this phase
+
+`playoutOffset.ts`, `playoutReanchor.ts`, `playoutReanchorState.ts`,
+`playoutReanchorText.ts`, `backlogShed.ts`, `routing/PlayoutRaises.ts`,
+`playoutDecay.ts`, `playoutSteps.ts`, `routing/testing/playoutRoute.ts`,
+`backlog_shed.py` and `backlog_shed.{cpp,h}` with their tests (23 files,
+7,133 lines, B-171); the 302M output's `audio302mTiming.ts` and FF9's
+`timelineSettleRestart.ts` in both audio outputs (B-167, B-168);
+`MediaRouter`'s head walk and raise surface, the `onRoutePlayout*` and
+`onPlayoutLegOffset` hooks, `EngineConfig.playoutOffsetMs` and
+`.playoutReanchor`, `MR_PLAYOUT_OFFSET_MS` and `MR_PLAYOUT_REANCHOR`,
+`PipelineDescription.backlogShed`, the `playout` status section, the
+re-anchor badge and warnings, `LatenessReporter.contentLatenessMs`; in the
+runners the shedder (619 lines of Python, 850 of C++), `_reclose_keyframe_gate`
+and `gate_kf::reclose`; `shed_watch` (grown into `queue_watch`, B-170);
+`AsrcDeviceLock`, the custom-slaving callback, `SLAVE_METHOD_CUSTOM`,
+`device-resync`/`device-resyncs` (B-166); B-62's `live_upstream` identity;
+`buildLeakyQueue` (B-173); `gst_backlog_shed_test.py`,
+`gst_latency_ratchet_test.py`, `backlog_shed_test.py` and the protocol cases
+N, PW, RA and `test_shed_refusals`; the settings Playout Offset (SRT Input,
+RIST Input, MPEG-TS IP Input, AES67 Input, TS Splitter), Lip-Sync Trim (Video
+Player, Audio Output (302M)), Sync Trim, Buffer, Sink Buffer and Low-Latency
+Sync (Audio Decoder), Sync and Buffer (Video Player), their stored values
+ignored (OQ-29, OQ-33), held absent by `removedTimingSettings.test.ts`.
+
+### Open at the end of the build
+
+- **The device rounds.** Ran: DEV-P4a and DEV-P4b (above). **Still to run**,
+  on the pre-release image and the v2.0.0.103 candidate: DEV-P4c1 (V-P4-1 on a
+  seamless source, V-P4-2, V-P4-4 on both outputs, V-P4-5 to V-P4-7, V-P4-10,
+  MR-029's PipeWire drill, MR-019's quantum check, the mode changes, kmssink
+  with Weston stopped through the player's form, `HELD_NS` under load,
+  DEV-P4b's leftovers, T31's output-off check); DEV-P4c2 (V-P4-3, V-P4-8,
+  V-P4-9, V-P4-12's drain on both boxes, the `MR_GATE=1` harness arms); DEV-P4d
+  after p4-17; then the v2.0.0.103 gate (p4-16, B-178), V-P4-11 the rollback
+  to v2.0.0.102. Nothing of WM1 to WM3c has been on a box.
+- **The phase review and its fixes** (p4-17, B-177): a Fable review of every
+  Phase 4 item against chapter 8 and the execution plan.
+- **The prefill's 40 ms** (OQ-31: revisited from V-P4-4's data before
+  release): a GstQueue's `min-threshold-time` is a delay line, so the 40 ms
+  adds latency and no ring margin; DEV-P4c1 measures the sink's fill and the
+  underrun rate at a 2048 quantum (MR-019, T27), then the owner decides
+  whether the 40 ms stays or the margin is made real at the sink.
+- **For the owner**: the engineering choices of rows B-160 to B-175 and
+  B-179, each recorded for the veto, and the items marked above (the cadence
+  hold, the two-origin Video Player rule, the drain's owner-level items);
+  p3-23's stale-PES veto, which p4-14's `scn-out-gap-recovers` inherits.
+- **Found, not fixed** (their rows): B-174's harness findings; B-162 F1;
+  B-172's leaky queue-full text naming the queue, not the input, on a
+  multi-input module whose `unixfdsrc` is auto-named, and a `device-stalled`
+  before the first `mrasrc-stats` dropped; a live input whose tail pushes
+  straight into a mixer never finishing `bus_input_remove` (B-170, rigs only:
+  the modules' branches end in `mralignwatch`); MR-041 on modules other than
+  outputs.

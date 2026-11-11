@@ -49,7 +49,10 @@ pad is never linked.
 - Cue timing is absolute house time: a cue shows when the video frame with
   that stamped PTS is composed, independent of playout offset D and of how
   many hops the cue took. Where a consumer's frames are not stamp-aligned the
-  bridge falls back to "show on arrival".
+  bridge falls back to "show on arrival". Amended by [[0029]] (Phase 4): there
+  is no playout offset D, and a Video Player never holds its picture for a
+  cue (the owner's Q1, "play on arrival"): a cue that reaches it after its
+  frame shows from when it arrives; the burn-in keeps its content-time wait.
 - Cue END times matter: the producer stamps `[now, now + hold)` and sends a
   zero-length CLEAR cue when the source erases; a renderer clears at whichever
   comes first. `holdMs` is the safety net for sources that never clear.
