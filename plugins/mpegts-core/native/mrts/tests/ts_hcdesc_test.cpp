@@ -73,7 +73,6 @@ void test_round_trip() {
     }
     CHECK("round trip: all 16 flag combinations", flags);
     HouseTimeDecl hi = full();
-    hi.version = 0xFF;
     hi.sync_source = 0xFF;
     hi.tai_utc_offset_s = 0xFF;
     hi.ptp_domain = 127;
@@ -97,6 +96,16 @@ void test_round_trip() {
         src = src && round_trips(d);
     }
     CHECK("round trip: each sync_source", src);
+    bool ver = true;
+    for (uint8_t v : {0, 2, 0xFF}) {
+        HouseTimeDecl d = full();
+        d.version = v;
+        HouseTimeDecl r;
+        const std::vector<uint8_t> b = enc(d);
+        ver = ver && b[6] == hcdesc::VERSION && hcdesc::decode(b.data(), (int)b.size(), &r) &&
+              r.version == hcdesc::VERSION;
+    }
+    CHECK("encode writes hc_version VERSION whatever the struct's version (0, 2, 0xFF)", ver);
 }
 
 void test_ptp_invalid() {
@@ -121,6 +130,24 @@ void test_lengths() {
     CHECK("length 24: decodes, timeline_id 0, the rest as written",
           hcdesc::decode(v24.data(), (int)v24.size(), &r) && r.timeline_id == 0 &&
               r.d_e_90k == d.d_e_90k && r.gm_identity == d.gm_identity && r.epoch_seq == d.epoch_seq);
+    // A 24-byte one followed by other descriptors: nothing past its byte 25 is read.
+    std::vector<uint8_t> loop24 = v24;
+    loop24.insert(loop24.end(), {0x0A, 4, 'e', 'n', 'g', 0x00, 0x05, 4, 'K', 'L', 'V', 'A'});
+    std::vector<uint8_t> pi24 = loop24;
+    CHECK("length 24 then other descriptors: decodes, timeline_id 0 (the next bytes not read)",
+          hcdesc::decode(loop24.data(), (int)loop24.size(), &r) && r.timeline_id == 0 &&
+              r.d_e_90k == d.d_e_90k && hcdesc::find_in(pi24, &r) && r.timeline_id == 0);
+    // Lengths 25-31 with bytes after byte 25 (part of a timeline_id): still timeline_id 0.
+    bool short_tl = true;
+    for (int len = 25; len <= 31; len++) {
+        std::vector<uint8_t> v(b.begin(), b.begin() + 2 + len);
+        v[1] = (uint8_t)len;
+        v.insert(v.end(), {0x0A, 4, 'e', 'n', 'g', 0x00});
+        HouseTimeDecl x;
+        short_tl = short_tl && hcdesc::decode(v.data(), (int)v.size(), &x) && x.timeline_id == 0 &&
+                   x.d_e_90k == d.d_e_90k && x.epoch_seq == d.epoch_seq;
+    }
+    CHECK("lengths 25-31 with bytes after byte 25: decode, timeline_id 0", short_tl);
     std::vector<uint8_t> v40 = b;
     v40[1] = 40;
     v40[6] = 2;

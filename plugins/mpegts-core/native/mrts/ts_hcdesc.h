@@ -11,7 +11,7 @@ namespace mrts {
 // One program's declaration. On the wire with ptp_valid = 0, ptp_domain is
 // 0xFF and gm_identity all ones whatever these hold; decode returns the wire.
 struct HouseTimeDecl {
-    uint8_t version = 1;              // hc_version
+    uint8_t version = 1;              // hc_version: decode's; encode writes hcdesc::VERSION
     bool house_time_tai = false;      // b7: PTS/DTS are H mod 2^33, PCR H(emission) - D_e
     bool disciplined = false;         // b6: the sender's daemon synchronised and disciplining
     bool traceable = false;           // b5: E latched while synchronised, kernel TAI offset set
@@ -39,7 +39,8 @@ constexpr uint8_t SYNC_NONE = 0, SYNC_NTP = 1, SYNC_SNTP = 2, SYNC_PTP = 3;
 constexpr uint8_t ERROR_CLASS_UNKNOWN = 0xFF;
 constexpr uint8_t ERROR_CLASS_MAX = 31;
 
-// The whole descriptor, tag to timeline_id; reserved flag bits b3-b0 are 1.
+// The whole descriptor, tag to timeline_id; hc_version is VERSION and the
+// reserved flag bits b3-b0 are 1.
 void encode(const HouseTimeDecl& decl, uint8_t out[BYTES]);
 // `data` = a descriptor from its tag, `len` bytes available. Takes an MRHT of
 // descriptor_length >= 24 and hc_version >= 1, reads the fields it knows and

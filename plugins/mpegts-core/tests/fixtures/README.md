@@ -48,8 +48,11 @@ to the content clock (`lateness`, [content ms, lateness ms] points) and any sett
 its `<case>.expect.jsonl`, the lines of `py/egress_core.py` on it (`python3 -m egress_core <input>
 --clock <case>.clock.json [--bus <sidecar>]` from `py/`): each event, each program's stats, the
 counters and the output's length, CRC-32 and SHA-256. `py/egress_ref_test.py` holds every case to
-its expectation and `mrts_cli egress` the C++ (p5-2b). No stream is committed for them; the
-audio-only and PCR-less programmes are generated at test time (`fixture_gen --ts egress`).
+its expectation, and `native/mrts/tests/ts_egress_replay_test` and `py/egress_parity_test.py` hold
+`mrts_cli egress`, the C++ (B-222), to the same lines and bytes. `wrap-33bit`'s E is a 2025 one
+(B-222: B-221's was past int64 ns, the same E modulo both wraps, so its expectation is unchanged).
+No stream is committed for them; the audio-only and PCR-less programmes are generated at test time
+(`fixture_gen --ts egress`).
 Reviewed by hand on 2026-11-12 (B-221): every output decodes in ffprobe with the input's packet
 count and the input's errors alone (the synthetic streams' payloads), each `d-e-*` line's lateness
 matches its clock file (the ramps' raises at least 130 ms apart, `hevc-aac-max` held at its 400 ms

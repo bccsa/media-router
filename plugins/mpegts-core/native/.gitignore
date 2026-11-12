@@ -25,6 +25,8 @@ mrts/tests/pcm_fade_test
 mrts/tests/video_pace_test
 mrts/tests/drain_servo_test
 mrts/tests/ts_hcdesc_test
+mrts/tests/ts_egress_test
+mrts/tests/ts_egress_replay_test
 mrts/tests/mrts_bench
 mrts/tests/fixture_gen
 mrtshouse/tests/restamp_ref

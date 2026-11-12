@@ -45,7 +45,7 @@ void encode(const HouseTimeDecl& d, uint8_t out[BYTES]) {
     out[0] = TAG;
     out[1] = LENGTH;
     put_be(out + 2, FORMAT, 4);
-    out[6] = d.version;
+    out[6] = VERSION;                     // what this encoder writes, whatever d.version holds
     out[7] = (uint8_t)((d.house_time_tai ? 0x80 : 0) | (d.disciplined ? 0x40 : 0) |
                        (d.traceable ? 0x20 : 0) | (d.ptp_valid ? 0x10 : 0) | 0x0F);
     out[8] = d.sync_source;

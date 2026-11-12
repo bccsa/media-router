@@ -30,22 +30,25 @@ inline void build_pcr_packet(int pid, int64_t pcr27, int cc, uint8_t out[PKT]) {
     build_pcr_packet(pid, pcr27, cc, false, out);    // today's 4-argument callers
 }
 
-// Egress cadence (§7): a PCR-only packet is due once the PCR PID has carried
-// no PCR for PCR_MAX_INTERVAL_NS, and before its first, so a source without a
-// PCR gets one. Call saw_pcr for every PCR sent, written or inserted.
+// Egress cadence (§7): a PCR-only packet is due once the PCR PID has carried no PCR for the
+// interval (40 ms unless given; the writer's 35 ms, S4), and before its first, so a source
+// without a PCR gets one. Call saw_pcr for every PCR sent, written or inserted.
 class PcrScheduler {
   public:
+    explicit PcrScheduler(int64_t interval_ns = PCR_MAX_INTERVAL_NS) : interval_ns_(interval_ns) {}
     void saw_pcr(int64_t house_now_ns) {
         last_pcr_ns_ = house_now_ns;
         have_pcr_ = true;
     }
     void saw_payload(uint8_t cc) { cc_ = cc & 0x0F; }
     bool due(int64_t house_now_ns) const {
-        return !have_pcr_ || house_now_ns - last_pcr_ns_ >= PCR_MAX_INTERVAL_NS;
+        return !have_pcr_ || house_now_ns - last_pcr_ns_ >= interval_ns_;
     }
     uint8_t cc() const { return cc_; }    // 0 until the PID's first payload
+    int64_t interval_ns() const { return interval_ns_; }
 
   private:
+    int64_t interval_ns_;
     int64_t last_pcr_ns_ = 0;
     bool have_pcr_ = false;
     uint8_t cc_ = 0;

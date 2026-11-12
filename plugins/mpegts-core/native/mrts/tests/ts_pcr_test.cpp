@@ -257,5 +257,21 @@ int main() {
     CHECK("cadence: a PCR every 20 ms needs only the start-up insertion", dense_ins == 1);
     CHECK("cadence: a PID with no PCR of its own gets one every 40 ms", none_ins == 25);
 
+    // The egress writer's 35 ms interval (S4): due at 35 ms, not 1 ns short of it.
+    PcrScheduler w35(35 * MS);
+    int w35_ins = 0;
+    for (int ms = 0; ms < 1050; ms++) {
+        if (w35.due(ms * MS)) {
+            w35_ins++;
+            w35.saw_pcr(ms * MS);
+        }
+    }
+    w35.saw_pcr(t0);
+    CHECK("scheduler 35 ms: the interval as given, 40 ms the default",
+          w35.interval_ns() == 35 * MS && PcrScheduler().interval_ns() == PCR_MAX_INTERVAL_NS);
+    CHECK("scheduler 35 ms: due at exactly 35 ms, not 1 ns before",
+          !w35.due(t0 + 35 * MS - 1) && w35.due(t0 + 35 * MS));
+    CHECK("cadence 35 ms: a PID with no PCR of its own gets one every 35 ms", w35_ins == 30);
+
     return test_summary("ts_pcr");
 }

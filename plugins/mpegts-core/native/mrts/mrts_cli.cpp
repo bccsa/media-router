@@ -10,6 +10,7 @@
 //        mrts_cli asrc seq.txt|-
 //        mrts_cli pace seq.jsonl|-
 //        mrts_cli asrc-device seq.jsonl|-
+//        mrts_cli egress in.ts --clock case.clock.json [--bus B] [--chunk N] [--out O] [--expect E]
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -18,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -28,7 +30,10 @@
 #include "asrc_servo.h"
 #include "demux_core.h"
 #include "drain_servo.h"
+#include "ts_egress.h"
 #include "ts_dump.h"
+#include "ts_gap.h"
+#include "ts_hcdesc.h"
 #include "ts_house.h"
 #include "ts_packet.h"
 #include "ts_pes.h"
@@ -2207,6 +2212,436 @@ int drain_main(int argc, char** argv) {
     return rc;
 }
 
+// --- egress: a recording through mrts::EgressCore, py/egress_core.py's replay (WI-P5-2) ----
+
+const char kEgressUsage[] =
+    "usage: mrts_cli egress in.ts --clock case.clock.json [--bus in.bus.jsonl] [--chunk N]\n"
+    "                          [--out out.ts] [--expect case.expect.jsonl]\n"
+    "  Replays a recording through mrts::EgressCore as py/egress_core.py's CLI does (the parity\n"
+    "  verb, B-222): the clock file's declaration, lateness ramp, changes and config; buffers of\n"
+    "  N bytes (default the file's \"chunk\", else 1316) or the sidecar's, a GAP one as a marker.\n"
+    "  Prints the events, each program's stats, the counters and the output's length, CRC-32 and\n"
+    "  SHA-256 as JSON lines (sorted keys); --expect compares them instead, exit 1 on a difference.\n";
+
+// python's int() of a JSON value: an integer, a float truncated, a decimal string, a bool.
+bool py_int(const Json& j, int64_t* v) {
+    if (j.type == Json::Type::boolean) return *v = j.b ? 1 : 0, true;
+    if (j.type == Json::Type::string) return parse_int(j.s, v);
+    if (j.i64(v)) return true;
+    double d;
+    if (!j.f64(&d) || !(d > -9.2e18 && d < 9.2e18)) return false;
+    *v = (int64_t)d;
+    return true;
+}
+
+bool py_bool(const Json& j, bool* v) {
+    if (j.type == Json::Type::boolean) return *v = j.b, true;
+    int64_t x;
+    if (!py_int(j, &x)) return false;
+    *v = x != 0;
+    return true;
+}
+
+bool clock_from_json(const Json& j, ClockDecl* c, std::string* err) {
+    if (j.type != Json::Type::object) return *err = "a clock is not an object", false;
+    for (const auto& kv : j.keys) {
+        const std::string& k = kv.first;
+        const Json& v = kv.second;
+        int64_t x = 0;
+        bool ok = true;
+        if (k == "eNs") ok = py_int(v, &c->e_ns);
+        else if (k == "seq") ok = py_int(v, &c->seq);
+        else if (k == "known") ok = py_bool(v, &c->known);
+        else if (k == "traceable") ok = py_bool(v, &c->traceable);
+        else if (k == "disciplined") ok = py_bool(v, &c->disciplined);
+        else if (k == "source") ok = py_int(v, &x) && x >= 0 && x <= 255, c->source = (uint8_t)x;
+        else if (k == "taiOffsetS") ok = py_int(v, &c->tai_offset_s);
+        else if (k == "ptpDomain") ok = py_int(v, &x) && x >= INT32_MIN && x <= INT32_MAX, c->ptp_domain = (int)x;
+        else if (k == "errorUs") {
+            if (v.type == Json::Type::null) c->error_us.reset();
+            else ok = py_int(v, &x), c->error_us = x;
+        } else if (k == "gm") {
+            uint64_t gm = 0;
+            if (v.type == Json::Type::null) c->gm.reset();
+            else if (v.type == Json::Type::string && hcdesc::parse_gm(v.s, &gm)) c->gm = gm;
+            else c->gm.reset();               // python's parse_gm: None
+        } else if (k == "timelineId") {
+            ok = v.type == Json::Type::string && hcdesc::parse_timeline_text(v.s, &c->timeline_id);
+        }
+        if (!ok) return *err = "bad clock \"" + k + "\"", false;
+    }
+    return true;
+}
+
+// The content clock (py/egress_core.py content_anchors): (byte offset, house ns) of the first
+// PCR PID's PCRs, unwrapped, - 1 h; with no PCR the first timing PID's DTS, else PTS.
+std::vector<std::pair<int64_t, int64_t>> content_anchors(const uint8_t* d, size_t n) {
+    std::vector<std::pair<size_t, const uint8_t*>> pkts;
+    for (size_t off = 0; off + PKT <= n;) {
+        if (d[off] != SYNC_BYTE) {
+            off++;
+            continue;
+        }
+        pkts.emplace_back(off, d + off);
+        off += PKT;
+    }
+    const int64_t hour = 3600LL * 1000000000LL;
+    std::vector<std::pair<int64_t, int64_t>> out;
+    int pcr_pid = -1;
+    for (const auto& op : pkts)
+        if (read_pcr(op.second) >= 0) {
+            pcr_pid = ts_pid(op.second);
+            break;
+        }
+    int64_t last = 0, u = 0;
+    bool have = false;
+    if (pcr_pid >= 0) {
+        for (const auto& op : pkts) {
+            if (ts_pid(op.second) != pcr_pid) continue;
+            const int64_t v = read_pcr(op.second);
+            if (v < 0) continue;
+            if (!have) {
+                u = v;
+            } else {
+                int64_t dd = ((v - last) % PCR_MODULO + PCR_MODULO) % PCR_MODULO;
+                u += dd > PCR_MODULO / 2 ? dd - PCR_MODULO : dd;
+            }
+            last = v;
+            have = true;
+            out.emplace_back((int64_t)op.first, pcr27_to_ns(u) - hour);
+        }
+        return out;
+    }
+    int tpid = -1;
+    for (const auto& op : pkts) {
+        uint8_t b[PKT];
+        std::memcpy(b, op.second, PKT);
+        PacketView v;
+        parse_packet(b, &v);
+        if (!v.pusi || v.payload_off >= PKT) continue;
+        PesHeader h;
+        if (!parse_pes_header(b + v.payload_off, PKT - v.payload_off, &h) || !h.complete || h.pts < 0) continue;
+        if (!((h.sid & 0xF0) == 0xE0 || (h.sid & 0xE0) == 0xC0)) continue;
+        if (tpid < 0) tpid = v.pid;
+        if (v.pid != tpid) continue;
+        const int64_t t = h.dts >= 0 ? h.dts : h.pts;
+        u = have ? u + fold33(t - last) : t;
+        last = t;
+        have = true;
+        out.emplace_back((int64_t)op.first, pts90k_to_ns(u) - hour);
+    }
+    return out;
+}
+
+// Linear between (x, y) points sorted by x, floor division, held outside them.
+int64_t interp(const std::vector<std::pair<int64_t, int64_t>>& pts, int64_t x) {
+    if (pts.empty()) return 0;
+    const size_t k = (size_t)(std::upper_bound(pts.begin(), pts.end(), x,
+                                               [](int64_t a, const std::pair<int64_t, int64_t>& p) {
+                                                   return a < p.first;
+                                               }) - pts.begin());
+    if (k == 0) return pts[0].second;
+    if (k == pts.size()) return pts.back().second;
+    const auto& a = pts[k - 1];
+    const auto& b = pts[k];
+    if (b.first == a.first) return b.second;
+    const __int128 num = (__int128)(b.second - a.second) * (x - a.first);
+    const __int128 den = b.first - a.first;
+    __int128 q = num / den;
+    if (num % den != 0 && ((num < 0) != (den < 0))) q -= 1;
+    return a.second + (int64_t)q;
+}
+
+uint32_t crc32_zlib(const uint8_t* d, size_t n) {
+    static uint32_t t[256];
+    if (!t[1]) {
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            t[i] = c;
+        }
+    }
+    uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < n; i++) c = t[(c ^ d[i]) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFFu;
+}
+
+// SHA-256 (FIPS 180-4), for the replay's output line.
+std::string sha256_hex(const uint8_t* d, size_t n) {
+    static const uint32_t K[64] = {
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+    uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    auto rotr = [](uint32_t x, int r) { return (x >> r) | (x << (32 - r)); };
+    std::vector<uint8_t> m(d, d + n);
+    m.push_back(0x80);
+    while (m.size() % 64 != 56) m.push_back(0);
+    for (int i = 7; i >= 0; i--) m.push_back((uint8_t)(((uint64_t)n * 8) >> (8 * i)));
+    for (size_t at = 0; at < m.size(); at += 64) {
+        uint32_t w[64];
+        for (int i = 0; i < 16; i++)
+            w[i] = (uint32_t)m[at + 4 * i] << 24 | (uint32_t)m[at + 4 * i + 1] << 16 | (uint32_t)m[at + 4 * i + 2] << 8 |
+                   m[at + 4 * i + 3];
+        for (int i = 16; i < 64; i++) {
+            const uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            const uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        uint32_t a = h[0], b = h[1], c = h[2], dd = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (int i = 0; i < 64; i++) {
+            const uint32_t t1 = hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i];
+            const uint32_t t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+            hh = g, g = f, f = e, e = dd + t1, dd = c, c = b, b = a, a = t1 + t2;
+        }
+        h[0] += a, h[1] += b, h[2] += c, h[3] += dd, h[4] += e, h[5] += f, h[6] += g, h[7] += hh;
+    }
+    char out[65];
+    for (int i = 0; i < 8; i++) std::snprintf(out + 8 * i, 9, "%08x", h[i]);
+    return std::string(out, 64);
+}
+
+// One JSON object of the replay's lines, its keys sorted as python's sort_keys.
+std::string sorted_obj(const std::map<std::string, std::string>& kv) {
+    std::string s = "{";
+    for (const auto& p : kv) s += (s.size() > 1 ? "," : "") + jstr(p.first) + ":" + p.second;
+    return s + "}";
+}
+
+std::string egress_event_json(const EgressEvent& e) {
+    using K = EgressEvent::Kind;
+    auto n = [](int64_t v) { return std::to_string(v); };
+    std::map<std::string, std::string> kv = {{"event", jstr(egress_event_name(e.kind))},
+                                             {"packet", std::to_string(e.packet)}};
+    switch (e.kind) {
+        case K::d_e_lower:
+            kv["gapNs"] = n(e.gap_ns);
+            [[fallthrough]];
+        case K::d_e_start: case K::d_e_raise: case K::d_e_max:
+            kv["program"] = n(e.program);
+            kv["fromNs"] = n(e.from_ns);
+            kv["toNs"] = n(e.to_ns);
+            kv["latenessNs"] = n(e.lateness_ns);
+            break;
+        case K::re_epoch:
+            kv["seq"] = n(e.seq);
+            kv["fromSeq"] = n(e.from_seq);
+            kv["deltaNs"] = n(e.delta_ns);
+            break;
+        case K::pcr_pid_assigned:
+            kv["program"] = n(e.program);
+            kv["pid"] = n(e.pid);
+            break;
+        case K::pmt_grew:
+            kv["program"] = n(e.program);
+            kv["inPackets"] = n(e.in_packets);
+            kv["outPackets"] = n(e.out_packets);
+            break;
+        case K::cc_lost_in:
+            kv["pid"] = n(e.pid);
+            break;
+    }
+    return sorted_obj(kv);
+}
+
+std::string egress_stats_json(const EgressStats& s) {
+    auto n = [](int64_t v) { return std::to_string(v); };
+    auto u = [](uint64_t v) { return std::to_string(v); };
+    return "{\"stats\":" + sorted_obj({{"pesRewritten", u(s.pes_rewritten)}, {"pcrWritten", u(s.pcr_written)},
+                                       {"pcrInserted", u(s.pcr_inserted)}, {"pmtSent", u(s.pmt_sent)},
+                                       {"latenessNs", s.lateness_ns ? n(*s.lateness_ns) : "null"},
+                                       {"latenessMaxNs", n(s.lateness_max_ns)},
+                                       {"pcrIntervalMaxNs", n(s.pcr_interval_max_ns)}, {"program", n(s.program)},
+                                       {"dENs", n(s.d_e_ns)}, {"dEChanges", u(s.d_e_changes)},
+                                       {"latenessOffHouse", u(s.lateness_off_house)},
+                                       {"pmtVersion", n(s.pmt_version)}, {"pcrPid", n(s.pcr_pid)}}) +
+           "}";
+}
+
+std::string egress_counters_json(const EgressCounters& c) {
+    auto u = [](uint64_t v) { return std::to_string(v); };
+    return "{\"counters\":" + sorted_obj({{"ccLostIn", u(c.cc_lost_in)}, {"droppedBeforePmt", u(c.dropped_before_pmt)},
+                                          {"gapMarkers", u(c.gap_markers)}, {"gaps", u(c.gaps)},
+                                          {"held", u(c.held)}, {"reEpochs", u(c.re_epochs)}}) +
+           "}";
+}
+
+struct EgressChange {
+    bool integer = true;
+    int64_t at_ns = 0;
+    double at_ms = 0;
+    const Json* clock = nullptr;
+};
+
+int egress_main(int argc, char** argv) {
+    std::string in, clock_path, bus_in, out_path, expect;
+    int64_t chunk = 0;
+    for (int i = 1; i < argc; i++) {
+        const std::string a = argv[i];
+        const bool arg = i + 1 < argc;
+        if (a == "--clock" && arg) clock_path = argv[++i];
+        else if (a == "--bus" && arg) bus_in = argv[++i];
+        else if (a == "--out" && arg) out_path = argv[++i];
+        else if (a == "--expect" && arg) expect = argv[++i];
+        else if (a == "--chunk" && arg && parse_int(argv[i + 1], &chunk) && chunk >= 1) i++;
+        else if (a[0] != '-' && in.empty()) in = a;
+        else return std::fputs(kEgressUsage, stderr), 2;
+    }
+    if (in.empty() || clock_path.empty()) return std::fputs(kEgressUsage, stderr), 2;
+    std::string ts, spec_text, err;
+    if (!read_file(in, &ts)) return std::perror(in.c_str()), 1;
+    Json spec;
+    if (!read_file(clock_path, &spec_text) || !parse_json(spec_text, &spec, &err) || spec.type != Json::Type::object) {
+        std::fprintf(stderr, "mrts_cli: %s: %s\n", clock_path.c_str(), err.empty() ? "not a clock file" : err.c_str());
+        return 2;
+    }
+    const int64_t MS = 1000000;
+    EgressConfig cfg;
+    if (const Json* c = spec.get("config")) {
+        const std::pair<const char*, int64_t*> keys[] = {
+            {"pcrIntervalMs", &cfg.pcr_interval_ns}, {"marginMs", &cfg.margin_ns}, {"headroomMs", &cfg.headroom_ns},
+            {"floorMs", &cfg.floor_ns}, {"maxMs", &cfg.max_ns}, {"gapLowerMinMs", &cfg.gap_lower_min_ns}};
+        for (const auto& k : keys) {
+            if (const Json* v = c->get(k.first)) {
+                int64_t x;
+                if (!py_int(*v, &x)) return std::fprintf(stderr, "mrts_cli: bad config %s\n", k.first), 2;
+                *k.second = x * MS;
+            }
+        }
+    }
+    ClockDecl clock;
+    if (const Json* c = spec.get("clock"))
+        if (!clock_from_json(*c, &clock, &err)) return std::fprintf(stderr, "mrts_cli: %s\n", err.c_str()), 2;
+    std::vector<std::pair<int64_t, int64_t>> lat;
+    if (const Json* l = spec.get("lateness")) {
+        for (const Json& p : l->items) {
+            int64_t t, ms;
+            if (p.items.size() != 2 || !py_int(p.items[0], &t) || !py_int(p.items[1], &ms))
+                return std::fputs("mrts_cli: bad lateness\n", stderr), 2;
+            lat.emplace_back(t * MS, ms * MS);
+        }
+    } else {
+        lat.emplace_back(0, 0);
+    }
+    std::vector<EgressChange> changes;
+    if (const Json* ch = spec.get("changes")) {
+        for (const Json& c : ch->items) {
+            EgressChange e;
+            const Json* at = c.get("atMs");
+            if (!at || at->type != Json::Type::number) return std::fputs("mrts_cli: bad change\n", stderr), 2;
+            e.integer = at->i64(&e.at_ns);
+            if (e.integer) e.at_ns *= MS;
+            else at->f64(&e.at_ms);
+            e.clock = c.get("clock");
+            changes.push_back(e);
+        }
+        std::stable_sort(changes.begin(), changes.end(), [](const EgressChange& a, const EgressChange& b) {
+            const double x = a.integer ? (double)a.at_ns / 1e6 : a.at_ms, y = b.integer ? (double)b.at_ns / 1e6 : b.at_ms;
+            return x < y;
+        });
+    }
+    const uint8_t* d = reinterpret_cast<const uint8_t*>(ts.data());
+    const size_t size = ts.size();
+    std::vector<BusLine> bus;
+    if (!bus_in.empty() && !read_bus(bus_in, in, size, &bus)) return 1;
+    if (chunk == 0) {
+        chunk = 1316;
+        if (const Json* c = spec.get("chunk"))
+            if (!py_int(*c, &chunk) || chunk < 1) return std::fputs("mrts_cli: bad chunk\n", stderr), 2;
+    }
+    const std::vector<std::pair<int64_t, int64_t>> anchors = content_anchors(d, size);
+    const int64_t c0 = anchors.empty() ? 0 : anchors[0].second;
+    auto content = [&](int64_t off) { return interp(anchors, off); };
+    auto now_at = [&](int64_t off) {
+        const int64_t c = content(off);
+        return c + interp(lat, c - c0);
+    };
+    struct Clk : ClockReader {
+        std::function<int64_t(int64_t)> f;
+        int64_t off = 0;
+        int64_t read(size_t i) const override { return f(off + (int64_t)i * PKT); }
+    } clk;
+    clk.f = now_at;
+    EgressCore core(cfg);
+    core.set_clock(clock);
+    std::vector<uint8_t> out;
+    std::vector<std::string> lines;
+    auto take = [&]() {
+        for (const EgressEvent& e : core.take_events()) lines.push_back(egress_event_json(e));
+    };
+    auto step = [&](int64_t off, int64_t len, bool gap, int64_t gap_pts) {
+        size_t k = 0;
+        for (; k < changes.size(); k++) {
+            const EgressChange& c = changes[k];
+            const int64_t dc = content(off) - c0;
+            if (!(c.integer ? dc >= c.at_ns : (double)dc >= c.at_ms * 1e6)) break;
+            if (c.clock && !clock_from_json(*c.clock, &clock, &err)) return false;
+            core.set_clock(clock);
+        }
+        changes.erase(changes.begin(), changes.begin() + k);
+        clk.off = off;
+        const EgressResult& r = gap ? core.on_gap(d + off, (size_t)len, now_at(off), gap_pts, clk)
+                                    : core.process(d + off, (size_t)len, now_at(off), clk);
+        r.apply(out);
+        take();
+        return true;
+    };
+    bool ok = true;
+    if (!bus_in.empty()) {
+        for (const BusLine& b : bus)
+            ok = ok && step((int64_t)b.off, (int64_t)b.len, (b.flags & 2048) && b.pts >= 0, b.pts);
+    } else {
+        for (int64_t o = 0; ok && o < (int64_t)size; o += chunk) ok = step(o, std::min<int64_t>(chunk, size - o), false, 0);
+    }
+    if (!ok) return std::fprintf(stderr, "mrts_cli: %s\n", err.c_str()), 2;
+    core.flush(out);
+    for (int n : core.programs()) {
+        EgressStats s;
+        core.stats(n, &s);
+        lines.push_back(egress_stats_json(s));
+    }
+    lines.push_back(egress_counters_json(core.counters()));
+    char crc[9];
+    std::snprintf(crc, sizeof crc, "%08x", crc32_zlib(out.data(), out.size()));
+    lines.push_back("{\"output\":" + sorted_obj({{"bytes", std::to_string(out.size())}, {"crc32", jstr(crc)},
+                                                {"sha256", jstr(sha256_hex(out.data(), out.size()))}}) +
+                    "}");
+    if (!out_path.empty() && !write_bytes(out_path, reinterpret_cast<const char*>(out.data()), out.size())) {
+        std::perror(out_path.c_str());
+        return 1;
+    }
+    if (!expect.empty()) {
+        std::string text;
+        if (!read_file(expect, &text)) return std::perror(expect.c_str()), 1;
+        std::vector<std::string> want;
+        for (size_t at = 0; at < text.size();) {
+            size_t nl = text.find('\n', at);
+            if (nl == std::string::npos) nl = text.size();
+            const std::string l = text.substr(at, nl - at);
+            at = nl + 1;
+            if (l.find_first_not_of(" \t\r") != std::string::npos) want.push_back(l);
+        }
+        if (want == lines) return 0;
+        for (size_t k = 0; k < std::max(want.size(), lines.size()); k++) {
+            const std::string x = k < want.size() ? want[k] : "", y = k < lines.size() ? lines[k] : "";
+            if (x != y) {
+                std::fprintf(stderr, "line %zu:\n  want %s\n  got  %s\n", k + 1, x.c_str(), y.c_str());
+                break;
+            }
+        }
+        return 1;
+    }
+    std::string text;
+    for (const std::string& l : lines) text += l + "\n";
+    std::fwrite(text.data(), 1, text.size(), stdout);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2220,6 +2655,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "pace") == 0) return pace_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "asrc-device") == 0) return asrc_device_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "drain") == 0) return drain_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "egress") == 0) return egress_main(argc - 1, argv + 1);
     std::fprintf(stderr,
                  "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
@@ -2232,6 +2668,8 @@ int main(int argc, char** argv) {
                  "       mrts_cli asrc seq.txt|-\n"
                  "       mrts_cli pace seq.jsonl|-\n"
                  "       mrts_cli asrc-device seq.jsonl|-\n"
-                 "       mrts_cli drain seq.jsonl|-\n");
+                 "       mrts_cli drain seq.jsonl|-\n"
+                 "       mrts_cli egress in.ts --clock case.clock.json [--bus B] [--chunk N] [--out O] "
+                 "[--expect E]\n");
     return 2;
 }

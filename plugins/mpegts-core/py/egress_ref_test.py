@@ -152,8 +152,8 @@ def pes_mapped(inp, out, e_of):
 
 
 def e_wrapping_at(pts_bus):
-    """An E of 2026 that puts the wire's 2^33 wrap at this bus PTS."""
-    e90 = 18400000 * ec.PTS_WRAP + (ec.MUX_CLOCK_BASE_90K - pts_bus) % ec.PTS_WRAP
+    """An E of 2025 (int64 ns, as the C++ holds it) that puts the wire's 2^33 wrap at this bus PTS."""
+    e90 = 18400 * ec.PTS_WRAP + (ec.MUX_CLOCK_BASE_90K - pts_bus) % ec.PTS_WRAP
     e_ns = -(-e90 * 100000 // 9)
     assert ec.ns_to_pts90k(e_ns) == e90
     return e_ns
