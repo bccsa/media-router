@@ -325,14 +325,15 @@ def _cc_ok(out):
 
 def cc_walk(data):
     """A strict CC walk per PID: a payload packet is the last payload CC + 1, an adaptation-only
-    one the last payload CC (before any, the first payload CC - 1). The violations, as
+    one the last payload CC (before any, the first payload CC - 1; on a PID with no payload, its
+    first adaptation-only CC). The violations, as
     (packet, pid, "pay"|"af", cc, wanted), and the adaptation-only packets judged."""
     pkts = [data[i:i + PKT] for i in range(0, len(data) - PKT + 1, PKT)]
     first = {}
     for p in pkts:
         if p[3] & 0x10:
             first.setdefault((p[1] & 0x1F) << 8 | p[2], p[3] & 0x0F)
-    last, bad, n = {}, [], 0
+    last, bad, n, af0 = {}, [], 0, {}
     for i, p in enumerate(pkts):
         pid, cc = (p[1] & 0x1F) << 8 | p[2], p[3] & 0x0F
         if pid == ec.PID_NULL:
@@ -342,7 +343,7 @@ def cc_walk(data):
                 bad.append((i, pid, "pay", cc, (last[pid] + 1) & 0x0F))
             last[pid] = cc
         elif p[3] & 0x20:
-            want = last.get(pid, (first[pid] - 1) & 0x0F if pid in first else None)
+            want = last.get(pid, (first[pid] - 1) & 0x0F if pid in first else af0.setdefault(pid, cc))
             n += 1
             if want is not None and cc != want:
                 bad.append((i, pid, "af", cc, want))
@@ -832,13 +833,174 @@ def case_pcr_other_pid():
     ]
 
 
+PCR_ONLY = 0x1F0
+
+
+def dedicated_pcr(data, pid=PCR_ONLY, cc=7):
+    """Each video PCR copied into a PCR-only packet on `pid` just before it (CC `cc`, never a
+    payload), the PMT's PCR_PID pointed there: a dedicated PCR PID (part 4.2)."""
+    out = bytearray()
+    for off in range(0, len(data), PKT):
+        p = bytearray(data[off:off + PKT])
+        v = hr.parse_packet(bytearray(p))
+        pcr = hr.read_pcr(p)
+        if pcr >= 0 and v.pid == 0x100:
+            out += ec.build_pcr_packet(pid, pcr, cc, False)
+        if v.pid == 0x1000 and v.pusi:
+            k = v.payload_off + 1 + p[v.payload_off]
+            ln = 3 + (((p[k + 1] & 0x0F) << 8) | p[k + 2])
+            p[k + 8], p[k + 9] = 0xE0 | (pid >> 8), pid & 0xFF
+            p[k + ln - 4:k + ln] = ec.crc32_mpeg(bytes(p[k:k + ln - 4])).to_bytes(4, "big")
+        out += p
+    return bytes(out)
+
+
+def case_dedicated_pcr():
+    """A PCR PID that never carries payload: PCRs inserted on its own CC, flagged at D_e changes."""
+    data = dedicated_pcr(gen("--duration", "20"))
+    out, lines, core = run(data, spec(lateness=((0, 200), (20000, 1000))))
+    w = Walk(out)
+    on = [r for _k, _i, r in w.of("pcr") if r["pid"] == PCR_ONLY]
+    de = [e for e in lines if e.get("event", "").startswith("d-e-") and e["fromNs"] != e["toNs"]]
+    iv = _pcr_intervals(w, PCR_ONLY)
+    st = core.stats(1)
+    ccs = {out[i + 3] & 0x0F for i in range(0, len(out), PKT)
+           if ((out[i + 1] & 0x1F) << 8 | out[i + 2]) == PCR_ONLY}
+    return [
+        ("dedicated PCR PID: the PMT says it in and out", all(
+            r["pcr"] == PCR_ONLY for _k, _i, r in w.of("pmt")) and all(
+            r["pcr"] == PCR_ONLY for _k, _i, r in Walk(data).of("pmt"))),
+        ("dedicated PCR PID: each D_e change a PMT one version on, then a flagged PCR on it",
+         len(de) >= 4 and _de_order_ok(out, lines, PCR_ONLY)
+         and sum(1 for r in on if r["disc"]) == len(de)),
+        ("dedicated PCR PID: PCRs inserted, interval <= 35 ms + its buffer spacing",
+         st["pcrInserted"] > 0 and bool(iv) and max(iv) <= 35 * MS + _max_spacing(data, 1316)),
+        ("dedicated PCR PID: inserted packets on its adaptation-only CC (strict CC walk)",
+         cc_strict(out) and ccs == {7}),
+        ("dedicated PCR PID: DTS - PCR >= headroom for every timing PES after the first",
+         (_dts_pcr_min(out, PCR_ONLY) or 0) >= 20 * MS),
+    ]
+
+
+def case_unknown_e():
+    """Part 4.5 Unknown E: known false with an eNs set writes E = 0, house_time_tai 0."""
+    data = gen("--duration", "3")
+    out, lines, _c = run(data, spec(known=False))
+    decls = [r["decl"] for _k, _i, r in Walk(out).of("pmt")]
+    return [
+        ("unknown E: an eNs given with known false: every PES on E = 0",
+         pes_mapped(data, out, lambda p, k: 0)),
+        ("unknown E: house_time_tai and traceable 0", bool(decls) and all(
+            not d.house_time_tai and not d.traceable for d in decls)),
+    ]
+
+
+def case_lateness_clock():
+    """Lateness against the latest clock reading (a PCR read mid-buffer), not the buffer's head:
+    buffers spanning about 400 ms of content keep DTS - PCR >= headroom."""
+    data = gen("--duration", "20")
+    chunk = 188 * 150
+    out, lines, _c = run(data, spec(lateness=((0, 200), (20000, 1000))), chunk=chunk)
+    return [
+        ("lateness clock: buffers span > 300 ms of content", _max_spacing(data, chunk) > 300 * MS),
+        ("lateness clock: DTS - PCR >= headroom for every timing PES after the first",
+         (_dts_pcr_min(out, 0x100) or 0) >= 20 * MS),
+    ]
+
+
+def ttx_early(data, pid, by_ns):
+    """The teletext PID's PES PTS moved `by_ns` earlier (each header whole in one packet)."""
+    out = bytearray(data)
+    for off in range(0, len(out), PKT):
+        work = bytearray(out[off:off + PKT])
+        v = hr.parse_packet(work)
+        if v is None or v.pid != pid or not v.pusi or v.payload_off >= PKT:
+            continue
+        h = hr.parse_pes_header(work, v.payload_off, PKT - v.payload_off)
+        if h is None or not h.complete or h.pts < 0:
+            continue
+        hr.rewrite_pes_timestamps(v, h, hr.fold33(h.pts - ec.ns_to_pts90k(by_ns)), h.dts)
+        out[off:off + PKT] = work
+    return bytes(out)
+
+
+def case_private_pes():
+    """A private PES (teletext, stream_id 0xBD) off the PCR PID does not drive D_e."""
+    data = fixture("cap-occ-1080i-h264-aac-ttx.ts")
+    ttx = next(r["pid"] for _k, _i, r in Walk(data).of("pes") if r["sid"] == 0xBD)
+    sp = spec(lateness=((0, 200),))
+    _o, lines, _c = run(data, sp)
+    _o, lines2, _c = run(ttx_early(data, ttx, 5 * SEC), sp)
+    de = [(e["event"], e["toNs"]) for e in lines if e.get("event", "").startswith("d-e-")]
+    de2 = [(e["event"], e["toNs"]) for e in lines2 if e.get("event", "").startswith("d-e-")]
+    return [
+        ("private PES: teletext PTS 5 s earlier leaves every D_e event as it was",
+         bool(de) and de == de2),
+    ]
+
+
+def case_before_pmt():
+    """ES packets before the PMT are dropped and counted (droppedBeforePmt), then pass."""
+    data = gen("--duration", "3")
+    pk = [data[i:i + PKT] for i in range(0, len(data), PKT)]
+    pids = [(p[1] & 0x1F) << 8 | p[2] for p in pk]
+    first_pmt = pids.index(0x1000)
+    lead = [p for p in pk[first_pmt + 1:] if (p[1] & 0x1F) << 8 | p[2] in (0x100, 0x101)][:40]
+    moved = b"".join(lead) + data
+    out, lines, core = run(moved, spec())
+    opk = [out[i:i + PKT] for i in range(0, len(out), PKT)]
+    opids = [(p[1] & 0x1F) << 8 | p[2] for p in opk]
+    return [
+        ("before PMT: the 40 leading ES packets dropped and counted",
+         core.counters["droppedBeforePmt"] == 40 + sum(
+             1 for q in pids[:first_pmt] if q in (0x100, 0x101))),
+        ("before PMT: no ES packet leaves before the first PMT",
+         not [q for q in opids[:opids.index(0x1000)] if q in (0x100, 0x101)]),
+        ("before PMT: ES packets pass after it", len(Walk(out).of("pes")) > 0),
+    ]
+
+
+def shared_pmt_pid(data):
+    """A second programme (2, one audio ES 0x102 never sent) whose PMT shares PID 0x1000 with
+    programme 1's: the PAT lists both, each programme-1 PMT followed by programme 2's."""
+    body = bytes([0x00, 0xB0, 17, 0, 1, 0xC1, 0, 0, 0, 1, 0xF0, 0x00, 0, 2, 0xF0, 0x00])
+    pat = body + ec.crc32_mpeg(body).to_bytes(4, "big")
+    p2 = ec.build_pmt_section(2, 0x102, b"", [(0x102, 0x0F, b"")], 0)
+    out, cc_pat = bytearray(), 0
+    for off in range(0, len(data), PKT):
+        p = data[off:off + PKT]
+        pid = (p[1] & 0x1F) << 8 | p[2]
+        if pid == 0:
+            pkts, cc_pat = ec.packetise_section(0, pat, cc_pat)
+            out += pkts[0]
+            continue
+        out += p
+        if pid == 0x1000 and p[1] & 0x40:
+            out += ec.packetise_section(0x1000, p2, 0)[0][0]
+    return bytes(out)
+
+
+def case_shared_pmt_pid():
+    data = shared_pmt_pid(gen("--duration", "3"))
+    out, _l, _c = run(data, spec())
+    progs = {r["program"] for _k, _i, r in Walk(out).of("pmt") if r["decl"] is not None}
+    bad = [b for b in cc_walk(out)[0] if b[1] == 0x1000]
+    return [
+        ("shared PMT PID: both programmes' PMTs written with the descriptor", progs == {1, 2}),
+        ("shared PMT PID: one CC sequence on it (strict CC walk)", not bad),
+    ]
+
+
 CASES = {
     "hcdesc": case_hcdesc, "wrap": case_wrap, "header-split": case_header_split,
     "sparse-pcr": case_sparse_pcr, "no-pcr-pid": case_no_pcr_pid, "de": case_de, "gap": case_gap,
     "silence": case_silence, "descriptor": case_descriptor, "reepoch": case_reepoch,
     "error-hold": case_error_hold, "timeline": case_timeline, "bytes": case_bytes,
     "lateness-cut": case_lateness_cut, "mpts": case_mpts, "pcr-value": case_pcr_value,
-    "pcr-other-pid": case_pcr_other_pid,
+    "pcr-other-pid": case_pcr_other_pid, "dedicated-pcr": case_dedicated_pcr,
+    "unknown-e": case_unknown_e, "lateness-clock": case_lateness_clock,
+    "private-pes": case_private_pes, "before-pmt": case_before_pmt,
+    "shared-pmt-pid": case_shared_pmt_pid,
     "expectations": case_expectations,
 }
 
@@ -946,6 +1108,65 @@ def _mut_late_cut():
     return _patch(ec.EgressDelay, "LATE_MAX_NS", 1 << 62)
 
 
+def _mut_prime_payload_only():
+    def prime(self, v):
+        if v.payload_off >= PKT:
+            return                                # a PCR-only PID never primed
+        for prog in self._progs.values():
+            if prog.pcr_out == v.pid and not prog.cc_known:
+                prog.sched.saw_payload((v.cc - 1) & 0x0F)
+                prog.cc_known = True
+    return _patch(ec.EgressCore, "_prime", prime)
+
+
+def _mut_prime_af_minus_one():
+    def prime(self, v):
+        for prog in self._progs.values():
+            if prog.pcr_out == v.pid and not prog.cc_known:
+                prog.sched.saw_payload((v.cc - 1) & 0x0F)   # CC - 1 on adaptation-only too
+                prog.cc_known = True
+    return _patch(ec.EgressCore, "_prime", prime)
+
+
+def _mut_unknown_e_used():
+    orig = ec.EgressCore._apply_clock
+
+    def apply(self, now):
+        c = self._pending
+        orig(self, now)
+        if c is not None:
+            self._e_ns = c.e_ns                   # E used though not known
+    return _patch(ec.EgressCore, "_apply_clock", apply)
+
+
+def _mut_lateness_head():
+    orig = ec.EgressCore._times
+
+    def times(self, i, prog, pid, h, pts33, dts33):
+        t, self._t = self._t, self._now           # lateness against the buffer's head
+        try:
+            return orig(self, i, prog, pid, h, pts33, dts33)
+        finally:
+            self._t = t
+    return _patch(ec.EgressCore, "_times", times)
+
+
+def _mut_every_pes_timing():
+    return _patch(ec, "timing_pes", lambda sid, pid, timing_pid: True)
+
+
+def _mut_pass_before_pmt():
+    return _patch(ec.EgressCore, "_all_known", lambda self: True)
+
+
+def _mut_pmt_cc_per_program():
+    def pk(self, prog):
+        pkts, prog.cc_mut = ec.packetise_section(prog.pmt_pid, prog.section, getattr(prog, "cc_mut", 0))
+        prog.st["pmtSent"] += 1
+        return pkts
+    return _patch(ec.EgressCore, "_packetise_pmt", pk)
+
+
 MUTANTS = [
     ("headroom 0", _mut_headroom, "de"),
     ("D_e lowered past the gap", _mut_gap_bound, "gap"),
@@ -960,6 +1181,15 @@ MUTANTS = [
     ("a flagged PCR skipped before the PCR PID's first payload forgotten", _mut_flag_dropped,
      "pcr-other-pid"),
     ("a re-epoch with seq kept does not bump the version", _mut_reepoch_no_bump, "reepoch"),
+    ("a PCR-only PCR PID never primed (no PCR inserted on it)", _mut_prime_payload_only,
+     "dedicated-pcr"),
+    ("an adaptation-only first packet primes CC - 1", _mut_prime_af_minus_one, "dedicated-pcr"),
+    ("E used with known false", _mut_unknown_e_used, "unknown-e"),
+    ("lateness against the buffer's head, not the latest clock reading", _mut_lateness_head,
+     "lateness-clock"),
+    ("every PES drives D_e", _mut_every_pes_timing, "private-pes"),
+    ("unknown PIDs passed before the PMT", _mut_pass_before_pmt, "before-pmt"),
+    ("the PMT CC kept per programme, not per PMT PID", _mut_pmt_cc_per_program, "shared-pmt-pid"),
 ]
 
 

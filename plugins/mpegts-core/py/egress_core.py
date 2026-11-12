@@ -12,12 +12,13 @@ written: (index, INSERT, bytes) before packet `index` (== the packet count: at t
   held behind it), other PIDs not delayed;
 - every PCR to H(emission) - D_e, H = the clock read for that PCR + E; on the PCR PID a PCR-only
   packet inserted once `pcr_interval` (35 ms) passed without one (the clock read once per buffer
-  and per PCR written), adaptation-only, its CC the PID's last payload CC sent before it (the
-  first payload packet's CC - 1 when none was sent; none inserted before that packet is in hand,
-  a flag then carried to the next PCR);
+  and per PCR written), adaptation-only, its CC the PID's last payload CC sent before it (none
+  sent: the PID's first packet's CC - 1, or its CC when adaptation-only, as on a PCR-only PID;
+  none inserted before that packet is in hand, a flag then carried to the next PCR);
 - PCR_PID 0x1FFF: the first video ES, else audio, else the first ES, once `pcr-pid-assigned`;
-- every PMT section replaced by the writer's own, on its own CC: the input program_info without
-  any MRHT, ours appended (hcdesc), the version bumped (mod 32) whenever its bytes change;
+- every PMT section replaced by the writer's own, on its own CC per PMT PID: the input
+  program_info without any MRHT, ours appended (hcdesc), the version bumped (mod 32) whenever its
+  bytes change;
 - lateness = t - house_from_mux_pts(DTS else PTS, t), t the buffer's latest clock reading, of each
   timing PES (B-51's rule: video,
   audio, or any PES on the PCR PID) drives D_e (EgressDelay, part 4.4): negative counts as 0,
@@ -391,7 +392,6 @@ class _Prog:
         self.version_out = 0
         self.section = None
         self.key = None
-        self.pmt_cc = 0
         self.cc_known = False                     # the PCR PID's last sent payload CC is in sched
         self.disc_pending = False                 # a flagged PCR skipped for it: the next one carries it
         self.grew_told = False
@@ -443,6 +443,7 @@ class EgressCore:
         self._asm = {}
         self._held_af = {}
         self._last_cc = {}
+        self._pmt_cc = {}                         # per PMT PID: programs may share one
         self._pat_pkts = deque()
         self._pat_sig = self._pat_new_sig = None
         self._pat_resync = False
@@ -680,8 +681,7 @@ class EgressCore:
                 continue
             if prog.psi.pmt != prog.pmt_in:
                 self._new_pmt(i, prog, prog.psi.pmt)
-            pkts, prog.pmt_cc = packetise_section(prog.pmt_pid, prog.section, prog.pmt_cc)
-            prog.st["pmtSent"] += 1
+            pkts = self._packetise_pmt(prog)
             if len(pkts) > n_in and not prog.grew_told:
                 prog.grew_told = True
                 self._event(i, "pmt-grew", program=prog.number, inPackets=n_in,
@@ -748,9 +748,14 @@ class EgressCore:
         prog.section = sec
         return True
 
-    def _emit_pmt(self, i, prog):
-        pkts, prog.pmt_cc = packetise_section(prog.pmt_pid, prog.section, prog.pmt_cc)
+    def _packetise_pmt(self, prog):
+        pkts, self._pmt_cc[prog.pmt_pid] = packetise_section(
+            prog.pmt_pid, prog.section, self._pmt_cc.get(prog.pmt_pid, 0))
         prog.st["pmtSent"] += 1
+        return pkts
+
+    def _emit_pmt(self, i, prog):
+        pkts = self._packetise_pmt(prog)
         for b in pkts:
             self._edits.append((i, INSERT, b))
 
@@ -782,12 +787,12 @@ class EgressCore:
             self._insert_pcr(i, prog, True)
 
     def _prime(self, v):
-        """The PCR PID's first payload packet in hand: a PCR inserted before it takes its CC - 1."""
-        if v.payload_off >= PKT:
-            return
+        """The PCR PID's first packet in hand: a PCR inserted before it takes its CC - 1 (payload)
+        or its CC (adaptation-only, so a PCR PID that never carries payload gets PCRs too)."""
+        cc = (v.cc - 1) & 0x0F if v.payload_off < PKT else v.cc
         for prog in self._progs.values():
             if prog.pcr_out == v.pid and not prog.cc_known:
-                prog.sched.saw_payload((v.cc - 1) & 0x0F)
+                prog.sched.saw_payload(cc)
                 prog.cc_known = True
 
     def _sent(self, pid, cc):

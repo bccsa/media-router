@@ -231,6 +231,7 @@ class EgressCore {
     std::map<int, SectionAssembler> asm_;
     std::map<int, std::vector<std::array<uint8_t, PKT>>> held_af_;
     int8_t last_cc_[8192];                   // the last payload CC sent per PID, -1 none
+    uint8_t pmt_cc_[8192] = {};              // per PMT PID: programs may share one
     std::deque<TsPacket> pat_pkts_;
     SectionSig pat_sig_, pat_new_sig_;
     bool pat_resync_ = false, pat_known_ = false;

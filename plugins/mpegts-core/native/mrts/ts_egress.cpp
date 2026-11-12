@@ -178,7 +178,6 @@ struct EgressCore::Prog {
     int version_out = 0;
     bool has_section = false, has_key = false;
     std::vector<uint8_t> section, key;
-    uint8_t pmt_cc = 0;
     bool cc_known = false;                    // the PCR PID's last sent payload CC is in sched
     bool disc_pending = false;                // a flagged PCR skipped for it: the next one carries it
     bool grew_told = false;
@@ -552,7 +551,7 @@ EgressCore::Verdict EgressCore::on_pmt(size_t i, PacketView& v) {
         if (!p || p->pmt_pid != v.pid || !p->psi.pmt()) continue;
         if (!p->pmt_in || !(*p->psi.pmt() == *p->pmt_in)) new_pmt(i, *p, *p->psi.pmt());
         const size_t before = pkt_out_.size();
-        packetise_section(p->pmt_pid, p->section, p->pmt_cc, pkt_out_);
+        packetise_section(p->pmt_pid, p->section, pmt_cc_[p->pmt_pid], pkt_out_);
         p->st.pmt_sent++;
         const int made = (int)((pkt_out_.size() - before) / PKT);
         if (made > d.packets && !p->grew_told) {
@@ -643,7 +642,7 @@ bool EgressCore::rebuild(Prog& p, bool force) {
 
 void EgressCore::emit_pmt(size_t i, Prog& p) {
     pkt_out_.clear();
-    packetise_section(p.pmt_pid, p.section, p.pmt_cc, pkt_out_);
+    packetise_section(p.pmt_pid, p.section, pmt_cc_[p.pmt_pid], pkt_out_);
     p.st.pmt_sent++;
     for (size_t at = 0; at + PKT <= pkt_out_.size(); at += PKT)
         res_.push((uint32_t)i, EgressEdit::Op::insert, pkt_out_.data() + at);
@@ -679,11 +678,12 @@ void EgressCore::discontinuity(size_t i, Prog& p, bool rebuilt) {
 }
 
 void EgressCore::prime(const PacketView& v) {
-    // The PCR PID's first payload packet in hand: a PCR inserted before it takes its CC - 1.
-    if (v.payload_off >= PKT) return;
+    // The PCR PID's first packet in hand: a PCR inserted before it takes its CC - 1 (payload)
+    // or its CC (adaptation-only, so a PCR PID that never carries payload gets PCRs too).
+    const uint8_t cc = v.payload_off < PKT ? (uint8_t)((v.cc - 1) & 0x0F) : (uint8_t)(v.cc & 0x0F);
     for (auto& up : progs_) {
         if (up->pcr_out != v.pid || up->cc_known) continue;
-        up->sched.saw_payload((uint8_t)((v.cc - 1) & 0x0F));
+        up->sched.saw_payload(cc);
         up->cc_known = true;
     }
 }

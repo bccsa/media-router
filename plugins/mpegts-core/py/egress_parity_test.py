@@ -9,7 +9,9 @@ replays a recording as egress_core.py's CLI does, and its output bytes and every
     no PCR PID, both, the error class's hold, a timeline change, the PCR PID moved to the audio
     (video PCRs on a non-PCR PID), a re-epoch moving E alone, lateness below 0 and past 60 s,
     unknown E with a PTP grandmaster, a bus silence, and syn-wrap-33bit with the wire's 2^33
-    wrap mid-file, re-epoched back across it and forward again (both directions of the wrap).
+    wrap mid-file, re-epoched back across it and forward again (both directions of the wrap),
+    a dedicated PCR PID that never carries payload, two programmes sharing one PMT PID, known
+    false with an eNs set, and buffers spanning about 400 ms (lateness on the latest reading).
 
 Then each of egress_ref_test.py's mutants replays the cases, and parity must tell it from
 mrts_cli. Skips (exit 0) without the built mrts_cli (make native).
@@ -131,6 +133,12 @@ def cases():
     g8 = rt.gen("--duration", "8")
     out.append(Case("gen-silence", _gen("g8", "--duration", "8"), rt.spec(lateness=((0, 1100), (4000, 200))),
                     _silence_bus(g8)))
+    out.append(Case("gen-dedicated-pcr", _write("gdp.ts", rt.dedicated_pcr(rt.gen("--duration", "20"))),
+                    rt.spec(lateness=ramp)))
+    out.append(Case("gen-shared-pmt-pid", _write("gsp.ts", rt.shared_pmt_pid(rt.gen("--duration", "3"))),
+                    rt.spec()))
+    out.append(Case("gen-unknown-e-set", g5, rt.spec(known=False)))
+    out.append(Case("gen-lateness-clock", g20, rt.spec(lateness=ramp), None, 188 * 150))
     wrap = os.path.join(FIX, "syn-wrap-33bit.ts")
     with open(wrap, "rb") as f:
         wd = f.read()
