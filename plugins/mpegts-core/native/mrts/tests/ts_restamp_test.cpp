@@ -12,6 +12,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <unistd.h>
@@ -92,6 +93,7 @@ struct Gen {
     int64_t outage_from = -1, outage_to = -1;   // nothing sent; the PCR runs on
     int64_t pmt_change_at = -1;           // PMT v1: teletext out of the table (still sent), audio-3 in
     int64_t pcr_move_at = -1;             // PMT v2: the PCR on a PID of its own
+    int64_t desc_bump_every = 0;          // the egress writer's bumps: version and an MRHT program_info
     int split_every = 0;                  // every n-th audio-2 header split over two packets
     int dup_every = 0;                    // every n-th packet of dup_pid sent twice
     int dup_pid = PID_A1;
@@ -252,6 +254,13 @@ Stream generate(const Gen& g) {
         if (g.program2) programs.push_back({PROGRAM2, PID_PMT2});
         build_pat(1, programs, 0, 0, pat.b.data());
         build_pmt(PID_PMT, PROGRAM, v2 ? PID_PCR2 : PID_V, es, 0, (int)v1 + (int)v2, pmt.b.data());
+        if (g.desc_bump_every > 0) {
+            const uint8_t n = (uint8_t)(t / g.desc_bump_every);
+            uint8_t cc = 0;
+            pmt.b.clear();
+            packetise_section(PID_PMT, build_pmt_section(PROGRAM, PID_V, {0x05, 0x08, 'M', 'R', 'H', 'T', 0, 0, 0, n}, es, n),
+                              cc, pmt.b);
+        }
         pat.mux = pmt.mux = t;
         pat.pid = PID_PAT;
         pmt.pid = PID_PMT;
@@ -1610,6 +1619,49 @@ void test_fixed() {
 }
 
 // --- Acceptance: PMT change, discontinuity, straddle, outage, degraded -------------------
+
+// p5-0 (B-218): the egress writer's PMT bumps (the version and an MRHT registration in
+// program_info, every 10 s) leave every PID's guard, CC and unwrap state: the output but the PMT
+// is the plain run's, no relock; one psi_change ("pmt") and one record_psi per bump.
+void test_pmt_descriptor_bumps() {
+    Gen g;
+    Gen b = g;
+    b.desc_bump_every = 10 * S;
+    const Case cp = make_case(g), cb = make_case(b);
+    TraceWriter tp, tb;
+    tp.open_memory();
+    tb.open_memory();
+    const Out p = run(cp, stc_cfg(), nullptr, 0, &tp), q = run(cb, stc_cfg(), nullptr, 0, &tb);
+    auto not_pmt = [](const Bytes& out) {
+        Bytes r;
+        for (size_t i = 0; i + PKT <= out.size(); i += PKT)
+            if (ts_pid(out.data() + i) != PID_PMT) r.insert(r.end(), out.begin() + (long)i, out.begin() + (long)i + PKT);
+        return r;
+    };
+    auto timing = [](const Out& o) {
+        std::vector<std::tuple<int, std::string, int64_t, uint32_t>> r;
+        for (const Ev& e : o.events)
+            if (e.kind != Ev::Kind::psi_change) r.emplace_back((int)e.kind, e.reason, e.house_ns, e.epoch);
+        return r;
+    };
+    auto records = [](const TraceWriter& w, bool psi) {
+        std::vector<TraceRecord> r;
+        for (const TraceRecord& x : w.records())
+            if ((x.kind == TraceKind::psi) == psi) r.push_back(x);
+        return r;
+    };
+    const Bytes op = not_pmt(p.bytes), oq = not_pmt(q.bytes);
+    CHECK("MRHT bumps: five version + program_info bumps leave every byte but the PMT's as the plain run's "
+          "(guards, CC, unwrap kept), and its other events (no relock)",
+          !op.empty() && op == oq && timing(p) == timing(q) && q.stats.cc_lost == p.stats.cc_lost &&
+              q.stats.programs[0].clock.relocks == p.stats.programs[0].clock.relocks);
+    CHECK("MRHT bumps: one psi_change (pmt) per bump, the first parse's included (6 against 1)",
+          count_events(q, Ev::Kind::psi_change, "pmt") == 6 && count_events(p, Ev::Kind::psi_change, "pmt") == 1 &&
+              count_events(q, Ev::Kind::psi_change, "pcr-pid") == 0);
+    CHECK("MRHT bumps: one record_psi per bump (the PCR PID and four ES: 30 PSI records against 5), "
+          "the PCR and PES records the plain run's",
+          records(tb, true).size() == 30 && records(tp, true).size() == 5 && records(tb, false) == records(tp, false));
+}
 
 void test_pmt_change() {
     Gen g;
@@ -4172,6 +4224,7 @@ int main() {
     test_queue_ramp("queue +600 ms over 30 s from 30 s", 600 * MS, 30 * S, 100);
     test_floor_fall("floor -100 ms at 30 s", -100 * MS, 0);
     test_floor_fall("queue drains 100 ms over 30 s from 30 s", -100 * MS, 30 * S);
+    test_pmt_descriptor_bumps();
     test_outage();
     test_outage_gaps();
     test_degraded();

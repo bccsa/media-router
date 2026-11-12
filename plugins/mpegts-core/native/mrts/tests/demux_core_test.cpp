@@ -271,6 +271,12 @@ struct Ts {
         pat();
         pmt({{pid, STREAM_TYPE_PRIVATE_PES, BSSD}}, pid, version);
     }
+    // A PMT with a program_info loop (the egress writer's descriptor rides there).
+    void pmt_info(std::vector<PmtStream> streams, int pcr_pid, int version, const Bytes& program_info) {
+        uint8_t c = (uint8_t)(cc[PMT_PID] & 0x0F);
+        packetise_section(PMT_PID, build_pmt_section(1, pcr_pid, program_info, streams, version), c, b);
+        cc[PMT_PID] = c;
+    }
     // One PES on `pid`: PTS (and DTS) raw 33-bit, -1 none; unbounded: PES_packet_length 0.
     void pes(int pid, int64_t pts33, const Bytes& payload, bool bounded = true, int64_t dts33 = -1) {
         Bytes opt;
@@ -851,6 +857,26 @@ void test_pmt_change() {
               kinds == std::vector<K>{K::section, K::section, K::plan, K::section, K::section} &&
                   d.pads() == std::vector<std::string>{"video_0_0100"} && of(out, K::no_stream).empty() &&
                   ed.state() == DemuxCore::State::waiting && of(sout, K::no_stream).size() == 1);
+    }
+    {
+        // p5-0 (B-218): the egress writer's bumps, the version and an MRHT registration in program_info.
+        Ts t;
+        t.pat();
+        for (int v = 0; v < 3; v++) {
+            t.pmt_info({{PID_A, STREAM_TYPE_PRIVATE_PES, BSSD}}, PID_A, v, cat(h("05084d524854000000"), {(uint8_t)v}));
+            for (int k = 0; k < 10; k++) t.frame(9000000 + (v * 10 + k) * TICKS_20MS);
+        }
+        DemuxCore d;
+        const auto ev = run(d, t.b, 100 * SEC);
+        std::vector<int> versions;
+        for (const Ev* e : of(ev, K::section))
+            if (std::string(e->reason) == "pmt") versions.push_back(e->version);
+        const auto us = of(ev, K::unit);
+        bool kept = us.size() == 30;
+        for (size_t k = 0; kept && k < us.size(); k++) kept &= us[k]->pad == "audio_0_0041" && us[k]->discont == (k == 0);
+        CHECK("9 pmt change: version and program_info bumps (an MRHT descriptor) are the same program: one plan, "
+              "no gone, a pmt section per version, every unit on the first pad, DISCONT on the first only",
+              of(ev, K::plan).size() == 1 && of(ev, K::gone).empty() && versions == std::vector<int>{0, 1, 2} && kept);
     }
 }
 

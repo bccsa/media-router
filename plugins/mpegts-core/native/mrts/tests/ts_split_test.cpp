@@ -539,5 +539,39 @@ int main() {
               discovered_in(g, 101) == 0);
     }
 
+    // p5-0 (B-218): the egress writer's PMT bumps (the version and an MRHT registration in
+    // program_info) are no change to the splitter: one discovery, every output byte as without them.
+    {
+        auto source = [](bool bumps) {
+            Bytes src;
+            uint8_t tmp[PKT], cc_pat = 0, cc_pmt = 0;
+            int cc_v = 0, cc_a = 0;
+            const std::vector<PmtStream> streams = {{VIDEO_PID, STREAM_TYPE_AVC, {}}, {AUDIO_PID, STREAM_TYPE_AAC, {}}};
+            for (int i = 0; i < 300; i++) {
+                if (i % 20 == 0) {
+                    const uint8_t v = bumps ? (uint8_t)(i / 100) : 0;
+                    build_pat(7, {{1, PMT_PID}}, cc_pat, 0, tmp);
+                    cc_pat = (cc_pat + 1) & 0xF;
+                    append_pkt(src, tmp);
+                    packetise_section(PMT_PID, build_pmt_section(1, VIDEO_PID, {0x05, 0x08, 'M', 'R', 'H', 'T', 0, 0, 0, v},
+                                                                 streams, v),
+                                      cc_pmt, src);
+                }
+                const Bytes pv = es_packet(VIDEO_PID, cc_v, i % 10 == 0), pa = es_packet(AUDIO_PID, cc_a, i % 10 == 0, 0xBB);
+                cc_v = (cc_v + 1) & 0xF;
+                cc_a = (cc_a + 1) & 0xF;
+                src.insert(src.end(), pv.begin(), pv.end());
+                src.insert(src.end(), pa.begin(), pa.end());
+            }
+            return src;
+        };
+        const RunResult r = run_core(source(true), 1316), plain = run_core(source(false), 1316);
+        CHECK("MRHT bumps: three PMT versions differing in version and program_info: one discovery",
+              r.discovered.size() == 1);
+        CHECK("MRHT bumps: every output byte as without the bumps (no PMT version bump, the ES packets kept)",
+              r.out == plain.out && r.out.size() == 2 && es_only(r.out.at(VIDEO_PID), VIDEO_PID).size() == 300 &&
+                  es_only(r.out.at(AUDIO_PID), AUDIO_PID).size() == 300);
+    }
+
     return test_summary("ts_split");
 }

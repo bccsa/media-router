@@ -127,6 +127,17 @@ class Ts:
         self.pat()
         self.pmt([(pid, 0x06, BSSD)], pid, version)
 
+    def pmt_info(self, streams, pcr_pid, version, program_info):
+        """A PMT with a program_info loop (the egress writer's descriptor rides there)."""
+        p = bytearray(ts_psi.build_pmt(PMT_PID, 1, pcr_pid, streams, self._cc(PMT_PID), version))
+        end = 8 + (((p[6] & 0x0F) << 8) | p[7]) - 4
+        body = p[5:15] + bytes([0xF0 | (len(program_info) >> 8), len(program_info) & 0xFF]) + program_info \
+            + p[17:end]
+        n = len(body) - 3 + 4
+        body[1], body[2] = 0xB0 | (n >> 8), n & 0xFF
+        sec = bytes(body) + ts_psi.crc32_mpeg(bytes(body)).to_bytes(4, "big")
+        self.b += bytes(p[:5]) + sec + b"\xff" * (PKT - 5 - len(sec))
+
     def pes(self, pid, pts33, payload, bounded=True, dts33=-1):
         """One PES on `pid`: PTS (and DTS) raw 33-bit, -1 none; unbounded: PES_packet_length 0."""
         opt = b""
@@ -545,6 +556,20 @@ def test_pmt_change():
           [x.kind for x in ev] == ["section", "section", "plan", "section", "section"] and
           d.pads() == ["video_0_0100"] and not of(out, "nostream") and ed.state() == ed.WAITING and
           len(of(sout, "nostream")) == 1)
+    # p5-0 (B-218): the egress writer's bumps, the version and an MRHT registration in program_info.
+    t = Ts()
+    t.pat()
+    for v in range(3):
+        t.pmt_info([(PID_A, 0x06, BSSD)], PID_A, v, h("05084d524854000000") + bytes([v]))
+        for k in range(10):
+            t.frame(9000000 + (v * 10 + k) * TICKS_20MS)
+    ev = run(dc.DemuxCore(), t.b, 100 * SEC)
+    us = of(ev, "unit")
+    check("9 pmt change: version and program_info bumps (an MRHT descriptor) are the same program: one plan, "
+          "no gone, a pmt section per version, every unit on the first pad, DISCONT on the first only",
+          len(of(ev, "plan")) == 1 and not of(ev, "gone") and
+          [e["version"] for e in of(ev, "section") if e.get("table") == "pmt"] == [0, 1, 2] and
+          len(us) == 30 and all(u["pad"] == "audio_0_0041" and u["discont"] == (k == 0) for k, u in enumerate(us)))
 
 
 # --- 10 the formula -------------------------------------------------------------------------------

@@ -699,6 +699,18 @@ int main() {
           !g.feed(gpmt({}, g265, 2)) && g.generation() == 3 && g.pmt()->version == 2);
     CHECK("program_info-only change: generation 4, feed() false",
           !g.feed(gpmt(cuei, g265, 2)) && g.generation() == 4 && g.pmt()->program_info == cuei);
+    // p5-0 (B-218): the egress writer's bumps change the version and an MRHT registration in
+    // program_info together; three such versions are one ES generation (WI-P5-4's acceptance).
+    PsiDiscovery w(128);
+    w.feed({pkt_of(gpat)});
+    auto mrht = [](uint8_t n) { return Bytes{0x05, 0x08, 'M', 'R', 'H', 'T', 0, 0, 0, n}; };
+    const bool w0 = w.feed(gpmt(mrht(0), g264, 0));
+    const bool w1 = w.feed(gpmt(mrht(1), g264, 1));
+    const bool w2 = w.feed(gpmt(mrht(2), g264, 2));
+    CHECK("MRHT bumps: the first PMT reported, two version + program_info bumps not; generation 3",
+          w0 && !w1 && !w2 && w.generation() == 3 && w.pmt()->version == 2 && w.pmt()->program_info == mrht(2));
+    CHECK("MRHT bumps: registration_format reads MRHT from the program_info loop",
+          registration_format(w.pmt()->program_info) == 0x4D524854u);
 
     // A two-packet PMT split across feeds stays pending until its tail arrives.
     uint8_t spat[PKT];
