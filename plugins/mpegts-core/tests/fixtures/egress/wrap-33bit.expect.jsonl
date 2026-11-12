@@ -1,0 +1,4 @@
+{"event":"d-e-start","fromNs":250000000,"latenessNs":0,"packet":3,"program":1,"toNs":160000000}
+{"stats":{"dEChanges":1,"dENs":160000000,"latenessMaxNs":0,"latenessNs":-434000000,"latenessOffHouse":0,"pcrInserted":198,"pcrIntervalMaxNs":51219512,"pcrPid":256,"pcrWritten":100,"pesRewritten":1386,"pmtSent":21,"pmtVersion":1,"program":1}}
+{"counters":{"ccLostIn":0,"droppedBeforePmt":0,"gapMarkers":0,"gaps":0,"held":0,"reEpochs":0}}
+{"output":{"bytes":1039452,"crc32":"beb5c8e0","sha256":"c71d728f6a8a01230b5a8cefdda0cd9f5dc0db92588ef0da2425a4c305fe8096"}}

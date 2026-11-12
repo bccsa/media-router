@@ -1,0 +1,34 @@
+{
+ "changes": [
+  {
+   "atMs": 3000,
+   "clock": {
+    "eNs": "1760283217623456789",
+    "seq": 4
+   }
+  },
+  {
+   "atMs": 5000,
+   "clock": {
+    "timelineId": "0123456789abcdef"
+   }
+  }
+ ],
+ "clock": {
+  "disciplined": true,
+  "eNs": "1760283215123456789",
+  "errorUs": 1200,
+  "known": true,
+  "seq": 3,
+  "source": 1,
+  "taiOffsetS": 37,
+  "traceable": true
+ },
+ "input": "syn-pmt-version-bump.ts",
+ "lateness": [
+  [
+   0,
+   100
+  ]
+ ]
+}

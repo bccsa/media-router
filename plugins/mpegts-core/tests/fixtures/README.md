@@ -41,6 +41,23 @@ buffer-time=100000`): the sink's provided clock against CLOCK_MONOTONIC, a line 
 the restart). Each is its recording's first lines byte for byte, cut at 2 MB about 300 s after
 the restart; `py/asrc_device_ref_test.py` and `native/mrts/tests/asrc_servo_test` replay them, and
 `py/asrc_device_parity_test.py` through `mrts_cli asrc-device` too (B-166).
+The egress writer's expectations are in `egress/` (Phase 5, plan ch. 9 WI-P5-2, register B-221): one
+`<case>.clock.json` per case, naming its input here (`input`, and `bus` for a sidecar's buffers), the
+writer's clock declaration at start (`clock`), its changes (`changes`), the lateness the replay adds
+to the content clock (`lateness`, [content ms, lateness ms] points) and any setting (`config`); and
+its `<case>.expect.jsonl`, the lines of `py/egress_core.py` on it (`python3 -m egress_core <input>
+--clock <case>.clock.json [--bus <sidecar>]` from `py/`): each event, each program's stats, the
+counters and the output's length, CRC-32 and SHA-256. `py/egress_ref_test.py` holds every case to
+its expectation and `mrts_cli egress` the C++ (p5-2b). No stream is committed for them; the
+audio-only and PCR-less programmes are generated at test time (`fixture_gen --ts egress`).
+Reviewed by hand on 2026-11-12 (B-221): every output decodes in ffprobe with the input's packet
+count and the input's errors alone (the synthetic streams' payloads), each `d-e-*` line's lateness
+matches its clock file (the ramps' raises at least 130 ms apart, `hevc-aac-max` held at its 400 ms
+with one `d-e-max`, `gap-marker` lowered once by its 520 ms marker though both PIDs carry one,
+`bus-pmt-change`'s reconnect backlog raising D_e to 2.92 s and its markers lowering it), the PMT
+versions count the D_e changes, the re-epoch and the timeline change but not
+`syn-pmt-version-bump`'s version-only bump, and `occ-relay-unknown-e` drops the 2,454 packets before
+the capture's first PMT.
 
 Each `<name>.demux.jsonl` (and `syn-mpts-two-programs.p2.demux.jsonl`, program 2) is Phase 3's
 expectation (ch. 7 WI-P3-1, register B-121): the events of `py/demux_core.py`, `mrts::DemuxCore`'s
@@ -183,6 +200,7 @@ to its entry by the protocol case `video-leg-pace` (a generated 1080p50 into `mr
 | `restamp/syn-sparse-bursty` | `fixture_gen --trace --pcr-ms 2000 --scatter-ms 200`, +50 ppm, 600 s (B-100) | One bucket per 2 s PCR: the window is 300 s of house time, so the lock comes at 308 s (a window of 300 buckets would wait 600 s) |
 | `restamp/syn-skew-floor-edge` | `fixture_gen --trace --scatter-ms 50:250 --scatter-floor 40` (40 % of the seconds on the floor, the rest 50-250 ms above), -50 ppm, 600 s (B-100) | The band reads the clock where the floor has a dense edge: +49.5 ppm at 306 s, pinned to 45-55 |
 | `restamp/syn-offset-masked` | as `syn-bursty-cycle-150` with the source +100 ppm, 600 s (B-100) | The known limit, pinned on purpose: on a diffuse scatter the band reads about zero whatever the clock (-12.7 ppm where the truth is -100), the 'Source clock off' alarm silent |
+| `egress/<case>.clock.json`, `egress/<case>.expect.jsonl` | `py/egress_core.py` on the recordings and syntheses here (B-221), 2026-11-12 | The egress writer's events, stats and output digest per case: `wrap-33bit` (E putting the wire's wrap mid-file), `pes-header-split`, `mux-unbounded-video`, `302m-bssd`, `mixer-302m-ptp` (a PTP declaration, the error unknown), `occ-relay-unknown-e` (a foreign programme relayed with no E), `gap-marker` and the bus recordings through their sidecars, `mpts-two-programs`, `pmt-version-bump-reepoch` (a re-epoch and a timeline change), `hevc-aac-max` (`d-e-max-ms` 400) |
 | `clock/sink-clock-pi4-hdmi.jsonl` | The Pi 4 test box (ivan-test-p4), 2026-10-27: a null sink loaded as an audio-decoder loads its own, its monitor linked to the HDMI sink so that it runs on HDMI's clock, the trace stream muted; the recording's first 21,040 lines (2103.5 s, 1,999,935 B) | HDMI's clock, +7.5 ppm over the cut. Interpolated: corrections of +4..+7 and -4..-6 ms about every 1.5 s, 0.13-0.17 ms sd between them; 0 for 302 ms at the start and 498 ms at the restart, all before the first write; from a start up to 42 ms behind within 5 s, then corrections of up to +23 ms until about 13 s. Runs on through the 300 ms hole and the 1 s underrun |
 | `clock/sink-clock-pi4-kt.jsonl` | The same box and run: its KT USB output, the trace stream muted beside the box's own; the first 21,040 lines (2103.5 s, 1,999,989 B) | -136.4 ppm; start-up corrections of +3.5..+6.9 ms; otherwise as the HDMI-linked sink |
 | `clock/sink-clock-pi4-null.jsonl` | The same box and run: a null sink linked to nothing, on PipeWire's own timer; the first 21,040 lines (2103.5 s, 1,999,908 B) | -0.2 ppm: the interpolation's noise alone, whose 10-minute least-squares slopes run from -2.1 to +0.9 ppm; 0 for 411 and 422 ms at the start and the restart |

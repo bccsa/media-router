@@ -1,0 +1,20 @@
+{
+ "clock": {
+  "disciplined": true,
+  "eNs": "1760283215123456789",
+  "errorUs": 1200,
+  "known": true,
+  "seq": 3,
+  "source": 1,
+  "taiOffsetS": 37,
+  "timelineId": "00000000000000a1",
+  "traceable": true
+ },
+ "input": "syn-mpts-two-programs.ts",
+ "lateness": [
+  [
+   0,
+   100
+  ]
+ ]
+}

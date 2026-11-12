@@ -1,0 +1,19 @@
+{
+ "clock": {
+  "disciplined": true,
+  "eNs": "1756164409075113555556",
+  "errorUs": 1200,
+  "known": true,
+  "seq": 3,
+  "source": 1,
+  "taiOffsetS": 37,
+  "traceable": true
+ },
+ "input": "syn-wrap-33bit.ts",
+ "lateness": [
+  [
+   0,
+   100
+  ]
+ ]
+}

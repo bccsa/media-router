@@ -21,7 +21,7 @@ const char kUsage[] =
     "  KIND: parity (py/native_parity_fixture.py's bytes), mpts-two-programs, wrap-33bit\n"
     "  [--wrap-at S], pes-header-split, pes-no-pts, source-restart [--restart S], gap-500ms,\n"
     "  gap-marker (also writes OUT's .bus.jsonl sidecar), video-hole-1s, private-novdesc,\n"
-    "  pmt-version-bump, adts-mpeg2\n"
+    "  pmt-version-bump, adts-mpeg2, egress [--audio-only] [--pcr-pid none] [--duration S] (10 s)\n"
     "       fixture_gen --respace PPM -i IN.ts -o OUT.ts\n"
     "  every PES PTS/DTS and PCR at (1 + PPM 1e-6) times its distance from the first PES\n"
     "       fixture_gen --drop PID@N[,PID@N...] -i IN.ts -o OUT.ts\n"
@@ -105,7 +105,13 @@ bool read_file(const std::string& path, ts_gen::Bytes* b) {
 
 // The --ts kinds by name; restart_ns and wrap_ns as given (or the kind's default). A kind with
 // a bus sidecar leaves it in *bus.
-bool ts_kind(const std::string& kind, int64_t wrap_ns, int64_t restart_ns, ts_gen::Bytes* out, std::string* bus) {
+struct EgressKnobs {
+    bool audio_only = false, pcr_none = false;
+    int64_t duration_ns = 10 * trace_gen::S;
+};
+
+bool ts_kind(const std::string& kind, int64_t wrap_ns, int64_t restart_ns, const EgressKnobs& eg, ts_gen::Bytes* out,
+             std::string* bus) {
     if (kind == "parity") *out = ts_gen::parity();
     else if (kind == "mpts-two-programs") *out = ts_gen::mpts_two_programs();
     else if (kind == "wrap-33bit") *out = ts_gen::wrap_33bit(wrap_ns);
@@ -118,6 +124,7 @@ bool ts_kind(const std::string& kind, int64_t wrap_ns, int64_t restart_ns, ts_ge
     else if (kind == "private-novdesc") *out = ts_gen::private_novdesc();
     else if (kind == "pmt-version-bump") *out = ts_gen::pmt_version_bump();
     else if (kind == "adts-mpeg2") *out = ts_gen::adts_mpeg2();
+    else if (kind == "egress") *out = ts_gen::egress(eg.duration_ns, eg.audio_only, eg.pcr_none);
     else return false;
     return true;
 }
@@ -135,10 +142,16 @@ int main(int argc, char** argv) {
     bool trace = false, scatter_floor = false;
     std::string out, ts_kind_name, drop_spec, shift_spec, freeze_spec, respace_spec, in;
     int64_t restart_ns = 3 * trace_gen::S;
+    EgressKnobs eg;
+    bool duration_set = false;
     for (int i = 1; i < argc; i++) {
         const std::string a = argv[i];
         if (a == "--trace") {
             trace = true;
+            continue;
+        }
+        if (a == "--audio-only") {
+            eg.audio_only = true;
             continue;
         }
         if (a == "-h" || a == "--help") return usage(nullptr), 0;
@@ -167,6 +180,10 @@ int main(int argc, char** argv) {
             ok = !v.empty() && *end == 0;
         } else if (a == "--duration") {
             ok = seconds(v, &c.duration_ns) && c.duration_ns > 0;
+            duration_set = true;
+        } else if (a == "--pcr-pid") {
+            ok = v == "none";
+            eg.pcr_none = ok;
         } else if (a == "--pids") {
             c.pids = v;
             for (const std::string& p : split(v, ',')) ok &= trace_gen::es_by_name(p) != nullptr;
@@ -241,7 +258,8 @@ int main(int argc, char** argv) {
         ts_gen::Bytes b;
         std::string bus;
         const int64_t wrap_ns = c.wrap_at_ns >= 0 ? c.wrap_at_ns : 5 * trace_gen::S;
-        if (!ts_kind(ts_kind_name, wrap_ns, restart_ns, &b, &bus))
+        if (duration_set) eg.duration_ns = c.duration_ns;
+        if (!ts_kind(ts_kind_name, wrap_ns, restart_ns, eg, &b, &bus))
             return usage(("unknown --ts kind " + ts_kind_name).c_str());
         if (!bus.empty() && !write_file(bus_path(out), ts_gen::Bytes(bus.begin(), bus.end()))) return 1;
         return write_file(out, b) ? 0 : 1;

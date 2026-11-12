@@ -1,0 +1,12 @@
+{
+ "clock": {
+  "known": false
+ },
+ "input": "cap-occ-1080i-h264-aac-ttx.ts",
+ "lateness": [
+  [
+   0,
+   300
+  ]
+ ]
+}

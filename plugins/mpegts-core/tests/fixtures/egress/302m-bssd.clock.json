@@ -1,0 +1,19 @@
+{
+ "clock": {
+  "disciplined": true,
+  "eNs": "1760283215123456789",
+  "errorUs": 1200,
+  "known": true,
+  "seq": 3,
+  "source": 1,
+  "taiOffsetS": 37,
+  "traceable": true
+ },
+ "input": "cap-302m-bssd.ts",
+ "lateness": [
+  [
+   0,
+   80
+  ]
+ ]
+}

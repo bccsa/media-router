@@ -1,0 +1,26 @@
+{
+ "clock": {
+  "disciplined": true,
+  "eNs": "1760283215123456789",
+  "errorUs": 1200,
+  "known": true,
+  "seq": 3,
+  "source": 1,
+  "taiOffsetS": 37,
+  "traceable": true
+ },
+ "config": {
+  "maxMs": 400
+ },
+ "input": "tp-hevc-aac.ts",
+ "lateness": [
+  [
+   0,
+   100
+  ],
+  [
+   8000,
+   900
+  ]
+ ]
+}

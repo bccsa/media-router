@@ -593,6 +593,7 @@ struct HouseProgram {
     std::function<HousePmt(int64_t)> pmt;           // the PMT at send tick t
     std::function<void(Mux&, int64_t)> with_psi;    // more packets after each PAT and PMT
     bool markers = false;
+    int64_t pcr_step = 3600;                        // ticks between PCR-only packets; 0: none
 };
 
 // `bus`, when given, gets the recording's sidecar (<name>.bus.jsonl, mrts_cli rebase's form): up
@@ -622,7 +623,7 @@ inline Bytes house_program(const HouseProgram& p, std::string* bus = nullptr) {
             if (p.with_psi) p.with_psi(m, t);
             version = now.version;
         }
-        if (t % 3600 == 0) m.pcr(now.pcr_pid, house_pts(t) * 300);
+        if (p.pcr_step > 0 && t % p.pcr_step == 0) m.pcr(now.pcr_pid, house_pts(t) * 300);
         note(t, -1);
         for (size_t i = 0; i < p.tracks.size(); i++) {
             const HouseTrack& tr = p.tracks[i];
@@ -817,6 +818,30 @@ inline Bytes adts_mpeg2() {
     p.duration = 4 * 90000;
     p.tracks = {house_aac(0x101, Es::aac_mpeg2)};
     p.pmt = fixed_pmt(0x101, {pmt_stream(0x101, mrts::STREAM_TYPE_AAC)});
+    return house_program(p);
+}
+
+// Phase 5's egress inputs (p5-2a, generated at test time): H.264 (0x100, the PCR every 40 ms),
+// AAC (0x101) and teletext (0x103); audio_only: AAC alone, a PES every 64 ms, its PCR every
+// 500 ms; pcr_none: PCR_PID 0x1FFF and no PCR at all.
+inline Bytes egress(int64_t duration_ns, bool audio_only, bool pcr_none) {
+    HouseProgram p;
+    p.duration = mrts::ns_to_pts90k(duration_ns);
+    if (audio_only) {
+        HouseTrack a = house_aac(0x101);
+        a.step = 5760;
+        p.tracks = {a};
+        p.pcr_step = 45000;
+    } else {
+        p.tracks = {house_h264(0x100), house_aac(0x101), house_data(0x103, Es::teletext, 45000, 1 + 46 * 7)};
+    }
+    if (pcr_none) p.pcr_step = 0;
+    std::vector<mrts::PmtStream> streams = {pmt_stream(0x101, mrts::STREAM_TYPE_AAC)};
+    if (!audio_only) {
+        streams.insert(streams.begin(), pmt_stream(0x100, mrts::STREAM_TYPE_AVC));
+        streams.push_back(pmt_stream(0x103, mrts::STREAM_TYPE_PRIVATE_PES, teletext_desc()));
+    }
+    p.pmt = fixed_pmt(pcr_none ? mrts::PID_NULL : audio_only ? 0x101 : 0x100, streams);
     return house_program(p);
 }
 

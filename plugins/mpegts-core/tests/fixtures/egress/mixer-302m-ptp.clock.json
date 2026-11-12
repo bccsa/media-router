@@ -1,0 +1,21 @@
+{
+ "clock": {
+  "disciplined": true,
+  "eNs": "1760283215123456789",
+  "errorUs": null,
+  "gm": "2C-CF-67-FF-FE-76-E6-69",
+  "known": true,
+  "ptpDomain": 0,
+  "seq": 3,
+  "source": 3,
+  "taiOffsetS": 37,
+  "traceable": true
+ },
+ "input": "cap-mixer-302m-house.ts",
+ "lateness": [
+  [
+   0,
+   60
+  ]
+ ]
+}
