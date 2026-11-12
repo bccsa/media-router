@@ -2,4 +2,4 @@
 {"event":"d-e-raise","fromNs":200000000,"latenessNs":238608449,"packet":4193,"program":100,"toNs":440000000}
 {"stats":{"dEChanges":2,"dENs":440000000,"latenessMaxNs":238608449,"latenessNs":-629379334,"latenessOffHouse":0,"pcrInserted":3,"pcrIntervalMaxNs":35043260,"pcrPid":101,"pcrWritten":18,"pesRewritten":39,"pmtSent":5,"pmtVersion":8,"program":100}}
 {"counters":{"ccLostIn":0,"droppedBeforePmt":2454,"gapMarkers":0,"gaps":0,"held":0,"reEpochs":0}}
-{"output":{"bytes":1540284,"crc32":"160d429c","sha256":"85f3c31caa3938a48d6603222150b24fb6b7b7c457dd4d4b7d99cc0632f9e28b"}}
+{"output":{"bytes":1540284,"crc32":"781e3f5d","sha256":"dcd2d0e817bc16b853f3b4947bb7466fcda9e77cc87817d0514401881e36a29f"}}

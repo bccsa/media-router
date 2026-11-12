@@ -31,4 +31,4 @@
 {"event":"cc-lost-in","packet":6003,"pid":301}
 {"stats":{"dEChanges":8,"dENs":2090000000,"latenessMaxNs":2874685185,"latenessNs":-608482185,"latenessOffHouse":0,"pcrInserted":68,"pcrIntervalMaxNs":65676057,"pcrPid":101,"pcrWritten":14,"pesRewritten":508,"pmtSent":31,"pmtVersion":9,"program":1}}
 {"counters":{"ccLostIn":23,"droppedBeforePmt":0,"gapMarkers":276,"gaps":276,"held":0,"reEpochs":0}}
-{"output":{"bytes":1963284,"crc32":"9e7befdb","sha256":"c0568ffb6e34d79c62b2c751ce878bc1e8f511ea6d37c78b1f611c2c17cf0963"}}
+{"output":{"bytes":1963284,"crc32":"fae43d12","sha256":"fb5aa18f571d99762d51f576aa036b97c5b7e7a114323157d81de6f9d0ccf68a"}}

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 
 #include "demux_core.h"
 #include "ts_gap.h"
@@ -178,6 +179,8 @@ struct EgressCore::Prog {
     bool has_section = false, has_key = false;
     std::vector<uint8_t> section, key;
     uint8_t pmt_cc = 0;
+    bool cc_known = false;                    // the PCR PID's last sent payload CC is in sched
+    bool disc_pending = false;                // a flagged PCR skipped for it: the next one carries it
     bool grew_told = false;
     std::optional<int64_t> pcr_last_t;
     EgressStats st;
@@ -227,6 +230,7 @@ void EgressCore::SectionAssembler::take(std::vector<uint8_t>& store, std::vector
 // --- EgressCore -----------------------------------------------------------------------------
 
 EgressCore::EgressCore(const EgressConfig& cfg) : cfg_(cfg) {
+    std::fill(std::begin(last_cc_), std::end(last_cc_), (int8_t)-1);
     one_.resize(1);
     res_.pkts_.reserve(64);
     res_.edits_.reserve(64);
@@ -331,6 +335,7 @@ const EgressResult& EgressCore::run(const uint8_t* data, size_t len, int64_t now
             e.pid = v.pid;
             event(i, e);
         }
+        prime(v);
         pcr_due(i, v);
         const Verdict verdict = on_packet(i, v);
         if (verdict == Verdict::drop)
@@ -422,7 +427,7 @@ void EgressCore::head() {
         Prog& p = *up;
         if (!p.has_section) continue;
         if (reepoch) {
-            rebuild(p);
+            rebuild(p, true);
             discontinuity(0, p, true);
         } else if (dirty && rebuild(p)) {
             emit_pmt(0, p);
@@ -595,14 +600,16 @@ void EgressCore::new_pmt(size_t i, Prog& p, const Pmt& pmt) {
     if (pcr != p.pcr_out) {
         p.pcr_out = pcr;
         p.sched = PcrScheduler(cfg_.pcr_interval_ns);
-        p.sched.saw_payload(pcr >= 0 && pcr < 8192 ? last_cc_[pcr] : 0);
+        const int last = pcr >= 0 && pcr < 8192 ? last_cc_[pcr] : -1;
+        p.cc_known = last >= 0;
+        p.sched.saw_payload(last >= 0 ? (uint8_t)last : 0);
         p.pcr_last_t.reset();
     }
     map_pids();
     rebuild(p);
 }
 
-bool EgressCore::rebuild(Prog& p) {
+bool EgressCore::rebuild(Prog& p, bool force) {
     const Pmt& pmt = *p.pmt_in;
     const std::vector<uint8_t> stripped = hcdesc::strip_from(pmt.program_info);
     std::vector<uint8_t> pi = stripped;
@@ -622,7 +629,7 @@ bool EgressCore::rebuild(Prog& p) {
         key.push_back(sec[5] & 0xC1);
         key.insert(key.end(), sec.begin() + 6, sec.end() - 4);
     }
-    if (p.has_key && p.key == key) return false;
+    if (p.has_key && p.key == key && !force) return false;
     if (p.has_key) {
         p.version_out = (p.version_out + 1) % 32;
         sec = build(p.version_out);
@@ -643,6 +650,13 @@ void EgressCore::emit_pmt(size_t i, Prog& p) {
 }
 
 void EgressCore::insert_pcr(size_t i, Prog& p, bool disc) {
+    // AF-only, with the PID's last sent payload CC; none before that CC is known (prime).
+    if (!p.cc_known) {
+        p.disc_pending = p.disc_pending || disc;
+        return;
+    }
+    disc = disc || p.disc_pending;
+    p.disc_pending = false;
     const int64_t t = read(i);
     uint8_t b[PKT];
     build_pcr_packet(p.pcr_out, net_pcr27(t + e_ns_, p.delay.d_e()), p.sched.cc(), disc, b);
@@ -664,13 +678,33 @@ void EgressCore::discontinuity(size_t i, Prog& p, bool rebuilt) {
     if (p.pcr_out >= 0) insert_pcr(i, p, true);
 }
 
+void EgressCore::prime(const PacketView& v) {
+    // The PCR PID's first payload packet in hand: a PCR inserted before it takes its CC - 1.
+    if (v.payload_off >= PKT) return;
+    for (auto& up : progs_) {
+        if (up->pcr_out != v.pid || up->cc_known) continue;
+        up->sched.saw_payload((uint8_t)((v.cc - 1) & 0x0F));
+        up->cc_known = true;
+    }
+}
+
+void EgressCore::sent(int pid, uint8_t cc) {
+    // A payload packet of pid is emitted: what is inserted after it carries its CC.
+    last_cc_[pid] = (int8_t)(cc & 0x0F);
+    for (auto& up : progs_) {
+        if (up->pcr_out != pid) continue;
+        up->sched.saw_payload(cc);
+        up->cc_known = true;
+    }
+}
+
 void EgressCore::pcr_due(size_t i, const PacketView& v) {
     for (auto& up : progs_) {
         Prog& p = *up;
         const int pid = p.pcr_out;
         if (pid < 0 || !p.has_section || span_.held(pid)) continue;
-        if (v.pid == pid && v.af_pcr) continue;
-        if (p.sched.due(t_)) insert_pcr(i, p, false);
+        if (v.pid == pid && v.af_pcr && !p.disc_pending) continue;
+        if (p.sched.due(t_) || p.disc_pending) insert_pcr(i, p, false);
     }
 }
 
@@ -730,10 +764,6 @@ void EgressCore::lateness(size_t i, Prog& p, int64_t lam) {
 EgressCore::Verdict EgressCore::on_es(size_t i, PacketView& v, Prog& p) {
     const int pid = v.pid;
     const bool payload = v.payload_off < PKT;
-    if (payload) {
-        last_cc_[pid] = v.cc;
-        if (pid == p.pcr_out) p.sched.saw_payload(v.cc);
-    }
     if (payload && span_.held(pid)) {
         bool joined = false;
         uint8_t first[PKT];
@@ -743,6 +773,7 @@ EgressCore::Verdict EgressCore::on_es(size_t i, PacketView& v, Prog& p) {
         });
         write_pcr_at(i, first, p, pid);
         res_.push((uint32_t)i, EgressEdit::Op::insert, first);
+        sent(pid, first[3] & 0x0F);
         auto it = held_af_.find(pid);
         if (it != held_af_.end()) {
             for (auto& af : it->second) {
@@ -753,6 +784,7 @@ EgressCore::Verdict EgressCore::on_es(size_t i, PacketView& v, Prog& p) {
         }
         if (joined) {
             write_pcr_at(i, v.p, p, pid);
+            sent(pid, v.cc);
             return Verdict::pass;
         }
     }
@@ -782,6 +814,7 @@ EgressCore::Verdict EgressCore::on_es(size_t i, PacketView& v, Prog& p) {
         }
     }
     write_pcr_at(i, v.p, p, pid);
+    sent(pid, v.cc);
     return Verdict::pass;
 }
 

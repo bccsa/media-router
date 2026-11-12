@@ -207,11 +207,13 @@ class EgressCore {
     Verdict on_pmt(size_t i, PacketView& v);
     int choose_pcr(const std::vector<PmtStream>& streams) const;
     void new_pmt(size_t i, Prog& p, const Pmt& pmt);
-    bool rebuild(Prog& p);
+    bool rebuild(Prog& p, bool force = false);
     void emit_pmt(size_t i, Prog& p);
     void insert_pcr(size_t i, Prog& p, bool discontinuity);
     void saw_pcr(Prog& p, int64_t t);
     void discontinuity(size_t i, Prog& p, bool rebuilt);
+    void prime(const PacketView& v);
+    void sent(int pid, uint8_t cc);
     void pcr_due(size_t i, const PacketView& v);
     void gap(int pid, int64_t end, int64_t g);
     void write_pcr_at(size_t i, uint8_t* buf, Prog& p, int pid);
@@ -228,7 +230,7 @@ class EgressCore {
     Prog* pid_prog_[8192] = {};
     std::map<int, SectionAssembler> asm_;
     std::map<int, std::vector<std::array<uint8_t, PKT>>> held_af_;
-    uint8_t last_cc_[8192] = {};
+    int8_t last_cc_[8192];                   // the last payload CC sent per PID, -1 none
     std::deque<TsPacket> pat_pkts_;
     SectionSig pat_sig_, pat_new_sig_;
     bool pat_resync_ = false, pat_known_ = false;

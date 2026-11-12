@@ -4,4 +4,4 @@
 {"event":"d-e-max","fromNs":400000000,"latenessNs":311375886,"packet":3448,"program":1,"toNs":400000000}
 {"stats":{"dEChanges":3,"dENs":400000000,"latenessMaxNs":329945945,"latenessNs":202666667,"latenessOffHouse":0,"pcrInserted":153,"pcrIntervalMaxNs":62857142,"pcrPid":256,"pcrWritten":105,"pesRewritten":247,"pmtSent":73,"pmtVersion":3,"program":1}}
 {"counters":{"ccLostIn":0,"droppedBeforePmt":0,"gapMarkers":0,"gaps":0,"held":0,"reEpochs":0}}
-{"output":{"bytes":773432,"crc32":"ecda29fb","sha256":"290ddad59005b8a48d6ac242bd4a7d52e130698e773f6f507e05c98d6c201fa0"}}
+{"output":{"bytes":773432,"crc32":"7868e0d3","sha256":"3e3fb63a99fccbf8ef976506e54f0f570c424aa4b4dcea8d5c586ea0d9a4db6e"}}

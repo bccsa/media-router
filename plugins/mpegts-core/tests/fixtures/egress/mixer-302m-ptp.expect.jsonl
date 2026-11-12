@@ -1,4 +1,4 @@
 {"event":"d-e-start","fromNs":250000000,"latenessNs":0,"packet":2,"program":1,"toNs":200000000}
 {"stats":{"dEChanges":1,"dENs":200000000,"latenessMaxNs":0,"latenessNs":-67142858,"latenessOffHouse":0,"pcrInserted":151,"pcrIntervalMaxNs":39583333,"pcrPid":65,"pcrWritten":150,"pesRewritten":750,"pmtSent":76,"pmtVersion":1,"program":1}}
 {"counters":{"ccLostIn":0,"droppedBeforePmt":0,"gapMarkers":0,"gaps":0,"held":0,"reEpochs":0}}
-{"output":{"bytes":2028520,"crc32":"92d7fd94","sha256":"8506b1242ddb9325196804c1d18cf7b511585f90b22b6c6c8b619c863f4b40c5"}}
+{"output":{"bytes":2028520,"crc32":"2e7540f6","sha256":"8271758c05543871fdcf2338e6286f42d63969c7264cfcae6c139f33f748b0cc"}}

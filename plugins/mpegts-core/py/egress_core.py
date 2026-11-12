@@ -12,7 +12,9 @@ written: (index, INSERT, bytes) before packet `index` (== the packet count: at t
   held behind it), other PIDs not delayed;
 - every PCR to H(emission) - D_e, H = the clock read for that PCR + E; on the PCR PID a PCR-only
   packet inserted once `pcr_interval` (35 ms) passed without one (the clock read once per buffer
-  and per PCR written), its CC the PID's last payload CC;
+  and per PCR written), adaptation-only, its CC the PID's last payload CC sent before it (the
+  first payload packet's CC - 1 when none was sent; none inserted before that packet is in hand,
+  a flag then carried to the next PCR);
 - PCR_PID 0x1FFF: the first video ES, else audio, else the first ES, once `pcr-pid-assigned`;
 - every PMT section replaced by the writer's own, on its own CC: the input program_info without
   any MRHT, ours appended (hcdesc), the version bumped (mod 32) whenever its bytes change;
@@ -22,7 +24,8 @@ written: (index, INSERT, bytes) before packet `index` (== the packet count: at t
   beyond 60 s is `lateness-off-house` and ignored (S22);
 - a D_e change: the new PMT at once, then a PCR-only packet with discontinuity_indicator, before
   the PES that caused it; a re-epoch (E or seq changed, applied at the next buffer): the same at
-  the buffer's head and the new E from each PID's next PUSI; any other declared field (the
+  the buffer's head (the version bumped even when the section's bytes did not change) and the
+  new E from each PID's next PUSI; any other declared field (the
   published error class after its 10 s hold, timeline_id, ...): the new PMT at once, no flag;
 - a GAP buffer (bus gap marker, OQ-12) consumed (read_gap_length, its PTS the gap's end) and
   dropped (S8); a bus silence of gap_lower_min (500 ms) between buffers is a gap too; D_e may
@@ -389,6 +392,8 @@ class _Prog:
         self.section = None
         self.key = None
         self.pmt_cc = 0
+        self.cc_known = False                     # the PCR PID's last sent payload CC is in sched
+        self.disc_pending = False                 # a flagged PCR skipped for it: the next one carries it
         self.grew_told = False
         self.pcr_last_t = None
         self.st = {"pesRewritten": 0, "pcrWritten": 0, "pcrInserted": 0, "pmtSent": 0,
@@ -515,6 +520,7 @@ class EgressCore:
             if self._cc_in.feed(v) == dc.CcTracker.LOST:
                 self.counters["ccLostIn"] += 1
                 self._event(i, "cc-lost-in", pid=v.pid)
+            self._prime(v)
             self._pcr_due(i, v)
             verdict = self._on_packet(i, v)
             if verdict == DROP:
@@ -582,7 +588,7 @@ class EgressCore:
             if prog.section is None:
                 continue
             if reepoch:
-                self._rebuild(prog)
+                self._rebuild(prog, force=True)
                 self._discontinuity(0, prog, rebuilt=True)
             elif n in dirty and self._rebuild(prog):
                 self._emit_pmt(0, prog)
@@ -713,14 +719,16 @@ class EgressCore:
         if pcr != prog.pcr_out:
             prog.pcr_out = pcr
             prog.sched = PcrScheduler(self.cfg.pcr_interval_ns)
-            prog.sched.saw_payload(self._last_cc.get(pcr, 0))
+            last = self._last_cc.get(pcr)
+            prog.cc_known = last is not None
+            prog.sched.saw_payload(last or 0)
             prog.pcr_last_t = None
         self._map_pids()
         self._rebuild(prog)
 
-    def _rebuild(self, prog):
+    def _rebuild(self, prog, force=False):
         """The program's output section from its input PMT and declaration; True when its bytes
-        (version and CRC aside) changed, the version then bumped."""
+        (version and CRC aside) changed or `force` (a re-epoch), the version then bumped."""
         pmt = prog.pmt_in
         pi = hcdesc.strip_from(pmt.program_info) + hcdesc.encode(self._decl(prog))
         pcr = PID_NULL if prog.pcr_out is None else prog.pcr_out
@@ -731,7 +739,7 @@ class EgressCore:
                                           pmt.streams, version)
         sec = build(prog.version_out)
         key = sec[:5] + bytes([sec[5] & 0xC1]) + sec[6:-4]
-        if prog.key == key:
+        if prog.key == key and not force:
             return False
         if prog.key is not None:
             prog.version_out = (prog.version_out + 1) % 32
@@ -747,6 +755,11 @@ class EgressCore:
             self._edits.append((i, INSERT, b))
 
     def _insert_pcr(self, i, prog, discontinuity):
+        # AF-only, with the PID's last sent payload CC; none before that CC is known (_prime).
+        if not prog.cc_known:
+            prog.disc_pending = prog.disc_pending or discontinuity
+            return
+        discontinuity, prog.disc_pending = discontinuity or prog.disc_pending, False
         t = self._read(i)
         self._edits.append((i, INSERT, build_pcr_packet(
             prog.pcr_out, net_pcr27(t + self._e_ns, prog.delay.d_e), prog.sched.cc(),
@@ -768,14 +781,31 @@ class EgressCore:
         if prog.pcr_out is not None:
             self._insert_pcr(i, prog, True)
 
+    def _prime(self, v):
+        """The PCR PID's first payload packet in hand: a PCR inserted before it takes its CC - 1."""
+        if v.payload_off >= PKT:
+            return
+        for prog in self._progs.values():
+            if prog.pcr_out == v.pid and not prog.cc_known:
+                prog.sched.saw_payload((v.cc - 1) & 0x0F)
+                prog.cc_known = True
+
+    def _sent(self, pid, cc):
+        """A payload packet of pid is emitted: what is inserted after it carries its CC."""
+        self._last_cc[pid] = cc
+        for prog in self._progs.values():
+            if prog.pcr_out == pid:
+                prog.sched.saw_payload(cc)
+                prog.cc_known = True
+
     def _pcr_due(self, i, v):
         for prog in self._progs.values():
             pid = prog.pcr_out
             if pid is None or prog.section is None or self._span.held(pid):
                 continue
-            if v.pid == pid and v.af_pcr:
+            if v.pid == pid and v.af_pcr and not prog.disc_pending:
                 continue
-            if prog.sched.due(self._t):
+            if prog.sched.due(self._t) or prog.disc_pending:
                 self._insert_pcr(i, prog, False)
 
     def _gap(self, pid, end, g):
@@ -822,10 +852,6 @@ class EgressCore:
     def _on_es(self, i, v, prog):
         pid = v.pid
         payload = v.payload_off < PKT
-        if payload:
-            self._last_cc[pid] = v.cc
-            if pid == prog.pcr_out:
-                prog.sched.saw_payload(v.cc)
         if payload and self._span.held(pid):
             joined = [False]
 
@@ -835,11 +861,13 @@ class EgressCore:
             held = bytearray(self._span.complete(v, ts))
             self._write_pcr(i, held, prog, pid)
             self._edits.append((i, INSERT, bytes(held)))
+            self._sent(pid, held[3] & 0x0F)
             for af in self._held_af.pop(pid, []):
                 self._write_pcr(i, af, prog, pid)
                 self._edits.append((i, INSERT, bytes(af)))
             if joined[0]:
                 self._write_pcr(i, v.p, prog, pid)
+                self._sent(pid, v.cc)
                 return None
         if not payload:
             if self._span.held(pid):
@@ -859,6 +887,7 @@ class EgressCore:
                 pts33, dts33 = self._times(i, prog, pid, h, h.pts, h.dts)
                 hr.rewrite_pes_timestamps(v, h, pts33, dts33)
         self._write_pcr(i, v.p, prog, pid)
+        self._sent(pid, v.cc)
         return None
 
 

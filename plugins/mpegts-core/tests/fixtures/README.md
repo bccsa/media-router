@@ -54,7 +54,9 @@ its expectation, and `native/mrts/tests/ts_egress_replay_test` and `py/egress_pa
 No stream is committed for them; the audio-only and PCR-less programmes are generated at test time
 (`fixture_gen --ts egress`).
 Reviewed by hand on 2026-11-12 (B-221): every output decodes in ffprobe with the input's packet
-count and the input's errors alone (the synthetic streams' payloads), each `d-e-*` line's lateness
+count and the input's errors alone (the synthetic streams' payloads), `ffprobe -v debug` counting
+no more continuity failures in any output than in its input (none in the ten clean inputs; checked
+after fix round 1, before which each D_e change on the PCR PID added one), each `d-e-*` line's lateness
 matches its clock file (the ramps' raises at least 130 ms apart, `hevc-aac-max` held at its 400 ms
 with one `d-e-max`, `gap-marker` lowered once by its 520 ms marker though both PIDs carry one,
 `bus-pmt-change`'s reconnect backlog raising D_e to 2.92 s and its markers lowering it), the PMT

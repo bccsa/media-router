@@ -130,4 +130,4 @@
 {"stats":{"dEChanges":0,"dENs":250000000,"latenessMaxNs":0,"latenessNs":null,"latenessOffHouse":0,"pcrInserted":0,"pcrIntervalMaxNs":20998392,"pcrPid":101,"pcrWritten":90,"pesRewritten":0,"pmtSent":36,"pmtVersion":1,"program":1}}
 {"stats":{"dEChanges":1,"dENs":160000000,"latenessMaxNs":0,"latenessNs":-11575766408,"latenessOffHouse":0,"pcrInserted":2,"pcrIntervalMaxNs":22648505,"pcrPid":357,"pcrWritten":90,"pesRewritten":338,"pmtSent":37,"pmtVersion":1,"program":2}}
 {"counters":{"ccLostIn":128,"droppedBeforePmt":0,"gapMarkers":0,"gaps":0,"held":0,"reEpochs":0}}
-{"output":{"bytes":1354728,"crc32":"906e8ebb","sha256":"4aeff223978ba2c790596433e52ad840e3a2ab02323668ed9b2270f669fc9be2"}}
+{"output":{"bytes":1354728,"crc32":"3a3328ae","sha256":"0a740f523489dc7c200e0d460abec258813f31bde27d9e96ef201a597b283c5d"}}

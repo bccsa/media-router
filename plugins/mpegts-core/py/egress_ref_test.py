@@ -285,6 +285,8 @@ def case_header_split():
          len(bi) == len(bo) and all(y <= x for x, y in zip(bi, bo))
          and any(y < x for x, y in zip(bi, bo))),
         ("header split: no PES lost", len(wo.of("pes")) == len(wi.of("pes"))),
+        ("header split: a strict CC walk over the output, in one buffer and in 188-byte ones",
+         cc_strict(data, False) and cc_strict(out) and cc_strict(run(data, spec(), chunk=188)[0])),
     ]
 
 
@@ -321,19 +323,41 @@ def _cc_ok(out):
     return t.lost == 0
 
 
-def _inserted_cc_ok(out, pid):
-    """Every PCR-only packet on pid carries its PID's last payload CC."""
-    last, ok, n = None, True, 0
-    for i in range(0, len(out), PKT):
-        p = out[i:i + PKT]
-        if ((p[1] & 0x1F) << 8 | p[2]) != pid:
+def cc_walk(data):
+    """A strict CC walk per PID: a payload packet is the last payload CC + 1, an adaptation-only
+    one the last payload CC (before any, the first payload CC - 1). The violations, as
+    (packet, pid, "pay"|"af", cc, wanted), and the adaptation-only packets judged."""
+    pkts = [data[i:i + PKT] for i in range(0, len(data) - PKT + 1, PKT)]
+    first = {}
+    for p in pkts:
+        if p[3] & 0x10:
+            first.setdefault((p[1] & 0x1F) << 8 | p[2], p[3] & 0x0F)
+    last, bad, n = {}, [], 0
+    for i, p in enumerate(pkts):
+        pid, cc = (p[1] & 0x1F) << 8 | p[2], p[3] & 0x0F
+        if pid == ec.PID_NULL:
             continue
         if p[3] & 0x10:
-            last = p[3] & 0x0F
-        elif hr.read_pcr(p) >= 0 and last is not None:
+            if pid in last and cc != (last[pid] + 1) & 0x0F:
+                bad.append((i, pid, "pay", cc, (last[pid] + 1) & 0x0F))
+            last[pid] = cc
+        elif p[3] & 0x20:
+            want = last.get(pid, (first[pid] - 1) & 0x0F if pid in first else None)
             n += 1
-            ok = ok and (p[3] & 0x0F) == last and (p[3] & 0x30) == 0x20
-    return ok and n > 0
+            if want is not None and cc != want:
+                bad.append((i, pid, "af", cc, want))
+    return bad, n
+
+
+def cc_strict(out, need_af=True):
+    bad, n = cc_walk(out)
+    return not bad and (n > 0 or not need_af)
+
+
+def cc_af_kept(inp, out):
+    """No adaptation-only CC violation in the output on a PID whose input has none."""
+    dirty = {b[1] for b in cc_walk(inp)[0] if b[2] == "af"}
+    return not [b for b in cc_walk(out)[0] if b[2] == "af" and b[1] not in dirty]
 
 
 def _content_fn(data):
@@ -359,7 +383,8 @@ def case_sparse_pcr():
         ("sparse PCR: buffers 2 ms apart, PCR interval <= 35 + 2 ms", bool(iv) and max(iv) <= 37 * MS),
         ("sparse PCR: the writer inserted PCRs (input PCR every 500 ms)",
          st["pcrInserted"] > st["pcrWritten"]),
-        ("sparse PCR: inserted packets AF-only with the PID's last payload CC", _inserted_cc_ok(out, 0x101)),
+        ("sparse PCR: inserted packets AF-only with the PID's last payload CC (strict CC walk)",
+         cc_strict(out) and cc_strict(out2)),
         ("sparse PCR: the output's CC tracker reports no loss", _cc_ok(out) and _cc_ok(out2)),
         ("sparse PCR: 1316-byte replay within 35 ms + its buffer spacing",
          bool(iv2) and max(iv2) <= 35 * MS + _max_spacing(data, 1316)),
@@ -436,6 +461,9 @@ def case_de():
     maxes = ev(linesm, "d-e-max")
     pm = [r["decl"].d_e_90k for _k, _i, r in Walk(outm).of("pmt")]
     return [
+        ("D_e: a strict CC walk over the ramp's output (inserted PCRs on the last payload CC sent, "
+         "the first one before the first payload on its CC - 1)",
+         cc_strict(data, False) and cc_strict(out) and cc_strict(outm)),
         ("D_e: start from the first PES, ceil10(lateness + margin + |eps|)",
          len(s0 and [s0]) == 1 and s0["toNs"] == _ceil10(s0["latenessNs"] + 150 * MS + 1200 * 1000)
          and 50 * MS < s0["latenessNs"] < 150 * MS),
@@ -472,6 +500,8 @@ def case_gap():
          big == 3050 * MS and d.d_e == big - 2 * SEC and lo[0][0] == "d-e-lower"),
         ("gap: one hole's two markers lower once", len(low) == 1),
         ("gap: markers consumed and not sent", markers == 0 and core.counters["gapMarkers"] == 2),
+        ("gap: a strict CC walk over the output (the lowering's flagged PCR included)",
+         cc_strict(data, False) and cc_strict(out)),
         ("gap: a GAP buffer's every packet dropped",
          all(all(op == ec.DROP for _i, op, _b in r.edits) and len(r.edits) == len(r.packets)
              for r in [core_gap_result()])),
@@ -566,7 +596,17 @@ def case_reepoch():
             e = e2 if idx > first_new else E1
             ok = ok and y["pts"] == ec.bus_to_net(x["pts"], e)
     versions = [r["version"] for _k, _i, r in pmts]
+    # E moved, seq not (part 4.2 step 7): the version still bumped, then the flagged PCR.
+    oute, linese, _c = run(data, spec(changes=[{"atMs": 3000, "clock": {"eNs": str(e2)}}]))
+    we = Walk(oute)
+    at_e = ev(linese, "re-epoch")[0]["packet"] if ev(linese, "re-epoch") else -1
+    ke = next((k for k, r in enumerate(we.recs) if r[0] == "pmt" and r[1] >= at_e), None)
+    e_bumped = (ke is not None and ke > 0 and we.recs[ke + 1][0] == "pcr" and we.recs[ke + 1][2]["disc"]
+                and we.recs[ke][2]["version"] == (max(r["version"] for _k, i, r in we.of("pmt")
+                                                      if i < we.recs[ke][1]) + 1) % 32)
     return [
+        ("re-epoch: E moved with seq kept bumps the PMT version, then a flagged PCR", e_bumped),
+        ("re-epoch: a strict CC walk over both outputs", cc_strict(out) and cc_strict(oute)),
         ("re-epoch: one event, seq 3 -> 4, delta E", len(re) == 1 and re[0]["seq"] == 4
          and re[0]["fromSeq"] == 3 and re[0]["deltaNs"] == 2500 * MS and at > 0),
         ("re-epoch: epoch_seq and the PMT version change, then a flagged PCR", seq_flagged
@@ -706,7 +746,8 @@ def case_expectations():
             sp = json.load(f)
         data = fixture(sp["input"])
         bus = ec.read_bus(os.path.join(FIX, sp["bus"])) if sp.get("bus") else None
-        _o, lines = ec.replay(data, sp, bus)
+        out, lines = ec.replay(data, sp, bus)
+        res.append(("expectation: %s adds no adaptation-only CC error" % name, cc_af_kept(data, out)))
         with open(os.path.join(EGRESS, name + ".expect.jsonl")) as f:
             want = [line.rstrip("\n") for line in f if line.strip()]
         res.append(("expectation: %s" % name, want == [ec.dump_line(x) for x in lines]))
@@ -741,12 +782,63 @@ def case_pcr_value():
     ]
 
 
+def pcr_on_audio(data):
+    """fixture_gen's egress stream with its PMT's PCR_PID moved to the audio (0x101): the video's
+    PCRs then sit on a non-PCR PID. The PMTs changed."""
+    data, n = bytearray(data), 0
+    for off in range(0, len(data), PKT):
+        v = hr.parse_packet(bytearray(data[off:off + PKT]))
+        if v.pid != 0x1000 or not v.pusi:
+            continue
+        k = off + v.payload_off + 1 + data[off + v.payload_off]
+        ln = 3 + (((data[k + 1] & 0x0F) << 8) | data[k + 2])
+        data[k + 8], data[k + 9] = 0xE1, 0x01
+        data[k + ln - 4:k + ln] = ec.crc32_mpeg(bytes(data[k:k + ln - 4])).to_bytes(4, "big")
+        n += 1
+    return bytes(data), n
+
+
+def case_pcr_other_pid():
+    """Part 4.2 step 5: a PCR on a PID other than the PCR PID is rewritten the same way."""
+    data, n = pcr_on_audio(gen("--duration", "2"))
+    core = ec.EgressCore()
+    core.set_clock(ec.clock_from_json(CLOCK))
+    out = bytearray()
+    want_ok, seen = True, 0
+    for off in range(0, len(data), PKT):
+        now = 1000 * SEC + (off // PKT) * MS
+        r = core.process(data[off:off + PKT], now)
+        d_e = core.stats(1)["dENs"] if core.stats(1) else 0
+        for i, op, b in r.edits:
+            if op == ec.REPLACE and ((b[1] & 0x1F) << 8 | b[2]) == 0x100 and hr.read_pcr(b) >= 0:
+                seen += 1
+                want_ok = want_ok and hr.read_pcr(b) == ec.ns_to_pcr27(now + E1 - d_e)
+        out += ec.apply_edits(r.packets, r.edits)
+    w = Walk(bytes(out))
+    pk = [out[i:i + PKT] for i in range(0, len(out), PKT)]
+    pay = next(i for i, p in enumerate(pk) if ((p[1] & 0x1F) << 8 | p[2]) == 0x101 and p[3] & 0x10)
+    p101 = [(i, r) for _k, i, r in w.of("pcr") if r["pid"] == 0x101]
+    return [
+        ("PCR other PID: D_e started on video before 0x101's first payload: its flagged PCR waits "
+         "for that packet and goes just before it, on its CC - 1",
+         bool(p101) and p101[0][0] == pay - 1 and p101[0][1]["disc"] and p101[0][1]["af_only"]
+         and p101[0][1]["cc"] == ((pk[pay][3] & 0x0F) - 1) & 0x0F
+         and any(r[0] == "pmt" and r[1] < pay - 1 and r[2]["version"] == 1 for r in w.recs)),
+        ("PCR other PID: the PMT says 0x101 in and out", n > 0 and all(
+            r["pcr"] == 0x101 for _k, _i, r in w.of("pmt"))),
+        ("PCR other PID: every video PCR rewritten to H(emission) - D_e", seen > 20 and want_ok),
+        ("PCR other PID: PCRs inserted on 0x101, a strict CC walk",
+         any(r["pid"] == 0x101 for _k, _i, r in w.of("pcr")) and cc_strict(bytes(out))),
+    ]
+
+
 CASES = {
     "hcdesc": case_hcdesc, "wrap": case_wrap, "header-split": case_header_split,
     "sparse-pcr": case_sparse_pcr, "no-pcr-pid": case_no_pcr_pid, "de": case_de, "gap": case_gap,
     "silence": case_silence, "descriptor": case_descriptor, "reepoch": case_reepoch,
     "error-hold": case_error_hold, "timeline": case_timeline, "bytes": case_bytes,
     "lateness-cut": case_lateness_cut, "mpts": case_mpts, "pcr-value": case_pcr_value,
+    "pcr-other-pid": case_pcr_other_pid,
     "expectations": case_expectations,
 }
 
@@ -808,6 +900,48 @@ def _mut_inserted_cc():
     return _patch(ec.PcrScheduler, "cc", lambda self: (self._cc + 1) & 0x0F)
 
 
+def _mut_cc_before_sent():
+    orig = ec.EgressCore._on_es
+
+    def on_es(self, i, v, prog):
+        if v.payload_off < PKT:                   # recorded before the packet's own handling
+            self._sent(v.pid, v.cc)
+        return orig(self, i, v, prog)
+    return _patch(ec.EgressCore, "_on_es", on_es)
+
+
+def _mut_first_cc_zero():
+    def prime(self, v):
+        for prog in self._progs.values():
+            if prog.pcr_out == v.pid and not prog.cc_known:
+                prog.cc_known = True              # CC 0 before the PID's first payload
+    return _patch(ec.EgressCore, "_prime", prime)
+
+
+def _mut_other_pid_pcr():
+    orig = ec.EgressCore._write_pcr
+
+    def write(self, i, buf, prog, pid):
+        if pid == prog.pcr_out:
+            orig(self, i, buf, prog, pid)
+    return _patch(ec.EgressCore, "_write_pcr", write)
+
+
+def _mut_flag_dropped():
+    orig = ec.EgressCore._insert_pcr
+
+    def insert(self, i, prog, discontinuity):
+        if not prog.cc_known:
+            return                                # the skipped flagged PCR forgotten
+        orig(self, i, prog, discontinuity)
+    return _patch(ec.EgressCore, "_insert_pcr", insert)
+
+
+def _mut_reepoch_no_bump():
+    orig = ec.EgressCore._rebuild
+    return _patch(ec.EgressCore, "_rebuild", lambda self, prog, force=False: orig(self, prog))
+
+
 def _mut_late_cut():
     return _patch(ec.EgressDelay, "LATE_MAX_NS", 1 << 62)
 
@@ -820,6 +954,12 @@ MUTANTS = [
     ("the flagged PCR before the PMT", _mut_pcr_before_pmt, "de"),
     ("inserted PCR packets one CC on", _mut_inserted_cc, "sparse-pcr"),
     ("no 60 s cut", _mut_late_cut, "lateness-cut"),
+    ("a payload CC taken before its packet is sent", _mut_cc_before_sent, "de"),
+    ("CC 0 for a PCR before the PCR PID's first payload", _mut_first_cc_zero, "de"),
+    ("a PCR on a non-PCR PID left as it came", _mut_other_pid_pcr, "pcr-other-pid"),
+    ("a flagged PCR skipped before the PCR PID's first payload forgotten", _mut_flag_dropped,
+     "pcr-other-pid"),
+    ("a re-epoch with seq kept does not bump the version", _mut_reepoch_no_bump, "reepoch"),
 ]
 
 

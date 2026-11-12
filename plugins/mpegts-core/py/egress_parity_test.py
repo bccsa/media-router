@@ -6,7 +6,8 @@ replays a recording as egress_core.py's CLI does, and its output bytes and every
   - every tests/fixtures/egress case with its clock file (a bus sidecar where it names one), and
     the non-sidecar ones again in 188- and 1000-byte buffers (a packet split across buffers);
   - generated streams (fixture_gen --ts egress): a D_e ramp, its max, audio-only (sparse PCR),
-    no PCR PID, both, the error class's hold, a timeline change, lateness below 0 and past 60 s,
+    no PCR PID, both, the error class's hold, a timeline change, the PCR PID moved to the audio
+    (video PCRs on a non-PCR PID), a re-epoch moving E alone, lateness below 0 and past 60 s,
     unknown E with a PTP grandmaster, a bus silence, and syn-wrap-33bit with the wire's 2^33
     wrap mid-file, re-epoched back across it and forward again (both directions of the wrap).
 
@@ -116,6 +117,10 @@ def cases():
     g5 = _gen("g5", "--duration", "5")
     out.append(Case("gen-timeline", g5, rt.spec(changes=[
         {"atMs": 2500, "clock": {"timelineId": "0123456789abcdef"}}])))
+    out.append(Case("gen-pcr-on-audio", _write("gpa.ts", rt.pcr_on_audio(rt.gen("--duration", "5"))[0]),
+                    rt.spec()))
+    out.append(Case("gen-reepoch-e-only", g5, rt.spec(changes=[
+        {"atMs": 2500, "clock": {"eNs": str(rt.E1 + 2500 * MS)}}])))
     g10 = _gen("g10")
     out.append(Case("gen-lateness-cut", g10, rt.spec(lateness=(
         (0, 100), (2000, -500), (3000, -500), (4000, 61000), (6000, 61000), (7000, 100)))))
