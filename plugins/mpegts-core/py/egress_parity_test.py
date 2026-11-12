@@ -13,7 +13,8 @@ replays a recording as egress_core.py's CLI does, and its output bytes and every
     a dedicated PCR PID that never carries payload, two programmes sharing one PMT PID, known
     false with an eNs set, buffers spanning about 400 ms (lateness on the latest reading), the
     audio and a private ES listed before the video under PCR_PID 0x1FFF, a clock error past the
-    50 ms cap, an adaptation-only packet between a split header's halves, and a 4 ms gap.
+    50 ms cap, one and three adaptation-only packets behind a split header, a new PMT of a
+    PCR-less programme, and a 4 ms gap.
 
 Then each of egress_ref_test.py's mutants replays the cases, and parity must tell it from
 mrts_cli. Skips (exit 0) without the built mrts_cli (make native).
@@ -94,6 +95,39 @@ def _silence_bus(data, chunk=1316, lost_s=2):
              "flags": 0} for o in range(0, len(data), chunk) if not cut - skip <= o < cut]
 
 
+def _split_with_afs(data, n=3):
+    """Every split video header followed by n adaptation-only packets on its PID and CC."""
+    out = bytearray()
+    for i in range(0, len(data), PKT):
+        p = data[i:i + PKT]
+        out += p
+        pid = (p[1] & 0x1F) << 8 | p[2]
+        if pid != 0x100 or not p[1] & 0x40:
+            continue
+        for _ in range(n):
+            out += bytes((0x47, p[1] & 0x1F, p[2], 0x20 | (p[3] & 0x0F), 183, 0x00)) + b"\xff" * 182
+    return bytes(out)
+
+
+def _pmt_version_bump(data):
+    """The PMT's version bumped from the middle on: a new PMT with the same streams."""
+    pk = bytearray(data)
+    pat = pmt_pid = None
+    for i in range(0, len(pk), PKT):
+        if (pk[i + 1] & 0x1F) << 8 | pk[i + 2] == 0 and pk[i + 1] & 0x40:
+            s0 = i + 4 + 1 + pk[i + 4]
+            pmt_pid = (pk[s0 + 10] & 0x1F) << 8 | pk[s0 + 11]
+            break
+    for i in range(len(pk) // 2 // PKT * PKT, len(pk), PKT):
+        if (pk[i + 1] & 0x1F) << 8 | pk[i + 2] != pmt_pid or not pk[i + 1] & 0x40 or (pk[i + 3] & 0x30) != 0x10:
+            continue
+        s0 = i + 4 + 1 + pk[i + 4]
+        n = 3 + ((pk[s0 + 1] & 0x0F) << 8 | pk[s0 + 2])
+        pk[s0 + 5] = (pk[s0 + 5] & 0xC1) | ((((pk[s0 + 5] >> 1) + 1) & 0x1F) << 1)
+        pk[s0 + n - 4:s0 + n] = ec.crc32_mpeg(bytes(pk[s0:s0 + n - 4])).to_bytes(4, "big")
+    return bytes(pk)
+
+
 def cases():
     out = []
     for fn in sorted(os.listdir(EGRESS)):
@@ -147,6 +181,10 @@ def cases():
     sa = _write("gsa.ts", rt.split_with_af(rt.fixture("syn-pes-header-split.ts"))[0])
     out.append(Case("gen-split-af", sa, rt.spec()))
     out.append(Case("gen-split-af-c188", sa, rt.spec(), None, 188))
+    out.append(Case("gen-split-3af", _write("gs3.ts", _split_with_afs(rt.fixture("syn-pes-header-split.ts"))),
+                    rt.spec()))
+    out.append(Case("gen-no-pcr-new-pmt", _write("gnv.ts", _pmt_version_bump(rt.gen("--pcr-pid", "none",
+                    "--duration", "5"))), rt.spec()))
     gm = rt.fixture("syn-gap-marker.ts")
     sd, sb = rt.small_gap(gm, ec.read_bus(os.path.join(FIX, "syn-gap-marker.bus.jsonl")))
     out.append(Case("gen-small-gap", _write("gsg.ts", sd),

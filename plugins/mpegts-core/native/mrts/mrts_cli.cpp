@@ -2362,20 +2362,6 @@ int64_t interp(const std::vector<std::pair<int64_t, int64_t>>& pts, int64_t x) {
     return a.second + (int64_t)q;
 }
 
-uint32_t crc32_zlib(const uint8_t* d, size_t n) {
-    static uint32_t t[256];
-    if (!t[1]) {
-        for (uint32_t i = 0; i < 256; i++) {
-            uint32_t c = i;
-            for (int k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-            t[i] = c;
-        }
-    }
-    uint32_t c = 0xFFFFFFFFu;
-    for (size_t i = 0; i < n; i++) c = t[(c ^ d[i]) & 0xFF] ^ (c >> 8);
-    return c ^ 0xFFFFFFFFu;
-}
-
 // SHA-256 (FIPS 180-4), for the replay's output line.
 std::string sha256_hex(const uint8_t* d, size_t n) {
     static const uint32_t K[64] = {

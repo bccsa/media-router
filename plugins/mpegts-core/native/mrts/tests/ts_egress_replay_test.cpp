@@ -1,7 +1,6 @@
-// ts_egress replay (plan ch. 9 WI-P5-2, p5-2b, B-222): every tests/fixtures/egress case through
-// `mrts_cli egress` (mrts::EgressCore under py/egress_core.py's replay) against its hand-reviewed
-// .expect.jsonl, events, stats, counters and the output's digest; a changed expectation fails.
-// MRTS_FIXTURES overrides tests/fixtures.
+// ts_egress replay (WI-P5-2, p5-2b, B-222): every tests/fixtures/egress case through `mrts_cli
+// egress` against its hand-reviewed .expect.jsonl and output digest. MRTS_FIXTURES overrides
+// tests/fixtures.
 #include <dirent.h>
 #include <sys/wait.h>
 

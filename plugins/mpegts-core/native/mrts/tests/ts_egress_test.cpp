@@ -1,15 +1,13 @@
-// ts_egress: mrts::EgressCore and EgressDelay (plan ch. 9 WI-P5-2's acceptance, p5-2b, B-222)
-// on generated streams: PTS/DTS on the network across the wire wrap, a split header, the sparse
-// and the missing PCR PID, D_e's start, raises, max and lowering at a gap, the descriptor once on
-// a relay, the re-epoch, the error class's hold, S22's lateness cut, and the bytes outside the
-// rewritten fields; the input never written. Byte parity with py/egress_core.py is
-// egress_parity_test.py's.
+// ts_egress (WI-P5-2, p5-2b, B-222): mrts::EgressCore and EgressDelay on generated streams, one
+// case per rule of plan ch. 9; the input is never written. Byte parity with py/egress_core.py
+// is egress_parity_test.py's.
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <deque>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -365,6 +363,42 @@ void test_header_split() {
     CHECK("header split: held packets counted, nothing left held", r.counters.held > 0 && r.out.size() % PKT == 0);
 }
 
+// Three adaptation-only packets (private data byte = marker) behind each held video header.
+void test_held_af() {
+    const Bytes base = ts_gen::pes_header_split();
+    Bytes in;
+    int k = 0;
+    for (size_t o = 0; o + PKT <= base.size(); o += PKT) {
+        const uint8_t* b = base.data() + o;
+        in.insert(in.end(), b, b + PKT);
+        if (ts_pid(b) != 0x100 || !(b[1] & 0x40)) continue;
+        for (int j = 0; j < 3; j++) {
+            uint8_t a[PKT];
+            std::memset(a, 0xFF, PKT);
+            a[0] = 0x47, a[1] = b[1] & 0x1F, a[2] = b[2], a[3] = (uint8_t)(0x20 | (b[3] & 0x0F));
+            a[4] = 183, a[5] = 0x02, a[6] = 1, a[7] = (uint8_t)(k++);
+            in.insert(in.end(), a, a + PKT);
+        }
+    }
+    const Run r = replay(in, fixed(100));
+    // Each marker after its own header: the last payload packet on the PID before it is a PUSI.
+    int want = 0;
+    bool order = k > 0, behind = true;
+    bool last_pusi = false;
+    for (size_t o = 0; o + PKT <= r.out.size(); o += PKT) {
+        const uint8_t* b = r.out.data() + o;
+        if (ts_pid(b) != 0x100) continue;
+        if (ts_has_payload(b)) {
+            last_pusi = (b[1] & 0x40) != 0;
+        } else if (b[4] > 2 && (b[5] & 0x02) && !(b[5] & 0x10)) {
+            order = order && b[7] == want++;
+            behind = behind && last_pusi;
+        }
+    }
+    CHECK("held AF: every adaptation-only packet out once, in input order", order && want == k);
+    CHECK("held AF: three behind a split header all follow it", behind);
+}
+
 // ns between consecutive PCRs on pid, a flagged one starting anew.
 int64_t max_pcr_interval(const Bytes& out, int pid, size_t* n = nullptr) {
     int64_t worst = 0, last = -1;
@@ -436,6 +470,27 @@ void test_no_pcr_pid() {
     CHECK("no PCR PID: one pcr-pid-assigned", count(r.ev, EgressEvent::Kind::pcr_pid_assigned) == 1);
     const Run ra = replay(ts_gen::egress(5 * SEC, true, true), fixed(100));
     CHECK("no PCR PID, audio only: the audio PID chosen", ra.st[0].pcr_pid == 0x101);
+}
+
+// A new PMT of a PCR-less program, same streams: the assigned PID is not announced again.
+void test_no_pcr_pid_new_pmt() {
+    Bytes in = ts_gen::egress(5 * SEC, false, true);
+    const int pmt_pid = Walk(in).pmt_pid;
+    for (size_t o = in.size() / 2 / PKT * PKT; o + PKT <= in.size(); o += PKT) {
+        uint8_t* b = in.data() + o;
+        PacketView v;
+        if (!parse_packet(b, &v) || v.pid != pmt_pid || !v.pusi || v.payload_off >= PKT) continue;
+        const size_t s0 = (size_t)v.payload_off + 1 + b[v.payload_off];
+        const size_t n = 3 + (((size_t)(b[s0 + 1] & 0x0F) << 8) | b[s0 + 2]);
+        b[s0 + 5] = (uint8_t)((b[s0 + 5] & 0xC1) | ((((b[s0 + 5] >> 1) + 1) & 0x1F) << 1));
+        const uint32_t c = crc32_mpeg(b + s0, n - 4);
+        for (int j = 0; j < 4; j++) b[s0 + n - 4 + j] = (uint8_t)(c >> (24 - 8 * j));
+    }
+    const Run r = replay(in, fixed(100));
+    std::set<int> versions;
+    for (const Rec& p : Walk(r.out).of(Rec::pmt)) versions.insert(p.pmt_v.version);
+    CHECK("no PCR PID, new PMT: the PMT changed, one pcr-pid-assigned",
+          versions.size() >= 2 && count(r.ev, EgressEvent::Kind::pcr_pid_assigned) == 1);
 }
 
 int64_t ceil10(int64_t v) { return (v + 10 * MS - 1) / (10 * MS) * (10 * MS); }
@@ -727,8 +782,10 @@ void test_bytes() {
 int main() {
     test_wrap();
     test_header_split();
+    test_held_af();
     test_sparse_pcr();
     test_no_pcr_pid();
+    test_no_pcr_pid_new_pmt();
     test_d_e();
     test_delay_unit();
     test_gap_marker();

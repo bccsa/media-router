@@ -39,7 +39,7 @@ class NowReader : public ClockReader {
 EgressDelay::EgressDelay(const EgressConfig& cfg) : cfg_(cfg), d_e_(cfg.floor_ns + cfg.margin_ns) {}
 
 int64_t EgressDelay::eps_ns(const std::optional<int64_t>& error_us) {
-    return error_us ? std::min(*error_us * 1000, EPS_CAP_NS) : EPS_CAP_NS;
+    return error_us ? std::min(*error_us, EPS_CAP_NS / 1000) * 1000 : EPS_CAP_NS;
 }
 
 int64_t EgressDelay::need(int64_t lam, int64_t eps) const {
