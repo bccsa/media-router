@@ -11,6 +11,7 @@ import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { ManagedProcess } from '../child-process/ManagedProcess.js';
 import { resolveNativeBinary } from '../child-process/nativeBinaries.js';
 import { pollClockSource, type ExecStdout } from './clockSource.js';
+import { houseClockFields, houseClockKey } from './houseClockProperty.js';
 import { PTP4L_RO_SOCKET, type ReadText } from './ptpStatus.js';
 import {
     SETTLE_MAX_MS,
@@ -48,7 +49,8 @@ const ms = (ns: bigint): string => (Number(ns) / 1e6).toFixed(3);
 
 /** The engine's one owner of the house epoch E = TAI − MONOTONIC and its time-sync state
  *  (design §4.2, §10.3): mr-clockstate measures, this decides, so a sidecar restart never
- *  re-epochs on its own. Emits `epoch` on every (re-)latch and `state` on any change. */
+ *  re-epochs on its own. Emits `epoch` on every (re-)latch and `state` on any change, also one
+ *  that only moves what a `house-clock` value declares (the error by class, the grandmaster). */
 export class HouseClock extends EventEmitter {
     private proc: ManagedProcess | null = null;
     private current: HouseEpoch | null = null;
@@ -78,6 +80,8 @@ export class HouseClock extends EventEmitter {
     private resolveReady!: (e: HouseEpoch | null) => void;
     private readonly readyPromise = new Promise<HouseEpoch | null>((r) => (this.resolveReady = r));
     private isReady = false;
+    /** The `house-clock` key as of the last `state` emitted (houseClockKey, no test override). */
+    private emittedKey = '';
     /** Lines held until the first source poll, so the first latch names its source. */
     private held: string[] | null = [];
 
@@ -200,8 +204,8 @@ export class HouseClock extends EventEmitter {
         this.stepped = false;
         this.decideAndApply(msg.sample, stepped, false);
         const syncChanged = prev && isSynced(prev) !== isSynced(msg.sample);
-        if (!prev || syncChanged || prev.taiOffsetS !== msg.sample.taiOffsetS)
-            this.emit('state', this.state());
+        if (!prev || syncChanged || prev.taiOffsetS !== msg.sample.taiOffsetS) this.emitState();
+        else this.emitIfDeclarationMoved();
     }
 
     private warnUnreadable(line: string): void {
@@ -275,7 +279,7 @@ export class HouseClock extends EventEmitter {
             if (d.traceable)
                 log.info(`clock: sync arrived, E unchanged — traceable (source=${this.source})`);
             else log.warn(`clock: sync lost (source=${this.source})`);
-            this.emit('state', this.state());
+            this.emitState();
             return;
         }
         const prev = this.current;
@@ -301,7 +305,7 @@ export class HouseClock extends EventEmitter {
         }
         this.markReady();
         this.emit('epoch', this.current);
-        this.emit('state', this.state());
+        this.emitState();
     }
 
     /** The latch lines' error: PTP's own under PTP, else the kernel's, n/a while that is still
@@ -318,7 +322,7 @@ export class HouseClock extends EventEmitter {
         if (this.waitTimer) clearTimeout(this.waitTimer);
         this.waitTimer = null;
         this.resolveReady(this.current);
-        this.emit('state', this.state());
+        this.emitState();
     }
 
     private async pollSource(readPtp = true): Promise<void> {
@@ -336,10 +340,23 @@ export class HouseClock extends EventEmitter {
             this.chrony = chrony;
             this.ptp = seq > this.ptpStaleUpTo ? ptp : undefined;
             if (readPtp && source === 'ptp') this.notePtpAnswer(!!ptp);
-            if (changed) this.emit('state', this.state());
+            if (changed) this.emitState();
+            else this.emitIfDeclarationMoved();
         } catch (err) {
             log.debug({ err }, 'clock: source poll failed');
         }
+    }
+
+    private emitState(): void {
+        const state = this.state();
+        this.emittedKey = houseClockKey(houseClockFields(this.current, state, {}));
+        this.emit('state', state);
+    }
+
+    /** A sample or poll that moves only the declaration (an error class, the grandmaster). */
+    private emitIfDeclarationMoved(): void {
+        if (houseClockKey(houseClockFields(this.current, this.state(), {})) !== this.emittedKey)
+            this.emitState();
     }
 
     private notePtpAnswer(answered: boolean): void {

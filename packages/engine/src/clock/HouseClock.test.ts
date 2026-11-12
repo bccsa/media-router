@@ -420,6 +420,7 @@ describe("HouseClock's error figure (B-198)", () => {
             portState: 'SLAVE',
             offsetNs: -812,
             pathDelayNs: 41_231,
+            domain: 0,
         });
         expect(logged).toEqual([
             '40 clock: no answer from ptp4l over /var/run/ptp4lro (pmc) — the clock shows no PTP error',
@@ -483,6 +484,7 @@ describe("HouseClock's error figure (B-198)", () => {
             portState: 'SLAVE',
             offsetNs: -15,
             pathDelayNs: 41_231,
+            domain: 0,
         });
         expect(logged).toEqual([
             `30 clock: epoch latched seq=1 reason=start source=ptp tai=37 est=${PTP_FIGURE}`,
@@ -703,5 +705,64 @@ describe('HouseClock logging through a real ProcessManager', () => {
             await pm.killAll();
             rmSync(dir, { recursive: true, force: true });
         }
+    });
+});
+
+describe("HouseClock's state on a declaration move (B-220)", () => {
+    let clock: HouseClock | null = null;
+    afterEach(async () => {
+        await clock?.stop();
+        clock = null;
+        vi.useRealTimers();
+    });
+
+    it('a sample that moves the error class emits state; one inside the class does not', async () => {
+        const h = fakeSidecar();
+        clock = h.clock;
+        h.clock.start();
+        h.emit(line({ estErrorUs: 1500 }));
+        await polled();
+        const before = h.states.length;
+        h.emit(line({ estErrorUs: 1900 })); // class 11 still
+        expect(h.states.length).toBe(before);
+        h.emit(line({ estErrorUs: 2100 })); // class 12
+        expect(h.states.length).toBe(before + 1);
+        expect(h.states.at(-1)!.estErrorUs).toBe(2100);
+        expect(h.epochs).toHaveLength(1);
+    });
+
+    it("a poll that brings ptp4l's grandmaster, or moves its offset's class, emits state", async () => {
+        vi.useFakeTimers();
+        let reply =
+            '\te45f01.fffe.1a1878-1 seq 0 RESPONSE MANAGEMENT PORT_DATA_SET\n' +
+            '\t\tportState               SLAVE\n' +
+            '\te45f01.fffe.1a1878-0 seq 1 RESPONSE MANAGEMENT CURRENT_DATA_SET \n' +
+            '\t\tstepsRemoved     1\n\t\toffsetFromMaster -812.0\n\t\tmeanPathDelay    41231.0\n';
+        const exec = vi.fn(async (cmd: string) =>
+            cmd === 'systemctl' ? 'inactive\nactive\n' : reply,
+        );
+        const h = fakeSidecar({ exec });
+        clock = h.clock;
+        h.clock.start();
+        h.emit(line({ estErrorUs: 16_000_000, maxErrorUs: 0 }));
+        await vi.advanceTimersByTimeAsync(0);
+        const before = h.states.length;
+        await vi.advanceTimersByTimeAsync(10_000); // same answer: nothing
+        expect(h.states.length).toBe(before);
+        reply +=
+            '\te45f01.fffe.1a1878-0 seq 2 RESPONSE MANAGEMENT PARENT_DATA_SET\n' +
+            '\t\tgrandmasterIdentity                   2ccf67.fffe.76e669\n';
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(h.states.length).toBe(before + 1);
+        expect(h.states.at(-1)!.ptp).toMatchObject({
+            domain: 0,
+            gmIdentity: '2C-CF-67-FF-FE-76-E6-69',
+        });
+        reply = reply.replace('-812.0', '-700.0'); // 1 µs still
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(h.states.length).toBe(before + 1);
+        reply = reply.replace('-700.0', '-9000.0'); // 9 µs: class 4
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(h.states.length).toBe(before + 2);
     });
 });

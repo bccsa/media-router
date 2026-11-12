@@ -88,7 +88,7 @@ describe('pollClockSource', () => {
         );
         expect(await pollClockSource(exec, { readText })).toEqual({
             source: 'ptp',
-            ptp: { portState: 'SLAVE', offsetNs: -812, pathDelayNs: 41_231 },
+            ptp: { portState: 'SLAVE', offsetNs: -812, pathDelayNs: 41_231, domain: 0 },
             ntpFallback: false,
         });
         exec.mockClear();

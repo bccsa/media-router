@@ -201,6 +201,12 @@ export type { ChannelMapEntry } from '@media-router/shared-types';
 // The engine's house epoch E (`services.houseClock`, house-clock design §4.2).
 export type { HouseEpoch, TimeSyncState } from '@media-router/shared-types';
 export type { HouseClock } from './clock/HouseClock.js';
+// Its `house-clock` element property (mrtsegress, mrtsrestamp; B-220).
+export {
+    HOUSE_CLOCK_E_OVERRIDE_ENV,
+    houseClockGstString,
+    houseClockPipelineProperty,
+} from './clock/houseClockProperty.js';
 // The `graph` status-field contract — a plugin computes its own plots and
 // publishes them with `setStatusGraph`; the UI only renders.
 export type {

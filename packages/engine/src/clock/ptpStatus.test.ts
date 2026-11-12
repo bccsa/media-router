@@ -11,6 +11,7 @@ import {
     ptpDomain,
     readPtpClock,
     readPtpStatusEnv,
+    rfc7273ClockIdentity,
 } from './ptpStatus.js';
 
 // PORT_DATA_SET is the Device Manager's verbatim capture of a slaved box (PMC_SLAVE in its
@@ -138,6 +139,103 @@ describe('parsePtpClock', () => {
     });
 });
 
+/** The Device Manager's verbatim capture of the same slaved box asking PARENT_DATA_SET too
+ *  (PMC_SLAVE in its PtpStatus.spec.ts, copied, not imported; DEFAULT_DATA_SET left out). */
+const DM_PARENT =
+    '\te45f01.fffe.1a1878-0 seq 1 RESPONSE MANAGEMENT PARENT_DATA_SET\n' +
+    '\t\tparentPortIdentity                    2ccf67.fffe.76e669-1\n' +
+    '\t\tparentStats                           0\n' +
+    '\t\tobservedParentOffsetScaledLogVariance 0xffff\n' +
+    '\t\tobservedParentClockPhaseChangeRate    0x7fffffff\n' +
+    '\t\tgrandmasterPriority1                  1\n' +
+    '\t\tgm.ClockClass                         248\n' +
+    '\t\tgm.ClockAccuracy                      0xfe\n' +
+    '\t\tgm.OffsetScaledLogVariance            0xffff\n' +
+    '\t\tgrandmasterPriority2                  128\n' +
+    '\t\tgrandmasterIdentity                   2ccf67.fffe.76e669\n';
+/** Its grandmaster, which won BMCA: the identity is its own. */
+const DM_PARENT_MASTER =
+    '\t2ccf67.fffe.76e669-0 seq 1 RESPONSE MANAGEMENT PARENT_DATA_SET\n' +
+    '\t\tparentPortIdentity                    2ccf67.fffe.76e669-0\n' +
+    '\t\tgrandmasterPriority1                  1\n' +
+    '\t\tgm.ClockClass                         248\n' +
+    '\t\tgrandmasterPriority2                  128\n' +
+    '\t\tgrandmasterIdentity                   2ccf67.fffe.76e669\n';
+const SENT3 = SENT + 'sending: GET PARENT_DATA_SET\n';
+
+describe('the grandmaster (PARENT_DATA_SET, B-220)', () => {
+    it("reads grandmasterIdentity in RFC 7273's form from the Device Manager's transcript", () => {
+        expect(
+            parsePtpClock(SENT3 + port('SLAVE') + current(1, '-812.0', '41231.0') + DM_PARENT),
+        ).toEqual({
+            portState: 'SLAVE',
+            offsetNs: -812,
+            pathDelayNs: 41_231,
+            gmIdentity: '2C-CF-67-FF-FE-76-E6-69',
+        });
+        // pmc's order varies: PARENT_DATA_SET first, an echo between.
+        expect(
+            parsePtpClock(
+                DM_PARENT +
+                    'sending: GET PARENT_DATA_SET\n' +
+                    port('SLAVE') +
+                    current(1, '-812.0', '41231.0'),
+            )?.gmIdentity,
+        ).toBe('2C-CF-67-FF-FE-76-E6-69');
+    });
+
+    it('the grandmaster itself, and a port that lost its master, still name one; no figure', () => {
+        expect(
+            parsePtpClock(SENT3 + port('MASTER') + current(0, '0.0', '0.0') + DM_PARENT_MASTER),
+        ).toEqual({
+            portState: 'MASTER',
+            gmIdentity: '2C-CF-67-FF-FE-76-E6-69',
+        });
+        expect(
+            parsePtpClock(SENT3 + port('LISTENING') + current(1, '-812.0', '41231.0') + DM_PARENT),
+        ).toEqual({
+            portState: 'LISTENING',
+            gmIdentity: '2C-CF-67-FF-FE-76-E6-69',
+        });
+    });
+
+    it('no PARENT_DATA_SET answer, or an identity pmc never prints: no gmIdentity; the rest stands', () => {
+        expect(parsePtpClock(SLAVE)).toEqual({
+            portState: 'SLAVE',
+            offsetNs: -812,
+            pathDelayNs: 41_231,
+        });
+        const odd = DM_PARENT.replace('2ccf67.fffe.76e669\n', '2ccf67fffe76e669\n');
+        expect(parsePtpClock(SLAVE + odd)).toEqual({
+            portState: 'SLAVE',
+            offsetNs: -812,
+            pathDelayNs: 41_231,
+        });
+        // PARENT alone is not ptp4l's view.
+        expect(parsePtpClock(SENT3 + DM_PARENT)).toBeNull();
+    });
+
+    it("rfc7273ClockIdentity: pmc's dotted form, either case, to upper-case dashed pairs", () => {
+        expect(rfc7273ClockIdentity('2ccf67.fffe.76e669')).toBe('2C-CF-67-FF-FE-76-E6-69');
+        expect(rfc7273ClockIdentity('E45F01.FFFE.1A1878')).toBe('E4-5F-01-FF-FE-1A-18-78');
+        for (const bad of [
+            undefined,
+            '',
+            '2ccf67.fffe.76e66',
+            '2ccf67.fffe.76e669-1',
+            'zzzzzz.ffff.zzzzzz',
+        ])
+            expect(rfc7273ClockIdentity(bad)).toBeUndefined();
+    });
+
+    it('a missing socket: pmc prints only its echoes, so no identity and no state', async () => {
+        const exec = vi.fn(async () => SENT3);
+        expect(await readPtpClock(exec, 0)).toBeNull();
+        const failed = vi.fn(async () => ''); // its error goes to stderr
+        expect(await readPtpClock(failed, 0)).toBeNull();
+    });
+});
+
 describe('ptpDomain', () => {
     it("takes status.env's PTP_DOMAIN, else pmc's default 0", () => {
         const env =
@@ -218,6 +316,7 @@ describe('pmcArgs', () => {
             '/run/user/1001/mr-pmc-1-1',
             'GET PORT_DATA_SET',
             'GET CURRENT_DATA_SET',
+            'GET PARENT_DATA_SET',
         ]);
         expect(PTP4L_RO_SOCKET).toBe('/var/run/ptp4lro');
     });
@@ -233,6 +332,7 @@ describe('readPtpClock', () => {
             portState: 'SLAVE',
             offsetNs: -812,
             pathDelayNs: 41_231,
+            domain: 127,
         });
         await readPtpClock(exec, 127);
         const calls = exec.mock.calls as unknown as Array<[string, string[]]>;

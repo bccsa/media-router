@@ -1,6 +1,6 @@
 // ptp4l's own view of the clock while linuxptp steers it (B-198): the kernel's esterror is
-// never PTP's (linuxptp does not set it), so the offset from the master comes from ptp4l. And
-// status.env, what ptp4l's last start applied: its domain, a slave-only box's NTP fallback.
+// never PTP's (linuxptp does not set it), so the offset from the master comes from ptp4l, with
+// the grandmaster's identity (B-220). And status.env: ptp4l's domain, the NTP fallback.
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -72,6 +72,7 @@ export function pmcArgs(domain: number, replyPath: string): string[] {
         replyPath,
         'GET PORT_DATA_SET',
         'GET CURRENT_DATA_SET',
+        'GET PARENT_DATA_SET',
     ];
 }
 
@@ -106,8 +107,19 @@ export function parsePmcBlocks(text: string): PmcBlock[] {
 const number = (v: string | undefined): number =>
     v !== undefined && /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : NaN;
 
+const CLOCK_IDENTITY = /^([0-9a-f]{6})\.([0-9a-f]{4})\.([0-9a-f]{6})$/i;
+
+/** pmc's clockIdentity (2ccf67.fffe.76e669) in RFC 7273's form, 2C-CF-67-FF-FE-76-E6-69, as
+ *  WI-P6-2 stores it; undefined for anything else. */
+export function rfc7273ClockIdentity(pmc: string | undefined): string | undefined {
+    const m = pmc === undefined ? null : CLOCK_IDENTITY.exec(pmc);
+    if (!m) return undefined;
+    return (m[1] + m[2] + m[3]).toUpperCase().match(/../g)!.join('-');
+}
+
 /** PORT_DATA_SET and CURRENT_DATA_SET into PTP's view; null unless both answered. The offset
- *  counts only while the port follows a master (SLAVE, UNCALIBRATED). */
+ *  counts only while the port follows a master (SLAVE, UNCALIBRATED); the grandmaster is
+ *  PARENT_DATA_SET's whenever it answered (the box's own while it is the grandmaster). */
 export function parsePtpClock(text: string): PtpClockState | null {
     const blocks = parsePmcBlocks(text);
     const states = blocks
@@ -120,13 +132,18 @@ export function parsePtpClock(text: string): PtpClockState | null {
     const offset = number(current.get('offsetFromMaster'));
     const delay = number(current.get('meanPathDelay'));
     if (![steps, offset, delay].every(Number.isFinite)) return null;
+    const gmIdentity = rfc7273ClockIdentity(
+        blocks.find((b) => b.name === 'PARENT_DATA_SET')?.fields.get('grandmasterIdentity'),
+    );
+    const gm = gmIdentity ? { gmIdentity } : {};
     const following = states.find((s) => s === 'SLAVE' || s === 'UNCALIBRATED');
     // A slave-only port that lost its master goes LISTENING with ptp4l's last offset still set.
-    if (!following || steps < 1) return { portState: states[0] };
+    if (!following || steps < 1) return { portState: states[0], ...gm };
     return {
         portState: following,
         offsetNs: Math.round(offset) || 0,
         pathDelayNs: Math.round(delay) || 0,
+        ...gm,
     };
 }
 
@@ -139,5 +156,6 @@ export async function readPtpClock(
 ): Promise<PtpClockState | null> {
     const dir = process.env.XDG_RUNTIME_DIR || tmpdir();
     const reply = join(dir, `mr-pmc-${process.pid}-${++pmcRuns}`);
-    return parsePtpClock(await exec(PMC, pmcArgs(domain, reply)));
+    const ptp = parsePtpClock(await exec(PMC, pmcArgs(domain, reply)));
+    return ptp && { ...ptp, domain };
 }

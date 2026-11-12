@@ -36,9 +36,15 @@ export interface ChronyTracking {
  *  linuxptp never does: shown as no figure, never as 16 s (B-198). */
 export const KERNEL_ESTERROR_UNSET_US = 16_000_000;
 
-/** ptp4l's own view while linuxptp steers the clock: `pmc` GET PORT_DATA_SET and
- *  CURRENT_DATA_SET over its read-only socket, at each source poll (B-198). */
+/** ptp4l's own view while linuxptp steers the clock: `pmc` GET PORT_DATA_SET,
+ *  CURRENT_DATA_SET and PARENT_DATA_SET over its read-only socket, at each source poll (B-198,
+ *  B-220). `domain` and `gmIdentity` are WI-P6-2's names; an older engine sends neither. */
 export interface PtpClockState {
+    /** The domain ptp4l answered in (status.env's PTP_DOMAIN). */
+    domain?: number;
+    /** PARENT_DATA_SET grandmasterIdentity in RFC 7273's form, 2C-CF-67-FF-FE-76-E6-69: the
+     *  box's own clockIdentity while it is the grandmaster. */
+    gmIdentity?: string;
     /** PORT_DATA_SET portState as pmc prints it: SLAVE, UNCALIBRATED, LISTENING, … */
     portState: string;
     /** CURRENT_DATA_SET offsetFromMaster in ns, only while the port is SLAVE or UNCALIBRATED:

@@ -22,6 +22,12 @@ import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
 import type { DemuxInputRef } from './demuxWatches.js';
 import type { StreamWarning } from './latenessReporter.js';
 import { timingPluginAlarm, type TimingPluginEvent } from './timingPluginAlarm.js';
+import {
+    houseClockFields,
+    houseClockFieldsString,
+    houseClockKey,
+    houseClockPipelineProperty,
+} from '../clock/houseClockProperty.js';
 
 /** Runner `error` kinds that are not a fault of this module: a reconnect to upstream keeps its
  *  warning through the restart that follows; a lost PipeWire stream, the watchdog's (B-195). */
@@ -172,6 +178,43 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 Math.max(DRAIN_GROUP_ALONE_NS, Math.round(targetNs)),
             );
         }
+    }
+
+    /** The `house-clock` key last put in a pipeline string or pushed; and the binding's off. */
+    private houseClockSent = '';
+    private houseClockUnbind: (() => void) | null = null;
+
+    /** `house-clock="…"` for the pipeline string at build (plan ch. 9 part 4.6, B-220): the
+     *  engine's E and sync state now; `bindHouseClock` keeps the elements current after. */
+    protected houseClockProperty(): string {
+        const clock = this.services?.houseClock;
+        const fields = houseClockFields(clock?.epoch() ?? null, clock?.state() ?? null);
+        this.houseClockSent = houseClockKey(fields);
+        return houseClockPipelineProperty(houseClockFieldsString(fields));
+    }
+
+    /** Pushes `house-clock` to these elements on every epoch and on any state change that moves
+     *  the declaration (the error by class), until onStop. The runner replays it after a restart. */
+    protected bindHouseClock(elements: string[]): void {
+        this.houseClockUnbind?.();
+        const clock = this.services?.houseClock;
+        if (!clock) return;
+        const push = (): void => {
+            const fields = houseClockFields(clock.epoch(), clock.state());
+            const key = houseClockKey(fields);
+            if (key === this.houseClockSent) return;
+            this.houseClockSent = key;
+            const value = houseClockFieldsString(fields);
+            for (const el of elements) void this.setElementProperty(el, 'house-clock', value);
+        };
+        clock.on('epoch', push);
+        clock.on('state', push);
+        this.houseClockUnbind = () => {
+            clock.off('epoch', push);
+            clock.off('state', push);
+            this.houseClockUnbind = null;
+        };
+        push(); // a move between the build and here
     }
 
     /** Subclasses define their GStreamer pipeline here. Return null to skip pipeline (idle module). */
@@ -684,6 +727,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     async onStop(): Promise<void> {
+        this.houseClockUnbind?.();
         this.vuStall.reset();
         this.captureStall?.reset();
         if (this.vuProcess) {
