@@ -44,7 +44,12 @@ the restart; `py/asrc_device_ref_test.py` and `native/mrts/tests/asrc_servo_test
 The egress writer's expectations are in `egress/` (Phase 5, plan ch. 9 WI-P5-2, register B-221): one
 `<case>.clock.json` per case, naming its input here (`input`, and `bus` for a sidecar's buffers), the
 writer's clock declaration at start (`clock`), its changes (`changes`), the lateness the replay adds
-to the content clock (`lateness`, [content ms, lateness ms] points) and any setting (`config`); and
+to the content clock (`lateness`, [content ms, lateness ms] points), any setting (`config`:
+`pcrIntervalMs`, `marginMs`, `headroomMs`, `floorMs`, `maxMs`, `gapLowerMinMs`) and the buffer size
+(`chunk`, 1316 bytes by default). A declaration (`clock`, or a change's `{"atMs", "clock"}`) holds
+`eNs` (a decimal string or number), `seq`, `known`, `traceable`, `disciplined`, `source` (0 to 3),
+`taiOffsetS`, `ptpDomain` (−1 none), `gm` (pmc or RFC 7273 text, null none), `errorUs` (null
+unknown) and `timelineId` (16 hex digits). And
 its `<case>.expect.jsonl`, the lines of `py/egress_core.py` on it (`python3 -m egress_core <input>
 --clock <case>.clock.json [--bus <sidecar>]` from `py/`): each event, each program's stats, the
 counters and the output's length, CRC-32 and SHA-256. `py/egress_ref_test.py` holds every case to

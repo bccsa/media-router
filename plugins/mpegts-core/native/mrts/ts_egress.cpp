@@ -88,8 +88,9 @@ int EgressDelay::on_pes(int64_t lateness_ns, int64_t eps, Change out[2]) {
         const int64_t g = gap_ns_;
         gap_ns_ = 0;
         const int64_t target = std::max(cfg_.floor_ns, nd);
-        if (target < d_e_) {
-            d_e_ = std::max(target, ceil_step(d_e_ - g, STEP_NS));
+        const int64_t low = std::max(target, ceil_step(d_e_ - g, STEP_NS));
+        if (low < d_e_) {  // a gap under one step moves nothing: no event
+            d_e_ = low;
             max_episode_ = false;
             out[0] = {Kind::lower, old, d_e_, lam, g};
             return count(out, 1);

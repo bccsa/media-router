@@ -11,7 +11,9 @@ replays a recording as egress_core.py's CLI does, and its output bytes and every
     unknown E with a PTP grandmaster, a bus silence, and syn-wrap-33bit with the wire's 2^33
     wrap mid-file, re-epoched back across it and forward again (both directions of the wrap),
     a dedicated PCR PID that never carries payload, two programmes sharing one PMT PID, known
-    false with an eNs set, and buffers spanning about 400 ms (lateness on the latest reading).
+    false with an eNs set, buffers spanning about 400 ms (lateness on the latest reading), the
+    audio and a private ES listed before the video under PCR_PID 0x1FFF, a clock error past the
+    50 ms cap, an adaptation-only packet between a split header's halves, and a 4 ms gap.
 
 Then each of egress_ref_test.py's mutants replays the cases, and parity must tell it from
 mrts_cli. Skips (exit 0) without the built mrts_cli (make native).
@@ -139,6 +141,16 @@ def cases():
                     rt.spec()))
     out.append(Case("gen-unknown-e-set", g5, rt.spec(known=False)))
     out.append(Case("gen-lateness-clock", g20, rt.spec(lateness=ramp), None, 188 * 150))
+    out.append(Case("gen-pcr-pid-order", _write("gpo.ts", rt.pcr_pid_none_reordered(
+        rt.gen("--pcr-pid", "none", "--duration", "3"))), rt.spec()))
+    out.append(Case("gen-eps-cap", _gen("g2", "--duration", "2"), rt.spec(errorUs=80000)))
+    sa = _write("gsa.ts", rt.split_with_af(rt.fixture("syn-pes-header-split.ts"))[0])
+    out.append(Case("gen-split-af", sa, rt.spec()))
+    out.append(Case("gen-split-af-c188", sa, rt.spec(), None, 188))
+    gm = rt.fixture("syn-gap-marker.ts")
+    sd, sb = rt.small_gap(gm, ec.read_bus(os.path.join(FIX, "syn-gap-marker.bus.jsonl")))
+    out.append(Case("gen-small-gap", _write("gsg.ts", sd),
+                    rt.spec(lateness=((0, 1100), (2900, 1100), (2950, 200))), sb))
     wrap = os.path.join(FIX, "syn-wrap-33bit.ts")
     with open(wrap, "rb") as f:
         wd = f.read()

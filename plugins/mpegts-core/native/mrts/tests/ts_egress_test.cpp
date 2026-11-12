@@ -519,6 +519,11 @@ void test_delay_unit() {
     CHECK("delay: a 2 s gap lowers by at most 2 s, its twin on another PID counted once",
           big == 3050 * MS && n == 1 && ch[0].kind == EgressDelay::Kind::lower && d.d_e() == big - 2 * SEC &&
               ch[0].gap_ns == 2 * SEC);
+    EgressDelay s;
+    s.on_pes(1000 * MS, 0, ch);
+    s.on_gap(20 * SEC, 4 * MS);                  // under one 10 ms step
+    CHECK("delay: a gap under one step moves nothing and reports no d-e-lower",
+          s.d_e() == 1150 * MS && s.on_pes(0, 0, ch) == 0 && s.d_e() == 1150 * MS);
     EgressDelay e;
     e.on_pes(-500 * MS, 0, ch);
     CHECK("S22: a lateness below 0 counts as 0", e.d_e() == 150 * MS && ch[0].lateness_ns == 0);

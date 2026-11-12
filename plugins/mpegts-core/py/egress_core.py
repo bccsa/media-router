@@ -1,53 +1,6 @@
 #!/usr/bin/env python3
-"""The Python reference of mrts::EgressCore and mrts::EgressDelay (plan ch. 9 parts 4.2, 4.4 and
-4.5, WI-P5-2; Phase 5 plan p5-2a, register B-221): the egress writer's data path without
-GStreamer, prototyped first and kept as the reference the C++ (p5-2b) ports byte for byte (OQ-1).
-Nothing loads it at runtime.
-
-Per bus buffer the writer returns an edit list over the buffer's whole packets, the input never
-written: (index, INSERT, bytes) before packet `index` (== the packet count: at the end),
-(index, REPLACE, bytes), (index, DROP, None). What it does, per program of the PAT:
-- every PES PTS/DTS to the network, bus_to_net (+E - 1 h mod 2^33); a header split across two
-  packets of its PID held and both rewritten (PesHeaderSpan, the PID's adaptation-only packets
-  held behind it), other PIDs not delayed;
-- every PCR to H(emission) - D_e, H = the clock read for that PCR + E; on the PCR PID a PCR-only
-  packet inserted once `pcr_interval` (35 ms) passed without one (the clock read once per buffer
-  and per PCR written), adaptation-only, its CC the PID's last payload CC sent before it (none
-  sent: the PID's first packet's CC - 1, or its CC when adaptation-only, as on a PCR-only PID;
-  none inserted before that packet is in hand, a flag then carried to the next PCR);
-- PCR_PID 0x1FFF: the first video ES, else audio, else the first ES, once `pcr-pid-assigned`;
-- every PMT section replaced by the writer's own, on its own CC per PMT PID: the input
-  program_info without any MRHT, ours appended (hcdesc), the version bumped (mod 32) whenever its
-  bytes change;
-- lateness = t - house_from_mux_pts(DTS else PTS, t), t the buffer's latest clock reading, of each
-  timing PES (B-51's rule: video,
-  audio, or any PES on the PCR PID) drives D_e (EgressDelay, part 4.4): negative counts as 0,
-  beyond 60 s is `lateness-off-house` and ignored (S22);
-- a D_e change: the new PMT at once, then a PCR-only packet with discontinuity_indicator, before
-  the PES that caused it; a re-epoch (E or seq changed, applied at the next buffer): the same at
-  the buffer's head (the version bumped even when the section's bytes did not change) and the
-  new E from each PID's next PUSI; any other declared field (the
-  published error class after its 10 s hold, timeline_id, ...): the new PMT at once, no flag;
-- a GAP buffer (bus gap marker, OQ-12) consumed (read_gap_length, its PTS the gap's end) and
-  dropped (S8); a bus silence of gap_lower_min (500 ms) between buffers is a gap too; D_e may
-  come down by the gap time no earlier gap covered (one hole's markers on several PIDs once);
-- packets of PIDs no PMT names are dropped until every program of the PAT has a PMT (they would
-  leave on bus time), passed after; PSI below 0x20 and null packets always pass.
-
-Run as a script (the parity verb `mrts_cli egress` prints the same lines):
-    python3 -m egress_core in.ts --clock case.clock.json [--bus in.bus.jsonl] [--chunk N]
-                           [--out out.ts] [--expect case.expect.jsonl]
-The clock file (tests/fixtures/egress/README rows): "clock" the declaration at start ("eNs"
-decimal string or number, "seq", "known", "traceable", "disciplined", "source" 0-3,
-"taiOffsetS", "ptpDomain" (-1 none), "gm" (pmc or RFC 7273 text, null none), "errorUs" (null
-unknown), "timelineId" (16 hex digits)), "lateness" [[content ms, lateness ms], ...], "changes"
-[{"atMs", "clock": {fields}}], "config" {pcrIntervalMs, marginMs, headroomMs, floorMs, maxMs,
-gapLowerMinMs}, "chunk" (1316). Time: the content clock at a byte offset is the house time of the
-first PCR PID's PCRs (unwrapped, - 1 h), linear between them by offset, held outside them (no
-PCR: the first timing PID's DTS, else PTS); a buffer at offset o has now = content(o) +
-lateness(content(o) - content(first)), its packet i read at offset o + 188 i. Integer floor
-division throughout, as python's `//` (the C++ floors likewise on negative values).
-"""
+"""The egress writer's Python reference, ported byte for byte by mrts::EgressCore (plan ch. 9
+WI-P5-2, register B-221: its rules and the CLI's contract). Never loaded at runtime."""
 import argparse
 import bisect
 import hashlib
@@ -306,10 +259,11 @@ class EgressDelay:
             g = self.gap_ns
             self.gap_ns = 0
             target = max(cfg.floor_ns, need)
-            if target < self.d_e:
-                self.d_e = max(target, self._ceil(self.d_e - g))
+            low = max(target, self._ceil(self.d_e - g))
+            if low < self.d_e:                    # a gap under one step moves nothing: no event
+                self.d_e = low
                 self.max_episode = False
-                return self._count([("d-e-lower", old, self.d_e, lam, g)])
+                return self._count([("d-e-lower", old, low, lam, g)])
         if lam > self.d_e - cfg.headroom_ns:
             new = need
             if cfg.max_ns > 0 and new > cfg.max_ns:

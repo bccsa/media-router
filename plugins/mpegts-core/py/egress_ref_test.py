@@ -493,6 +493,13 @@ def case_gap():
     d.on_gap(10 * SEC, 1900 * MS)               # the same hole on another PID: no more
     lo = d.on_pes(0, 0)
     markers = sum(1 for i in range(0, len(out), PKT) if ec.dc.read_gap_length(out[i:i + PKT]) >= 0)
+    s = ec.EgressDelay(ec.EgressConfig())
+    s.on_pes(1000 * MS, 0)
+    s.on_gap(20 * SEC, 4 * MS)                  # under one 10 ms step
+    small = s.on_pes(0, 0)
+    sd, sb = small_gap(data, bus)
+    _o, sl, _c = run(sd, spec(lateness=((0, 1100), (2900, 1100), (2950, 200))), sb)
+    slow = ev(sl, "d-e-lower")
     return [
         ("gap: a marker lowers D_e at the next PES, by at most the gap",
          len(low) == 1 and 0 < low[0]["fromNs"] - low[0]["toNs"] <= low[0]["gapNs"]),
@@ -500,6 +507,9 @@ def case_gap():
         ("gap: a 2 s gap lowers by at most 2 s, its twin on another PID counted once",
          big == 3050 * MS and d.d_e == big - 2 * SEC and lo[0][0] == "d-e-lower"),
         ("gap: one hole's two markers lower once", len(low) == 1),
+        ("gap: a gap under one step moves nothing and reports no d-e-lower",
+         small == [] and s.d_e == 1150 * MS and core_moves(low)
+         and core_moves(slow) and len(slow) == 1),
         ("gap: markers consumed and not sent", markers == 0 and core.counters["gapMarkers"] == 2),
         ("gap: a strict CC walk over the output (the lowering's flagged PCR included)",
          cc_strict(data, False) and cc_strict(out)),
@@ -507,6 +517,23 @@ def case_gap():
          all(all(op == ec.DROP for _i, op, _b in r.edits) and len(r.edits) == len(r.packets)
              for r in [core_gap_result()])),
     ]
+
+
+def core_moves(lows):
+    return all(e["fromNs"] != e["toNs"] for e in lows)
+
+
+def small_gap(data, bus, at_ns=1005 * SEC, g_ns=4 * MS):
+    """syn-gap-marker with one more GAP buffer, a marker of g_ns ending at the first buffer whose
+    PTS reaches at_ns: a gap under one D_e step, after the 520 ms one has lowered D_e."""
+    marker = bytearray(next(data[i:i + PKT] for i in range(0, len(data), PKT)
+                            if ec.dc.read_gap_length(data[i:i + PKT]) >= 0))
+    marker[7:15] = g_ns.to_bytes(8, "big")
+    k = next(j for j, b in enumerate(bus) if not b["flags"] and (b["pts"] or 0) >= at_ns)
+    off = bus[k]["off"]
+    new = dict(bus[k], len=PKT, flags=ec.GST_FLAG_GAP | 64)
+    return (data[:off] + bytes(marker) + data[off:],
+            bus[:k] + [new] + [dict(b, off=b["off"] + PKT) for b in bus[k:]])
 
 
 def core_gap_result():
@@ -991,6 +1018,113 @@ def case_shared_pmt_pid():
     ]
 
 
+def _pmt_es(data, off):
+    """(section offset, section length, program_info length, [(pid, type, es_info)]) of the PMT
+    section starting in the packet at `off`."""
+    v = hr.parse_packet(bytearray(data[off:off + PKT]))
+    k = off + v.payload_off + 1 + data[off + v.payload_off]
+    ln = 3 + (((data[k + 1] & 0x0F) << 8) | data[k + 2])
+    pil = ((data[k + 10] & 0x0F) << 8) | data[k + 11]
+    es, j = [], k + 12 + pil
+    while j < k + ln - 4:
+        eil = ((data[j + 3] & 0x0F) << 8) | data[j + 4]
+        es.append((((data[j + 1] & 0x1F) << 8) | data[j + 2], data[j], bytes(data[j + 5:j + 5 + eil])))
+        j += 5 + eil
+    return k, ln, pil, es
+
+
+def _pmt_offsets(data):
+    return [o for o in range(0, len(data), PKT)
+            if ((data[o + 1] & 0x1F) << 8 | data[o + 2]) == 0x1000 and data[o + 1] & 0x40]
+
+
+def pcr_pid_none_reordered(data):
+    """fixture_gen's --pcr-pid none stream with its PMT's ES loop as private 0x1F5 (never sent),
+    then the audio, then the video: the video is not the first ES listed."""
+    out = bytearray(data)
+    for off in _pmt_offsets(data):
+        k, _ln, pil, es = _pmt_es(out, off)
+        sec = ec.build_pmt_section((out[k + 3] << 8) | out[k + 4], 0x1FFF,
+                                   bytes(out[k + 12:k + 12 + pil]),
+                                   [(0x1F5, 0x06, b"")] + es[::-1], (out[k + 5] >> 1) & 0x1F)
+        out[off:off + PKT] = ec.packetise_section(0x1000, sec, out[off + 3] & 0x0F)[0][0]
+    return bytes(out)
+
+
+def case_pcr_pid_order():
+    """PCR_PID 0x1FFF with a private ES and the audio listed before the video: the video chosen."""
+    data = pcr_pid_none_reordered(gen("--pcr-pid", "none", "--duration", "3"))
+    out, lines, _c = run(data, spec())
+    a = ev(lines, "pcr-pid-assigned")
+    return [
+        ("PCR PID order: the input lists 0x1F5 first, the audio before the video, PCR_PID 0x1FFF",
+         all([e[0] for e in _pmt_es(data, o)[3]][::3] == [0x1F5, 0x100]
+             and [e[0] for e in _pmt_es(data, o)[3]].index(0x101) == 2 for o in _pmt_offsets(data))
+         and all(r["pcr"] == 0x1FFF for _k, _i, r in Walk(data).of("pmt"))),
+        ("PCR PID order: the video chosen though listed last, one pcr-pid-assigned",
+         len(a) == 1 and a[0]["pid"] == 0x100
+         and all(r["pcr"] == 0x100 for _k, _i, r in Walk(out).of("pmt"))),
+    ]
+
+
+def case_eps_cap():
+    """The clock error term is capped at 50 ms: errorUs 80000 starts D_e where 50000 does."""
+    data = gen("--duration", "2")
+    start = {}
+    for e in (40000, 50000, 80000):
+        _o, lines, _c = run(data, spec(errorUs=e))
+        start[e] = ev(lines, "d-e-start")[0]["toNs"]
+    return [
+        ("eps cap: errorUs 80000 starts D_e as 50000 does, 40000 10 ms lower",
+         start[80000] == start[50000] == start[40000] + 10 * MS),
+        ("eps cap: eps_ns(80000) == 50 ms", ec.EgressDelay.eps_ns(80000) == 50 * MS),
+    ]
+
+
+AF_MARK = 0x5A
+
+
+def split_with_af(data):
+    """syn-pes-header-split.ts with an adaptation-only packet (no PCR, its first stuffing byte
+    AF_MARK) of the split PID between the first split header's two halves, on the first half's CC."""
+    pk = [bytearray(data[i:i + PKT]) for i in range(0, len(data), PKT)]
+    for idx, p in enumerate(pk):
+        v = hr.parse_packet(bytearray(p))
+        if v is None or not v.pusi or v.payload_off >= PKT:
+            continue
+        h = hr.parse_pes_header(p, v.payload_off, PKT - v.payload_off)
+        if h is not None and not h.complete:
+            af = bytearray(b"\xff" * PKT)
+            af[0], af[1], af[2], af[3], af[4], af[5], af[6] = (
+                0x47, v.pid >> 8, v.pid & 0xFF, 0x20 | v.cc, 183, 0x00, AF_MARK)
+            return b"".join(bytes(q) for q in pk[:idx + 1]) + bytes(af) + b"".join(
+                bytes(q) for q in pk[idx + 1:]), v.pid
+    raise AssertionError("no split header")
+
+
+def case_split_af():
+    """Part 4.2: a split header's PID holds its adaptation-only packets behind the first half."""
+    data, pid = split_with_af(fixture("syn-pes-header-split.ts"))
+    res = []
+    for chunk in (None, 188):
+        out, _l, _c = run(data, spec(), chunk=chunk)
+        seq = []
+        for i in range(0, len(out), PKT):
+            p = out[i:i + PKT]
+            if (p[1] & 0x1F) << 8 | p[2] != pid:
+                continue
+            if (p[3] & 0x30) == 0x20 and p[5] == 0x00 and p[6] == AF_MARK:
+                seq.append("af")
+            elif p[3] & 0x10:
+                seq.append("pusi" if p[1] & 0x40 else "pay")
+        k = seq.index("af") if "af" in seq else -1
+        res.append(k > 0 and seq[k - 1] == "pusi" and seq[k + 1] == "pay" and cc_strict(out))
+    return [
+        ("split AF: the adaptation-only packet leaves between the halves, CC walk strict "
+         "(one buffer and 188-byte ones)", cc_strict(data, False) and all(res)),
+    ]
+
+
 CASES = {
     "hcdesc": case_hcdesc, "wrap": case_wrap, "header-split": case_header_split,
     "sparse-pcr": case_sparse_pcr, "no-pcr-pid": case_no_pcr_pid, "de": case_de, "gap": case_gap,
@@ -1000,7 +1134,8 @@ CASES = {
     "pcr-other-pid": case_pcr_other_pid, "dedicated-pcr": case_dedicated_pcr,
     "unknown-e": case_unknown_e, "lateness-clock": case_lateness_clock,
     "private-pes": case_private_pes, "before-pmt": case_before_pmt,
-    "shared-pmt-pid": case_shared_pmt_pid,
+    "shared-pmt-pid": case_shared_pmt_pid, "pcr-pid-order": case_pcr_pid_order,
+    "eps-cap": case_eps_cap, "split-af": case_split_af,
     "expectations": case_expectations,
 }
 
@@ -1167,6 +1302,35 @@ def _mut_pmt_cc_per_program():
     return _patch(ec.EgressCore, "_packetise_pmt", pk)
 
 
+def _mut_first_es_pcr():
+    return _patch(ec.EgressCore, "_choose_pcr",
+                  lambda self, streams: streams[0][0] if streams else ec.PID_NULL)
+
+
+def _mut_eps_uncapped():
+    orig = ec.EgressDelay.__dict__["eps_ns"]
+    ec.EgressDelay.eps_ns = classmethod(lambda cls, e: cls.EPS_CAP_NS if e is None else e * 1000)
+    return lambda: setattr(ec.EgressDelay, "eps_ns", orig)
+
+
+def _mut_af_never_held():
+    return _patch(ec.EgressCore, "MAX_HELD_AF", 0)
+
+
+def _mut_lower_noop_event():
+    def on_pes(self, lateness_ns, eps_ns):
+        if self.started and self.gap_ns > 0 and lateness_ns <= self.LATE_MAX_NS:
+            lam = max(0, lateness_ns)
+            g, self.gap_ns = self.gap_ns, 0
+            target = max(self.cfg.floor_ns, self._need(lam, eps_ns))
+            if target < self.d_e:
+                old, self.d_e = self.d_e, max(target, self._ceil(self.d_e - g))
+                return self._count([("d-e-lower", old, self.d_e, lam, g)])
+        return orig(self, lateness_ns, eps_ns)
+    orig = ec.EgressDelay.on_pes
+    return _patch(ec.EgressDelay, "on_pes", on_pes)
+
+
 MUTANTS = [
     ("headroom 0", _mut_headroom, "de"),
     ("D_e lowered past the gap", _mut_gap_bound, "gap"),
@@ -1190,6 +1354,10 @@ MUTANTS = [
     ("every PES drives D_e", _mut_every_pes_timing, "private-pes"),
     ("unknown PIDs passed before the PMT", _mut_pass_before_pmt, "before-pmt"),
     ("the PMT CC kept per programme, not per PMT PID", _mut_pmt_cc_per_program, "shared-pmt-pid"),
+    ("the first ES listed as the PCR PID", _mut_first_es_pcr, "pcr-pid-order"),
+    ("no 50 ms cap on the clock error", _mut_eps_uncapped, "eps-cap"),
+    ("adaptation-only packets never held behind a split header", _mut_af_never_held, "split-af"),
+    ("a d-e-lower reported when D_e did not move", _mut_lower_noop_event, "gap"),
 ]
 
 
