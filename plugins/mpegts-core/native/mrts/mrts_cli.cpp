@@ -2678,11 +2678,11 @@ class PsiSections {
         }
         p += 1 + ptr;
         n -= 1 + ptr;
-        while (n >= 3 && p[0] != 0xFF) {    // back-to-back sections after the pointer
+        while (n > 0 && p[0] != 0xFF) {     // back-to-back sections after the pointer
             b.bytes.assign(p, p + n);
             b.open = true;
-            const int len = need(b);
-            if (len < 0 || len > n) {
+            const int len = need(b);          // 0: under 3 bytes, kept open for the next packet
+            if (len <= 0 || len > n) {
                 if (len < 0) cut(b);
                 return;
             }
@@ -2845,7 +2845,9 @@ const char kPcrcheckUsage[] =
     "  it), CC errors and PMT CRC errors. --arrival: per PCR PID of the trace, arrival -\n"
     "  PCR's peak to peak, raw and with the best line removed, per run between jumps. Exit 1 on\n"
     "  any violation (an unflagged jump, a repetition, a PES at or before the PCR, a CC or CRC\n"
-    "  error, a program with PES and no PCR).\n";
+    "  error, a program with PES and no PCR, no program at all). Exit 3 on an unreadable input or a\n"
+    "  bad or truncated trace. jumpMaxNs: the largest unflagged jump, signed. driftPpb > 0: the\n"
+    "  sender's PCR runs slow against arrival.\n";
 
 constexpr int64_t PCR_JUMP_NS = 100 * 1000000LL;   // TR 101 290 PCR_discontinuity_indicator_error
 constexpr int64_t HIST_MS[] = {10, 20, 30, 35, 40, 100};
@@ -2863,7 +2865,7 @@ struct PcrProgram {
     std::set<int> es;
     int64_t last_pcr = -1;
     uint64_t pcrs = 0, flagged = 0, repetition = 0, jumps = 0, jumps_flagged = 0;
-    int64_t interval_max_ns = 0;
+    int64_t interval_max_ns = 0, jump_max_ns = 0;   // the largest unflagged jump by size, signed
     uint64_t hist[sizeof HIST_MS / sizeof HIST_MS[0]] = {};
     uint64_t pes = 0, unjudged = 0, before_pcr = 0, untimed_before_pcr = 0, cc = 0, pmt_sections = 0, pmt_crc = 0;
     std::map<int, Pid> pids;
@@ -2877,6 +2879,7 @@ struct PcrProgram {
             if (disc) {
                 if (jump) jumps_flagged++;
             } else if (jump) {
+                if (!jumps || std::llabs(d) > std::llabs(jump_max_ns)) jump_max_ns = d;
                 jumps++;
             } else {
                 interval_max_ns = std::max(interval_max_ns, d);
@@ -2898,7 +2901,7 @@ struct PcrProgram {
         if (h.pts < 0) return true;
         pes++;
         p.pes++;
-        const bool timing = (h.sid & 0xF0) == 0xE0 || (h.sid & 0xE0) == 0xC0 || pid == pcr_pid;
+        const bool timing = timing_sid(h.sid, pid, pcr_pid);
         p.timing = p.timing || timing;
         if (pcr_then < 0) {
             unjudged++;
@@ -2990,6 +2993,7 @@ int pcrcheck_main(int argc, char** argv) {
             p.pmt_sections++;
             if (!crc_ok) p.pmt_crc++;
             if (!m) return;
+            if (m->pcr_pid != p.pcr_pid) p.last_pcr = -1;   // a new PCR PID is not measured against the old
             p.pcr_pid = m->pcr_pid;
             p.es.clear();
             for (const PmtStream& st : m->streams) p.es.insert(st.pid);
@@ -3011,8 +3015,9 @@ int pcrcheck_main(int argc, char** argv) {
                 if (v.payload_off < PKT) p.payload(v);
             }
         });
-    if (walk.run(in)) return 1;
-    uint64_t violations = walk.pat_crc_errors(), cc_total = 0, cc_outside = 0;
+    if (walk.run(in)) return 3;
+    // An empty or PAT-less capture is no clean one.
+    uint64_t violations = walk.pat_crc_errors() + (progs.empty() ? 1 : 0), cc_total = 0, cc_outside = 0;
     for (const auto& kv : walk.cc_errors()) {
         cc_total += kv.second;
         bool listed = false;
@@ -3030,6 +3035,7 @@ int pcrcheck_main(int argc, char** argv) {
                         ",\"pcrRepetitionErrors\":" + std::to_string(p.repetition) +
                         ",\"pcrJumpsUnflagged\":" + std::to_string(p.jumps) +
                         ",\"pcrJumpsFlagged\":" + std::to_string(p.jumps_flagged) +
+                        ",\"jumpMaxNs\":" + (p.jumps ? std::to_string(p.jump_max_ns) : std::string("null")) +
                         ",\"pes\":" + std::to_string(p.pes) + ",\"pesUnjudged\":" + std::to_string(p.unjudged) +
                         ",\"pesBeforePcr\":" + std::to_string(p.before_pcr) +
                         ",\"untimedBeforePcr\":" + std::to_string(p.untimed_before_pcr) +
@@ -3052,7 +3058,7 @@ int pcrcheck_main(int argc, char** argv) {
     }
     if (!arrival.empty()) {
         TraceReader r;
-        if (!r.open(arrival)) return std::fprintf(stderr, "mrts_cli: %s: not an arrival trace\n", arrival.c_str()), 1;
+        if (!r.open(arrival)) return std::fprintf(stderr, "mrts_cli: %s: not an arrival trace\n", arrival.c_str()), 3;
         struct Pid {
             uint64_t pcrs = 0, matched = 0;
             int64_t last = -1, first_arrival = 0, unwrapped = 0;
@@ -3068,7 +3074,7 @@ int pcrcheck_main(int argc, char** argv) {
             auto pv = pcr_values.find(rec.pid);
             if (pv != pcr_values.end() && pv->second.count(v)) p.matched++;
             const int64_t d = p.last < 0 ? 0 : fold_pcr_ns(v - p.last);
-            if (p.last < 0 || (rec.flags & TRACE_FLAG_DISCONTINUITY) || d <= 0 || d > PCR_JUMP_NS) {
+            if (p.last < 0 || (rec.flags & TRACE_FLAG_DISCONTINUITY) || d < 0 || d > PCR_JUMP_NS) {
                 p.runs.emplace_back();
                 p.unwrapped = 0;
                 p.first_arrival = rec.arrival_ns;
@@ -3080,7 +3086,7 @@ int pcrcheck_main(int argc, char** argv) {
                                           (double)(rec.arrival_ns - p.first_arrival - p.unwrapped));
         }
         if (r.status() == TraceReader::Status::truncated || r.status() == TraceReader::Status::bad_header)
-            return std::fprintf(stderr, "mrts_cli: %s: truncated\n", arrival.c_str()), 1;
+            return std::fprintf(stderr, "mrts_cli: %s: truncated\n", arrival.c_str()), 3;
         for (const auto& kv : by_pid) {
             const Pid& p = kv.second;
             double raw = 0, det = 0, ppb = 0;
@@ -3116,7 +3122,8 @@ const char kHcdescUsage[] =
     "usage: mrts_cli hcdesc in.ts\n"
     "  Every house-time descriptor (MRHT, B-219) of every program, with its PMT's version, as\n"
     "  JSON lines: one line per PMT that differs from its program's last (version or descriptors),\n"
-    "  \"mrht\" null without one, then a summary of the PMT sections seen (WI-P5-5).\n";
+    "  \"mrht\" null without one, then a summary of the PMT sections seen (WI-P5-5).\n"
+    "  Exit 3 on an unreadable input.\n";
 
 std::string mrht_json(const HouseTimeDecl& d) {
     auto b = [](bool x) { return x ? "true" : "false"; };
@@ -3173,7 +3180,7 @@ int hcdesc_main(int argc, char** argv) {
         },
         [](const PacketView&, CcTracker::Result) {});
     self = &walk;
-    if (walk.run(in)) return 1;
+    if (walk.run(in)) return 3;
     std::printf("{\"hcdesc\":\"summary\",\"pmtSections\":%llu,\"pmtCrcErrors\":%llu,\"withMrht\":%llu,\"lines\":%llu}\n",
                 (unsigned long long)sections, (unsigned long long)crc_errors, (unsigned long long)with_mrht,
                 (unsigned long long)printed);

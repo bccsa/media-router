@@ -18,11 +18,6 @@ int64_t floor_div(int64_t a, int64_t b) {
 
 int64_t ceil_step(int64_t v, int64_t step) { return -floor_div(-v, step) * step; }
 
-// ts_house's timing_pes on a parsed header: a video or audio stream_id, or the PCR carrier.
-bool timing_sid(uint8_t sid, int pid, int timing_pid) {
-    return (sid & 0xF0) == 0xE0 || (sid & 0xE0) == 0xC0 || pid == timing_pid;
-}
-
 class NowReader : public ClockReader {
   public:
     explicit NowReader(int64_t now) : now_(now) {}
@@ -33,6 +28,10 @@ class NowReader : public ClockReader {
 };
 
 }  // namespace
+
+bool timing_sid(uint8_t sid, int pid, int timing_pid) {
+    return (sid & 0xF0) == 0xE0 || (sid & 0xE0) == 0xC0 || pid == timing_pid;
+}
 
 // --- EgressDelay (part 4.4) -----------------------------------------------------------------
 

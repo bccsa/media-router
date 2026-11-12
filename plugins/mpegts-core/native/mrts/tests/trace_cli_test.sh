@@ -314,11 +314,9 @@ check "fixture_gen --respace: +40 ppm writes syn-foreign-clock-aac.ts, -40 anoth
 EG=$TSFIX/egress
 num() { sed -n "s/.*\"$1\":\(-\{0,1\}[0-9]*\).*/\1/p" "$2" | head -n 1; }   # a number's first match in a file
 sum() { awk -F"\"$1\":" 'NF > 1 { split($2, a, ","); r += a[1] } END { print r + 0 }' "$2"; }   # over programs
-# Every egress case through `mrts_cli egress --out`, then pcrcheck. Five report nothing; the rest
-# report only what their replay inputs give: PCR intervals over 40 ms where the input's packets are
-# that sparse (the writer's pcrIntervalMaxNs says the same), CC errors the input carries, and an
-# unflagged jump where the replay's clock jumps (bus-pmt-change, +1.24 s at the PMT change) or runs
-# back (gap-marker, the lateness ramp falls 900 ms in 50 ms). No timing PES is ever at its PCR.
+# Every egress case through `mrts_cli egress --out`, then pcrcheck: five clean, the rest only their
+# replay inputs' faults (sparse packets, CC errors carried, the replay clock's jumps at
+# bus-pmt-change and gap-marker; row B-223). No timing PES is ever at its PCR.
 all=0
 while read -r name rep jumps cc viol; do
     clock=$EG/$name.clock.json
@@ -377,8 +375,47 @@ st2=$?
 [ "$st" -eq 1 ] && [ "$st2" -eq 1 ] && grep -q '"pcrJumpsUnflagged":1,"pcrJumpsFlagged":0,' "$T/jump.pcr" &&
     grep -q '"pcrJumpsUnflagged":1,"pcrJumpsFlagged":0,' "$T/jump2.pcr" &&
     [ "$(tail -n 1 "$T/jump.pcr" | sed 's/.*"violations":\([0-9]*\)}$/\1/')" = 1 ] &&
-    [ "$(tail -n 1 "$T/jump2.pcr" | sed 's/.*"violations":\([0-9]*\)}$/\1/')" = 1 ]
-check "pcrcheck: a hand-made unflagged PCR jump (+1 s, and -1 s) is one violation, exit 1" $?
+    [ "$(tail -n 1 "$T/jump2.pcr" | sed 's/.*"violations":\([0-9]*\)}$/\1/')" = 1 ] &&
+    a=$(num jumpMaxNs "$T/jump.pcr") && [ "$a" -gt 1000000000 ] && [ "$a" -lt 1100000000 ] &&
+    a=$(num jumpMaxNs "$T/jump2.pcr") && [ "$a" -gt -1000000000 ] && [ "$a" -lt -900000000 ] &&
+    grep -q '"pcrJumpsFlagged":0,"jumpMaxNs":null,' "$T/mux-unbounded-video.pcr"
+check "pcrcheck: a hand-made unflagged PCR jump (+1 s, and -1 s) is one violation, exit 1, its size in jumpMaxNs" $?
+# pcr_at IN OUT K ADD: the K-th PCR on PID 256 set ADD (90 kHz) after the lowest DTS (else PTS) of the
+# timing PES from its packet to the next PCR; prints how many of those it leaves at or behind it.
+pcr_at() {
+    set -- "$1" "$2" "$(od -An -v -tu1 -w188 "$1" | awk -v k="$3" -v add="$4" '
+        function ts(i) { return (int($(i) / 2) % 8) * 1073741824 + $(i + 1) * 4194304 + int($(i + 2) / 2) * 32768 + $(i + 3) * 128 + int($(i + 4) / 2) }
+        $1 != 71 { next }
+        { pid = ($2 % 32) * 256 + $3; afc = int($4 / 16) % 4 }
+        pid == 256 && afc >= 2 && $5 > 0 && int($6 / 16) % 2 == 1 { n++; if (n == k) at = NR - 1; else if (n == k + 1) exit }
+        n == k && afc % 2 == 1 && int($2 / 64) % 2 == 1 {
+            o = 4 + (afc >= 2 ? 1 + $5 : 0) + 1; sid = $(o + 3); pd = int($(o + 7) / 64)
+            if ($o != 0 || $(o + 1) != 0 || $(o + 2) != 1 || pd < 2 || (pid != 256 && (sid < 192 || sid > 239))) next
+            v[++m] = pd == 3 ? ts(o + 14) : ts(o + 9)
+        }
+        END {
+            lo = v[1]; for (i = 2; i <= m; i++) if (v[i] < lo) lo = v[i]
+            b = (lo + add) % 8589934592; c = 0
+            for (i = 1; i <= m; i++) if (v[i] <= lo + add) c++
+            printf "%d %d %d %d %d %d %d\n", at, c, int(b / 33554432), int(b / 131072) % 256, int(b / 512) % 256, int(b / 2) % 256, (b % 2) * 128 + 126 }')"
+    cp "$1" "$2" && set -- "$2" $3 &&
+        printf "\\$(printf %o "$4")\\$(printf %o "$5")\\$(printf %o "$6")\\$(printf %o "$7")\\$(printf %o "$8")\\000" |
+        dd of="$1" bs=1 seek=$(($2 * 188 + 6)) conv=notrunc 2>/dev/null && echo "$3"
+}
+# One PCR moved 1 s late: its window's timing PES are behind it, counted as such (chapter 9's
+# "must stay > 0"); one moved onto the lowest DTS-or-PTS: that PES, exactly at it, counts too.
+c=$(pcr_at "$g" "$T/late.ts" 10 90000) && "$CLI" pcrcheck "$T/late.ts" >"$T/late.pcr"
+st=$?
+c2=$(pcr_at "$g" "$T/at.ts" 10 0) && "$CLI" pcrcheck "$T/at.ts" >"$T/at.pcr"
+st2=$?
+[ "$st" -eq 1 ] && [ "$st2" -eq 1 ] && [ "$c" -ge 2 ] && [ "$c2" -ge 1 ] &&
+    grep -q "\"pesBeforePcr\":$c,\"untimedBeforePcr\":0," "$T/late.pcr" &&
+    grep -q '{"pid":264,"timing":true,"pes":37,"ptsMinusPcrMinNs":-1000000000,' "$T/late.pcr" &&
+    grep -q "\"pesBeforePcr\":$c2,\"untimedBeforePcr\":0," "$T/at.pcr" &&
+    grep -q '{"pid":264,"timing":true,"pes":37,"ptsMinusPcrMinNs":0,' "$T/at.pcr" &&
+    grep -q '{"pid":256,"timing":true,"pes":21,"ptsMinusPcrMinNs":124326333,"dtsMinusPcrMinNs":110998777}' "$T/at.pcr" &&
+    [ "$(num jumpMaxNs "$T/late.pcr")" -gt 1000000000 ] && [ "$(num jumpMaxNs "$T/at.pcr")" -gt 100000000 ]
+check "pcrcheck: timing PES behind their PCR, and one exactly at it, are counted as late, exit 1; the per-PID minimum; the larger of two jumps" $?
 # --arrival: a path without jitter is flat, one with it is not, a slow source drifts; a jump starts a run.
 "$GEN" --trace -o "$T/ar0.stct" --duration 60 --seed 3 --jitter-ms 0 &&
     "$GEN" --trace -o "$T/ar5.stct" --duration 60 --seed 3 --jitter-ms 5 &&
@@ -409,8 +446,28 @@ cp "$TSFIX/syn-gap-marker.ts" "$T/crc.ts" &&
 [ $? -eq 1 ] && grep -q '"ccErrors":1,"pmtSections"' "$T/drop.pcr" &&
     "$CLI" pcrcheck "$TSFIX/syn-gap-marker.ts" >/dev/null &&
     [ "$(status "$CLI" pcrcheck)" = 2 ] && [ "$(status "$CLI" pcrcheck "$g" --bogus)" = 2 ] &&
-    [ "$(status "$CLI" pcrcheck "$T/none.ts")" = 1 ] && [ "$(status "$CLI" pcrcheck "$g" --arrival "$T/junk.stct")" = 1 ]
-check "pcrcheck: a PMT CRC error and a lost packet are violations; a clean input exits 0; usage 2, a missing file or bad trace 1" $?
+    [ "$(status "$CLI" pcrcheck "$T/none.ts")" = 3 ] && [ "$(status "$CLI" pcrcheck "$g" --arrival "$T/junk.stct")" = 3 ] &&
+    head -c 20 "$T/ar0.stct" >"$T/cut.stct" && [ "$(status "$CLI" pcrcheck "$g" --arrival "$T/cut.stct")" = 3 ]
+check "pcrcheck: a PMT CRC error and a lost packet are violations; a clean input exits 0; usage 2, a missing file or bad or cut trace 3" $?
+# No capture is no clean one: an empty file, one of no PAT; a PAT CRC error; a program with PES and no PCR.
+: >"$T/empty.ts" && awk 'BEGIN { for (i = 0; i < 1880; i++) printf "%c", 97 + i % 26 }' >"$T/nopat.ts" &&
+    cp "$TSFIX/syn-gap-marker.ts" "$T/pat.ts" &&
+    pk=$(od -An -v -tu1 -w188 "$T/pat.ts" | awk '$1 == 71 && ($2 % 32) * 256 + $3 == 0 { print NR - 1; exit }') &&
+    printf '\377' | dd of="$T/pat.ts" bs=1 seek=$((pk * 188 + 15)) conv=notrunc 2>/dev/null &&
+    "$GEN" --ts egress --pcr-pid none -o "$T/nopcr.ts" &&
+    [ "$(status "$CLI" pcrcheck "$T/empty.ts")" = 1 ] && [ "$(status "$CLI" pcrcheck "$T/nopat.ts")" = 1 ] &&
+    "$CLI" pcrcheck "$T/empty.ts" | grep -q '"packets":0,.*"programs":0,.*"violations":1}$' &&
+    "$CLI" pcrcheck "$T/nopat.ts" | grep -q '"programs":0,.*"violations":1}$' &&
+    [ "$(status "$CLI" pcrcheck "$T/pat.ts")" = 1 ] && "$CLI" pcrcheck "$T/pat.ts" | grep -q '"patCrcErrors":1,.*"violations":1}$' &&
+    "$CLI" pcrcheck "$T/nopcr.ts" >"$T/nopcr.pcr"
+[ $? -eq 1 ] && grep -q '"pcrs":0,.*"pesBeforePcr":0,.*"violations":1}$' "$T/nopcr.pcr" && grep -q '"violations":1}$' "$T/nopcr.pcr"
+check "pcrcheck: an empty or PAT-less capture is a violation, as are a PAT CRC error and a program with PES and no PCR" $?
+# --arrival: a PCR repeated (0 ms on) stays in its run.
+for v in 0:0 33333333:900000 34000000:900000 66666666:1800000; do
+    echo "{\"t\":${v%%:*},\"kind\":\"pcr\",\"pid\":256,\"pcr\":${v#*:},\"di\":false,\"class\":\"video\"}"
+done >"$T/rep.jsonl" && "$CLI" jsonl2trace "$T/rep.jsonl" "$T/rep.stct" &&
+    "$CLI" pcrcheck "$g" --arrival "$T/rep.stct" | grep -q '"arrival","pid":256,"pcrs":4,"matched":0,"runs":1,'
+check "pcrcheck --arrival: a repeated PCR does not split its run" $?
 # hcdesc: the re-epoch case's six PMT states, its timeline_id once set; none in an input of no writer.
 "$CLI" hcdesc "$T/pmt-version-bump-reepoch.ts" >"$T/hc.jsonl" &&
     [ "$(grep '"hcdesc":"pmt"' "$T/hc.jsonl" | sed 's/.*"version":\([0-9]*\),.*/\1/' | paste -sd' ' -)" = "0 1 2 3 4 5" ] &&
@@ -422,8 +479,8 @@ check "pcrcheck: a PMT CRC error and a lost packet are violations; a clean input
     "$CLI" hcdesc "$TSFIX/syn-pmt-version-bump.ts" >"$T/hc0.jsonl" && grep -q '"mrht":null}$' "$T/hc0.jsonl" &&
     ! grep -q '"mrht":{' "$T/hc0.jsonl" && grep -q '"withMrht":0,' "$T/hc0.jsonl" &&
     [ "$("$CLI" hcdesc "$T/mpts-two-programs.ts" | grep '"mrht":{' | sed 's/.*"program":\([0-9]*\),.*/\1/' | sort -u | paste -sd' ' -)" = "1 2" ] &&
-    [ "$(status "$CLI" hcdesc)" = 2 ] && [ "$(status "$CLI" hcdesc "$T/none.ts")" = 1 ]
-check "hcdesc: every PMT state with its version, the epoch and timeline_id as set; null without a writer; both MPTS programs; usage" $?
+    [ "$(status "$CLI" hcdesc)" = 2 ] && [ "$(status "$CLI" hcdesc "$T/none.ts")" = 3 ]
+check "hcdesc: every PMT state with its version, the epoch and timeline_id as set; null without a writer; both MPTS programs; usage; a missing file 3" $?
 # dump --net: the writer's output mapped back at the clock's E is the bus input's PTS and DTS, PES for PES.
 "$CLI" dump "$TSFIX/cap-mux-unbounded-video.ts" |
     sed -n 's/^{"pid":\([0-9]*\),"sid":[0-9]*,"pts":\([0-9a-z]*\),"dts":\([0-9a-z]*\),.*/\1 \2 \3/p' >"$T/nb.txt" &&

@@ -257,4 +257,8 @@ class EgressCore {
     std::vector<SectionAssembler::Done> secs_;
 };
 
+// ts_house's timing_pes on a parsed header: a video or audio stream_id, or the PCR carrier.
+// The writer's D_e rule and pcrcheck's "must stay > 0" check share it.
+bool timing_sid(uint8_t sid, int pid, int timing_pid);
+
 }  // namespace mrts
