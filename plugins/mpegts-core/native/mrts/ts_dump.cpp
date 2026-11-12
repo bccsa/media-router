@@ -150,6 +150,10 @@ void PesIndex::emit_units() {
         add_value(s, "dts", h.dts >= 0, h.dts);
         add_value(s, "ptsUnwrapped", h.pts >= 0, pts_u);
         add_value(s, "dtsUnwrapped", dts_u != Unwrapper::NO_DTS, dts_u);
+        if (has_net_) {
+            add_value(s, "ptsBus", h.pts >= 0, h.pts >= 0 ? net_to_bus(h.pts, net_) : 0);
+            add_value(s, "dtsBus", h.dts >= 0, h.dts >= 0 ? net_to_bus(h.dts, net_) : 0);
+        }
         add(s, ",\"len\":%zu,\"crc32\":\"%08x\",\"discont\":%s,\"seq\":%" PRIu64 "}", u.size,
             crc32_zlib(u.payload.data(), u.payload.size()), u.discont ? "true" : "false", u.seq);
         sink_(s);

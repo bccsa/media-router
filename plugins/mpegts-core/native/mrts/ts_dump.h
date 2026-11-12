@@ -29,6 +29,8 @@ class PesIndex {
     using Sink = std::function<void(const std::string& line)>;
     // program: the PAT's program to follow; -1 = its first.
     explicit PesIndex(Sink sink, int program = -1);
+    // A wire capture (WI-P5-5): each PES line also gives ptsBus and dtsBus, net_to_bus at `e`.
+    void set_net(const NetEpoch& e) { net_ = e, has_net_ = true; }
     void feed(uint8_t* data, size_t len);
     void finish();                        // flushes open PES, then the counters line
 
@@ -49,6 +51,8 @@ class PesIndex {
     uint64_t dts_discarded_ = 0;          // of PIDs the PMT dropped
     int64_t ref_ = 0;
     bool have_ref_ = false;
+    NetEpoch net_;
+    bool has_net_ = false;
     int pmt_pid_ = -1, program_ = -1, gen_ = 0;
 };
 

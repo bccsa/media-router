@@ -2,7 +2,7 @@
 # trace_cli_test: the arrival-trace tools at the command line (WI-P1-2): generator and replay
 # determinism, the .stct <-> JSONL round trip, every expectation in tests/fixtures/restamp (a
 # synthetic trace regenerated from its "source" line), bad input refused; the replay rebase,
-# Phase 3's --ts kinds and --respace (WI-P3-3); check.h's output.
+# Phase 3's --ts kinds and --respace (WI-P3-3); pcrcheck, hcdesc and dump --net (WI-P5-5); check.h's output.
 #   MRTS_CLI, FIXTURE_GEN, RESTAMP_FIXTURES, TS_FIXTURES override the default paths.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -309,6 +309,130 @@ check "fixture_gen --ts: Phase 3's six kinds write the committed bytes, gap-mark
     [ "$(status "$GEN" --respace 40 -o "$T/x.ts")" = 2 ] &&
     [ "$(status "$GEN" --respace 40 -i "$T/junk.stct" -o "$T/x.ts")" = 1 ]
 check "fixture_gen --respace: +40 ppm writes syn-foreign-clock-aac.ts, -40 another; a bad PPM, no -i or no PES refused" $?
+
+# --- p5-5 (WI-P5-5, B-223): pcrcheck, hcdesc and dump --net on the writer's golden outputs.
+EG=$TSFIX/egress
+num() { sed -n "s/.*\"$1\":\(-\{0,1\}[0-9]*\).*/\1/p" "$2" | head -n 1; }   # a number's first match in a file
+sum() { awk -F"\"$1\":" 'NF > 1 { split($2, a, ","); r += a[1] } END { print r + 0 }' "$2"; }   # over programs
+# Every egress case through `mrts_cli egress --out`, then pcrcheck. Five report nothing; the rest
+# report only what their replay inputs give: PCR intervals over 40 ms where the input's packets are
+# that sparse (the writer's pcrIntervalMaxNs says the same), CC errors the input carries, and an
+# unflagged jump where the replay's clock jumps (bus-pmt-change, +1.24 s at the PMT change) or runs
+# back (gap-marker, the lateness ramp falls 900 ms in 50 ms). No timing PES is ever at its PCR.
+all=0
+while read -r name rep jumps cc viol; do
+    clock=$EG/$name.clock.json
+    in=$(sed -n 's/^ *"input": "\(.*\)",\{0,1\}$/\1/p' "$clock")
+    bus=$(sed -n 's/^ *"bus": "\(.*\)",\{0,1\}$/\1/p' "$clock")
+    if [ -n "$bus" ]; then
+        "$CLI" egress "$TSFIX/$in" --clock "$clock" --bus "$TSFIX/$bus" --out "$T/$name.ts" >"$T/$name.eg"
+    else
+        "$CLI" egress "$TSFIX/$in" --clock "$clock" --out "$T/$name.ts" >"$T/$name.eg"
+    fi || { echo "  egress $name"; all=1; continue; }
+    "$CLI" pcrcheck "$T/$name.ts" >"$T/$name.pcr"
+    st=$?
+    got="$(sum pcrRepetitionErrors "$T/$name.pcr") $(sum pcrJumpsUnflagged "$T/$name.pcr")"
+    got="$got $(tail -n 1 "$T/$name.pcr" | sed 's/.*"ccErrors":\([0-9]*\),"violations":\([0-9]*\)}$/\1 \2/')"
+    rc=1
+    [ "$viol" -eq 0 ] && rc=0
+    { [ "$got" = "$rep $jumps $cc $viol" ] && [ "$(sum pesBeforePcr "$T/$name.pcr")" = 0 ] && [ "$st" -eq "$rc" ]; } ||
+        { echo "  $name: got $got, want $rep $jumps $cc $viol (exit $st)"; all=1; }
+    # One program, no gap marker: the widest interval is the writer's own figure (to 1 us of rounding).
+    if [ "$name" != mpts-two-programs ] && [ "$name" != bus-ingest-relock-gap ]; then
+        a=$(num intervalMaxNs "$T/$name.pcr") b=$(num pcrIntervalMaxNs "$T/$name.eg")
+        [ $((a - b)) -le 1000 ] && [ $((b - a)) -le 1000 ] || { echo "  $name: interval $a, writer $b"; all=1; }
+    fi
+done <<'CASES'
+302m-bssd 0 0 0 0
+bus-ingest-relock-gap 23 0 30 53
+bus-pmt-change 39 1 23 63
+gap-marker 0 2 0 2
+hevc-aac-max 96 0 0 96
+mixer-302m-ptp 0 0 0 0
+mpts-two-programs 0 0 128 128
+mux-unbounded-video 0 0 0 0
+occ-relay-unknown-e 0 0 0 0
+pes-header-split 39 0 0 39
+pmt-version-bump-reepoch 0 0 0 0
+wrap-33bit 111 0 0 111
+CASES
+[ "$all" -eq 0 ] && [ "$(ls "$EG"/*.clock.json | wc -l)" -eq 12 ]
+check "pcrcheck: the twelve golden outputs, five clean, the rest only their inputs' faults; no timing PES at its PCR" $?
+grep -q '"pcrFlagged":2,.*"pcrJumpsUnflagged":0,"pcrJumpsFlagged":1,' "$T/pmt-version-bump-reepoch.pcr" &&
+    grep -q '"untimedBeforePcr":3,' "$T/occ-relay-unknown-e.pcr" && grep -q '{"pid":32,"timing":false,' "$T/occ-relay-unknown-e.pcr" &&
+    grep -q '"intervalHistMs":{"10":1,"20":10,"30":0,"35":0,"40":20,"100":0}' "$T/mux-unbounded-video.pcr"
+check "pcrcheck: a re-epoch's flagged jump is no violation; a late teletext counts apart; the interval histogram" $?
+# The hand-made unflagged jump: the clean output cut at a packet, its tail rebased 1 s later (PCR and
+# PTS alike, CC kept), joined again: one jump, nothing else. 1 s earlier: one too.
+g=$T/mux-unbounded-video.ts
+head -c $((5000 * 188)) "$g" >"$T/j-head.ts" && tail -c +$((5000 * 188 + 1)) "$g" >"$T/j-tail.ts" &&
+    "$CLI" rebase "$T/j-tail.ts" "$T/j-x.ts" --to-ns 1 >"$T/j.json" && f0=$(key fromNs "$T/j.json") &&
+    "$CLI" rebase "$T/j-tail.ts" "$T/j-late.ts" --to-ns $((f0 + 1000000000)) >/dev/null &&
+    "$CLI" rebase "$T/j-tail.ts" "$T/j-early.ts" --to-ns $((f0 - 1000000000)) >/dev/null &&
+    cat "$T/j-head.ts" "$T/j-late.ts" >"$T/jump.ts" && cat "$T/j-head.ts" "$T/j-early.ts" >"$T/jump2.ts"
+"$CLI" pcrcheck "$T/jump.ts" >"$T/jump.pcr"
+st=$?
+"$CLI" pcrcheck "$T/jump2.ts" >"$T/jump2.pcr"
+st2=$?
+[ "$st" -eq 1 ] && [ "$st2" -eq 1 ] && grep -q '"pcrJumpsUnflagged":1,"pcrJumpsFlagged":0,' "$T/jump.pcr" &&
+    grep -q '"pcrJumpsUnflagged":1,"pcrJumpsFlagged":0,' "$T/jump2.pcr" &&
+    [ "$(tail -n 1 "$T/jump.pcr" | sed 's/.*"violations":\([0-9]*\)}$/\1/')" = 1 ] &&
+    [ "$(tail -n 1 "$T/jump2.pcr" | sed 's/.*"violations":\([0-9]*\)}$/\1/')" = 1 ]
+check "pcrcheck: a hand-made unflagged PCR jump (+1 s, and -1 s) is one violation, exit 1" $?
+# --arrival: a path without jitter is flat, one with it is not, a slow source drifts; a jump starts a run.
+"$GEN" --trace -o "$T/ar0.stct" --duration 60 --seed 3 --jitter-ms 0 &&
+    "$GEN" --trace -o "$T/ar5.stct" --duration 60 --seed 3 --jitter-ms 5 &&
+    "$GEN" --trace -o "$T/arp.stct" --duration 60 --seed 3 --jitter-ms 0 --ppm -300 &&
+    "$GEN" --trace -o "$T/arj.stct" --duration 60 --seed 3 --jitter-ms 0 --jump 30:-5000:di &&
+    "$CLI" pcrcheck "$g" --arrival "$T/ar0.stct" >"$T/ar0.pcr" &&
+    grep -q '"arrival","pid":256,"pcrs":600,"matched":0,"runs":1,"jitterPpNs":0,"detrendedPpNs":0,"driftPpb":0}' "$T/ar0.pcr" &&
+    "$CLI" pcrcheck "$g" --arrival "$T/ar5.stct" | grep '"arrival"' >"$T/ar5.pcr" && [ "$(num detrendedPpNs "$T/ar5.pcr")" -gt 5000000 ] &&
+    "$CLI" pcrcheck "$g" --arrival "$T/arp.stct" | grep -q '"jitterPpNs":17970000,"detrendedPpNs":0,"driftPpb":300000}' &&
+    "$CLI" pcrcheck "$g" --arrival "$T/arj.stct" | grep -q '"runs":2,"jitterPpNs":0,'
+check "pcrcheck --arrival: flat without jitter, jitter seen, a -300 ppm source's drift, a jump starts a run" $?
+# The capture's own PCRs as a trace (one per ms of packet index): every one matches.
+od -An -v -tu1 -w188 "$T/pes-header-split.ts" | awk '
+    $1 == 71 && int($4 / 16) % 4 >= 2 && $5 > 0 && int($6 / 16) % 2 == 1 {
+        b = $7 * 33554432 + $8 * 131072 + $9 * 512 + $10 * 2 + int($11 / 128)
+        printf "{\"t\":%d,\"kind\":\"pcr\",\"pid\":%d,\"pcr\":%.0f,\"di\":%s,\"class\":\"video\"}\n",
+            (NR - 1) * 1000000, ($2 % 32) * 256 + $3, b * 300 + ($11 % 2) * 256 + $12, $6 >= 128 ? "true" : "false" }' >"$T/own.jsonl" &&
+    "$CLI" jsonl2trace "$T/own.jsonl" "$T/own.stct" && n=$(wc -l <"$T/own.jsonl" | tr -d ' ') && [ "$n" -gt 50 ] &&
+    "$CLI" pcrcheck "$T/pes-header-split.ts" --arrival "$T/own.stct" | grep -q "\"arrival\",\"pid\":256,\"pcrs\":$n,\"matched\":$n,"
+check "pcrcheck --arrival: a trace of the capture's own PCRs matches every one" $?
+# Damage: a PMT with a broken CRC, a lost packet; a clean input exits 0; usage.
+cp "$TSFIX/syn-gap-marker.ts" "$T/crc.ts" &&
+    pk=$(od -An -v -tu1 -w188 "$T/crc.ts" | awk '$1 == 71 && ($2 % 32) * 256 + $3 == 4096 { print NR - 1; exit }') &&
+    printf '\377' | dd of="$T/crc.ts" bs=1 seek=$((pk * 188 + 20)) conv=notrunc 2>/dev/null
+"$CLI" pcrcheck "$T/crc.ts" >"$T/crc.pcr"
+[ $? -eq 1 ] && grep -q '"pmtCrcErrors":1,"pids"' "$T/crc.pcr" && grep -q '"violations":1}$' "$T/crc.pcr" &&
+    "$GEN" --drop 258@40 -i "$TSFIX/syn-gap-marker.ts" -o "$T/drop.ts" && "$CLI" pcrcheck "$T/drop.ts" >"$T/drop.pcr"
+[ $? -eq 1 ] && grep -q '"ccErrors":1,"pmtSections"' "$T/drop.pcr" &&
+    "$CLI" pcrcheck "$TSFIX/syn-gap-marker.ts" >/dev/null &&
+    [ "$(status "$CLI" pcrcheck)" = 2 ] && [ "$(status "$CLI" pcrcheck "$g" --bogus)" = 2 ] &&
+    [ "$(status "$CLI" pcrcheck "$T/none.ts")" = 1 ] && [ "$(status "$CLI" pcrcheck "$g" --arrival "$T/junk.stct")" = 1 ]
+check "pcrcheck: a PMT CRC error and a lost packet are violations; a clean input exits 0; usage 2, a missing file or bad trace 1" $?
+# hcdesc: the re-epoch case's six PMT states, its timeline_id once set; none in an input of no writer.
+"$CLI" hcdesc "$T/pmt-version-bump-reepoch.ts" >"$T/hc.jsonl" &&
+    [ "$(grep '"hcdesc":"pmt"' "$T/hc.jsonl" | sed 's/.*"version":\([0-9]*\),.*/\1/' | paste -sd' ' -)" = "0 1 2 3 4 5" ] &&
+    grep -q '"version":1,"mrht":{"hcVersion":1,"houseTimeTai":true,.*"epochSeq":3,"dE90k":14400,"dENs":160000000,"timelineId":"0000000000000000"}}$' "$T/hc.jsonl" &&
+    grep -q '"version":2,.*"epochSeq":4,' "$T/hc.jsonl" &&
+    grep -q '"version":4,.*"timelineId":"0123456789abcdef"}}$' "$T/hc.jsonl" &&
+    grep -q '"gmIdentity":"FF-FF-FF-FF-FF-FF-FF-FF"' "$T/hc.jsonl" &&
+    grep -q '^{"hcdesc":"summary","pmtSections":20,"pmtCrcErrors":0,"withMrht":20,"lines":6}$' "$T/hc.jsonl" &&
+    "$CLI" hcdesc "$TSFIX/syn-pmt-version-bump.ts" >"$T/hc0.jsonl" && grep -q '"mrht":null}$' "$T/hc0.jsonl" &&
+    ! grep -q '"mrht":{' "$T/hc0.jsonl" && grep -q '"withMrht":0,' "$T/hc0.jsonl" &&
+    [ "$("$CLI" hcdesc "$T/mpts-two-programs.ts" | grep '"mrht":{' | sed 's/.*"program":\([0-9]*\),.*/\1/' | sort -u | paste -sd' ' -)" = "1 2" ] &&
+    [ "$(status "$CLI" hcdesc)" = 2 ] && [ "$(status "$CLI" hcdesc "$T/none.ts")" = 1 ]
+check "hcdesc: every PMT state with its version, the epoch and timeline_id as set; null without a writer; both MPTS programs; usage" $?
+# dump --net: the writer's output mapped back at the clock's E is the bus input's PTS and DTS, PES for PES.
+"$CLI" dump "$TSFIX/cap-mux-unbounded-video.ts" |
+    sed -n 's/^{"pid":\([0-9]*\),"sid":[0-9]*,"pts":\([0-9a-z]*\),"dts":\([0-9a-z]*\),.*/\1 \2 \3/p' >"$T/nb.txt" &&
+    "$CLI" dump --net 1760283215123456789 "$g" |
+    sed -n 's/^{"pid":\([0-9]*\),.*"ptsBus":\([0-9a-z]*\),"dtsBus":\([0-9a-z]*\),.*/\1 \2 \3/p' >"$T/nw.txt" &&
+    [ "$(wc -l <"$T/nb.txt")" -gt 50 ] && grep -q ' [0-9]* [0-9]' "$T/nb.txt" && cmp -s "$T/nb.txt" "$T/nw.txt" &&
+    ! "$CLI" dump "$g" | grep -q ptsBus &&
+    [ "$(status "$CLI" dump --net 12x "$g")" = 2 ] && [ "$(status "$CLI" dump --net)" = 2 ]
+check "dump --net: the writer's output at its E maps back to the bus input's PTS and DTS, PES for PES; none without it; a bad E exits 2" $?
 
 echo
 if [ "$fails" -ne 0 ]; then

@@ -1,6 +1,6 @@
 // mrts_cli: test harness for the mrts core. `dump` prints every PES of the followed program,
 // PSI events and counters as JSON lines.
-// Usage: mrts_cli dump [--chunk 1316] [--program N] input.ts
+// Usage: mrts_cli dump [--chunk 1316] [--program N] [--net E_ns] input.ts
 //        mrts_cli trace2jsonl input.stct
 //        mrts_cli jsonl2trace input.jsonl|- output.stct
 //        mrts_cli restamp-replay input.stct [--config k=v...] [--sweep grid.json] [--expect file]
@@ -11,6 +11,8 @@
 //        mrts_cli pace seq.jsonl|-
 //        mrts_cli asrc-device seq.jsonl|-
 //        mrts_cli egress in.ts --clock case.clock.json [--bus B] [--chunk N] [--out O] [--expect E]
+//        mrts_cli pcrcheck in.ts [--arrival in.stct]
+//        mrts_cli hcdesc in.ts
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -48,17 +50,23 @@ using namespace mrts;
 
 namespace {
 
+bool parse_int(const std::string& s, int64_t* v);
 
 int dump_main(int argc, char** argv) {
     long chunk = 1316;
     int program = -1;
     std::string input;
+    bool net = false;
+    NetEpoch e;
     for (int i = 1; i < argc; i++) {
         const std::string a = argv[i];
         if (a == "--chunk" && i + 1 < argc) {
             chunk = std::atol(argv[++i]);
         } else if (a == "--program" && i + 1 < argc) {
             program = std::atoi(argv[++i]);
+        } else if (a == "--net" && i + 1 < argc && parse_int(argv[i + 1], &e.e_ns)) {
+            net = true;
+            i++;
         } else if (a[0] != '-' && input.empty()) {
             input = a;
         } else {
@@ -67,7 +75,8 @@ int dump_main(int argc, char** argv) {
         }
     }
     if (input.empty() || chunk <= 0) {
-        std::fprintf(stderr, "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n");
+        std::fprintf(stderr, "usage: mrts_cli dump [--chunk N] [--program N] [--net E_ns] input.ts\n"
+                             "  --net: a wire capture; each PES also gives ptsBus and dtsBus, net_to_bus at E\n");
         return 2;
     }
     FILE* f = std::fopen(input.c_str(), "rb");
@@ -77,6 +86,7 @@ int dump_main(int argc, char** argv) {
     }
     std::vector<uint8_t> buf((size_t)chunk);
     PesIndex dump([](const std::string& line) { std::printf("%s\n", line.c_str()); }, program);
+    if (net) dump.set_net(e);
     size_t n;
     while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0) dump.feed(buf.data(), n);
     const bool failed = std::ferror(f);
@@ -2642,6 +2652,548 @@ int egress_main(int argc, char** argv) {
     return 0;
 }
 
+
+// --- pcrcheck and hcdesc: a wire capture measured (WI-P5-5, B-223) ---------------------
+
+// The PAT and every PMT it names, sections reassembled per PID and CRC-checked; a
+// section a CC loss cuts is dropped, counted.
+class PsiSections {
+  public:
+    struct Section {
+        int pid;
+        const std::vector<uint8_t>& bytes;   // table_id to CRC
+        bool crc_ok;
+    };
+    using Sink = std::function<void(const Section&)>;
+    explicit PsiSections(Sink sink) : sink_(std::move(sink)) {}
+
+    void watch(int pid) { open_[pid]; }
+    bool watched(int pid) const { return open_.count(pid) != 0; }
+    void packet(const PacketView& v, CcTracker::Result cc) {
+        auto it = open_.find(v.pid);
+        if (it == open_.end() || cc == CcTracker::Result::Duplicate) return;
+        Buf& b = it->second;
+        if (cc == CcTracker::Result::Lost && b.open) cut(b);
+        if (v.payload_off >= PKT) return;
+        const uint8_t* p = v.p + v.payload_off;
+        int n = PKT - v.payload_off;
+        if (!v.pusi) {
+            if (b.open) append(v.pid, b, p, n);
+            return;
+        }
+        const int ptr = p[0];
+        if (1 + ptr > n) {
+            if (b.open) cut(b);
+            return;
+        }
+        if (b.open) {
+            append(v.pid, b, p + 1, ptr);
+            if (b.open) cut(b);
+        }
+        p += 1 + ptr;
+        n -= 1 + ptr;
+        while (n >= 3 && p[0] != 0xFF) {    // back-to-back sections after the pointer
+            b.bytes.assign(p, p + n);
+            b.open = true;
+            const int len = need(b);
+            if (len < 0 || len > n) {
+                if (len < 0) cut(b);
+                return;
+            }
+            emit(v.pid, b, len);
+            p += len;
+            n -= len;
+        }
+    }
+    uint64_t cut_sections() const { return cut_; }
+
+  private:
+    struct Buf {
+        std::vector<uint8_t> bytes;
+        bool open = false;
+    };
+    // The section's whole length once its header is in; -1 = not a PSI section.
+    static int need(const Buf& b) {
+        if (b.bytes.size() < 3) return 0;
+        const int len = 3 + (((b.bytes[1] & 0x0F) << 8) | b.bytes[2]);
+        return len > 4096 || len < 3 + 9 ? -1 : len;
+    }
+    void append(int pid, Buf& b, const uint8_t* p, int n) {
+        b.bytes.insert(b.bytes.end(), p, p + n);
+        const int len = need(b);
+        if (len < 0) cut(b);
+        else if (len > 0 && (int)b.bytes.size() >= len) emit(pid, b, len);
+    }
+    void emit(int pid, Buf& b, int len) {
+        b.bytes.resize((size_t)len);
+        b.open = false;
+        sink_(Section{pid, b.bytes, crc32_mpeg(b.bytes.data(), b.bytes.size()) == 0});
+    }
+    void cut(Buf& b) {
+        b.open = false;
+        b.bytes.clear();
+        cut_++;
+    }
+    Sink sink_;
+    std::map<int, Buf> open_;
+    uint64_t cut_ = 0;
+};
+
+// A PAT section's {program_number, pmt_pid}, program 0 (the NIT) left out.
+std::vector<std::pair<int, int>> pat_programs(const std::vector<uint8_t>& s) {
+    std::vector<std::pair<int, int>> out;
+    if (s[0] != TABLE_PAT || !(s[5] & 0x01)) return out;
+    for (size_t i = 8; i + 4 + 4 <= s.size(); i += 4) {
+        const int prog = (s[i] << 8) | s[i + 1], pid = ((s[i + 2] & 0x1F) << 8) | s[i + 3];
+        if (prog != 0) out.emplace_back(prog, pid);
+    }
+    return out;
+}
+
+// A PMT section, CRC already checked; false when it is not one, or overruns itself.
+bool pmt_from_section(const std::vector<uint8_t>& s, Pmt* m) {
+    if (s[0] != TABLE_PMT || !(s[5] & 0x01) || s.size() < 16) return false;
+    m->program_number = (s[3] << 8) | s[4];
+    m->version = (s[5] >> 1) & 0x1F;
+    m->pcr_pid = ((s[8] & 0x1F) << 8) | s[9];
+    const size_t end = s.size() - 4, pil = (size_t)(((s[10] & 0x0F) << 8) | s[11]);
+    if (12 + pil > end) return false;
+    m->program_info.assign(s.begin() + 12, s.begin() + 12 + (long)pil);
+    m->streams.clear();
+    for (size_t i = 12 + pil; i + 5 <= end;) {
+        PmtStream st;
+        st.stream_type = s[i];
+        st.pid = ((s[i + 1] & 0x1F) << 8) | s[i + 2];
+        const size_t eil = (size_t)(((s[i + 3] & 0x0F) << 8) | s[i + 4]);
+        if (i + 5 + eil > end) return false;
+        st.es_info.assign(s.begin() + (long)(i + 5), s.begin() + (long)(i + 5 + eil));
+        m->streams.push_back(std::move(st));
+        i += 5 + eil;
+    }
+    return true;
+}
+
+// One input file walked packet by packet with the CC check and the PSI sections; the
+// PAT's PMT PIDs are watched as it names them.
+class TsWalk {
+  public:
+    // `program`: the PMT's own, else (a bad section) the PAT's for its PID; -1 when neither.
+    using OnPmt = std::function<void(int pmt_pid, int program, bool crc_ok, const Pmt* pmt)>;
+    using OnPacket = std::function<void(const PacketView&, CcTracker::Result)>;
+    TsWalk(OnPmt on_pmt, OnPacket on_packet)
+        : on_pmt_(std::move(on_pmt)), on_packet_(std::move(on_packet)),
+          psi_([this](const PsiSections::Section& s) { section(s); }) {
+        psi_.watch(PID_PAT);
+    }
+    // 0 read, 1 an I/O error (said on stderr).
+    int run(const std::string& path) {
+        FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) return std::perror(path.c_str()), 1;
+        std::vector<uint8_t> buf(1316 * 16);
+        size_t n;
+        while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0)
+            walker_.feed(buf.data(), n, [&](PacketView& v) {
+                const CcTracker::Result cc = v.pid == PID_NULL ? CcTracker::Result::Ok : cc_.feed(v);
+                if (cc == CcTracker::Result::Lost) cc_errors_[v.pid]++;
+                psi_.packet(v, cc);
+                on_packet_(v, cc);
+                packets_++;
+            });
+        const bool failed = std::ferror(f);
+        std::fclose(f);
+        if (failed) return std::perror(path.c_str()), 1;
+        return 0;
+    }
+    uint64_t packets() const { return packets_; }     // the index of the packet being handed out
+    uint64_t desync_bytes() const { return walker_.desync_bytes(); }
+    uint64_t pat_sections() const { return pat_sections_; }
+    uint64_t pat_crc_errors() const { return pat_crc_errors_; }
+    uint64_t cut_sections() const { return psi_.cut_sections(); }
+    const std::map<int, uint64_t>& cc_errors() const { return cc_errors_; }
+
+  private:
+    void section(const PsiSections::Section& s) {
+        if (s.pid == PID_PAT) {
+            pat_sections_++;
+            if (!s.crc_ok) {
+                pat_crc_errors_++;
+                return;
+            }
+            for (const auto& pp : pat_programs(s.bytes)) {
+                if (!psi_.watched(pp.second)) psi_.watch(pp.second);
+                pmt_program_.emplace(pp.second, pp.first);
+            }
+            return;
+        }
+        if (s.bytes[0] != TABLE_PMT) return;
+        Pmt m;
+        if (s.crc_ok && pmt_from_section(s.bytes, &m)) return on_pmt_(s.pid, m.program_number, true, &m);
+        const auto it = pmt_program_.find(s.pid);
+        on_pmt_(s.pid, it == pmt_program_.end() ? -1 : it->second, s.crc_ok, nullptr);
+    }
+    OnPmt on_pmt_;
+    OnPacket on_packet_;
+    PsiSections psi_;
+    PacketWalker walker_;
+    CcTracker cc_;
+    std::map<int, uint64_t> cc_errors_;
+    std::map<int, int> pmt_program_;      // PMT PID -> the PAT's first program on it
+    uint64_t packets_ = 0, pat_sections_ = 0, pat_crc_errors_ = 0;
+};
+
+// A 27 MHz difference folded to (-PCR_MODULO/2, PCR_MODULO/2], in ns.
+int64_t fold_pcr_ns(int64_t d27) {
+    d27 %= PCR_MODULO;
+    if (d27 > PCR_MODULO / 2) d27 -= PCR_MODULO;
+    if (d27 <= -PCR_MODULO / 2) d27 += PCR_MODULO;
+    return d27 * 1000 / 27;
+}
+
+const char kPcrcheckUsage[] =
+    "usage: mrts_cli pcrcheck in.ts [--arrival in.stct]\n"
+    "  The PCR and timestamp checks of TR 101 290 on a capture, per program as JSON lines (WI-P5-5):\n"
+    "  PCR intervals (a histogram by upper bound in ms, the max; over 40 ms a repetition error),\n"
+    "  PCR jumps (negative or over 100 ms) with and without discontinuity_indicator, per PID the\n"
+    "  minimum PTS - PCR and DTS - PCR against the PCR in force (on a video or audio PES or the\n"
+    "  PCR PID's, DTS else PTS at or below 0 is an error; on another, untimedBeforePcr counts\n"
+    "  it), CC errors and PMT CRC errors. --arrival: per PCR PID of the trace, arrival -\n"
+    "  PCR's peak to peak, raw and with the best line removed, per run between jumps. Exit 1 on\n"
+    "  any violation (an unflagged jump, a repetition, a PES at or before the PCR, a CC or CRC\n"
+    "  error, a program with PES and no PCR).\n";
+
+constexpr int64_t PCR_JUMP_NS = 100 * 1000000LL;   // TR 101 290 PCR_discontinuity_indicator_error
+constexpr int64_t HIST_MS[] = {10, 20, 30, 35, 40, 100};
+
+struct PcrProgram {
+    struct Pid {
+        uint64_t pes = 0;
+        bool timing = false;                  // a video or audio PES, or on the PCR PID (B-51)
+        bool have_pts = false, have_dts = false;
+        int64_t pts_min = 0, dts_min = 0;
+        std::vector<uint8_t> held;            // a PES header split over packets
+        int64_t held_pcr = -1;
+    };
+    int pmt_pid = -1, pcr_pid = PID_NULL;
+    std::set<int> es;
+    int64_t last_pcr = -1;
+    uint64_t pcrs = 0, flagged = 0, repetition = 0, jumps = 0, jumps_flagged = 0;
+    int64_t interval_max_ns = 0;
+    uint64_t hist[sizeof HIST_MS / sizeof HIST_MS[0]] = {};
+    uint64_t pes = 0, unjudged = 0, before_pcr = 0, untimed_before_pcr = 0, cc = 0, pmt_sections = 0, pmt_crc = 0;
+    std::map<int, Pid> pids;
+
+    void pcr(int64_t v, bool disc) {
+        pcrs++;
+        if (disc) flagged++;
+        if (last_pcr >= 0) {
+            const int64_t d = fold_pcr_ns(v - last_pcr);
+            const bool jump = d < 0 || d > PCR_JUMP_NS;   // 0..100 ms is in range
+            if (disc) {
+                if (jump) jumps_flagged++;
+            } else if (jump) {
+                jumps++;
+            } else {
+                interval_max_ns = std::max(interval_max_ns, d);
+                size_t k = 0;
+                while (d > HIST_MS[k] * 1000000LL) k++;
+                hist[k]++;
+                if (d > PCR_MAX_INTERVAL_NS) repetition++;
+            }
+        }
+        last_pcr = v;
+    }
+    // A PES header's bytes on `pid`, the PCR in force when it started; false = cut short.
+    // Only a timing PES can be an error: D_e covers those (the writer's rule), a late private
+    // stream (teletext, KLV) is its source's and is counted apart.
+    bool judge(int pid, Pid& p, const uint8_t* b, size_t n, int64_t pcr_then) {
+        PesHeader h;
+        if (!parse_pes_header(b, n, &h)) return true;
+        if (!h.complete) return false;
+        if (h.pts < 0) return true;
+        pes++;
+        p.pes++;
+        const bool timing = (h.sid & 0xF0) == 0xE0 || (h.sid & 0xE0) == 0xC0 || pid == pcr_pid;
+        p.timing = p.timing || timing;
+        if (pcr_then < 0) {
+            unjudged++;
+            return true;
+        }
+        const int64_t dp = fold_pcr_ns(h.pts * 300 - pcr_then);
+        p.pts_min = p.have_pts ? std::min(p.pts_min, dp) : dp;
+        p.have_pts = true;
+        int64_t check = dp;
+        if (h.dts >= 0) {
+            const int64_t dd = fold_pcr_ns(h.dts * 300 - pcr_then);
+            p.dts_min = p.have_dts ? std::min(p.dts_min, dd) : dd;
+            p.have_dts = true;
+            check = dd;
+        }
+        if (check <= 0) (timing ? before_pcr : untimed_before_pcr)++;
+        return true;
+    }
+    void payload(const PacketView& v) {
+        Pid& p = pids[v.pid];
+        const uint8_t* b = v.p + v.payload_off;
+        const size_t n = (size_t)(PKT - v.payload_off);
+        if (v.pusi) {
+            p.held.clear();
+            if (!judge(v.pid, p, b, n, last_pcr)) {
+                p.held.assign(b, b + n);
+                p.held_pcr = last_pcr;
+            }
+        } else if (!p.held.empty()) {
+            p.held.insert(p.held.end(), b, b + n);
+            if (judge(v.pid, p, p.held.data(), p.held.size(), p.held_pcr) || p.held.size() > 2 * PKT) p.held.clear();
+        }
+    }
+    uint64_t violations() const {
+        return repetition + jumps + before_pcr + cc + pmt_crc + (pcrs == 0 && pes > 0 ? 1 : 0);
+    }
+};
+
+struct ArrivalRun {
+    std::vector<std::pair<double, double>> xy;   // PCR s from the run's first, arrival - PCR ns
+};
+
+// Peak to peak of y, raw and less its least-squares line in x; the slope in ppb.
+void line_fit(const ArrivalRun& r, double* raw, double* detrended, double* ppb) {
+    double sx = 0, sy = 0, sxx = 0, sxy = 0, lo = 0, hi = 0;
+    const double n = (double)r.xy.size();
+    for (size_t i = 0; i < r.xy.size(); i++) {
+        const double x = r.xy[i].first, y = r.xy[i].second;
+        sx += x, sy += y, sxx += x * x, sxy += x * y;
+        lo = i ? std::min(lo, y) : y;
+        hi = i ? std::max(hi, y) : y;
+    }
+    *raw = hi - lo;
+    const double den = n * sxx - sx * sx;
+    const double b = den > 0 ? (n * sxy - sx * sy) / den : 0, a = (sy - b * sx) / n;
+    lo = hi = 0;
+    for (size_t i = 0; i < r.xy.size(); i++) {
+        const double e = r.xy[i].second - (a + b * r.xy[i].first);
+        lo = i ? std::min(lo, e) : e;
+        hi = i ? std::max(hi, e) : e;
+    }
+    *detrended = hi - lo;
+    *ppb = b;                                     // ns per s
+}
+
+std::string hist_json(const uint64_t* h) {
+    std::string s = "{";
+    for (size_t k = 0; k < sizeof HIST_MS / sizeof HIST_MS[0]; k++)
+        s += (k ? ",\"" : "\"") + std::to_string(HIST_MS[k]) + "\":" + std::to_string(h[k]);
+    return s + "}";
+}
+
+int pcrcheck_main(int argc, char** argv) {
+    std::string in, arrival;
+    for (int i = 1; i < argc; i++) {
+        const std::string a = argv[i];
+        if (a == "--arrival" && i + 1 < argc) arrival = argv[++i];
+        else if (a[0] != '-' && in.empty()) in = a;
+        else return std::fputs(kPcrcheckUsage, stderr), 2;
+    }
+    if (in.empty()) return std::fputs(kPcrcheckUsage, stderr), 2;
+    std::map<int, PcrProgram> progs;             // by program_number
+    std::map<int, std::set<int64_t>> pcr_values; // per PCR PID, for --arrival's match
+    TsWalk walk(
+        [&](int pmt_pid, int program, bool crc_ok, const Pmt* m) {
+            if (program < 0) return;
+            PcrProgram& p = progs[program];
+            p.pmt_pid = pmt_pid;
+            p.pmt_sections++;
+            if (!crc_ok) p.pmt_crc++;
+            if (!m) return;
+            p.pcr_pid = m->pcr_pid;
+            p.es.clear();
+            for (const PmtStream& st : m->streams) p.es.insert(st.pid);
+        },
+        [&](const PacketView& v, CcTracker::Result cc) {
+            if (v.pid == PID_NULL || cc == CcTracker::Result::Duplicate) return;
+            for (auto& kv : progs) {
+                PcrProgram& p = kv.second;
+                if (v.pid == p.pcr_pid && v.af_pcr) {
+                    const int64_t pcr = read_pcr(v.p);
+                    p.pcr(pcr, v.af_discontinuity);
+                    if (!arrival.empty()) pcr_values[v.pid].insert(pcr);
+                }
+                if (!p.es.count(v.pid)) continue;
+                if (cc == CcTracker::Result::Lost) {
+                    p.cc++;
+                    p.pids[v.pid].held.clear();   // a split header is not joined across a loss
+                }
+                if (v.payload_off < PKT) p.payload(v);
+            }
+        });
+    if (walk.run(in)) return 1;
+    uint64_t violations = walk.pat_crc_errors(), cc_total = 0, cc_outside = 0;
+    for (const auto& kv : walk.cc_errors()) {
+        cc_total += kv.second;
+        bool listed = false;
+        for (const auto& pk : progs) listed = listed || pk.second.es.count(kv.first);
+        if (!listed) cc_outside += kv.second;
+    }
+    violations += cc_outside;
+    for (const auto& kv : progs) {
+        const PcrProgram& p = kv.second;
+        std::string s = "{\"pcrcheck\":\"program\",\"program\":" + std::to_string(kv.first) +
+                        ",\"pmtPid\":" + std::to_string(p.pmt_pid) + ",\"pcrPid\":" + std::to_string(p.pcr_pid) +
+                        ",\"pcrs\":" + std::to_string(p.pcrs) + ",\"pcrFlagged\":" + std::to_string(p.flagged) +
+                        ",\"intervalMaxNs\":" + std::to_string(p.interval_max_ns) +
+                        ",\"intervalHistMs\":" + hist_json(p.hist) +
+                        ",\"pcrRepetitionErrors\":" + std::to_string(p.repetition) +
+                        ",\"pcrJumpsUnflagged\":" + std::to_string(p.jumps) +
+                        ",\"pcrJumpsFlagged\":" + std::to_string(p.jumps_flagged) +
+                        ",\"pes\":" + std::to_string(p.pes) + ",\"pesUnjudged\":" + std::to_string(p.unjudged) +
+                        ",\"pesBeforePcr\":" + std::to_string(p.before_pcr) +
+                        ",\"untimedBeforePcr\":" + std::to_string(p.untimed_before_pcr) +
+                        ",\"ccErrors\":" + std::to_string(p.cc) +
+                        ",\"pmtSections\":" + std::to_string(p.pmt_sections) +
+                        ",\"pmtCrcErrors\":" + std::to_string(p.pmt_crc) + ",\"pids\":[";
+        bool first = true;
+        for (const auto& pp : p.pids) {
+            if (!pp.second.pes) continue;
+            s += std::string(first ? "" : ",") + "{\"pid\":" + std::to_string(pp.first) +
+                 ",\"timing\":" + (pp.second.timing ? "true" : "false") +
+                 ",\"pes\":" + std::to_string(pp.second.pes) + ",\"ptsMinusPcrMinNs\":" +
+                 (pp.second.have_pts ? std::to_string(pp.second.pts_min) : "null") + ",\"dtsMinusPcrMinNs\":" +
+                 (pp.second.have_dts ? std::to_string(pp.second.dts_min) : "null") + "}";
+            first = false;
+        }
+        s += "],\"violations\":" + std::to_string(p.violations()) + "}";
+        std::printf("%s\n", s.c_str());
+        violations += p.violations();
+    }
+    if (!arrival.empty()) {
+        TraceReader r;
+        if (!r.open(arrival)) return std::fprintf(stderr, "mrts_cli: %s: not an arrival trace\n", arrival.c_str()), 1;
+        struct Pid {
+            uint64_t pcrs = 0, matched = 0;
+            int64_t last = -1, first_arrival = 0, unwrapped = 0;
+            std::vector<ArrivalRun> runs;
+        };
+        std::map<int, Pid> by_pid;
+        TraceRecord rec;
+        while (r.next(&rec)) {
+            if (rec.kind != TraceKind::pcr) continue;
+            Pid& p = by_pid[rec.pid];
+            const int64_t v = (int64_t)rec.value;
+            p.pcrs++;
+            auto pv = pcr_values.find(rec.pid);
+            if (pv != pcr_values.end() && pv->second.count(v)) p.matched++;
+            const int64_t d = p.last < 0 ? 0 : fold_pcr_ns(v - p.last);
+            if (p.last < 0 || (rec.flags & TRACE_FLAG_DISCONTINUITY) || d <= 0 || d > PCR_JUMP_NS) {
+                p.runs.emplace_back();
+                p.unwrapped = 0;
+                p.first_arrival = rec.arrival_ns;
+            } else {
+                p.unwrapped += d;
+            }
+            p.last = v;
+            p.runs.back().xy.emplace_back((double)p.unwrapped / 1e9,
+                                          (double)(rec.arrival_ns - p.first_arrival - p.unwrapped));
+        }
+        if (r.status() == TraceReader::Status::truncated || r.status() == TraceReader::Status::bad_header)
+            return std::fprintf(stderr, "mrts_cli: %s: truncated\n", arrival.c_str()), 1;
+        for (const auto& kv : by_pid) {
+            const Pid& p = kv.second;
+            double raw = 0, det = 0, ppb = 0;
+            size_t longest = 0;
+            for (size_t k = 0; k < p.runs.size(); k++) {
+                double a, b, c;
+                line_fit(p.runs[k], &a, &b, &c);
+                raw = std::max(raw, a);
+                det = std::max(det, b);
+                if (p.runs[k].xy.size() > p.runs[longest].xy.size()) longest = k;
+            }
+            if (!p.runs.empty()) {
+                double a, b;
+                line_fit(p.runs[longest], &a, &b, &ppb);
+            }
+            std::printf("{\"pcrcheck\":\"arrival\",\"pid\":%d,\"pcrs\":%llu,\"matched\":%llu,\"runs\":%zu,"
+                        "\"jitterPpNs\":%.0f,\"detrendedPpNs\":%.0f,\"driftPpb\":%.0f}\n",
+                        kv.first, (unsigned long long)p.pcrs, (unsigned long long)p.matched, p.runs.size(), raw, det,
+                        ppb);
+        }
+    }
+    std::printf("{\"pcrcheck\":\"summary\",\"packets\":%llu,\"desyncBytes\":%llu,\"programs\":%zu,"
+                "\"patSections\":%llu,\"patCrcErrors\":%llu,\"sectionsCut\":%llu,\"ccErrors\":%llu,"
+                "\"violations\":%llu}\n",
+                (unsigned long long)walk.packets(), (unsigned long long)walk.desync_bytes(), progs.size(),
+                (unsigned long long)walk.pat_sections(), (unsigned long long)walk.pat_crc_errors(),
+                (unsigned long long)walk.cut_sections(), (unsigned long long)cc_total,
+                (unsigned long long)violations);
+    return violations ? 1 : 0;
+}
+
+const char kHcdescUsage[] =
+    "usage: mrts_cli hcdesc in.ts\n"
+    "  Every house-time descriptor (MRHT, B-219) of every program, with its PMT's version, as\n"
+    "  JSON lines: one line per PMT that differs from its program's last (version or descriptors),\n"
+    "  \"mrht\" null without one, then a summary of the PMT sections seen (WI-P5-5).\n";
+
+std::string mrht_json(const HouseTimeDecl& d) {
+    auto b = [](bool x) { return x ? "true" : "false"; };
+    char s[640];
+    std::snprintf(s, sizeof s,
+                  "{\"hcVersion\":%u,\"houseTimeTai\":%s,\"disciplined\":%s,\"traceable\":%s,\"ptpValid\":%s,"
+                  "\"syncSource\":%u,\"taiUtcOffsetS\":%u,\"ptpDomain\":%u,\"clockErrorClass\":%u,"
+                  "\"gmIdentity\":\"%s\",\"epochSeq\":%u,\"dE90k\":%u,\"dENs\":%lld,\"timelineId\":\"%s\"}",
+                  d.version, b(d.house_time_tai), b(d.disciplined), b(d.traceable), b(d.ptp_valid), d.sync_source,
+                  d.tai_utc_offset_s, d.ptp_domain, d.clock_error_class, hcdesc::gm_text(d.gm_identity).c_str(),
+                  d.epoch_seq, d.d_e_90k, (long long)pts90k_to_ns(d.d_e_90k),
+                  hcdesc::timeline_text(d.timeline_id).c_str());
+    return s;
+}
+
+int hcdesc_main(int argc, char** argv) {
+    std::string in;
+    for (int i = 1; i < argc; i++) {
+        const std::string a = argv[i];
+        if (a[0] != '-' && in.empty()) in = a;
+        else return std::fputs(kHcdescUsage, stderr), 2;
+    }
+    if (in.empty()) return std::fputs(kHcdescUsage, stderr), 2;
+    struct Last {
+        int version = -1;
+        std::vector<uint8_t> info;
+    };
+    std::map<int, Last> last;                    // by program_number
+    uint64_t sections = 0, crc_errors = 0, printed = 0, with_mrht = 0;
+    TsWalk* self = nullptr;
+    TsWalk walk(
+        [&](int pmt_pid, int, bool crc_ok, const Pmt* m) {
+            sections++;
+            if (!crc_ok) crc_errors++;
+            if (!m) return;
+            HouseTimeDecl d;
+            const bool found = hcdesc::find_in(m->program_info, &d);
+            if (found) with_mrht++;
+            Last& l = last[m->program_number];
+            if (l.version == m->version && l.info == m->program_info) return;
+            l.version = m->version;
+            l.info = m->program_info;
+            bool undecodable = false;
+            for_each_descriptor(m->program_info.data(), (int)m->program_info.size(), [&](const Descriptor& x) {
+                if (x.tag == hcdesc::TAG && x.len >= 4 &&
+                    ((uint32_t)x.data[0] << 24 | (uint32_t)x.data[1] << 16 | (uint32_t)x.data[2] << 8 | x.data[3]) ==
+                        hcdesc::FORMAT)
+                    undecodable = undecodable || !found;
+            });
+            std::printf("{\"hcdesc\":\"pmt\",\"packet\":%llu,\"program\":%d,\"pmtPid\":%d,\"version\":%d,\"mrht\":%s%s}\n",
+                        (unsigned long long)self->packets(), m->program_number, pmt_pid, m->version,
+                        found ? mrht_json(d).c_str() : "null", undecodable ? ",\"undecodable\":true" : "");
+            printed++;
+        },
+        [](const PacketView&, CcTracker::Result) {});
+    self = &walk;
+    if (walk.run(in)) return 1;
+    std::printf("{\"hcdesc\":\"summary\",\"pmtSections\":%llu,\"pmtCrcErrors\":%llu,\"withMrht\":%llu,\"lines\":%llu}\n",
+                (unsigned long long)sections, (unsigned long long)crc_errors, (unsigned long long)with_mrht,
+                (unsigned long long)printed);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2656,8 +3208,10 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "asrc-device") == 0) return asrc_device_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "drain") == 0) return drain_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "egress") == 0) return egress_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "pcrcheck") == 0) return pcrcheck_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "hcdesc") == 0) return hcdesc_main(argc - 1, argv + 1);
     std::fprintf(stderr,
-                 "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n"
+                 "usage: mrts_cli dump [--chunk N] [--program N] [--net E_ns] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
                  "       mrts_cli jsonl2trace input.jsonl|- output.stct\n"
                  "       mrts_cli restamp-replay input.stct [--config k=v...] [--sweep grid.json] "
@@ -2670,6 +3224,8 @@ int main(int argc, char** argv) {
                  "       mrts_cli asrc-device seq.jsonl|-\n"
                  "       mrts_cli drain seq.jsonl|-\n"
                  "       mrts_cli egress in.ts --clock case.clock.json [--bus B] [--chunk N] [--out O] "
-                 "[--expect E]\n");
+                 "[--expect E]\n"
+                 "       mrts_cli pcrcheck in.ts [--arrival in.stct]\n"
+                 "       mrts_cli hcdesc in.ts\n");
     return 2;
 }
