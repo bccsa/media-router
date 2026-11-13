@@ -1,0 +1,51 @@
+{
+  "source": "fixture_gen --trace --duration 90 --pids v,a2 --pcr-ms 35 --delay-ms 1900,2300@10,1900@15 --jitter-ms 1 --sender-epoch 1800000000 --decl 200 --outage 40:3000",
+  "note": "WI-P5-7's trust-return: the path rises to 2.3 s at 10 s (transit-high, fallback with a gap of about the STC's lead, 2.1 s), back to 1.9 s at 15 s; returning 10 s qualified later; the 3 s outage at 40 s is the natural gap the return takes, longer than k, so straight to trust with a gap of 3 s less k.",
+  "config": {
+    "timing_mode": "trust",
+    "l_ns": 2000000000,
+    "clock_e_ns": 1799999000000000000,
+    "clock_disciplined": true,
+    "clock_error_us": 100
+  },
+  "trustStates": [
+    "trust",
+    "fallback",
+    "returning",
+    "trust"
+  ],
+  "trustFinalState": "trust",
+  "trustSwitches": 2,
+  "events": [
+    {
+      "kind": "trust-switch",
+      "reason": "switch-to-restamp",
+      "state": "fallback",
+      "atS": [
+        10.3,
+        10.6
+      ]
+    },
+    {
+      "kind": "trust-switch",
+      "state": "returning",
+      "atS": [
+        25,
+        26
+      ]
+    },
+    {
+      "kind": "trust-switch",
+      "reason": "switch-to-trust",
+      "state": "trust",
+      "atS": [
+        42.9,
+        43.1
+      ]
+    }
+  ],
+  "overlaps": 0,
+  "pesLost": 0,
+  "outCcLost": 0,
+  "monotonic": true
+}

@@ -1,0 +1,34 @@
+{
+  "source": "fixture_gen --trace --duration 60 --pids v,a2 --pcr-ms 35 --delay-ms 1900 --jitter-ms 0 --sender-epoch 1800000000 --decl 200 --jump 30:500:di",
+  "note": "WI-P5-7's trust-sender-reepoch: the sender's timeline steps 500 ms forward at 30 s (a flagged discontinuity); Trust's constant mapping passes it onto the bus as one gap (the AAC PID's; video's 0.5 s hole is under its 1 s gap rule), no switch.",
+  "config": {
+    "timing_mode": "trust",
+    "l_ns": 2000000000,
+    "clock_e_ns": 1799999000000000000,
+    "clock_disciplined": true,
+    "clock_error_us": 100
+  },
+  "trustStates": [
+    "trust"
+  ],
+  "trustSwitches": 0,
+  "gaps": 1,
+  "gapMs": [
+    499,
+    502
+  ],
+  "overlaps": 0,
+  "pesLost": 0,
+  "events": [
+    {
+      "kind": "gap",
+      "reason": "jump",
+      "pid": 258,
+      "atS": [
+        29.9,
+        30.1
+      ]
+    }
+  ],
+  "monotonic": true
+}

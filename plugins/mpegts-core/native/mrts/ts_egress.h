@@ -30,19 +30,6 @@ struct EgressConfig {
     int64_t gap_lower_min_ns = 500 * EGRESS_MS;
 };
 
-// The element's `house-clock` value (p5-9) plus timeline_id (p5-20; 0 until then).
-struct ClockDecl {
-    int64_t e_ns = 0;
-    int64_t seq = 0;
-    bool known = false, traceable = false, disciplined = false;
-    uint8_t source = hcdesc::SYNC_NONE;
-    int64_t tai_offset_s = 0;
-    int ptp_domain = -1;                      // -1: none
-    std::optional<uint64_t> gm;               // EUI-64; none = unknown
-    std::optional<int64_t> error_us;          // none = unknown
-    uint64_t timeline_id = 0;
-};
-
 // The clock read for a PCR written at packet `packet` of the buffer (the element ignores
 // the index; the replay and the tests set `now` per packet).
 class ClockReader {

@@ -1,0 +1,44 @@
+{
+  "source": "fixture_gen --trace --duration 520 --pids v,a2 --pcr-ms 35 --delay-ms 1900,2300@10,1900@15 --jitter-ms 1 --sender-epoch 1800000000 --decl 200",
+  "note": "Q1 (b), pending the owner: trust-return without the outage. 30 s after returning the switch into Trust takes k = the STC's lead on Trust (2.1 s) and converges at 0.5 %: nothing dropped, no gap or overlap at the switch, PTS monotonic, back to trust 420 s later.",
+  "config": {
+    "timing_mode": "trust",
+    "l_ns": 2000000000,
+    "clock_e_ns": 1799999000000000000,
+    "clock_disciplined": true,
+    "clock_error_us": 100
+  },
+  "trustStates": [
+    "trust",
+    "fallback",
+    "returning",
+    "converging",
+    "trust"
+  ],
+  "trustFinalState": "trust",
+  "trustSwitches": 2,
+  "events": [
+    {
+      "kind": "trust-switch",
+      "reason": "switch-to-trust",
+      "state": "converging",
+      "atS": [
+        55,
+        56
+      ]
+    },
+    {
+      "kind": "trust-switch",
+      "state": "trust",
+      "atS": [
+        474,
+        476
+      ]
+    }
+  ],
+  "gaps": 2,
+  "overlaps": 0,
+  "pesLost": 0,
+  "outCcLost": 0,
+  "monotonic": true
+}

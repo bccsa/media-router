@@ -1,0 +1,49 @@
+{
+  "source": "fixture_gen --trace --duration 40 --pids v,a2 --pcr-ms 35 --delay-ms 1900 --jitter-ms 0 --sender-epoch 1800000000 --decl 200 --jump 30:-37000:di",
+  "note": "WI-P5-7's trust-tai-unset: the sender loses its TAI offset at 30 s (its timeline steps back 37 s). The 3 PCRs' content that stepped back is the guard's (7 PES, about 0.2 s), the third bad PCR falls back with transit-high, and the program continues on the STC about L later than before the step: one gap per PID of about 2.2 s, no backward PTS, CC continuous.",
+  "config": {
+    "timing_mode": "trust",
+    "l_ns": 2000000000,
+    "clock_e_ns": 1799999000000000000,
+    "clock_disciplined": true,
+    "clock_error_us": 100
+  },
+  "trustStates": [
+    "trust",
+    "fallback"
+  ],
+  "trustFinalState": "fallback",
+  "trustFailed": "transit-high",
+  "trustSwitches": 1,
+  "events": [
+    {
+      "kind": "trust-switch",
+      "reason": "switch-to-restamp",
+      "state": "fallback",
+      "atS": [
+        30,
+        30.2
+      ]
+    },
+    {
+      "kind": "gap",
+      "reason": "trust-switch",
+      "gapMs": [
+        2100,
+        2300
+      ]
+    }
+  ],
+  "overlaps": 2,
+  "droppedPes": [
+    1,
+    10
+  ],
+  "pesLost": [
+    1,
+    10
+  ],
+  "gaps": 2,
+  "outCcLost": 0,
+  "monotonic": true
+}

@@ -93,6 +93,7 @@ const char* event_kind_name(RestampCore::Event::Kind k) {
         case RestampCore::Event::Kind::gap: return "gap";
         case RestampCore::Event::Kind::overlap: return "overlap";
         case RestampCore::Event::Kind::lead_clamp: return "lead-clamp";
+        case RestampCore::Event::Kind::trust_switch: return "trust-switch";
         default: return "psi-change";
     }
 }
@@ -126,7 +127,78 @@ void RestampCore::set_step_fall_hold(int64_t ns) {
     for (auto& g : progs_) g->stc.set_step_fall_hold(ns);
 }
 
+void RestampCore::set_timing_mode(TimingMode m, int64_t now_ns) {
+    cfg_.timing_mode = m;
+    for (auto& g : progs_) {
+        if (g->gate) {
+            const bool was = deciding(*g);
+            g->gate->set_mode(m == TimingMode::trust, now_ns + base_);
+            after_gate(*g, was);
+        }
+        update_pcr_shift(*g);
+    }
+}
+
+void RestampCore::set_house_clock(const ClockDecl& c, int64_t now_ns) {
+    cfg_.house_clock = c;
+    for (auto& g : progs_)
+        if (g->gate) {
+            g->gate->set_clock(c, now_ns + base_);
+            after_gate(*g, false);
+        }
+}
+
+void RestampCore::set_transport_latency(int64_t l_ns) {
+    cfg_.trust.l_ns = l_ns;
+    for (auto& g : progs_)
+        if (g->gate) g->gate->set_l(l_ns);
+}
+
+void RestampCore::set_trust_tolerance(int64_t tau_ns) {
+    cfg_.trust.tau_ns = tau_ns;
+    for (auto& g : progs_)
+        if (g->gate) g->gate->set_tau(tau_ns);
+}
+
+bool RestampCore::deciding(const Program& g) const {
+    return g.gate && g.gate->state() == TrustGate::State::deciding;
+}
+
+void RestampCore::step_gate(Program& g, int64_t now) {
+    if (!g.gate || releasing_) return;
+    const bool was = deciding(g);
+    g.gate->step(now);
+    after_gate(g, was);
+}
+
+// The gate's transitions as events. A mapping change is a switch: each PID shows it at its next PES,
+// the next PCR is flagged, no copy is rewritten across it (B-203). Leaving deciding releases the hold.
+void RestampCore::after_gate(Program& g, bool was_deciding) {
+    auto is_mapped = [](TrustGate::State s) {
+        return s == TrustGate::State::trust || s == TrustGate::State::converging;
+    };
+    for (const TrustGate::Transition& t : g.gate->take_log()) {
+        Event e = make_event(Event::Kind::trust_switch, g.number, -1, trust_decision_name(t.decision), t.t, 0);
+        e.state = trust_state_name(t.state);
+        e.failed = t.failed ? t.failed : "";
+        e.value_ns = t.k_ns;
+        e.gap_ns = t.gap_ns;
+        events_.push_back(e);
+        if (is_mapped(t.from) != is_mapped(t.state) || t.decision == TrustGate::Decision::switch_to_trust) {
+            for (int pid : g.es)
+                if (pids_[pid]) pids_[pid]->switched = true;
+            g.flag_pcr = true;
+            g.relocks++;
+        }
+    }
+    if (!was_deciding || deciding(g)) return;
+    if (res_) release(g, true);
+    else g.decide_release = true;
+}
+
 int64_t RestampCore::target_shift(int pid) const {
+    // Trust means untouched: no O and no trim in any state while Trust is selected (Q13, C-10).
+    if (cfg_.mode == RestampConfig::Mode::stc && cfg_.timing_mode == TimingMode::trust) return 0;
     const auto it = trims_.find(pid);
     return offset_ + (it == trims_.end() ? 0 : it->second);
 }
@@ -156,8 +228,14 @@ RestampCore::Result RestampCore::process(uint8_t* data, size_t len, int64_t arri
     scratch_.clear();
     out_bytes_ = 0;
     // B-185: a wait past its bound ends before this buffer, on the arrivals its packets had.
-    for (auto& g : progs_)
-        if (!g->held.empty() && arrival_ns - g->held.front().arrival >= HOLD_NS) release(*g, false);
+    for (auto& g : progs_) {
+        if (g->decide_release) {          // left deciding outside process() (a setter)
+            g->decide_release = false;
+            release(*g, true);
+        }
+        if (!g->held.empty() && !deciding(*g) && arrival_ns - g->held.front().arrival >= HOLD_NS)
+            release(*g, false);
+    }
     const int64_t silence = have_arrival_ ? arrival_ns - arrival_ : 0;
     have_arrival_ = true;
     arrival_ = arrival_ns;
@@ -178,7 +256,10 @@ RestampCore::Result RestampCore::process(uint8_t* data, size_t len, int64_t arri
         }
         outage_h_ = arrival_h_;
         record(TraceKind::outage, PID_NULL, (uint64_t)silence, 0, 0, arrival_ns);
+        for (auto& g : progs_)            // a natural gap: where a waiting Trust switch is taken
+            if (g->gate) g->gate->on_natural_gap(silence, arrival_h_);
     }
+    for (auto& g : progs_) step_gate(*g, arrival_h_);
     walker_.feed(data, len, [this](PacketView& v) { on_packet(v); });
     for (const Op& o : ops_)
         res.keep.push_back(Range{(o.internal ? scratch_.data() : data) + o.off, o.len});
@@ -207,6 +288,11 @@ void RestampCore::put(const uint8_t* pkt) {
 
 void RestampCore::on_packet(PacketView& v) {
     Pid* p = v.pid == PID_PAT || pmt_ref_[v.pid] ? nullptr : pids_[v.pid].get();
+    // The gate judges each PCR on its arrival, even one a hold keeps back.
+    if (p && p->prog->gate && v.pid == p->prog->pcr_pid && v.af_pcr) {
+        p->prog->gate->on_pcr(read_pcr(v.p), arrival_h_);
+        step_gate(*p->prog, arrival_h_);
+    }
     if (p && hold(*p, v)) return;
     take(v);
 }
@@ -215,6 +301,17 @@ void RestampCore::on_packet(PacketView& v) {
 // is fed first, then what waited goes on in order (release), then the PCR's own packet.
 bool RestampCore::hold(Pid& p, PacketView& v) {
     Program& g = *p.prog;
+    if (deciding(g)) {
+        // OQ-39: the program's packets wait while its gate decides, up to decide_max_bytes.
+        if ((int64_t)(g.held.size() + 1) * PKT <= cfg_.trust.decide_max_bytes) {
+            g.held.emplace_back();
+            std::memcpy(g.held.back().b, v.p, PKT);
+            g.held.back().arrival = arrival_;
+            return true;
+        }
+        g.gate->give_up(arrival_h_);
+        after_gate(g, true);
+    }
     const bool pcr = v.pid == g.pcr_pid && v.af_pcr;   // fed before its own PES (take) in any case
     if (g.wait == Program::Wait::waiting && pcr) {
         feed_stc(g, read_pcr(v.p), v.af_discontinuity);
@@ -237,6 +334,7 @@ bool RestampCore::hold(Pid& p, PacketView& v) {
 bool RestampCore::starts_wait(const Pid& p, const PacketView& v) const {
     const Program& g = *p.prog;
     if (g.degraded || !g.have_pcr || p.stream_type < 0 || v.payload_off >= PKT) return false;
+    if (g.gate && g.gate->mapped()) return false;   // Trust's mapping needs no PCR to place a PES
     PesHeader h;
     if (!v.pusi && !span_.joined(v, &h)) return false;
     if (v.pusi && (!parse_pes_header(v.p + v.payload_off, PKT - v.payload_off, &h) || !h.complete)) return false;
@@ -254,6 +352,8 @@ void RestampCore::release(Program& g, bool decided) {
     q.swap(g.held);
     if (!decided) g.wait = Program::Wait::expired;
     const int64_t a = arrival_, ah = arrival_h_;
+    const bool was = releasing_;
+    releasing_ = true;
     for (Program::Held& e : q) {
         arrival_ = e.arrival;
         arrival_h_ = e.arrival + base_;
@@ -261,6 +361,7 @@ void RestampCore::release(Program& g, bool decided) {
         parse_packet(e.b, &v);
         take(v);
     }
+    releasing_ = was;
     arrival_ = a;
     arrival_h_ = ah;
 }
@@ -349,7 +450,12 @@ void RestampCore::update_programs(const std::vector<std::pair<int, int>>& pat) {
     for (const auto& e : pat) {
         const bool known = std::any_of(progs_.begin(), progs_.end(),
                                        [&](const std::unique_ptr<Program>& g) { return g->number == e.first; });
-        if (!known) progs_.push_back(std::make_unique<Program>(e.first, e.second, cfg_));
+        if (!known) {
+            progs_.push_back(std::make_unique<Program>(e.first, e.second, cfg_));
+            if (cfg_.mode == RestampConfig::Mode::stc)
+                progs_.back()->gate = std::make_unique<TrustGate>(e.first, cfg_.trust, cfg_.house_clock,
+                                                                  cfg_.timing_mode == TimingMode::trust, arrival_h_);
+        }
     }
     std::fill(pmt_ref_.begin(), pmt_ref_.end(), 0);
     for (auto& g : progs_) pmt_ref_[g->pmt_pid & 0x1FFF]++;
@@ -432,6 +538,10 @@ void RestampCore::on_pmt_seen(Program& g) {
     if (has || g.had_decl)
         for (uint64_t k = 0; k < n && trace_; k++) record_decl(g, has ? &d : nullptr);
     g.had_decl = has;
+    if (g.gate) {
+        g.gate->on_pmt(has ? &d : nullptr, arrival_h_);
+        step_gate(g, arrival_h_);
+    }
 }
 
 void RestampCore::record_decl(const Program& g, const HouseTimeDecl* d) {
@@ -467,6 +577,8 @@ void RestampCore::pull_events(Program& g) {
                 const bool moved = std::strcmp(e.reason, "envelope-step") != 0;
                 g.relocked |= moved;
                 g.relocks += moved;
+                // A re-lock is a natural gap for a waiting Trust switch (of no length: k stays).
+                if (moved && g.gate) g.gate->on_natural_gap(0, arrival_h_);
                 break;
             }
             case StcEvent::Kind::degraded:
@@ -523,28 +635,36 @@ void RestampCore::on_pcr(Pid& p, PacketView& v) {
     } else {
         if (g.prefed) g.prefed = false;   // fed before the packets that waited for it (B-185)
         else feed_stc(g, pcr, v.af_discontinuity);
-        // The one mapping its PES take, epoch choice included, outside the lead row.
-        VirtualStc::Mapping m;
-        if (!g.degraded) {
-            m = g.stc.map_pcr(arrival_);
-            pull_events(g);
-        }
-        if (m.valid) {
-            out_ns = m.house_ns + g.pcr_shift;
-            epoch = m.epoch;
-        } else if (m.stale) {
-            // No PES leaves while the line is a backlog's (B-39): the PCR keeps arrival's pace
-            // (a frozen one would read as a freeze one hop on), never back among such.
-            out_ns = arrival_h_ - DEGRADED_PCR_LEAD_NS;
-            if (g.have_wpcr && g.wpcr_regen && out_ns < g.wpcr_ns) out_ns = g.wpcr_ns;
-            regen = true;
+        if (g.gate && g.gate->mapped()) {
+            // Trust: the program's mapping on the base, the extension kept; the clock runs on.
+            const int64_t base = g.gate->f(pcr / 300);
+            out27 = base * 300 + pcr % 300;
+            out_ns = house_from_mux_pts(base, arrival_h_);
+            epoch = g.wpcr_epoch;
         } else {
-            out_ns = degraded_pcr(g);
-            regen = true;
+            // The one mapping its PES take, epoch choice included, outside the lead row.
+            VirtualStc::Mapping m;
+            if (!g.degraded) {
+                m = g.stc.map_pcr(arrival_);
+                pull_events(g);
+            }
+            if (m.valid) {
+                out_ns = m.house_ns + g.pcr_shift;
+                epoch = m.epoch;
+            } else if (m.stale) {
+                // No PES leaves while the line is a backlog's (B-39): the PCR keeps arrival's pace
+                // (a frozen one would read as a freeze one hop on), never back among such.
+                out_ns = arrival_h_ - DEGRADED_PCR_LEAD_NS;
+                if (g.have_wpcr && g.wpcr_regen && out_ns < g.wpcr_ns) out_ns = g.wpcr_ns;
+                regen = true;
+            } else {
+                out_ns = degraded_pcr(g);
+                regen = true;
+            }
+            // Written as mpegtsmux writes its PCR, on the PTS's base (house + 1 h), so
+            // PTS - PCR on the bus is the source's lead.
+            out27 = floor_mod(ns_to_pcr27(out_ns) + MUX_CLOCK_BASE_90K * 300, PCR_MODULO);
         }
-        // Written as mpegtsmux writes its PCR, on the PTS's base (house + 1 h), so
-        // PTS - PCR on the bus is the source's lead.
-        out27 = floor_mod(ns_to_pcr27(out_ns) + MUX_CLOCK_BASE_90K * 300, PCR_MODULO);
     }
     // Phases 1-2's tsdemux re-bases at every flagged PCR, so only a break is flagged: flag_pcr (a shift,
     // a relock, an outage, a PES gap of 1 s or more), mapped <-> regenerated, another epoch's line, a
@@ -769,8 +889,13 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
            trace_flags(di, p.cls), arrival);
     const int64_t arrival_h = arrival + base_;
     // house: the PTS on house time; key_house: what the guard compares (video: DTS).
-    int64_t house, key_house, out_pts, d = 0, own = 0;
+    int64_t house, key_house, out_pts, out_dts, d = 0, own = 0;
     uint32_t epoch = 0;
+    // Trust (stc mode): the gate steps at each PES, so a switch it takes starts here.
+    TrustGate* gate = g.gate.get();
+    step_gate(g, arrival_h);
+    const bool trust_map = gate && gate->mapped();
+    TrustGate::Mapped tm;
     // The PES's own spacing from the PID's previous one, on source time (an edit or an
     // epoch moves only the mapping): its length while the PID has no interval yet.
     auto spacing = [&](int64_t src) {
@@ -786,8 +911,27 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         if (h.dts >= 0 && !sane) dts_bad_fixed_++;
         d = h.dts >= 0 && sane ? d90 : 0;
         out_pts = floor_mod(h.pts + ns_to_pts90k(base_ + p.shift), PTS_WRAP);
+        out_dts = floor_mod(out_pts + d, PTS_WRAP);
         key_house = house + (p.cls == StreamClass::video ? pts90k_to_ns(d) : 0);
         spacing(key_house);
+    } else if (trust_map) {
+        // trust / converging: net_to_bus (+ k) on PTS and DTS, the program's one function; no
+        // STC map, so no lead clamp (Trust is untouched), and no shift.
+        const int64_t pu = unwrap_pes(g, p.unwrap, h.pts);
+        const int64_t du = p.unwrap.feed_dts(h.dts, pu);
+        d = du != Unwrapper::NO_DTS ? du - pu : 0;
+        const bool by_dts = p.cls == StreamClass::video && du != Unwrapper::NO_DTS;
+        spacing(pts90k_to_ns(by_dts ? du : pu));
+        if (p.pid == g.ref_pid) {
+            g.stc.feed_ref_pes(p.pid, by_dts ? du : pu, arrival);
+            pull_events(g);
+        }
+        tm = gate->map(h.pts, d, -1);
+        out_pts = tm.pts;
+        out_dts = tm.dts >= 0 ? tm.dts : tm.pts;
+        house = house_from_mux_pts(out_pts, arrival_h);
+        key_house = by_dts ? house_from_mux_pts(out_dts, arrival_h) : house;
+        epoch = p.last_epoch;
     } else {
         const int64_t pu = unwrap_pes(g, p.unwrap, h.pts);
         const int64_t du = p.unwrap.feed_dts(h.dts, pu);
@@ -831,14 +975,14 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         key_house = m.house_ns;
         house = by_dts ? m.house_ns - pts90k_to_ns(d) : m.house_ns;
         out_pts = floor_mod(mux_pts_from_house(m.house_ns + p.shift) - (by_dts ? d : 0), PTS_WRAP);
+        // PTS and DTS keep their exact distance: one mapping per PES, and the reorder
+        // delay is content. A damaged DTS decodes at its PTS.
+        out_dts = floor_mod(out_pts + d, PTS_WRAP);
     }
-    // PTS and DTS keep their exact distance: one mapping per PES, and the reorder
-    // delay is content. A damaged DTS decodes at its PTS.
-    const int64_t out_dts = floor_mod(out_pts + d, PTS_WRAP);
     p.leads.emplace_back(arrival_h, house - arrival_h);
     while (p.leads.front().first < arrival_h - LEAD_WINDOW_NS) p.leads.pop_front();
 
-    const int64_t key = key_house + p.shift;
+    const int64_t key = key_house + (trust_map ? 0 : p.shift);
     if (p.have_last && key < p.last_key + pts90k_to_ns(1)) {
         // Overlap (R18): what the bus already carries is not written again, so no
         // PID's time steps back. Video compares DTS, the rest PTS, and a key must lie
@@ -858,20 +1002,22 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
     bool jump = false;
     if (p.have_last) {
         // A gap is checked on a PID's first PES under a newer epoch; a straddler back on
-        // an older one is no new epoch.
-        if (epoch > p.max_epoch) why = "epoch";
+        // an older one is no new epoch. A Trust switch is the first.
+        if (p.switched) why = "trust-switch";
+        else if (epoch > p.max_epoch) why = "epoch";
         else if (edited) why = "edit";
         else if (p.outage) why = "outage";
         else if (p.backlog) why = "backlog";
         // Onto another epoch than its last PES's, kept or dropped (a straddler back from a dropped
         // run, a clamped PID back on the program's): the hole it shows, a PES or more (B-48).
         else if (epoch != p.prev_epoch && key > p.last_key + 2 * p.interval) why = "epoch";
-        else if (cfg_.mode == RestampConfig::Mode::fixed && p.n_spacing >= 2 &&
+        else if ((cfg_.mode == RestampConfig::Mode::fixed || trust_map) && p.n_spacing >= 2 &&
                  key - p.last_key > 2 * upper_median(p.spacing, p.n_spacing) &&
                  (p.cls != StreamClass::video || key - (p.last_key + p.interval) >= GAP_FLAG_NS)) {
             // More than two PES lengths, the length being the upper median of the last three
             // spacings: a short PES (an ASRC's first output, a relock's remainder) never sets it.
-            // Video also needs a hole of GAP_FLAG_NS: a dropped frame is no gap (B-89).
+            // Video also needs a hole of GAP_FLAG_NS: a dropped frame is no gap (B-89). Trust's
+            // constant mapping takes the rule too: a sender re-epoch's step is such a jump.
             why = "jump";
             jump = true;
         }
@@ -905,8 +1051,11 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
     p.max_epoch = std::max(p.max_epoch, epoch);
     p.last_epoch = p.prev_epoch = epoch;
     p.unit = Pid::Unit::keep;
+    p.switched = false;
     pts33 = p.pts33 = out_pts;
     dts33 = p.dts33 = out_dts;
+    // The gate learns what left: the last PES's source and bus PTS give a switch into Trust its k.
+    if (gate) gate->emitted(p.pid, h.pts, trust_map ? tm : gate->map(h.pts, d, out_pts), arrival_h);
     return true;
 }
 
@@ -924,6 +1073,8 @@ void RestampCore::push_gap(Pid& p, int64_t start, int64_t end, const char* why, 
 }
 
 void RestampCore::tick(int64_t now_ns) {
+    // Not the gates: they step on input, so a silence is judged when the stream comes back,
+    // with its outage as the natural gap (a PMT older than 1 s inside it is no fault).
     for (auto& g : progs_) g->stc.tick(now_ns);
 }
 
@@ -988,6 +1139,10 @@ RestampCore::Stats RestampCore::stats() {
         ProgramStats ps;
         ps.program = g.number;
         if (cfg_.mode == RestampConfig::Mode::stc) ps.clock = g.stc.stats();
+        if (g.gate) {
+            ps.has_trust = true;
+            ps.trust = g.gate->stats(arrival_h_);
+        }
         ps.gaps = g.gaps;
         ps.gap_ns_total = g.gap_ns;
         ps.dropped_pes = g.dropped_pes;

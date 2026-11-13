@@ -2,7 +2,7 @@
 // PCR of a TS rewritten in place onto house time, through one virtual STC per program
 // (stc) or by a constant (fixed: the capture producers), shifted by the ingest offset
 // O and a per-PID trim; overlap dropped, gaps reported, CC kept continuous. No
-// GStreamer: the mrtsrestamp element (WI-P1-4) is a thin face on this.
+// GStreamer: the mrtsrestamp element (WI-P1-4) is a thin face on this. Trust: ts_trust.h.
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +17,7 @@
 #include "ts_psi.h"
 #include "ts_stc.h"
 #include "ts_trace.h"
+#include "ts_trust.h"
 
 namespace mrts {
 
@@ -31,6 +32,11 @@ struct RestampConfig {
     std::map<int, int64_t> trims_ns;      // per-PID trim on top of O; clamped to ±2 s
     ClockLockConfig clock;
     PcrValidatorConfig pcr;
+    // Trust (stc mode only; chapter 9 part 4.8): the selection, the gate's constants with L and
+    // tau, and the local house-clock (ch. 9's `ClockDecl clock`; `clock` is the lock's here).
+    TimingMode timing_mode = TimingMode::restamp;
+    TrustConfig trust;
+    ClockDecl house_clock;
 };
 
 // The class of a PMT entry: its stream_type, and for private PES (0x06) its
@@ -84,7 +90,8 @@ class RestampCore {
     // `degraded`, which names the reference PID whose PTS the timing then follows, and
     // `lead_clamp`, the PID clamped (value_ns: its lead under the reference mapping).
     struct Event {
-        enum class Kind { relock, degraded, recovered, envelope_step, gap, overlap, psi_change, lead_clamp };
+        enum class Kind { relock, degraded, recovered, envelope_step, gap, overlap, psi_change, lead_clamp,
+                          trust_switch };
         Kind kind = Kind::relock;
         int program = -1;
         int pid = -1;
@@ -93,12 +100,18 @@ class RestampCore {
         int64_t house_ns = 0;             // arrival of what caused it
         uint32_t epoch = 0;
         int64_t value_ns = 0;             // envelope-step: the step; a leap's relock: Δσ - Δh
+        // trust-switch: every TrustGate transition. reason = its decision, state = the state
+        // entered, failed = the first failing condition ("" qualified); value_ns = k, gap_ns the gap.
+        const char* state = "";
+        const char* failed = "";
     };
     struct ProgramStats {
         int program = 0;
         VirtualStc::Stats clock;          // stc mode only
         uint64_t gaps = 0, dropped_pes = 0;
         int64_t gap_ns_total = 0, dropped_ns_total = 0;
+        bool has_trust = false;           // stc mode: the program's TrustGate
+        TrustGate::Stats trust;
     };
     struct PidStats {
         int program = 0, pid = 0, stream_type = 0;
@@ -132,6 +145,12 @@ class RestampCore {
     // program the PAT adds later.
     void set_step_fall_hold(int64_t ns);
     void tick(int64_t now_ns);                        // no input: lets a clock go lost
+    // Trust, live (house time, as arrivals): the selection (O and trims apply only under
+    // Restamp), the local house-clock (a receiver re-epoch switches each mapped program), L, tau.
+    void set_timing_mode(TimingMode m, int64_t now_ns);
+    void set_house_clock(const ClockDecl& c, int64_t now_ns);
+    void set_transport_latency(int64_t l_ns);
+    void set_trust_tolerance(int64_t tau_ns);
     // During an outage (OQ-17): per PID that emitted a PES, the gap from the end of what it
     // emitted to `now_ns` (arrival time, as process()), where that end is before now. A
     // query: the gap on resume still comes from process().
@@ -166,6 +185,7 @@ class RestampCore {
         uint32_t max_epoch = 0, last_epoch = 0;   // the newest it emitted under; the last PES's
         uint32_t prev_epoch = 0;          // the last PES's mapping, kept or dropped as overlap
         bool outage = false;              // an outage since its last PES
+        bool switched = false;            // its program's mapping switched since its last PES
         bool backlog = false;             // stale PES dropped since its last (B-39)
         // Packets: the open PES's fate, CC renumbering, duplicates, a held header.
         Unit unit = Unit::none;
@@ -222,6 +242,10 @@ class RestampCore {
             int64_t arrival;
         };
         std::deque<Held> held;
+        // Trust (stc mode): the gate; held also takes the whole program while it decides (OQ-39),
+        // released when it leaves deciding (pending when that happens outside process()).
+        std::unique_ptr<TrustGate> gate;
+        bool decide_release = false;
     };
     struct Op {
         bool internal;
@@ -229,6 +253,9 @@ class RestampCore {
     };
 
     void on_packet(PacketView& v);
+    bool deciding(const Program& g) const;
+    void step_gate(Program& g, int64_t now);
+    void after_gate(Program& g, bool was_deciding);
     void take(PacketView& v);
     bool hold(Pid& p, PacketView& v);
     bool starts_wait(const Pid& p, const PacketView& v) const;
@@ -283,6 +310,7 @@ class RestampCore {
     int64_t arrival_ = 0, arrival_h_ = 0;      // as given; on house time
     bool have_arrival_ = false;
     int64_t outage_h_ = 0;                     // arrival of the buffer that ended the last outage
+    bool releasing_ = false;                   // held packets going through take(): no gate steps
     uint64_t pes_no_pts_ = 0, dts_bad_fixed_ = 0, unmapped_ = 0, broken_ = 0, unknown_ = 0,
              removed_ = 0, pcr_kept_ = 0;
 };

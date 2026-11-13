@@ -2,7 +2,7 @@
 // H.264-like video with B-frame DTS carrying the PCR, two audio PIDs, a teletext-like
 // private PID and PSI every 100 ms, sent in 7-packet datagrams with one-sided jitter.
 // Chapter 3's .ts fixtures plug in at the tests marked WI-S0-9; part 7.2's .stct traces
-// go through restamp_replay_test.
+// go through restamp_replay_test. Trust's restamp side (p5-6b) runs on trace_gen's sender.
 #include <algorithm>
 #include <climits>
 #include <cstdint>
@@ -25,6 +25,7 @@
 #include "../ts_restamp.h"
 #include "../ts_trace.h"
 #include "check.h"
+#include "trace_gen.h"
 
 using namespace mrts;
 
@@ -4197,6 +4198,294 @@ void test_restart_same_cc_all() {
 
 }  // namespace
 
+// --- Trust (p5-6b, B-226): the restamp side of a Trust-selected ingest ---------------------------
+// trace_gen's sender (MRHT, its PCR on house time less D_e) played as TS into a RestampCore, the
+// output read back PES by PES (each names its trace record); setters called between buffers.
+
+namespace trust {
+
+constexpr int64_t EPOCH = 1800000000LL * S, HOUSE0 = 1000 * S, E_RX = EPOCH - HOUSE0;
+
+trace_gen::Config source(int64_t secs, int64_t delay_ms = 1900, int64_t jitter_ms = 2) {
+    trace_gen::Config c;
+    c.duration_ns = secs * S;
+    c.pids = "v,a2";
+    c.pcr_ns = trace_gen::Schedule{{{0, 35 * MS}}};
+    c.delay_ns = trace_gen::Schedule{{{0, delay_ms * MS}}};
+    c.jitter_mean_ns = jitter_ms * MS;
+    c.decl = true;
+    c.decl_v.house_time_tai = c.decl_v.disciplined = true;
+    c.decl_v.d_e_90k = 18000;
+    c.decl_v.clock_error_class = 10;
+    c.decl_v.sync_source = 1;
+    c.decl_v.epoch_seq = 1;
+    c.sender_epoch_ns = EPOCH;
+    return c;
+}
+
+RestampConfig config(TimingMode m, int64_t e_ns = E_RX) {
+    RestampConfig c;
+    c.timing_mode = m;
+    c.trust.l_ns = 2 * S;
+    c.house_clock.e_ns = e_ns;
+    c.house_clock.seq = 1;
+    c.house_clock.disciplined = true;
+    c.house_clock.error_us = 100;
+    return c;
+}
+
+struct Out {
+    int pid = 0;
+    uint32_t rec = 0;
+    int64_t pts = -1, dts = -1, arrival = 0;
+};
+struct Run {
+    std::vector<TraceRecord> recs;
+    std::vector<Out> pes;
+    std::vector<std::pair<int64_t, Ev>> events;
+    std::vector<int64_t> pcr_in, pcr_out;          // PCR fields in order, the PCR PID's
+    std::vector<std::pair<int, int>> es_in, es_out;   // (PID, CC) of every ES packet, in order
+    uint64_t cc_lost = 0;
+    size_t in_pes = 0;
+    int64_t first_es_out = -1;                      // arrival of the first output buffer with an ES packet
+    RestampCore::Stats st;
+};
+using Hook = std::function<void(RestampCore&, int64_t)>;
+using Mutate = std::function<void(std::vector<uint8_t>&, int64_t, const std::vector<uint8_t>& prev)>;
+
+Run run(const trace_gen::Config& src, const RestampConfig& cfg, const Hook& hook = {}, const Mutate& mutate = {}) {
+    Run r;
+    r.recs = trace_gen::generate(src);
+    for (const TraceRecord& t : r.recs) r.in_pes += t.kind == TraceKind::pes;
+    RestampCore core(cfg);
+    TracePlayer player(r.recs, RestampCore::OUTAGE_NS);
+    TracePlayer::Buffer b;
+    PacketWalker wi, wo;
+    CcTracker cc;
+    PesAssembler units;
+    units.select(0x100, true);
+    units.select(0x102, true);
+    std::vector<PesUnit> got;
+    std::vector<uint8_t> prev, out;
+    while (player.next(&b)) {
+        if (hook) hook(core, b.arrival_ns);
+        if (mutate) mutate(b.bytes, b.arrival_ns, prev);
+        prev = b.bytes;
+        wi.feed(b.bytes.data(), b.bytes.size(), [&](PacketView& v) {
+            if (v.pid == 0x100 && v.af_pcr) r.pcr_in.push_back(read_pcr(v.p));
+            if ((v.pid == 0x100 || v.pid == 0x102) && v.has_payload) r.es_in.push_back({v.pid, v.p[3] & 0x0F});
+        });
+        const RestampCore::Result res = core.process(b.bytes.data(), b.bytes.size(), b.arrival_ns);
+        for (const Ev& e : core.take_events()) r.events.push_back({b.arrival_ns, e});
+        out.clear();
+        for (const RestampCore::Range& k : res.keep) out.insert(out.end(), k.data, k.data + k.len);
+        wo.feed(out.data(), out.size(), [&](PacketView& v) {
+            if (v.pid == 0x100 && v.af_pcr) r.pcr_out.push_back(read_pcr(v.p));
+            if ((v.pid == 0x100 || v.pid == 0x102) && v.has_payload) {
+                r.es_out.push_back({v.pid, v.p[3] & 0x0F});
+                if (r.first_es_out < 0) r.first_es_out = b.arrival_ns;
+            }
+            units.feed(v, cc.feed(v), got);
+        });
+        for (const PesUnit& u : got) {
+            Out o;
+            o.pid = u.pid;
+            o.pts = u.hdr.pts;
+            o.dts = u.hdr.dts;
+            o.arrival = b.arrival_ns;
+            if (trace_pes_tag(u.payload.data(), u.payload.size(), &o.rec)) r.pes.push_back(o);
+        }
+        got.clear();
+    }
+    r.cc_lost = cc.lost();
+    r.st = core.stats();
+    return r;
+}
+
+// Every PID's key (video: DTS) strictly rising on house time.
+bool monotonic(const Run& r) {
+    std::map<int, int64_t> last;
+    for (const Out& o : r.pes) {
+        const int64_t v = o.dts >= 0 && o.pid == 0x100 ? o.dts : o.pts;
+        const int64_t k = house_from_mux_pts(v, o.arrival);
+        if (last.count(o.pid) && k <= last[o.pid]) return false;
+        last[o.pid] = k;
+    }
+    return true;
+}
+
+std::vector<std::string> states(const Run& r) {
+    std::vector<std::string> s;
+    for (const auto& e : r.events)
+        if (e.second.kind == Ev::Kind::trust_switch) s.push_back(e.second.state);
+    return s;
+}
+
+int count(const Run& r, Ev::Kind k, const char* reason = nullptr) {
+    int n = 0;
+    for (const auto& e : r.events) n += e.second.kind == k && (!reason || !std::strcmp(e.second.reason, reason));
+    return n;
+}
+
+const Ev* first(const Run& r, Ev::Kind k, const char* reason) {
+    for (const auto& e : r.events)
+        if (e.second.kind == k && !std::strcmp(e.second.reason, reason)) return &e.second;
+    return nullptr;
+}
+
+bool every_pes_once(const Run& r) {
+    std::vector<int> seen(r.recs.size(), 0);
+    for (const Out& o : r.pes)
+        if (o.rec >= r.recs.size() || seen[o.rec]++) return false;
+    return r.pes.size() == r.in_pes;
+}
+
+void test_trust_ok() {
+    RestampConfig cfg = config(TimingMode::trust);
+    cfg.offset_ns = 500 * MS;             // ignored while Trust is selected (Q13, C-10)
+    cfg.trims_ns[0x102] = 40 * MS;
+    const Run r = run(source(30), cfg);
+    const NetEpoch e{E_RX};
+    bool exact = true;
+    for (const Out& o : r.pes) {
+        const TraceRecord& t = r.recs[o.rec];
+        const int64_t want_dts = t.dts_minus_pts_90k ? net_to_bus(((int64_t)t.value + t.dts_minus_pts_90k) % PTS_WRAP, e) : -1;
+        exact = exact && o.pts == net_to_bus((int64_t)t.value, e) && (want_dts < 0 ? o.dts < 0 || o.dts == o.pts : o.dts == want_dts);
+    }
+    CHECK("Trust, ok link: decided at once (deciding -> trust), nothing else", states(r) == std::vector<std::string>{"trust"} &&
+                                                                              count(r, Ev::Kind::trust_switch, "release-trust") == 1);
+    CHECK("Trust: every PES out once, its PTS and DTS net_to_bus exactly, O and the trim ignored",
+          every_pes_once(r) && exact && r.st.pids.size() == 2 && r.st.pids[0].shift_ns == 0 && r.st.pids[1].shift_ns == 0);
+    bool pcr = r.pcr_in.size() == r.pcr_out.size();
+    for (size_t i = 0; pcr && i < r.pcr_in.size(); i++)
+        pcr = r.pcr_out[i] == net_to_bus(r.pcr_in[i] / 300, e) * 300 + r.pcr_in[i] % 300;
+    CHECK("Trust: every PCR net_to_bus on its base, the extension kept", pcr && !r.pcr_in.empty());
+    CHECK("Trust: the deciding hold released its packets in order, none lost, CC continuous",
+          r.es_in == r.es_out && r.cc_lost == 0 && r.first_es_out >= HOUSE0 + 1900 * MS + 4 * 35 * MS);
+    const TrustGate::Stats& g = r.st.programs[0].trust;
+    CHECK("stats: the program's gate (trust, its transit 1.9 s, the sender's declaration)",
+          r.st.programs[0].has_trust && g.state == TrustGate::State::trust && g.transit_median_ns >= 1900 * MS && g.transit_median_ns < 1910 * MS &&
+              g.have_decl && g.decl.d_e_90k == 18000 && g.trust_selected);
+}
+
+void test_trust_hold_bound() {
+    RestampConfig cfg = config(TimingMode::trust);
+    cfg.trust.decide_max_bytes = 10 * 188;
+    const Run r = run(source(10), cfg);
+    const Ev* rel = first(r, Ev::Kind::trust_switch, "release-restamp");
+    CHECK("the deciding hold's byte bound: deciding ends before its 1 s -> fallback, held packets out in order",
+          rel && !std::strcmp(rel->state, "fallback") && rel->house_ns < HOUSE0 + 1900 * MS + 500 * MS &&
+              r.es_in == r.es_out && every_pes_once(r) && monotonic(r) && r.cc_lost == 0);
+}
+
+// Restamp, then the operator's Trust at 10 s: qualifying, then (no natural gap) at once 32 s on,
+// converging from the STC's timeline onto Trust's.
+void test_trust_operator() {
+    const Run r = run(source(70), config(TimingMode::restamp), [](RestampCore& c, int64_t a) {
+        static bool done;
+        if (a < HOUSE0 + 3 * S) done = false;
+        if (!done && a >= HOUSE0 + 10 * S) {
+            c.set_timing_mode(TimingMode::trust, a);
+            done = true;
+        }
+    });
+    const Ev* sw = first(r, Ev::Kind::trust_switch, "switch-to-trust");
+    CHECK("the operator's Trust mid-stream: qualifying, then converging 32 s on (no natural gap)",
+          (states(r) == std::vector<std::string>{"qualifying", "converging"}) && sw &&
+              sw->house_ns >= HOUSE0 + 42 * S && sw->house_ns < HOUSE0 + 42200 * MS && sw->value_ns > 1900 * MS);
+    CHECK("... no PES dropped through the switch, no gap at it, PTS strictly rising per PID, CC continuous",
+          every_pes_once(r) && count(r, Ev::Kind::gap) == 0 && count(r, Ev::Kind::overlap) == 0 && monotonic(r) &&
+              r.cc_lost == 0 && r.es_in == r.es_out);
+}
+
+// Trust, the operator's Restamp at 10 s with O = +300 ms: the switch waits 30 s (no natural gap),
+// then leaves a gap of about the STC's lead + O, and O applies.
+void test_trust_to_restamp() {
+    RestampConfig cfg = config(TimingMode::trust);
+    cfg.offset_ns = 300 * MS;
+    const Run r = run(source(60), cfg, [](RestampCore& c, int64_t a) {
+        static bool done;
+        if (a < HOUSE0 + 3 * S) done = false;
+        if (!done && a >= HOUSE0 + 10 * S) {
+            c.set_timing_mode(TimingMode::restamp, a);
+            done = true;
+        }
+    });
+    const Ev* sw = first(r, Ev::Kind::trust_switch, "switch-to-restamp");
+    const Ev* gap = first(r, Ev::Kind::gap, "trust-switch");
+    CHECK("the operator's Restamp from trust: taken at once 30 s on, a gap of about the transit + D_e + O per PID",
+          sw && !std::strcmp(sw->state, "restamp") && sw->house_ns >= HOUSE0 + 40 * S && sw->house_ns < HOUSE0 + 40100 * MS &&
+              gap && gap->gap_ns > 2300 * MS && gap->gap_ns < 2500 * MS && count(r, Ev::Kind::gap, "trust-switch") == 2);
+    CHECK("... nothing dropped, PTS strictly rising, CC continuous, O in force after it",
+          every_pes_once(r) && monotonic(r) && r.cc_lost == 0 && r.st.pids[0].shift_ns == 300 * MS);
+}
+
+void test_trust_receiver_reepoch() {
+    for (int dir = 1; dir >= -1; dir -= 2) {
+        const Run r = run(source(90, 1500), config(TimingMode::trust), [dir](RestampCore& c, int64_t a) {
+            static bool done;
+            if (a < HOUSE0 + 3 * S) done = false;
+            if (!done && a >= HOUSE0 + 20 * S) {
+                ClockDecl k = config(TimingMode::trust).house_clock;
+                k.e_ns = E_RX + dir * 300 * MS;
+                k.seq = 2;
+                c.set_house_clock(k, a);
+                done = true;
+            }
+        });
+        if (dir > 0) {
+            const Ev* sw = first(r, Ev::Kind::trust_switch, "switch-to-trust");
+            CHECK("a receiver re-epoch of +300 ms in trust: converging (k 300 ms) back to trust 60 s on, nothing dropped",
+                  (states(r) == std::vector<std::string>{"trust", "converging", "trust"}) && sw &&
+                      sw->value_ns / MS == 300 && every_pes_once(r) && monotonic(r) && count(r, Ev::Kind::gap) == 0 &&
+                      r.cc_lost == 0);
+        } else {
+            CHECK("a receiver re-epoch of -300 ms in trust: a gap of 300 ms per PID (trust-switch), nothing dropped",
+                  (states(r) == std::vector<std::string>{"trust", "trust"}) && count(r, Ev::Kind::gap, "trust-switch") == 2 &&
+                      iabs(first(r, Ev::Kind::gap, "trust-switch")->gap_ns - 300 * MS) <= TICK_NS && every_pes_once(r) && monotonic(r));
+        }
+    }
+}
+
+// B-203 in trust: after a 1.5 s outage the source sends its last buffer again (same bytes, same CC):
+// none of it leaves on the old timeline.
+void test_trust_restart_copy() {
+    trace_gen::Config src = source(40);
+    src.outages.push_back(trace_gen::Outage{20 * S, 1500 * MS});
+    std::vector<uint8_t> before;
+    const Run r = run(src, config(TimingMode::trust), {}, [&](std::vector<uint8_t>& b, int64_t a, const std::vector<uint8_t>& prev) {
+        static int64_t last;
+        if (!before.empty() || prev.empty()) {
+            last = a;
+            return;
+        }
+        if (a - last >= RestampCore::OUTAGE_NS) {
+            before = prev;
+            b.insert(b.begin(), prev.begin(), prev.end());
+        }
+        last = a;
+    });
+    std::vector<int> seen(r.recs.size(), 0);
+    bool once = true;
+    for (const Out& o : r.pes) once = once && !seen[o.rec]++;
+    CHECK("B-203 in trust: a restart that repeats its last buffer (same CC) after an outage puts none of it out again",
+          !before.empty() && once && monotonic(r) && (states(r) == std::vector<std::string>{"trust"}));
+}
+
+// E12: per-PID lead clamping is the STC's; in trust the sender's stamps are kept, however far ahead.
+void test_trust_no_lead_clamp() {
+    trace_gen::Config src = source(30);
+    src.ahead.push_back({0x102, 6 * S});
+    const Run t = run(src, config(TimingMode::trust));
+    const Run r = run(src, config(TimingMode::restamp));
+    bool exact = true;
+    for (const Out& o : t.pes) exact = exact && o.pts == net_to_bus((int64_t)t.recs[o.rec].value, NetEpoch{E_RX});
+    CHECK("trust: an AAC PID stamped 6 s ahead is not lead-clamped, its PTS net_to_bus exactly (Restamp clamps it)",
+          count(t, Ev::Kind::lead_clamp) == 0 && exact && every_pes_once(t) && count(r, Ev::Kind::lead_clamp) > 0);
+}
+
+}  // namespace trust
+
 int main() {
     test_mapping();
     test_split_header();
@@ -4300,5 +4589,12 @@ int main() {
     test_new_timeline_wait();
     test_flush_straddle();
     test_restart_same_cc_all();
+    trust::test_trust_ok();
+    trust::test_trust_hold_bound();
+    trust::test_trust_operator();
+    trust::test_trust_to_restamp();
+    trust::test_trust_receiver_reepoch();
+    trust::test_trust_restart_copy();
+    trust::test_trust_no_lead_clamp();
     return test_summary("ts_restamp");
 }

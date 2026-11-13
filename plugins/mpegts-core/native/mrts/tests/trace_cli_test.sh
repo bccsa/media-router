@@ -3,7 +3,8 @@
 # determinism, the .stct <-> JSONL round trip, every expectation in tests/fixtures/restamp (a
 # synthetic trace regenerated from its "source" line), bad input refused; the replay rebase,
 # Phase 3's --ts kinds and --respace (WI-P3-3); pcrcheck, hcdesc and dump --net (WI-P5-5);
-# trace version 2's declarations (p5-6t); check.h's output.
+# trace version 2's declarations (p5-6t); Trust's replays and trust-replay (p5-6b);
+# check.h's output.
 #   MRTS_CLI, FIXTURE_GEN, RESTAMP_FIXTURES, TS_FIXTURES override the default paths.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -303,6 +304,49 @@ printf '{"relocks": 0, "envelopeSteps": 0}\n' >"$T/none.json"
     [ "$(status "$CLI" restamp-replay "$r" --quiet --config clock.step_ns=50000000 --expect "$T/none.json")" = 0 ] &&
     [ "$(status "$CLI" restamp-replay "$r" --quiet --config pcr.step_ns=50000000)" = 2 ]
 check "restamp-replay: --config sets the clock's constants (step_falls, clock.step_ns; pcr. has none)" $?
+
+# --- Trust (p5-6b, B-226): the trust-*.expect.json replays above carry their "config"; it is applied
+# (the same trace under Restamp, or converging at twice the rate, fails), refused when bad; trust-replay
+# reads the reference's event list.
+TR=$FIX/trust-ok-srt2000.expect.json
+"$GEN" --trace -o "$T/tr.stct" --duration 60 --pids v,a2 --pcr-ms 35 --delay-ms 1900 --jitter-ms 2 --sender-epoch 1800000000 --decl 200 &&
+    [ "$(status "$CLI" restamp-replay "$T/tr.stct" --quiet --expect "$TR")" = 0 ] &&
+    [ "$(status "$CLI" restamp-replay "$T/tr.stct" --quiet --expect "$TR" --config timing_mode=restamp)" = 1 ] &&
+    [ "$(status "$CLI" restamp-replay "$T/tr.stct" --quiet --expect "$TR" --config offset_ns=500000000 timing_mode=restamp)" = 1 ] &&
+    "$CLI" restamp-replay "$T/tr.stct" --quiet --expect "$TR" --config timing_mode=restamp | tail -n 1 | grep -q 'trustStates: \[\]'
+check "trust replays: the expectation's config applies (Restamp, and O under it, fail trust-ok), --config after it" $?
+"$GEN" --trace -o "$T/tc.stct" --duration 520 --pids v,a2 --pcr-ms 35 --delay-ms 1900,2300@10,1900@15 --jitter-ms 1 --sender-epoch 1800000000 --decl 200 &&
+    [ "$(status "$CLI" restamp-replay "$T/tc.stct" --quiet --expect "$FIX/trust-converge.expect.json")" = 0 ] &&
+    [ "$(status "$CLI" restamp-replay "$T/tc.stct" --quiet --expect "$FIX/trust-converge.expect.json" --config trust.converge_div=100)" = 1 ] &&
+    [ "$(status "$CLI" restamp-replay "$T/tc.stct" --quiet --expect "$FIX/trust-converge.expect.json" --config trust.return_gap_wait_ns=0)" = 1 ]
+check "trust replays: trust-converge fails at twice the rate and without the gap wait" $?
+TC='"config": {"timing_mode": "trust", "l_ns": 2000000000, "clock_e_ns": 1799999000000000000, "clock_disciplined": true}'
+all=0
+for want in '"trustStates": ["fallback"]' '"trustFinalState": "fallback"' '"trustFailed": "transit-high"' \
+    '"trustSwitches": 1' '"pesLost": 1' '"outCcLost": 1' '"events": [{"kind": "trust-switch", "state": "fallback"}]'; do
+    printf '{%s, %s}\n' "$TC" "$want" >"$T/neg.json"
+    [ "$(status "$CLI" restamp-replay "$T/tr.stct" --quiet --expect "$T/neg.json")" = 1 ] || { echo "  passed: $want"; all=1; }
+done
+printf '{%s, "trustStates": ["trust"], "trustFailed": "", "pesLost": 0, "events": [{"kind": "trust-switch", "state": "trust"}]}\n' \
+    "$TC" >"$T/pos.json"
+[ "$all" -eq 0 ] && [ "$(status "$CLI" restamp-replay "$T/tr.stct" --quiet --expect "$T/pos.json")" = 0 ]
+check "trust replays: each Trust key fails when the replay differs" $?
+sed 's/"timing_mode": "trust"/"timing_mode": "sometimes"/' "$TR" >"$T/badcfg.json"
+sed 's/"l_ns"/"l_zz"/' "$TR" >"$T/badkey.json"
+[ "$(status "$CLI" restamp-replay "$T/tr.stct" --quiet --expect "$T/badcfg.json")" = 1 ] &&
+    [ "$(status "$CLI" restamp-replay "$T/tr.stct" --quiet --expect "$T/badkey.json")" = 1 ] &&
+    [ "$(status "$CLI" restamp-replay "$T/tr.stct" --quiet --config timing_mode=x)" = 2 ] &&
+    [ "$(status "$CLI" restamp-replay "$T/tr.stct" --quiet --config clock_disciplined=maybe)" = 2 ] &&
+    [ "$(status "$CLI" restamp-replay "$T/tr.stct" --quiet --config trust.bad_pcrs=99999999999)" = 2 ]
+check "trust replays: a bad config value or key in an expectation (exit 1) or on --config (exit 2) refused" $?
+{ echo '{"t":0,"kind":"clock","eNs":1799999000000000000,"seq":1,"disciplined":true,"errorUs":100}'
+  echo '{"t":0,"kind":"l","ns":2000000000}'; echo '{"t":0,"kind":"mode","mode":"trust"}'
+  "$CLI" trace2jsonl "$T/tr.stct"; } >"$T/tr.jsonl" && "$CLI" trust-replay "$T/tr.jsonl" >"$T/tr.out" &&
+    [ "$(grep -c '"decision"' "$T/tr.out")" = 1 ] && grep -q '"decision":"release-trust","from":"deciding","state":"trust"' "$T/tr.out" &&
+    tail -n 1 "$T/tr.out" | grep -q '"state":"trust","mode":"trust","failed":null' &&
+    "$CLI" trust-replay - --pes <"$T/tr.jsonl" >"$T/tr2.out" && [ "$(grep -c '"mapping":"trust"' "$T/tr2.out")" -gt 4000 ] &&
+    [ "$(status "$CLI" trust-replay "$T/nothing.jsonl")" = 1 ] && [ "$(status "$CLI" trust-replay)" = 2 ]
+check "trust-replay: the generated trace's event list decides Trust at once, every PES on the Trust mapping; no file exits 1" $?
 
 # --- rebase (WI-P3-3): every committed .ts moved +1 h and back, and onto the 2^33 wrap and back.
 key() { sed -n "s/.*\"$1\":\(-\{0,1\}[0-9]*\).*/\1/p" "$2"; }   # a number from a rebase report

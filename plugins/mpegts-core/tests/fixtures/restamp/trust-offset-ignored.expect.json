@@ -1,0 +1,21 @@
+{
+  "source": "fixture_gen --trace --duration 60 --pids v,a2 --pcr-ms 35 --delay-ms 1900 --jitter-ms 2 --sender-epoch 1800000000 --decl 200",
+  "note": "O = +500 ms and a 40 ms trim on the AAC PID while Trust is selected (Q13, C-10): trust-ok-srt2000's replay exactly, the highest lead still the sender's -1.38 s (with O it would be -0.88 s).",
+  "config": {
+    "timing_mode": "trust",
+    "l_ns": 2000000000,
+    "clock_e_ns": 1799999000000000000,
+    "clock_disciplined": true,
+    "clock_error_us": 100,
+    "offset_ns": 500000000,
+    "pid_trims": "258=40000000"
+  },
+  "trustStates": [
+    "trust"
+  ],
+  "gaps": 0,
+  "overlaps": 0,
+  "pesLost": 0,
+  "monotonic": true,
+  "leadMaxMs": -1350
+}

@@ -3,6 +3,7 @@
 // and read by a Trust ingest. Encode, decode, find and strip; the text forms.
 #pragma once
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -67,4 +68,19 @@ std::string timeline_text(uint64_t id);
 bool parse_timeline_text(const std::string& text, uint64_t* out);
 
 }  // namespace hcdesc
+
+// The element's `house-clock` value (p5-9) plus timeline_id (p5-20; 0 until then): the
+// local clock the egress declares and Trust checks against.
+struct ClockDecl {
+    int64_t e_ns = 0;
+    int64_t seq = 0;
+    bool known = false, traceable = false, disciplined = false;
+    uint8_t source = hcdesc::SYNC_NONE;
+    int64_t tai_offset_s = 0;
+    int ptp_domain = -1;                      // -1: none
+    std::optional<uint64_t> gm;               // EUI-64; none = unknown
+    std::optional<int64_t> error_us;          // none = unknown
+    uint64_t timeline_id = 0;
+};
+
 }  // namespace mrts

@@ -10,9 +10,11 @@
 //        mrts_cli asrc seq.txt|-
 //        mrts_cli pace seq.jsonl|-
 //        mrts_cli asrc-device seq.jsonl|-
+//        mrts_cli drain seq.jsonl|-
 //        mrts_cli egress in.ts --clock case.clock.json [--bus B] [--chunk N] [--out O] [--expect E]
 //        mrts_cli pcrcheck in.ts [--arrival in.stct]
 //        mrts_cli hcdesc in.ts
+//        mrts_cli trust-replay events.jsonl|- [--pes]
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -44,6 +46,7 @@
 #include "ts_restamp.h"
 #include "ts_stc.h"
 #include "ts_trace.h"
+#include "ts_trust.h"
 #include "video_pace.h"
 
 using namespace mrts;
@@ -815,6 +818,50 @@ bool set_knob(RestampConfig& c, const std::string& key, const std::string& v, st
         found = true;
         ok = parse_flag(v, &c.clock.step_falls);
     }
+    // Trust (p5-6b): the selection, L, tau, the local house-clock, and TrustConfig's constants.
+    struct TrustKnob {
+        const char* name;
+        int64_t TrustConfig::*i64;
+        int TrustConfig::*i;
+    };
+    static const TrustKnob kTrust[] = {
+        {"l_ns", &TrustConfig::l_ns, nullptr}, {"tau_ns", &TrustConfig::tau_ns, nullptr},
+        {"trust.neg_base_ns", &TrustConfig::neg_base_ns, nullptr}, {"trust.bad_pcrs", nullptr, &TrustConfig::bad_pcrs},
+        {"trust.decide_pcrs", nullptr, &TrustConfig::decide_pcrs},
+        {"trust.decide_max_ns", &TrustConfig::decide_max_ns, nullptr},
+        {"trust.decide_max_bytes", &TrustConfig::decide_max_bytes, nullptr},
+        {"trust.qualify_ns", &TrustConfig::qualify_ns, nullptr},
+        {"trust.return_qualified_ns", &TrustConfig::return_qualified_ns, nullptr},
+        {"trust.return_gap_wait_ns", &TrustConfig::return_gap_wait_ns, nullptr},
+        {"trust.pmt_stale_ns", &TrustConfig::pmt_stale_ns, nullptr},
+        {"trust.converge_div", &TrustConfig::converge_div, nullptr}};
+    for (const TrustKnob& n : kTrust) {
+        if (key != n.name) continue;
+        found = true;
+        ok = parse_int(v, &x) && (n.i64 || (x >= INT32_MIN && x <= INT32_MAX));
+        if (ok && n.i64) c.trust.*n.i64 = x;
+        if (ok && n.i) c.trust.*n.i = (int)x;
+    }
+    if (key == "timing_mode") {
+        found = true;
+        ok = v == "restamp" || v == "trust";
+        c.timing_mode = v == "trust" ? TimingMode::trust : TimingMode::restamp;
+    } else if (key == "clock_e_ns") {
+        found = true;
+        ok = parse_int(v, &c.house_clock.e_ns);
+    } else if (key == "clock_error_us") {
+        found = true;
+        ok = parse_int(v, &x);
+        if (x < 0) c.house_clock.error_us.reset();   // -1: unknown
+        else c.house_clock.error_us = x;
+    } else if (key == "clock_seq") {
+        found = true;
+        ok = parse_int(v, &x) && x >= 0 && x <= UINT32_MAX;
+        c.house_clock.seq = x;
+    } else if (key == "clock_disciplined") {
+        found = true;
+        ok = parse_flag(v, &c.house_clock.disciplined);
+    }
     if (top && k == "mode") {
         found = true;
         ok = v == "stc" || v == "fixed";
@@ -880,6 +927,8 @@ struct Run {
     std::map<int, int> pcr_pid_program;   // every PID a program's PSI named its PCR PID
     std::map<int, uint64_t> pcr_flagged;  // per PID: written PCRs with discontinuity_indicator
     long first_diff = -1;                 // first record the replay recorded otherwise; -1: none
+    bool trust = false;                   // timing_mode trust: the summary shows each program's gate
+    uint64_t out_cc_lost = 0;             // CC errors in the output
     bool faithful() const { return first_diff < 0; }
 };
 
@@ -893,9 +942,12 @@ struct ReplayOpts {
 
 void print_event(int64_t t, const RestampCore::Event& e) {
     std::printf("{\"msg\":\"mrtsrestamp-event\",\"t\":%lld,\"kind\":\"%s\",\"program\":%d,\"pid\":%d,\"reason\":%s,"
-                "\"gap-ns\":%lld,\"dropped-ns\":%lld,\"house-ns\":%lld,\"epoch\":%u,\"value-ns\":%lld}\n",
+                "\"gap-ns\":%lld,\"dropped-ns\":%lld,\"house-ns\":%lld,\"epoch\":%u,\"value-ns\":%lld",
                 (long long)t, event_kind_name(e.kind), e.program, e.pid, jstr(e.reason ? e.reason : "").c_str(),
                 (long long)e.gap_ns, (long long)e.dropped_ns, (long long)e.house_ns, e.epoch, (long long)e.value_ns);
+    if (e.kind == RestampCore::Event::Kind::trust_switch)
+        std::printf(",\"state\":\"%s\",\"failed\":%s", e.state, jstr(e.failed).c_str());
+    std::printf("}\n");
 }
 
 void print_stats(int64_t t, const RestampCore::Stats& s) {
@@ -1023,6 +1075,8 @@ Run replay(const std::vector<TraceRecord>& recs, const ReplayOpts& o) {
     units.flush(got);
     take();
     run.final_stats = core.stats();
+    run.trust = o.cfg.timing_mode == TimingMode::trust;
+    run.out_cc_lost = cc.lost();
     core.set_trace(nullptr);
     run.misplaced = player.misplaced();
     const std::vector<TraceRecord>& rec2 = again.records();
@@ -1066,6 +1120,13 @@ struct ProgramSum {
     // drift criterion, part 4.3).
     int64_t ppb_at[4] = {0, 0, 0, 0};
     bool has_at[4] = {false, false, false, false};
+    // Trust (p5-6b): the states entered in order, the switches, the gate at the end.
+    bool trust = false;
+    std::vector<std::string> trust_states;
+    int trust_switches = 0;
+    std::string trust_final, trust_failed;
+    int64_t trust_k = 0;
+    uint64_t out_cc_lost = 0;
 };
 
 constexpr int64_t MAPPING_WINDOW_NS = 30000000000LL;
@@ -1097,6 +1158,10 @@ ProgramSum summarize(const Run& run, int program) {
                 s.overlap_ns += e.dropped_ns;
                 break;
             case RestampCore::Event::Kind::lead_clamp: s.clamps++; break;
+            case RestampCore::Event::Kind::trust_switch:
+                s.trust_states.push_back(e.state);
+                s.trust_switches += !std::strncmp(e.reason, "switch-to-", 10);
+                break;
             default: s.psi++; break;
         }
         if ((e.kind == RestampCore::Event::Kind::gap || e.kind == RestampCore::Event::Kind::overlap) && e.reason &&
@@ -1111,7 +1176,14 @@ ProgramSum summarize(const Run& run, int program) {
         s.pcr_cadence = p.clock.pcr_cadence_ns;
         s.dropped_pes = p.dropped_pes;
         s.dropped_ns = p.dropped_ns_total;
+        if (run.trust && p.has_trust) {
+            s.trust = true;
+            s.trust_final = trust_state_name(p.trust.state);
+            s.trust_failed = p.trust.failed ? p.trust.failed : "";
+            s.trust_k = p.trust.k_ns;
+        }
     }
+    s.out_cc_lost = run.out_cc_lost;
     std::vector<const StatPoint*> mine;
     for (const StatPoint& sp : run.stats)
         if (sp.p.program == program) mine.push_back(&sp);
@@ -1181,7 +1253,16 @@ void print_program(const ProgramSum& s) {
                 (long long)s.pcr_cadence);
     for (int k = 0, n = 0; k < 4; k++)
         if (s.has_at[k]) std::printf("%s\"%lld\":%lld", n++ ? "," : "", (long long)PPB_MARKS_S[k], (long long)s.ppb_at[k]);
-    std::printf("}}");
+    std::printf("}");
+    if (s.trust) {
+        std::printf(",\"trust\":{\"states\":[");
+        for (size_t k = 0; k < s.trust_states.size(); k++)
+            std::printf("%s\"%s\"", k ? "," : "", s.trust_states[k].c_str());
+        std::printf("],\"switches\":%d,\"finalState\":\"%s\",\"failed\":%s,\"kNs\":%lld,\"outCcLost\":%llu}",
+                    s.trust_switches, s.trust_final.c_str(), jstr(s.trust_failed).c_str(), (long long)s.trust_k,
+                    (unsigned long long)s.out_cc_lost);
+    }
+    std::printf("}");
 }
 
 void print_summary(const Run& run) {
@@ -1257,14 +1338,16 @@ std::vector<std::string> check_expect(const Json& x, const Run& run) {
     };
     std::vector<std::string> known = {"source", "note", "program", "relockReasons", "events", "ppmAfterS",
                                       "lockedWithinS", "residualMinMs", "finalState", "mappingPpmMax", "gapMs",
-                                      "gapsPerPid", "ppm", "leadMaxMs"};
+                                      "gapsPerPid", "ppm", "leadMaxMs", "config", "trustStates", "trustFinalState",
+                                      "trustFailed"};
     const char* counts[] = {"relocks", "epochs", "degraded", "recovered", "envelopeSteps", "gaps", "overlaps",
                             "droppedPes", "droppedMs", "psiChanges", "leadClamps", "backlogEvents", "pcrFlagged",
-                            "pcrCadenceMs"};
+                            "pcrCadenceMs", "trustSwitches", "pesLost", "outCcLost"};
     const double vals[] = {(double)s.relocks, (double)s.epoch, (double)s.degraded, (double)s.recovered,
                            (double)s.steps, (double)s.gaps, (double)s.overlaps, (double)s.dropped_pes,
                            s.dropped_ns / 1e6, (double)s.psi, (double)s.clamps, (double)s.backlog,
-                           (double)s.pcr_flagged, s.pcr_cadence / 1e6};
+                           (double)s.pcr_flagged, s.pcr_cadence / 1e6, (double)s.trust_switches,
+                           (double)s.pes_in - (double)s.pes_out, (double)s.out_cc_lost};
     for (size_t i = 0; i < sizeof counts / sizeof counts[0]; i++) {
         count(counts[i], vals[i]);
         known.push_back(counts[i]);
@@ -1286,6 +1369,19 @@ std::vector<std::string> check_expect(const Json& x, const Run& run) {
     }
     if (const Json* j = x.get("finalState"))
         if (j->s != s.final_state) fail.push_back("finalState: " + s.final_state + ", want " + j->s);
+    if (const Json* j = x.get("trustStates")) {
+        std::vector<std::string> want;
+        for (const Json& r : j->items) want.push_back(r.s);
+        if (j->type != Json::Type::array || want != s.trust_states) {
+            std::string got;
+            for (const std::string& r : s.trust_states) got += (got.empty() ? "" : ",") + r;
+            fail.push_back("trustStates: [" + got + "]");
+        }
+    }
+    if (const Json* j = x.get("trustFinalState"))
+        if (j->s != s.trust_final) fail.push_back("trustFinalState: " + s.trust_final + ", want " + j->s);
+    if (const Json* j = x.get("trustFailed"))
+        if (j->s != s.trust_failed) fail.push_back("trustFailed: " + s.trust_failed + ", want " + j->s);
     double lim = 0;
     if (const Json* j = x.get("lockedWithinS")) {
         if (!j->f64(&lim) || s.locked_at < 0 || s.locked_at / 1e9 > lim)
@@ -1352,9 +1448,10 @@ std::vector<std::string> check_expect(const Json& x, const Run& run) {
             const Json* when = w.get("atS");
             const Json* gap = w.get("gapMs");
             const Json* drop = w.get("droppedMs");
+            const Json* state = w.get("state");
             for (const auto& kv : w.keys)
                 if (kv.first != "kind" && kv.first != "reason" && kv.first != "pid" && kv.first != "atS" &&
-                    kv.first != "gapMs" && kv.first != "droppedMs")
+                    kv.first != "gapMs" && kv.first != "droppedMs" && kv.first != "state")
                     fail.push_back("events: unknown key \"" + kv.first + "\"");
             bool found = false;
             std::string want;
@@ -1366,7 +1463,8 @@ std::vector<std::string> check_expect(const Json& x, const Run& run) {
                         (!pid || (pid->i64(&pv) && pv == e.pid)) &&
                         (!when || range_ok(*when, sat_sub(run.events[at].first, run.t0) / 1e9, &want)) &&
                         (!gap || range_ok(*gap, e.gap_ns / 1e6, &want)) &&
-                        (!drop || range_ok(*drop, e.dropped_ns / 1e6, &want));
+                        (!drop || range_ok(*drop, e.dropped_ns / 1e6, &want)) &&
+                        (!state || state->s == e.state);
             }
             if (!found) {
                 std::string d;
@@ -1395,7 +1493,9 @@ const char kReplayUsage[] =
     "  Plays the trace into RestampCore and prints JSON lines: mrtsrestamp-stats / -pid / -event\n"
     "  as the element posts them (\"t\": the trace's house ns), then a summary; --expect checks\n"
     "  the replay against an expectation file (exit 1 on a failure). --config sets RestampConfig\n"
-    "  (mode, add_base_time, base_time_ns, offset_ns, pid_trims=<pid>=<ns>;...) and every\n"
+    "  (mode, add_base_time, base_time_ns, offset_ns, pid_trims=<pid>=<ns>;...), Trust's\n"
+    "  (timing_mode=restamp|trust, l_ns, tau_ns, clock_e_ns, clock_seq, clock_disciplined,\n"
+    "  clock_error_us, trust.<TrustConfig field>; an expectation's \"config\" object first) and every\n"
     "  ClockLockConfig / PcrValidatorConfig field by name (clock. / pcr. to pick one). --sweep\n"
     "  replays once per point of {\"key\": [values], ...} and prints one line per point: its\n"
     "  config, the expectation's verdict and the first program's summary (ppbAtS: epsilon at\n"
@@ -1438,13 +1538,6 @@ int restamp_replay_main(int argc, char** argv) {
         }
     }
     if (input.empty()) return std::fputs(kReplayUsage, stderr), 2;
-    for (const auto& kv : config) {
-        std::string err;
-        if (!set_knob(o.cfg, kv.first, kv.second, &err)) {
-            std::fprintf(stderr, "mrts_cli: %s\n", err.c_str());
-            return 2;
-        }
-    }
     std::vector<TraceRecord> recs;
     TraceReader::Status st;
     if (!read_trace(input, &recs, &st)) return 1;
@@ -1455,6 +1548,24 @@ int restamp_replay_main(int argc, char** argv) {
         if (!read_file(*f.first, &text) || !parse_json(text, f.second, &err)) {
             std::fprintf(stderr, "mrts_cli: %s: %s\n", f.first->c_str(), err.empty() ? "cannot read" : err.c_str());
             return 1;
+        }
+    }
+    // An expectation's "config" (a Trust replay's selection and clock, p5-6b) first, then --config.
+    if (const Json* c = expect_path.empty() ? nullptr : expect.get("config")) {
+        for (const auto& kv : c->keys) {
+            std::string err;
+            const std::string v = kv.second.type == Json::Type::boolean ? (kv.second.b ? "true" : "false") : kv.second.s;
+            if (!set_knob(o.cfg, kv.first, v, &err)) {
+                std::fprintf(stderr, "mrts_cli: %s: %s\n", expect_path.c_str(), err.c_str());
+                return 1;
+            }
+        }
+    }
+    for (const auto& kv : config) {
+        std::string err;
+        if (!set_knob(o.cfg, kv.first, kv.second, &err)) {
+            std::fprintf(stderr, "mrts_cli: %s\n", err.c_str());
+            return 2;
         }
     }
     const Json* x = expect_path.empty() ? nullptr : &expect;
@@ -3327,6 +3438,332 @@ int hcdesc_main(int argc, char** argv) {
     return 0;
 }
 
+// --- trust-replay: TrustGate over the reference's event list (p5-6b, parity with py/trust_gate.py) ---
+
+const char kTrustUsage[] =
+    "usage: mrts_cli trust-replay events.jsonl|- [--pes]\n"
+    "  py/trust_gate.py's event list through one TrustGate per program, its output byte for byte:\n"
+    "  each transition, with --pes each PES's mapping, then a summary per program.\n";
+
+std::string jnum_or_null(bool have, int64_t v) { return have ? std::to_string((long long)v) : "null"; }
+std::string jstr_or_null(const char* s) { return s ? jstr(s) : "null"; }
+
+std::string transition_json(int program, const TrustGate::Transition& t) {
+    std::string s = "{\"t\":" + std::to_string((long long)t.t) + ",\"program\":" + std::to_string(program) +
+                    ",\"decision\":\"" + trust_decision_name(t.decision) + "\",\"from\":\"" +
+                    trust_state_name(t.from) + "\",\"state\":\"" + trust_state_name(t.state) +
+                    "\",\"failed\":" + jstr_or_null(t.failed);
+    if (t.has_k) s += ",\"kNs\":" + std::to_string((long long)t.k_ns) + ",\"k90k\":" + std::to_string((long long)t.k90k);
+    if (t.has_gap) s += ",\"gapNs\":" + std::to_string((long long)t.gap_ns);
+    return s + "}";
+}
+
+std::string trust_stats_json(int program, const TrustGate::Stats& s) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%08x", s.digest);
+    std::string o = "{\"program\":" + std::to_string(program) + ",\"state\":\"" + trust_state_name(s.state) +
+                    "\",\"mode\":\"" + (s.trust_selected ? "trust" : "restamp") + "\",\"failed\":" +
+                    jstr_or_null(s.failed) + ",\"switches\":" + std::to_string((unsigned long long)s.switches) +
+                    ",\"pes\":{\"stc\":" + std::to_string((unsigned long long)s.pes[0]) +
+                    ",\"restamp\":" + std::to_string((unsigned long long)s.pes[1]) +
+                    ",\"trust\":" + std::to_string((unsigned long long)s.pes[2]) +
+                    ",\"converging\":" + std::to_string((unsigned long long)s.pes[3]) + "},\"digest\":\"" + b +
+                    "\",\"transit\":";
+    o += s.have_transit ? "{\"minNs\":" + std::to_string((long long)s.transit_min_ns) + ",\"medianNs\":" +
+                              std::to_string((long long)s.transit_median_ns) + ",\"maxNs\":" +
+                              std::to_string((long long)s.transit_max_ns) + "}"
+                        : std::string("null");
+    o += ",\"boundLoNs\":" + std::to_string((long long)s.bound_lo_ns) + ",\"boundHiNs\":" +
+         std::to_string((long long)s.bound_hi_ns) + ",\"kNs\":" + std::to_string((long long)s.k_ns);
+    o += ",\"timelineId\":" + (s.have_decl ? jstr(hcdesc::timeline_text(s.decl.timeline_id)) : std::string("null"));
+    o += ",\"deNs\":" + jnum_or_null(s.have_decl, pts90k_to_ns(s.decl.d_e_90k));
+    o += ",\"epochSeq\":" + jnum_or_null(s.have_decl, s.decl.epoch_seq) + "}";
+    return o;
+}
+
+// The reference's Replay: gates in the order first seen, a step of every gate after every event.
+class TrustReplay {
+  public:
+    explicit TrustReplay(bool pes_rows) : pes_rows_(pes_rows) {}
+    bool feed(const Json& ev, std::string* err);
+    void finish() {
+        std::vector<size_t> order(gates_.size());
+        for (size_t i = 0; i < order.size(); i++) order[i] = i;
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return gates_[a].program < gates_[b].program; });
+        for (size_t i : order) std::printf("%s\n", trust_stats_json(gates_[i].program, gates_[i].gate->stats(now_)).c_str());
+    }
+
+  private:
+    struct Held {
+        int pid;
+        int64_t pts, dmp, stc, now;
+    };
+    struct Entry {
+        int program;
+        std::unique_ptr<TrustGate> gate;
+        std::vector<Held> held;
+    };
+    Entry& gate(int program, int64_t now) {
+        for (Entry& e : gates_)
+            if (e.program == program) return e;
+        gates_.push_back(Entry{program, std::make_unique<TrustGate>(program, cfg_, clock_, trust_, now), {}});
+        return gates_.back();
+    }
+    Entry* find(int program) {
+        for (Entry& e : gates_)
+            if (e.program == program) return &e;
+        return nullptr;
+    }
+    // A PES out through the gate: STC states add O and the trim in restamp (the reference's stand-in).
+    std::string emit(Entry& e, const Held& h) {
+        TrustGate& g = *e.gate;
+        int64_t stc = h.stc;
+        if (stc >= 0 && g.state() == TrustGate::State::restamp) {
+            const auto it = trims_.find(h.pid);
+            stc += ns_to_pts90k(offset_ + (it == trims_.end() ? 0 : it->second));
+        }
+        const TrustGate::Mapped m = g.map(h.pts, h.dmp, stc);
+        g.emitted(h.pid, h.pts, m, h.now);
+        return "{\"t\":" + std::to_string((long long)h.now) + ",\"program\":" + std::to_string(e.program) +
+               ",\"pid\":" + std::to_string(h.pid) + ",\"mapping\":\"" + trust_mapping_name(m.kind) + "\",\"pts\":" +
+               jnum_or_null(m.pts >= 0, m.pts) + ",\"dts\":" + jnum_or_null(m.dts >= 0, m.dts) +
+               ",\"k90k\":" + std::to_string((long long)m.k90k) + "}";
+    }
+    void release_if(Entry& e, bool was_deciding, std::vector<std::string>* rows) {
+        if (!was_deciding || e.gate->state() == TrustGate::State::deciding) return;
+        std::vector<Held> q;
+        q.swap(e.held);
+        for (const Held& h : q) rows->push_back(emit(e, h));
+    }
+
+    TrustConfig cfg_;
+    ClockDecl clock_;
+    bool trust_ = false;
+    int64_t offset_ = 0;
+    std::map<int, int64_t> trims_;
+    std::vector<Entry> gates_;
+    std::vector<std::pair<int, int>> pid_program_, pcr_pid_;   // dicts in insertion order
+    bool pes_rows_;
+    int64_t now_ = 0;
+};
+
+bool get_i64(const Json& ev, const char* key, int64_t* v, std::string* err) {
+    const Json* j = ev.get(key);
+    if (!j || !j->i64(v)) return *err = std::string("missing or bad \"") + key + "\"", false;
+    return true;
+}
+
+bool get_bool(const Json& ev, const char* key, bool* v, std::string* err) {
+    const Json* j = ev.get(key);
+    if (!j || j->type != Json::Type::boolean) return *err = std::string("missing or bad \"") + key + "\"", false;
+    *v = j->b;
+    return true;
+}
+
+// A decl line (trace2jsonl's) as the gate's declaration; false when absent.
+bool decl_of(const Json& ev, HouseTimeDecl* d, bool* present, std::string* err) {
+    if (!get_bool(ev, "present", present, err)) return false;
+    if (!*present) return true;
+    int64_t de = 0, cls = 0, seq = 0;
+    const Json* tl = ev.get("timelineId");
+    if (!get_bool(ev, "houseTimeTai", &d->house_time_tai, err) || !get_bool(ev, "disciplined", &d->disciplined, err) ||
+        !get_i64(ev, "de90k", &de, err) || !get_i64(ev, "clockErrorClass", &cls, err) ||
+        !get_i64(ev, "epochSeq", &seq, err))
+        return false;
+    if (!tl || tl->type != Json::Type::string || !hcdesc::parse_timeline_text(tl->s, &d->timeline_id))
+        return *err = "missing or bad \"timelineId\"", false;
+    d->d_e_90k = (uint32_t)de;
+    d->clock_error_class = (uint8_t)cls;
+    d->epoch_seq = (uint16_t)seq;
+    return true;
+}
+
+bool TrustReplay::feed(const Json& ev, std::string* err) {
+    const Json* kj = ev.get("kind");
+    if (!kj || kj->type != Json::Type::string) return *err = "missing \"kind\"", false;
+    const std::string& k = kj->s;
+    if (k == "config") {
+        struct Key {
+            const char* name;
+            int64_t TrustConfig::*i64;
+            int TrustConfig::*i;
+        };
+        static const Key keys[] = {
+            {"negBaseNs", &TrustConfig::neg_base_ns, nullptr}, {"badPcrs", nullptr, &TrustConfig::bad_pcrs},
+            {"decidePcrs", nullptr, &TrustConfig::decide_pcrs}, {"decideMaxNs", &TrustConfig::decide_max_ns, nullptr},
+            {"qualifyNs", &TrustConfig::qualify_ns, nullptr},
+            {"returnQualifiedNs", &TrustConfig::return_qualified_ns, nullptr},
+            {"returnGapWaitNs", &TrustConfig::return_gap_wait_ns, nullptr},
+            {"pmtStaleNs", &TrustConfig::pmt_stale_ns, nullptr}};
+        for (const auto& kv : ev.keys) {
+            if (kv.first == "kind") continue;
+            const Key* hit = nullptr;
+            for (const Key& x : keys)
+                if (kv.first == x.name) hit = &x;
+            int64_t v = 0;
+            if (!hit) return *err = "unknown config key " + kv.first, false;
+            if (!kv.second.i64(&v)) return *err = "bad value for " + kv.first, false;
+            if (hit->i64) cfg_.*(hit->i64) = v;
+            else cfg_.*(hit->i) = (int)v;
+        }
+        for (Entry& e : gates_) {
+            TrustConfig c = cfg_;
+            c.l_ns = e.gate->config().l_ns;
+            c.tau_ns = e.gate->config().tau_ns;
+            e.gate->set_config(c);
+        }
+        return true;
+    }
+    int64_t now = 0;
+    if (!get_i64(ev, "t", &now, err)) return false;
+    now_ = now;
+    std::vector<std::string> rows;
+    std::vector<bool> deciding;
+    auto snapshot = [&]() {
+        deciding.clear();
+        for (Entry& e : gates_) deciding.push_back(e.gate->state() == TrustGate::State::deciding);
+    };
+    if (k == "psi") {
+        int64_t program = 0, pid = 0;
+        bool pcr = false;
+        if (!get_i64(ev, "program", &program, err) || !get_i64(ev, "pid", &pid, err) || !get_bool(ev, "pcrPid", &pcr, err))
+            return false;
+        Entry& e = gate((int)program, now);
+        if (pcr) {
+            pid_program_.erase(std::remove_if(pid_program_.begin(), pid_program_.end(),
+                                              [&](const std::pair<int, int>& x) { return x.second == e.program; }),
+                               pid_program_.end());
+            bool found = false;
+            for (auto& x : pcr_pid_)
+                if (x.first == e.program) x.second = (int)pid, found = true;
+            if (!found) pcr_pid_.push_back({e.program, (int)pid});
+        } else {
+            bool found = false;
+            for (auto& x : pid_program_)
+                if (x.first == (int)pid) x.second = e.program, found = true;
+            if (!found) pid_program_.push_back({(int)pid, e.program});
+        }
+        e.gate->pmt_seen(now);
+    } else if (k == "decl") {
+        int64_t program = 0;
+        HouseTimeDecl d;
+        bool present = false;
+        if (!get_i64(ev, "program", &program, err) || !decl_of(ev, &d, &present, err)) return false;
+        gate((int)program, now).gate->on_pmt(present ? &d : nullptr, now);
+    } else if (k == "pcr") {
+        int64_t pid = 0, pcr = 0;
+        if (!get_i64(ev, "pid", &pid, err) || !get_i64(ev, "pcr", &pcr, err)) return false;
+        for (const auto& x : pcr_pid_)
+            if (x.second == (int)pid) find(x.first)->gate->on_pcr(pcr, now);
+    } else if (k == "pes") {
+        int64_t pid = 0, pts = 0, dmp = 0, stc = -1;
+        if (!get_i64(ev, "pid", &pid, err) || !get_i64(ev, "pts", &pts, err)) return false;
+        if (const Json* j = ev.get("dtsMinusPts"))
+            if (!j->i64(&dmp)) return *err = "bad \"dtsMinusPts\"", false;
+        if (const Json* j = ev.get("stc"))
+            if (j->type != Json::Type::null && !j->i64(&stc)) return *err = "bad \"stc\"", false;
+        for (const auto& x : pid_program_) {
+            if (x.first != (int)pid) continue;
+            Entry& e = *find(x.second);
+            const Held h{(int)pid, pts, dmp, stc, now};
+            if (e.gate->state() == TrustGate::State::deciding) e.held.push_back(h);
+            else rows.push_back(emit(e, h));
+        }
+    } else if (k == "outage" || k == "natural-gap") {
+        int64_t g_ns = 0, program = 0;
+        if (!get_i64(ev, k == "outage" ? "silenceNs" : "gapNs", &g_ns, err)) return false;
+        const Json* pj = k == "natural-gap" ? ev.get("program") : nullptr;
+        if (pj && !pj->i64(&program)) return *err = "bad \"program\"", false;
+        for (Entry& e : gates_)
+            if (!pj || program == e.program) e.gate->on_natural_gap(g_ns, now);
+    } else if (k == "mode") {
+        const Json* m = ev.get("mode");
+        if (!m || m->type != Json::Type::string) return *err = "missing \"mode\"", false;
+        trust_ = m->s == "trust";
+        snapshot();
+        for (size_t i = 0; i < gates_.size(); i++) {
+            gates_[i].gate->set_mode(trust_, now);
+            release_if(gates_[i], deciding[i], &rows);
+        }
+    } else if (k == "l" || k == "tau") {
+        int64_t ns = 0;
+        if (!get_i64(ev, "ns", &ns, err)) return false;
+        (k == "l" ? cfg_.l_ns : cfg_.tau_ns) = ns;
+        for (Entry& e : gates_) {
+            e.gate->set_l(cfg_.l_ns);
+            e.gate->set_tau(cfg_.tau_ns);
+        }
+    } else if (k == "clock") {
+        ClockDecl c;
+        int64_t seq = 0, error_us = 0;
+        if (!get_i64(ev, "eNs", &c.e_ns, err) || !get_bool(ev, "disciplined", &c.disciplined, err)) return false;
+        if (const Json* j = ev.get("seq"))
+            if (!j->i64(&seq)) return *err = "bad \"seq\"", false;
+        c.seq = seq;
+        if (const Json* j = ev.get("errorUs"); j && j->type != Json::Type::null) {
+            if (!j->i64(&error_us)) return *err = "bad \"errorUs\"", false;
+            c.error_us = error_us;
+        }
+        clock_ = c;
+        for (Entry& e : gates_) e.gate->set_clock(clock_, now);
+    } else if (k == "offset") {
+        if (!get_i64(ev, "ns", &offset_, err)) return false;
+    } else if (k == "trim") {
+        int64_t pid = 0, ns = 0;
+        if (!get_i64(ev, "pid", &pid, err) || !get_i64(ev, "ns", &ns, err)) return false;
+        trims_[(int)pid] = ns;
+    } else if (k != "tick" && k != "decl2") {
+        return *err = "unknown event kind " + k, false;
+    }
+    snapshot();
+    for (size_t i = 0; i < gates_.size(); i++) {
+        gates_[i].gate->step(now);
+        release_if(gates_[i], deciding[i], &rows);
+    }
+    for (Entry& e : gates_)
+        for (const TrustGate::Transition& t : e.gate->take_log())
+            std::printf("%s\n", transition_json(e.program, t).c_str());
+    if (pes_rows_)
+        for (const std::string& r : rows) std::printf("%s\n", r.c_str());
+    return true;
+}
+
+int trust_replay_main(int argc, char** argv) {
+    std::string input;
+    bool pes = false;
+    for (int i = 1; i < argc; i++) {
+        const std::string a = argv[i];
+        if (a == "--pes") pes = true;
+        else if ((a == "-" || a[0] != '-') && input.empty()) input = a;
+        else return std::fputs(kTrustUsage, stderr), 2;
+    }
+    if (input.empty()) return std::fputs(kTrustUsage, stderr), 2;
+    std::string text;
+    if (!read_file(input, &text)) {
+        std::fprintf(stderr, "mrts_cli: cannot read %s\n", input.c_str());
+        return 1;
+    }
+    TrustReplay r(pes);
+    size_t at = 0, line = 0;
+    while (at < text.size()) {
+        size_t nl = text.find('\n', at);
+        if (nl == std::string::npos) nl = text.size();
+        const std::string s = text.substr(at, nl - at);
+        at = nl + 1;
+        line++;
+        if (s.find_first_not_of(" \t\r") == std::string::npos) continue;
+        Json ev;
+        std::string err;
+        if (!parse_json(s, &ev, &err) || ev.type != Json::Type::object || !r.feed(ev, &err)) {
+            std::fflush(stdout);
+            std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", input.c_str(), line, err.empty() ? "not an object" : err.c_str());
+            return 1;
+        }
+    }
+    r.finish();
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -3343,6 +3780,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "egress") == 0) return egress_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "pcrcheck") == 0) return pcrcheck_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "hcdesc") == 0) return hcdesc_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "trust-replay") == 0) return trust_replay_main(argc - 1, argv + 1);
     std::fprintf(stderr,
                  "usage: mrts_cli dump [--chunk N] [--program N] [--net E_ns] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
@@ -3359,6 +3797,7 @@ int main(int argc, char** argv) {
                  "       mrts_cli egress in.ts --clock case.clock.json [--bus B] [--chunk N] [--out O] "
                  "[--expect E]\n"
                  "       mrts_cli pcrcheck in.ts [--arrival in.stct]\n"
-                 "       mrts_cli hcdesc in.ts\n");
+                 "       mrts_cli hcdesc in.ts\n"
+                 "       mrts_cli trust-replay events.jsonl|- [--pes]\n");
     return 2;
 }

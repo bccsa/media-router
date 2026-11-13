@@ -1,0 +1,22 @@
+{
+  "source": "fixture_gen --trace --duration 60 --pids v,a2 --pcr-ms 35 --delay-ms 1900 --jitter-ms 2 --sender-epoch 1800000000 --decl 200",
+  "note": "WI-P5-7's trust-ok-srt2000 (p5-6b): an SRT link of 1.9 s under L = 2 s, the receiver's E putting the transit at the path's delay. Decided at the fifth good PCR, Trust throughout: every PES out (each on net_to_bus exactly: ts_restamp_test's Trust cases), no gap, no overlap, no backward PTS, the output's CC continuous.",
+  "config": {
+    "timing_mode": "trust",
+    "l_ns": 2000000000,
+    "clock_e_ns": 1799999000000000000,
+    "clock_disciplined": true,
+    "clock_error_us": 100
+  },
+  "trustStates": [
+    "trust"
+  ],
+  "trustFinalState": "trust",
+  "trustSwitches": 0,
+  "gaps": 0,
+  "overlaps": 0,
+  "pesLost": 0,
+  "outCcLost": 0,
+  "monotonic": true,
+  "leadMaxMs": -1350
+}
