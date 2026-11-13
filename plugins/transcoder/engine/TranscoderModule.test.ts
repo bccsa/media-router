@@ -238,6 +238,36 @@ describe('buildPipeline', () => {
         expect(desc.pipeline).toContain('x265enc'); // rendition 1 codec override
     });
 
+    it('resolves QVBR quality per rendition: override, else the global, else 25', () => {
+        TranscoderModule.setAvailableImpls({ h264: ['va'], h265: ['va'], av1: [] });
+        const { module } = makeModule();
+        const desc = module.buildPipeline({
+            rateControl: 'qvbr',
+            quality: 30,
+            renditions: [
+                { width: 1920, height: 1080, bitrate: 4841, quality: 20 },
+                { width: 1280, height: 720, bitrate: 2500 },
+            ],
+        })!;
+        expect(desc.pipeline).toContain(
+            'bitrate=4841 rate-control=qvbr target-percentage=100 qpi=20',
+        );
+        expect(desc.pipeline).toContain(
+            'bitrate=2500 rate-control=qvbr target-percentage=100 qpi=30',
+        );
+        const dflt = makeModule().module.buildPipeline({
+            rateControl: 'qvbr',
+            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+        })!;
+        expect(dflt.pipeline).toContain('qpi=25');
+        // An unknown global mode still falls back to CBR.
+        const junk = makeModule().module.buildPipeline({
+            rateControl: 'abr',
+            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+        })!;
+        expect(junk.pipeline).toContain('rate-control=cbr');
+    });
+
     it('flags overridden knobs in the encoder status summary', () => {
         const { module } = makeModule();
         module.buildPipeline({

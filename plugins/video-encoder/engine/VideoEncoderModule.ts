@@ -223,6 +223,7 @@ export class VideoEncoderModule extends GstPluginBase {
             h264Profile,
             sceneCut,
             cpbSeconds,
+            quality,
         } = knobs;
         const scaleStage = buildScaleStage({
             width,
@@ -268,6 +269,7 @@ export class VideoEncoderModule extends GstPluginBase {
                 h264Profile,
                 sceneCut,
                 cpbSeconds,
+                quality,
             },
             inputQueue: 'none',
             muxName: 'mux',

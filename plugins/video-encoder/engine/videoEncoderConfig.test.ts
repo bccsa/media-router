@@ -26,6 +26,7 @@ describe('readEncoderKnobs', () => {
             h264Profile: 'auto',
             sceneCut: 40,
             cpbSeconds: 1,
+            quality: 25,
         });
     });
     it('reads and validates every knob', () => {
@@ -40,6 +41,7 @@ describe('readEncoderKnobs', () => {
             h264Profile: 'baseline',
             sceneCut: 0,
             cpbSeconds: 0.5,
+            quality: 30,
         });
         expect(k).toEqual({
             codec: 'h265',
@@ -53,6 +55,7 @@ describe('readEncoderKnobs', () => {
             h264Profile: 'baseline',
             sceneCut: 0,
             cpbSeconds: 0.5,
+            quality: 30,
         });
     });
     it('rejects out-of-set enums back to the defaults', () => {
@@ -64,5 +67,14 @@ describe('readEncoderKnobs', () => {
         expect(k.rateControl).toBe('cbr');
         expect(k.speedPreset).toBe('superfast');
         expect(k.h264Profile).toBe('auto');
+    });
+    it('accepts qvbr and clamps its quality to 1–51', () => {
+        expect(readEncoderKnobs({ rateControl: 'qvbr', quality: 18 })).toMatchObject({
+            rateControl: 'qvbr',
+            quality: 18,
+        });
+        expect(readEncoderKnobs({ quality: 99 }).quality).toBe(51);
+        expect(readEncoderKnobs({ quality: 0 }).quality).toBe(1);
+        expect(readEncoderKnobs({ quality: 'junk' }).quality).toBe(25);
     });
 });

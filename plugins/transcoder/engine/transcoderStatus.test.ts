@@ -38,6 +38,16 @@ describe('renditionSummary', () => {
         ];
         expect(renditionSummary(outputs)).toBe('1920x1080@5000k [v4l2, cbr], 854x480@1200k');
     });
+
+    it('tags a quality override only when the rendition runs QVBR', () => {
+        const row = (rateControl: string): any => ({
+            rendition: { width: 1280, height: 720, bitrate: 2500, rateControl, quality: 20 },
+            encode: { codec: 'h264', impl: 'va', rateControl, quality: 20 },
+        });
+        expect(renditionSummary([row('qvbr'), row('cbr')])).toBe(
+            '1280x720@2500k [qvbr, q20], 1280x720@2500k [cbr]',
+        );
+    });
 });
 
 describe('renditionStatLabel', () => {

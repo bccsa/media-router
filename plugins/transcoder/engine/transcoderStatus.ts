@@ -21,6 +21,8 @@ export function renditionSummary(outputs: TranscoderOutput[]): string {
             if (r.speedPreset) tags.push(o.encode.speedPreset);
             if (r.h264Profile && r.h264Profile !== 'auto') tags.push(o.encode.h264Profile);
             if (r.sceneCut !== undefined) tags.push(`sc${o.encode.sceneCut}`);
+            if (r.quality !== undefined && o.encode.rateControl === 'qvbr')
+                tags.push(`q${o.encode.quality}`);
             const suffix = tags.length ? ` [${tags.join(', ')}]` : '';
             return `${r.width}x${r.height}@${r.bitrate}k${suffix}`;
         })

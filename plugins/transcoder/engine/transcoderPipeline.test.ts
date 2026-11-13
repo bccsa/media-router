@@ -29,6 +29,7 @@ const enc = (over: Partial<ResolvedEncode> = {}): ResolvedEncode => ({
     h264Profile: 'auto',
     sceneCut: 40,
     cpbSeconds: 1,
+    quality: 25,
     ...over,
 });
 
@@ -297,6 +298,21 @@ describe('buildPipeline', () => {
         );
     });
 
+    it('reads a qvbr override and its quality, clamped to 1–51; junk quality inherits', () => {
+        const res = readRenditions({
+            renditions: [
+                { width: 1920, height: 1080, bitrate: 4841, rateControl: 'qvbr', quality: 22 },
+                { width: 1280, height: 720, bitrate: 2500, quality: 99 },
+                { width: 854, height: 480, bitrate: 1200, quality: 'best' },
+                { width: 640, height: 360, bitrate: 800, quality: '' },
+            ],
+        });
+        expect(res[0]).toMatchObject({ rateControl: 'qvbr', quality: 22 });
+        expect(res[1].quality).toBe(51);
+        expect(res[2].quality).toBeUndefined();
+        expect(res[3].quality).toBeUndefined();
+    });
+
     it('passes the GOP frame count straight through as key-int-max', () => {
         const res = buildPipeline({ ...base, gopFrames: 60, outputs: [out(0, r())] })!;
         expect(res.pipeline).toContain('key-int-max=60');
@@ -314,6 +330,11 @@ describe('buildPipeline', () => {
         })!;
         expect(vbr.pipeline).not.toContain('nal-hrd=cbr');
         expect(vbr.pipeline).toContain('vbv-maxrate'); // VBV-capped VBR
+        const qvbr = buildPipeline({
+            ...base,
+            outputs: [out(0, r(), enc({ rateControl: 'qvbr', quality: 21 }))],
+        })!;
+        expect(qvbr.pipeline).toContain('pass=qual quantizer=21');
     });
 
     it("applies each rendition's own speed preset", () => {
@@ -539,6 +560,7 @@ describe('subtitle burn-in', () => {
                 h264Profile: 'auto' as const,
                 sceneCut: 40,
                 cpbSeconds: 1,
+                quality: 25,
             },
         },
     ];

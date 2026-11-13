@@ -110,15 +110,27 @@
                 },
                 "rateControl": {
                     "type": "string",
-                    "enum": ["cbr", "vbr"],
+                    "enum": ["cbr", "vbr", "qvbr"],
                     "default": "cbr",
                     "x-enumLabels": {
                         "cbr": "CBR (constant — safest for UDP/SRT)",
-                        "vbr": "VBR (variable — better quality on motion)"
+                        "vbr": "VBR (variable — better quality on motion)",
+                        "qvbr": "QVBR (quality-targeted, bitrate = ceiling)"
                     },
                     "title": "Rate Control",
-                    "description": "CBR: constant bitrate, safest for fixed-bandwidth links. VBR: better motion quality. Hidden on V4L2 (always VBR).",
+                    "description": "CBR: fixed rate. VBR: better on motion. QVBR: bitrate is the peak, easy content uses less. Hidden on V4L2 (always VBR).",
                     "x-showWhen": "encoderImpl=software,va,auto"
+                },
+                "quality": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 51,
+                    "default": 25,
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "title": "QVBR Quality",
+                    "description": "QVBR quality target, lower = better; the bitrate stays the ceiling, easy content comes in under it.",
+                    "x-showWhen": "rateControl=qvbr"
                 },
                 "speedPreset": {
                     "type": "string",

@@ -1,5 +1,5 @@
 /**
- * Shared video-encoder element selection + CBR/VBR-tuned branch builder.
+ * Shared video-encoder element selection + CBR/VBR/QVBR-tuned branch builder.
  *
  * Codec/encoder knowledge is common to every codec plugin (video-encoder,
  * transcoder, …), so it lives here rather than being forked per plugin. Kept
@@ -51,8 +51,31 @@ export function resolveImpl(
  * bitrate, no headroom) and pads to hold the rate (`nal-hrd=cbr` / `strict-cbr`).
  * `vbv-bufsize` = 1 s. Software (x264/x265) and VA-API honour it; the V4L2
  * (bcm2835) path CANNOT — it pins VBR, see `buildV4l2ExtraControls`.
+ *
+ * QVBR (quality-targeted VBR): the bitrate is a CEILING, not a target — the
+ * encoder aims at a quality level (`quality`, CRF-like, lower = better) and
+ * spends less than the ceiling on easy content. Peak = bitrate, buffer =
+ * bitrate x cpbSeconds, as for CBR but without padding. VA-API maps it to the
+ * driver's QVBR mode; x264/x265 to capped CRF. See `buildEncoderBranch`.
  */
-export type RateControl = 'cbr' | 'vbr';
+export type RateControl = 'cbr' | 'vbr' | 'qvbr';
+
+/** Allowed rate-control modes — also used to validate untrusted config. */
+export const RATE_CONTROLS: RateControl[] = ['cbr', 'vbr', 'qvbr'];
+
+/** QVBR quality when none is configured (CRF-like scale, lower = better). */
+export const QVBR_QUALITY_DEFAULT = 25;
+
+/**
+ * Read a QVBR quality value from untrusted config: rounded and clamped to 1–51
+ * (VA-API `qpi` / x265 CRF range); blank or non-numeric = `undefined`, so the
+ * caller can inherit or default.
+ */
+export function readQvbrQuality(value: unknown): number | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    const n = Math.round(Number(value));
+    return Number.isFinite(n) ? Math.min(51, Math.max(1, n)) : undefined;
+}
 
 /**
  * x264/x265 speed↔quality preset, ordered fastest→slowest. Faster presets cost
@@ -138,6 +161,10 @@ export interface EncoderBranchOptions {
      *  bitstream (`interlaced=true`); VA-API/V4L2 have no interlaced encode mode,
      *  so the flag is ignored there and their output stays progressive-flagged. */
     interlacedOutput?: boolean;
+    /** QVBR only: the quality target, 1–51, lower = better (default
+     *  {@link QVBR_QUALITY_DEFAULT}). VA-API `qpi` (the driver's quality
+     *  factor), x264 CRF (capped at x264enc's 50), x265 CRF. */
+    quality?: number;
 }
 
 /**
@@ -192,14 +219,17 @@ export function buildEncoderBranch(opts: EncoderBranchOptions): string {
         sceneCut = 40,
         cpbSeconds = 1,
         interlacedOutput = false,
+        quality = QVBR_QUALITY_DEFAULT,
     } = opts;
     const bps = bitrateKbps * 1000;
-    const cbr = rateControl !== 'vbr';
+    const qvbr = rateControl === 'qvbr';
+    const cbr = rateControl !== 'vbr' && !qvbr;
     // VBR targets `bitrate` as the AVERAGE and lets per-frame size vary for better
     // quality on motion, but bounds bursts with a VBV cap at 1.5x so it can't
     // overrun the downstream UDP/SRT buffer too hard. CBR pins peak = average
-    // (vbv-maxrate = bitrate) and pads to hold the rate constant.
-    const vbvMax = cbr ? bitrateKbps : Math.round(bitrateKbps * 1.5);
+    // (vbv-maxrate = bitrate) and pads to hold the rate constant. QVBR pins the
+    // peak at `bitrate` too (it is the ceiling) but does not pad.
+    const vbvMax = rateControl === 'vbr' ? Math.round(bitrateKbps * 1.5) : bitrateKbps;
     // HRD buffer depth (kbit): vbv-bufsize / cpb-size = rate cap x cpbSeconds.
     const cpbKbit = Math.max(1, Math.round(vbvMax * cpbSeconds));
     if (impl === 'v4l2') {
@@ -230,7 +260,14 @@ export function buildEncoderBranch(opts: EncoderBranchOptions): string {
         // speed preset, key-int-max for the GOP. x264-only knobs (scenecut, the
         // VBV option-string) don't apply. b-frames=0 keeps latency low. vah26Xenc
         // accepts system-memory NV12, so the leaf's videoconvert feeds it directly.
-        const rc = cbr ? 'cbr' : 'vbr';
+        //
+        // QVBR (GStreamer 1.28 gstvah26Xenc `_ensure_rate_control`): max bitrate =
+        // bitrate x 100 / target-percentage, `qpi` = the driver's quality factor.
+        // target-percentage=100 makes `bitrate` the PEAK (= ffmpeg `-rc_mode QVBR
+        // -global_quality q -b:v X -maxrate X`); the driver then spends less on
+        // easy content. (VBR leaves target-percentage at its default 66, so its
+        // peak is ~1.52x bitrate.)
+        const rc = qvbr ? `qvbr target-percentage=100 qpi=${quality}` : cbr ? 'cbr' : 'vbr';
         const tu = VA_TARGET_USAGE[speedPreset];
         if (codec === 'h264') {
             const profCaps = h264Profile === 'auto' ? '' : ` ! video/x-h264,profile=${h264Profile}`;
@@ -240,7 +277,10 @@ export function buildEncoderBranch(opts: EncoderBranchOptions): string {
             return `vah265enc name=${name} bitrate=${bitrateKbps} rate-control=${rc} target-usage=${tu} key-int-max=${kif} b-frames=0 cpb-size=${cpbKbit} ! h265parse config-interval=1`;
         }
         if (codec === 'av1') {
-            return `vaav1enc name=${name} bitrate=${bitrateKbps} rate-control=${rc} target-usage=${tu} key-int-max=${kif} ! av1parse`;
+            // vaav1enc offers no QVBR (iHD on Meteor Lake lists cbr/vbr/cqp/icq):
+            // QVBR falls back to CBR, which keeps the bitrate a ceiling.
+            const av1Rc = rateControl === 'vbr' ? 'vbr' : 'cbr';
+            return `vaav1enc name=${name} bitrate=${bitrateKbps} rate-control=${av1Rc} target-usage=${tu} key-int-max=${kif} ! av1parse`;
         }
     }
     if (impl === 'software') {
@@ -250,25 +290,40 @@ export function buildEncoderBranch(opts: EncoderBranchOptions): string {
             // CBR adds `nal-hrd=cbr` to pad to a constant rate; VBR omits it.
             // `scenecut` inserts an adaptive keyframe at detected cuts (x264
             // default 40; 0 = off for strict fixed-GOP ABR alignment).
-            const opts =
-                (cbr
-                    ? `nal-hrd=cbr:vbv-maxrate=${bitrateKbps}:vbv-bufsize=${cpbKbit}`
-                    : `vbv-maxrate=${vbvMax}:vbv-bufsize=${cpbKbit}`) + `:scenecut=${sceneCut}`;
             // Force the profile via a src capsfilter (x264enc has no `profile`
             // property); x264 then drops CABAC / 8x8dct etc. to comply. 'auto'
             // adds no filter and leaves x264 to pick.
             const profCaps = h264Profile === 'auto' ? '' : ` ! video/x-h264,profile=${h264Profile}`;
             const ilace = interlacedOutput ? ' interlaced=true' : '';
+            if (qvbr) {
+                // Capped CRF. x264enc applies option-string BEFORE its `pass`
+                // switch, and `pass=qual` then sets vbv-maxrate = `bitrate` and
+                // vbv-bufsize = bitrate x vbv-buf-capacity (ms) itself — so the
+                // cap goes through those properties, not the option-string.
+                const crf = Math.min(50, quality); // x264enc `quantizer` is 0–50
+                const vbvMs = Math.max(1, Math.round(cpbSeconds * 1000));
+                return `x264enc name=${name} tune=zerolatency bitrate=${bitrateKbps} pass=qual quantizer=${crf} vbv-buf-capacity=${vbvMs} speed-preset=${speedPreset} key-int-max=${kif} bframes=0${ilace} option-string="scenecut=${sceneCut}"${profCaps} ! h264parse config-interval=1`;
+            }
+            const opts =
+                (cbr
+                    ? `nal-hrd=cbr:vbv-maxrate=${bitrateKbps}:vbv-bufsize=${cpbKbit}`
+                    : `vbv-maxrate=${vbvMax}:vbv-bufsize=${cpbKbit}`) + `:scenecut=${sceneCut}`;
             return `x264enc name=${name} tune=zerolatency bitrate=${bitrateKbps} speed-preset=${speedPreset} key-int-max=${kif} bframes=0${ilace} option-string="${opts}"${profCaps} ! h264parse config-interval=1`;
         }
         if (codec === 'h265') {
-            const opts =
-                (cbr
-                    ? `vbv-maxrate=${bitrateKbps}:vbv-bufsize=${cpbKbit}:strict-cbr=1`
-                    : `vbv-maxrate=${vbvMax}:vbv-bufsize=${cpbKbit}`) + `:scenecut=${sceneCut}`;
+            // QVBR = capped CRF: x265enc applies option-string AFTER its own
+            // ABR setup, and `crf=` switches libx265 to CRF mode.
+            const rcOpts = qvbr
+                ? `crf=${quality}:vbv-maxrate=${bitrateKbps}:vbv-bufsize=${cpbKbit}`
+                : cbr
+                  ? `vbv-maxrate=${bitrateKbps}:vbv-bufsize=${cpbKbit}:strict-cbr=1`
+                  : `vbv-maxrate=${vbvMax}:vbv-bufsize=${cpbKbit}`;
+            const opts = `${rcOpts}:scenecut=${sceneCut}`;
             return `x265enc name=${name} bitrate=${bitrateKbps} tune=zerolatency speed-preset=${speedPreset} key-int-max=${kif} option-string="${opts}" ! h265parse config-interval=1`;
         }
         if (codec === 'av1') {
+            // svtav1enc ignores `rateControl` (CBR/VBR/QVBR alike): its
+            // capped-CRF wiring is unverified, so QVBR keeps this behaviour.
             return `svtav1enc name=${name} target-bitrate=${bitrateKbps} preset=10 ! av1parse`;
         }
     }

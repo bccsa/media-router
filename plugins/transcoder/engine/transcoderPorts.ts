@@ -13,6 +13,8 @@ import type { DynamicPort } from '@media-router/engine';
 import {
     SPEED_PRESETS,
     H264_PROFILES,
+    RATE_CONTROLS,
+    readQvbrQuality,
     type CodecId,
     type H264Profile,
     type ImplId,
@@ -25,7 +27,6 @@ export type ImplChoice = ImplId | 'auto';
 
 const CODEC_IDS: readonly CodecId[] = ['h264', 'h265', 'av1'];
 const ENCODER_IMPLS: readonly ImplChoice[] = ['auto', 'v4l2', 'va', 'software'];
-const RATE_CONTROLS: readonly RateControl[] = ['cbr', 'vbr'];
 
 export type { DynamicPort };
 
@@ -44,6 +45,8 @@ export interface RenditionOverrides {
     h264Profile?: H264Profile;
     sceneCut?: number;
     cpbSeconds?: number;
+    /** QVBR quality target, 1–51 (lower = better). */
+    quality?: number;
 }
 
 /** One configured output rendition (size/bitrate + optional encoder overrides). */
@@ -69,6 +72,9 @@ export interface ResolvedEncode {
     /** HRD/CPB depth in seconds of the rate cap — bounds scene-cut IDR bursts
      *  (see buildEncoderBranch.cpbSeconds). */
     cpbSeconds: number;
+    /** QVBR quality target (1–51, lower = better); only read when
+     *  `rateControl` is 'qvbr'. */
+    quality: number;
 }
 
 /** A rendition with its allocated bus channel + resolved encoder settings. */
@@ -128,6 +134,7 @@ export function readRenditions(config: Record<string, unknown>): Rendition[] {
             h264Profile: readEnum(e.h264Profile, H264_PROFILES),
             sceneCut: readSceneCutOverride(e.sceneCut),
             cpbSeconds: readCpbSecondsOverride(e.cpbSeconds),
+            quality: readQvbrQuality(e.quality),
         };
     });
 }

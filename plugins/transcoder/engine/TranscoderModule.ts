@@ -4,6 +4,9 @@ import {
     H264_PROFILES,
     ProbedEncoders,
     SPEED_PRESETS,
+    RATE_CONTROLS,
+    QVBR_QUALITY_DEFAULT,
+    readQvbrQuality,
     ThroughputPoller,
     bitrateBadge,
     busSrcTapName,
@@ -13,6 +16,7 @@ import {
     type H264Profile,
     type ImplId,
     type PipelineDescription,
+    type RateControl,
     type SpeedPreset,
     type ThroughputSample,
 } from '@media-router/engine';
@@ -191,7 +195,10 @@ export class TranscoderModule extends GstPluginBase {
         // rendition that doesn't override the field.
         const globalCodec = (config.codec as CodecId) ?? 'h264';
         const globalImplChoice = (config.encoderImpl as ImplChoice) ?? 'auto';
-        const globalRateControl = config.rateControl === 'vbr' ? 'vbr' : 'cbr';
+        const globalRateControl = RATE_CONTROLS.includes(config.rateControl as RateControl)
+            ? (config.rateControl as RateControl)
+            : 'cbr';
+        const globalQuality = readQvbrQuality(config.quality) ?? QVBR_QUALITY_DEFAULT;
         const globalSpeedPreset = SPEED_PRESETS.includes(config.speedPreset as SpeedPreset)
             ? (config.speedPreset as SpeedPreset)
             : 'ultrafast';
@@ -238,6 +245,7 @@ export class TranscoderModule extends GstPluginBase {
                 h264Profile: r.h264Profile ?? globalH264Profile,
                 sceneCut: r.sceneCut ?? globalSceneCut,
                 cpbSeconds: r.cpbSeconds ?? globalCpbSeconds,
+                quality: r.quality ?? globalQuality,
             };
             const portId = outputPortId(i);
             const ep = router.assignBusChannel(instanceId, portId);

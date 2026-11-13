@@ -164,6 +164,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
                 h264Profile: e.h264Profile,
                 sceneCut: e.sceneCut,
                 cpbSeconds: e.cpbSeconds,
+                quality: e.quality,
                 interlacedOutput: deinterlaceMode === 'off',
             },
             muxName: `mux_${i}`,
