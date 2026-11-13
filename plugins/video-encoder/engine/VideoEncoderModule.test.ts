@@ -399,6 +399,46 @@ describe('VideoEncoderModule', () => {
             expect(desc!.liveCaptureClock).toBe(true);
         });
 
+        it('carries rateControl=qvbr and quality to the VA encoder', () => {
+            VideoEncoderModule.setAvailableImpls(
+                { h264: ['va'], h265: [], av1: [] },
+                { va: false, v4l2: false },
+                { h264: true },
+            );
+            const module = makeModule();
+            const desc = module.buildPipeline({
+                device: '/dev/video-nonexistent-for-test',
+                codec: 'h264',
+                encoderImpl: 'va',
+                bitrate: 4841,
+                rateControl: 'qvbr',
+                quality: 22,
+                cpbSeconds: 0.4,
+            })!;
+            expect(desc.pipeline).toContain(
+                'vah264enc name=venc0 bitrate=4841 rate-control=qvbr target-percentage=100 qpi=22 target-usage=6 key-int-max=60 b-frames=0 cpb-size=2421',
+            );
+        });
+
+        it('VA driver without QVBR: capped VBR and a warning that PLAYING re-asserts', () => {
+            VideoEncoderModule.setAvailableImpls({ h264: ['va'], h265: [], av1: [] });
+            const module = makeModule();
+            const desc = module.buildPipeline({
+                device: '/dev/video-nonexistent-for-test',
+                codec: 'h264',
+                encoderImpl: 'va',
+                bitrate: 4841,
+                rateControl: 'qvbr',
+            })!;
+            expect(desc.pipeline).toContain('rate-control=vbr target-percentage=100 ');
+            (module as any).health = 'ok'; // what PLAYING's markHealthy does
+            (module as any).onPipelinePlaying();
+            expect(module.getState().health).toBe('warning');
+            expect(module.getState().error).toBe(
+                'No VA-API QVBR for h264: VBR capped at the bitrate, quality ignored',
+            );
+        });
+
         it('falls back to a fakesink when no bus channel endpoint is assigned', () => {
             VideoEncoderModule.setAvailableImpls({ h264: ['v4l2'], h265: [], av1: [] });
             const module = makeModule();

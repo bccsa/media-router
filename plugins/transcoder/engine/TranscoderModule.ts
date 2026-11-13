@@ -4,6 +4,9 @@ import {
     H264_PROFILES,
     ProbedEncoders,
     SPEED_PRESETS,
+    RATE_CONTROLS,
+    QVBR_QUALITY_DEFAULT,
+    readQvbrQuality,
     ThroughputPoller,
     bitrateBadge,
     busSrcTapName,
@@ -13,8 +16,10 @@ import {
     type H264Profile,
     type ImplId,
     type PipelineDescription,
+    type RateControl,
     type SpeedPreset,
     type ThroughputSample,
+    type VaQvbrAvailability,
 } from '@media-router/engine';
 import {
     SUBTITLE_INPUT_PORT_ID,
@@ -24,7 +29,7 @@ import {
     renderDemuxInput,
 } from '@media-router/plugin-subtitle-core';
 import { buildPipeline, deinterlaceMethodForArch, DEMUX_NAME } from './transcoderPipeline.js';
-import { renditionSummary, throughputSection } from './transcoderStatus.js';
+import { qvbrFallbackWarning, renditionSummary, throughputSection } from './transcoderStatus.js';
 import { BURNIN_ALIGNER } from './transcoderSubtitles.js';
 import {
     buildDynamicPorts,
@@ -134,11 +139,16 @@ export class TranscoderModule extends GstPluginBase {
         return TranscoderModule.probed.availability;
     }
 
-    /** Exposed for tests — replaces the availability, keeping the probed scalers. */
-    static setAvailableImpls(availability: Record<CodecId, ImplId[]>): void {
+    /** Exposed for tests — replaces the availability (and VA QVBR support,
+     *  default none), keeping the probed scalers. */
+    static setAvailableImpls(
+        availability: Record<CodecId, ImplId[]>,
+        vaQvbr: Partial<VaQvbrAvailability> = {},
+    ): void {
         TranscoderModule.probed = ProbedEncoders.forTest(
             availability,
             TranscoderModule.probed.hwScalers,
+            vaQvbr,
         );
     }
 
@@ -147,6 +157,7 @@ export class TranscoderModule extends GstPluginBase {
         TranscoderModule.probed = ProbedEncoders.forTest(
             TranscoderModule.probed.availability,
             hwScalers,
+            TranscoderModule.probed.vaQvbr,
         );
     }
 
@@ -168,6 +179,7 @@ export class TranscoderModule extends GstPluginBase {
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
+        this.rcWarning = null;
         const router = this.services?.mediaRouter;
         const instanceId = this.services?.instanceId ?? '';
         if (!router) return null;
@@ -191,7 +203,10 @@ export class TranscoderModule extends GstPluginBase {
         // rendition that doesn't override the field.
         const globalCodec = (config.codec as CodecId) ?? 'h264';
         const globalImplChoice = (config.encoderImpl as ImplChoice) ?? 'auto';
-        const globalRateControl = config.rateControl === 'vbr' ? 'vbr' : 'cbr';
+        const globalRateControl = RATE_CONTROLS.includes(config.rateControl as RateControl)
+            ? (config.rateControl as RateControl)
+            : 'cbr';
+        const globalQuality = readQvbrQuality(config.quality) ?? QVBR_QUALITY_DEFAULT;
         const globalSpeedPreset = SPEED_PRESETS.includes(config.speedPreset as SpeedPreset)
             ? (config.speedPreset as SpeedPreset)
             : 'ultrafast';
@@ -238,6 +253,8 @@ export class TranscoderModule extends GstPluginBase {
                 h264Profile: r.h264Profile ?? globalH264Profile,
                 sceneCut: r.sceneCut ?? globalSceneCut,
                 cpbSeconds: r.cpbSeconds ?? globalCpbSeconds,
+                quality: r.quality ?? globalQuality,
+                vaQvbr: TranscoderModule.probed.vaQvbr[codec],
             };
             const portId = outputPortId(i);
             const ep = router.assignBusChannel(instanceId, portId);
@@ -291,7 +308,8 @@ export class TranscoderModule extends GstPluginBase {
             framerate: `${framerate} fps`,
             renditions: renditionSummary(outputs),
         });
-        this.setHealth('ok');
+        this.rcWarning = qvbrFallbackWarning(outputs);
+        this.setHealth('ok'); // shows rcWarning instead while one stands
 
         // Decode threading is set INLINE in the pipeline (explicit
         // `avdec_h264 thread-type=frame`, see buildPipeline) rather than left to
@@ -303,6 +321,19 @@ export class TranscoderModule extends GstPluginBase {
             ...(result.runnerHooks ? { runnerHooks: result.runnerHooks } : {}),
             ...(result.runner ? { runner: result.runner } : {}),
         };
+    }
+
+    /** A QVBR rendition running capped VBR (see `qvbrFallbackWarning`): it
+     *  stands over every return to ok, PLAYING included, until a rebuild. */
+    private rcWarning: string | null = null;
+
+    setHealth(...args: Parameters<GstPluginBase['setHealth']>): void {
+        super.setHealth(...args);
+        if (args[0] === 'ok' && this.rcWarning) super.setHealth('warning', this.rcWarning);
+    }
+
+    protected onPipelinePlaying(): void {
+        if (this.health === 'ok' && this.rcWarning) super.setHealth('warning', this.rcWarning);
     }
 
     // --- internals ---

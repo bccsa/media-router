@@ -30,6 +30,7 @@ import type { TranscoderOutput } from './transcoderPorts.js';
  *     re-frames itself (house-clock WI-P3-18, OQ-26).
  *   - 2026-11-09: the raw-frame queue and each leaf's decoder-pool queue are
  *     non-leaky: a slow encoder is lateness, not lost frames (B-173).
+ *   - 2026-11-13: QVBR case added (a new string; the two above unchanged).
  */
 
 const outputs: TranscoderOutput[] = [
@@ -45,6 +46,8 @@ const outputs: TranscoderOutput[] = [
             h264Profile: 'auto',
             sceneCut: 40,
             cpbSeconds: 1,
+            quality: 25,
+            vaQvbr: true,
         },
     },
     {
@@ -59,6 +62,8 @@ const outputs: TranscoderOutput[] = [
             h264Profile: 'baseline',
             sceneCut: 30,
             cpbSeconds: 0.5,
+            quality: 25,
+            vaQvbr: true,
         },
     },
 ];
@@ -79,6 +84,45 @@ const GOLDEN_V4L2_SCALER =
 const GOLDEN_VA_SCALER =
     'unixfdsrc socket-path=/tmp/mr-bus-5000.sock ! mrlateness name=lat_busin_5000 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! queue leaky=0 max-size-time=700000000 max-size-buffers=0 max-size-bytes=0 ! mrtsdemux name=demux media=video ! capsfilter caps="video/x-h264" ! h264parse ! avdec_h264 thread-type=frame max-threads=3 ! queue leaky=0 max-size-time=700000000 max-size-buffers=0 max-size-bytes=0 ! videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=25/1;video/x-raw,framerate=[1/1,25/1] ! tee name=t t. ! queue leaky=0 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videoscale ! video/x-raw,width=1920,height=1080 ! videoconvert ! v4l2h264enc name=venc_0 extra-controls="controls,video_bitrate=5000000,video_bitrate_mode=0,repeat_sequence_header=1,video_gop_size=60,h264_i_frame_period=60" ! video/x-h264,level=(string)4.2 ! h264parse config-interval=1 ! mpegtsmux name=mux_0 latency=0 alignment=0 ! capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_40100 reference=running-time ! tee name=busout_40100 allow-not-linked=true t. ! queue leaky=0 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videoscale ! video/x-raw,width=854,height=480 ! videoconvert ! x264enc name=venc_1 tune=zerolatency bitrate=1200 speed-preset=medium key-int-max=60 bframes=0 interlaced=true option-string="vbv-maxrate=1800:vbv-bufsize=900:scenecut=30" ! video/x-h264,profile=baseline ! h264parse config-interval=1 ! mpegtsmux name=mux_1 latency=0 alignment=0 ! capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_40101 reference=running-time ! tee name=busout_40101 allow-not-linked=true';
 
+const qvbrOutputs: TranscoderOutput[] = [
+    {
+        port: 40100,
+        portId: 'out-0',
+        rendition: { name: '1080p', width: 1920, height: 1080, bitrate: 4841 },
+        encode: {
+            codec: 'h264',
+            impl: 'va',
+            rateControl: 'qvbr',
+            speedPreset: 'fast',
+            h264Profile: 'auto',
+            sceneCut: 40,
+            cpbSeconds: 1,
+            quality: 25,
+            vaQvbr: true,
+        },
+    },
+    {
+        port: 40101,
+        portId: 'out-1',
+        rendition: { name: '480p', width: 854, height: 480, bitrate: 1200 },
+        encode: {
+            codec: 'h264',
+            impl: 'software',
+            rateControl: 'qvbr',
+            speedPreset: 'veryfast',
+            h264Profile: 'main',
+            sceneCut: 0,
+            cpbSeconds: 0.5,
+            quality: 23,
+            vaQvbr: true,
+        },
+    },
+];
+
+/** QVBR: VA-API driver QVBR with bitrate = peak; x264 capped CRF (pass=qual). */
+const GOLDEN_QVBR =
+    'unixfdsrc socket-path=/tmp/mr-bus-5000.sock ! mrlateness name=lat_busin_5000 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! queue leaky=0 max-size-time=700000000 max-size-buffers=0 max-size-bytes=0 ! mrtsdemux name=demux media=video ! capsfilter caps="video/x-h264" ! h264parse ! avdec_h264 thread-type=frame max-threads=3 ! queue leaky=0 max-size-time=700000000 max-size-buffers=0 max-size-bytes=0 ! videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=50/1;video/x-raw,framerate=[1/1,50/1] ! tee name=t t. ! queue leaky=0 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! vapostproc ! video/x-raw(memory:VAMemory),width=1920,height=1080 ! vah264enc name=venc_0 bitrate=4841 rate-control=qvbr target-percentage=100 qpi=25 target-usage=4 key-int-max=50 b-frames=0 cpb-size=4841 ! h264parse config-interval=1 ! mpegtsmux name=mux_0 latency=0 alignment=0 ! capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_40100 reference=running-time ! tee name=busout_40100 allow-not-linked=true t. ! queue leaky=0 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videoscale ! video/x-raw,width=854,height=480 ! videoconvert ! x264enc name=venc_1 tune=zerolatency bitrate=1200 pass=qual quantizer=23 vbv-buf-capacity=500 speed-preset=veryfast key-int-max=50 bframes=0 interlaced=true option-string="scenecut=0" ! video/x-h264,profile=main ! h264parse config-interval=1 ! mpegtsmux name=mux_1 latency=0 alignment=0 ! capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_40101 reference=running-time ! tee name=busout_40101 allow-not-linked=true';
+
 describe('transcoderPipeline golden strings (pre-refactor capture)', () => {
     it('v4l2 hw scaler available: byte-identical to the pre-refactor builder', () => {
         const res = buildPipeline({ ...base, hwScalers: { va: false, v4l2: true } });
@@ -90,6 +134,17 @@ describe('transcoderPipeline golden strings (pre-refactor capture)', () => {
         const res = buildPipeline({ ...base, hwScalers: { va: true, v4l2: false } });
         expect(res!.pipeline).toBe(GOLDEN_VA_SCALER);
         expect(res!.sinkNames).toEqual(['busout_40100', 'busout_40101']);
+    });
+
+    it('qvbr: VA-API QVBR (target-percentage=100, qpi) and x264 capped CRF', () => {
+        const res = buildPipeline({
+            ...base,
+            framerate: 50,
+            gopFrames: 50,
+            outputs: qvbrOutputs,
+            hwScalers: { va: true, v4l2: false },
+        });
+        expect(res!.pipeline).toBe(GOLDEN_QVBR);
     });
 
     it('no hold queue anywhere, a subtitle source wired or not (no subhold, min-threshold-time; OQ-24)', () => {

@@ -1,5 +1,5 @@
-import type { ThroughputSample } from '@media-router/engine';
-import type { Rendition, TranscoderOutput } from './transcoderPorts.js';
+import { effectiveRateControl, type ThroughputSample } from '@media-router/engine';
+import { renditionLabel, type Rendition, type TranscoderOutput } from './transcoderPorts.js';
 
 /**
  * Operator-facing status text for the transcoder's rendition ladder. Pure
@@ -17,14 +17,34 @@ export function renditionSummary(outputs: TranscoderOutput[]): string {
             const tags: string[] = [];
             if (r.codec) tags.push(o.encode.codec);
             if (r.encoderImpl) tags.push(o.encode.impl);
-            if (r.rateControl) tags.push(o.encode.rateControl);
+            // What the encoder runs, not what was asked: QVBR on V4L2 is VBR,
+            // on VA without it capped VBR (no quality tag then).
+            const rc = effectiveRateControl(o.encode);
+            if (r.rateControl) tags.push(rc);
             if (r.speedPreset) tags.push(o.encode.speedPreset);
             if (r.h264Profile && r.h264Profile !== 'auto') tags.push(o.encode.h264Profile);
             if (r.sceneCut !== undefined) tags.push(`sc${o.encode.sceneCut}`);
+            if (r.quality !== undefined && rc === 'qvbr') tags.push(`q${o.encode.quality}`);
             const suffix = tags.length ? ` [${tags.join(', ')}]` : '';
             return `${r.width}x${r.height}@${r.bitrate}k${suffix}`;
         })
         .join(', ');
+}
+
+/**
+ * The standing warning when a QVBR rendition on VA-API runs capped VBR instead
+ * (the driver lacks QVBR, or it is vaav1enc): null when none does.
+ */
+export function qvbrFallbackWarning(outputs: TranscoderOutput[]): string | null {
+    const fallen = outputs.filter(
+        (o) =>
+            o.encode.rateControl === 'qvbr' &&
+            o.encode.impl === 'va' &&
+            effectiveRateControl(o.encode) === 'capped-vbr',
+    );
+    if (fallen.length === 0) return null;
+    const names = fallen.map((o) => renditionLabel(o.rendition)).join(', ');
+    return `No VA-API QVBR for ${names}: VBR capped at the bitrate, quality ignored`;
 }
 
 /**

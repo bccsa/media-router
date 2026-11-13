@@ -12,7 +12,7 @@
  * rather than replacing them — those stay independently usable and tested.
  */
 
-import { probeGstElement } from './gstInspect.js';
+import { gstElementEnumHasValue, probeGstElement } from './gstInspect.js';
 import { ENCODER_ELEMENTS, resolveImpl, type CodecId, type ImplId } from './encoderElements.js';
 import { probeEncoderAvailability, applyEncoderAvailabilityToManifest } from './encoderManifest.js';
 
@@ -38,15 +38,48 @@ function emptyAvailability(): Record<CodecId, ImplId[]> {
     return { h264: [], h265: [], av1: [] };
 }
 
+/** Per codec: does its VA element's `rate-control` list `qvbr` here? */
+export type VaQvbrAvailability = Record<CodecId, boolean>;
+
+function noVaQvbr(): VaQvbrAvailability {
+    return { h264: false, h265: false, av1: false };
+}
+
+/** Probe `qvbr` in each installed VA element's per-driver rate-control enum. */
+async function probeVaQvbr(
+    elements: Record<CodecId, Partial<Record<ImplId, string>>>,
+    availability: Record<CodecId, ImplId[]>,
+): Promise<VaQvbrAvailability> {
+    const codecs = Object.keys(availability) as CodecId[];
+    const found = await Promise.all(
+        codecs.map((c) => {
+            const el = elements[c]?.va;
+            return el && availability[c].includes('va')
+                ? gstElementEnumHasValue(el, 'rate-control', 'qvbr')
+                : Promise.resolve(false);
+        }),
+    );
+    const out = noVaQvbr();
+    codecs.forEach((c, i) => (out[c] = found[i]));
+    return out;
+}
+
 export class ProbedEncoders {
     /** Impls whose GStreamer element is actually installed, per codec. */
     readonly availability: Record<CodecId, ImplId[]>;
     /** Hardware scalers installed. All-false unless `probeHwScalers` was set. */
     readonly hwScalers: HwScalerAvailability;
+    /** VA elements whose driver offers QVBR (`buildEncoderBranch`'s `vaQvbr`). */
+    readonly vaQvbr: VaQvbrAvailability;
 
-    private constructor(availability: Record<CodecId, ImplId[]>, hwScalers: HwScalerAvailability) {
+    private constructor(
+        availability: Record<CodecId, ImplId[]>,
+        hwScalers: HwScalerAvailability,
+        vaQvbr: VaQvbrAvailability,
+    ) {
         this.availability = availability;
         this.hwScalers = hwScalers;
+        this.vaQvbr = vaQvbr;
     }
 
     /**
@@ -63,7 +96,8 @@ export class ProbedEncoders {
             opts.probeHwScalers ? probeGstElement('vapostproc') : Promise.resolve(false),
             opts.probeHwScalers ? probeGstElement('v4l2convert') : Promise.resolve(false),
         ]);
-        return new ProbedEncoders(availability, { va, v4l2 });
+        const vaQvbr = await probeVaQvbr(elements, availability);
+        return new ProbedEncoders(availability, { va, v4l2 }, vaQvbr);
     }
 
     /**
@@ -78,16 +112,18 @@ export class ProbedEncoders {
      * available") rather than naming an element that isn't installed.
      */
     static unprobed(): ProbedEncoders {
-        return new ProbedEncoders(emptyAvailability(), { va: false, v4l2: false });
+        return new ProbedEncoders(emptyAvailability(), { va: false, v4l2: false }, noVaQvbr());
     }
 
     static forTest(
         availability: Partial<Record<CodecId, ImplId[]>>,
         hwScalers: Partial<HwScalerAvailability> = {},
+        vaQvbr: Partial<VaQvbrAvailability> = {},
     ): ProbedEncoders {
         return new ProbedEncoders(
             { ...emptyAvailability(), ...availability },
             { va: false, v4l2: false, ...hwScalers },
+            { ...noVaQvbr(), ...vaQvbr },
         );
     }
 

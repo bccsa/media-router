@@ -19,6 +19,7 @@ import {
     suspendV4l2Enumeration,
     releaseV4l2Demand,
     ENCODER_ELEMENTS,
+    effectiveRateControl,
     type CodecId,
     type EngineServices,
     type ImplId,
@@ -110,8 +111,9 @@ export class VideoEncoderModule extends GstPluginBase {
     static setAvailableImpls(
         availability: Record<CodecId, ImplId[]>,
         hwScalers: { va: boolean; v4l2: boolean } = { va: false, v4l2: false },
+        vaQvbr: Partial<Record<CodecId, boolean>> = {},
     ): void {
-        VideoEncoderModule.probed = ProbedEncoders.forTest(availability, hwScalers);
+        VideoEncoderModule.probed = ProbedEncoders.forTest(availability, hwScalers, vaQvbr);
     }
 
     /**
@@ -185,15 +187,28 @@ export class VideoEncoderModule extends GstPluginBase {
     /** Every PLAYING sets health ok: put a standing restamp warning back. */
     protected onPipelinePlaying(): void {
         this.ingestTiming.reassert();
+        this.reassertRcWarning();
     }
 
     /** A return to ok shows a standing restamp warning again: another may have hidden it. */
     setHealth(...args: Parameters<GstPluginBase['setHealth']>): void {
         super.setHealth(...args);
-        if (args[0] === 'ok') this.ingestTiming.reassert();
+        if (args[0] === 'ok') {
+            this.ingestTiming.reassert();
+            this.reassertRcWarning();
+        }
+    }
+
+    /** QVBR asked on a VA driver without it: the encoder runs capped VBR.
+     *  Stands over ok (PLAYING included) until a rebuild. */
+    private rcWarning: string | null = null;
+
+    private reassertRcWarning(): void {
+        if (this.health === 'ok' && this.rcWarning) super.setHealth('warning', this.rcWarning);
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
+        this.rcWarning = null;
         const device = (config.device as string) ?? '';
         if (!device) {
             this.setHealth('warning', 'No V4L2 device selected');
@@ -223,7 +238,15 @@ export class VideoEncoderModule extends GstPluginBase {
             h264Profile,
             sceneCut,
             cpbSeconds,
+            quality,
         } = knobs;
+        const vaQvbr = VideoEncoderModule.probed.vaQvbr[codec];
+        this.rcWarning =
+            rateControl === 'qvbr' &&
+            impl === 'va' &&
+            effectiveRateControl({ codec, impl, rateControl, vaQvbr }) === 'capped-vbr'
+                ? `No VA-API QVBR for ${codec}: VBR capped at the bitrate, quality ignored`
+                : null;
         const scaleStage = buildScaleStage({
             width,
             height,
@@ -268,6 +291,8 @@ export class VideoEncoderModule extends GstPluginBase {
                 h264Profile,
                 sceneCut,
                 cpbSeconds,
+                quality,
+                vaQvbr,
             },
             inputQueue: 'none',
             muxName: 'mux',

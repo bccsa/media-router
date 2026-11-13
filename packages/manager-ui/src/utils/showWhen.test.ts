@@ -26,6 +26,13 @@ describe('matchShowWhen', () => {
         expect(matchShowWhen('codec=', from({}))).toBe(true);
     });
 
+    it('requires every &-joined clause', () => {
+        const cond = 'rateControl=qvbr&encoderImpl=software,va,auto';
+        expect(matchShowWhen(cond, from({ rateControl: 'qvbr', encoderImpl: 'va' }))).toBe(true);
+        expect(matchShowWhen(cond, from({ rateControl: 'qvbr', encoderImpl: 'v4l2' }))).toBe(false);
+        expect(matchShowWhen(cond, from({ rateControl: 'cbr', encoderImpl: 'va' }))).toBe(false);
+    });
+
     it('coerces non-string values before comparing', () => {
         expect(matchShowWhen('n=5', from({ n: 5 }))).toBe(true);
     });

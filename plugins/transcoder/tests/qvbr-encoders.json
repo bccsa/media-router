@@ -1,0 +1,11 @@
+{
+  "va-h264": "vah264enc name=enc bitrate=4841 rate-control=qvbr target-percentage=100 qpi=25 target-usage=7 key-int-max=50 b-frames=0 cpb-size=4841 ! h264parse config-interval=1",
+  "va-h264-cpb0.4": "vah264enc name=enc bitrate=4841 rate-control=qvbr target-percentage=100 qpi=25 target-usage=7 key-int-max=50 b-frames=0 cpb-size=2421 ! h264parse config-interval=1",
+  "va-h264-fallback": "vah264enc name=enc bitrate=4841 rate-control=vbr target-percentage=100 target-usage=7 key-int-max=50 b-frames=0 cpb-size=2421 ! h264parse config-interval=1",
+  "va-h265": "vah265enc name=enc bitrate=16000 rate-control=qvbr target-percentage=100 qpi=28 target-usage=7 key-int-max=50 b-frames=0 cpb-size=16000 ! h265parse config-interval=1",
+  "va-h265-cpb0.4": "vah265enc name=enc bitrate=16000 rate-control=qvbr target-percentage=100 qpi=25 target-usage=7 key-int-max=50 b-frames=0 cpb-size=8000 ! h265parse config-interval=1",
+  "va-av1": "vaav1enc name=enc bitrate=4841 rate-control=vbr target-percentage=100 target-usage=7 key-int-max=50 cpb-size=4841 ! av1parse",
+  "x264": "x264enc name=enc tune=zerolatency bitrate=4841 pass=qual quantizer=23 vbv-buf-capacity=500 speed-preset=ultrafast key-int-max=50 bframes=0 option-string=\"scenecut=40\" ! video/x-h264,profile=main ! h264parse config-interval=1",
+  "x265": "x265enc name=enc bitrate=4841 tune=zerolatency speed-preset=ultrafast key-int-max=50 option-string=\"crf=28:vbv-maxrate=4841:vbv-bufsize=2421:scenecut=40\" ! h265parse config-interval=1",
+  "svtav1": "svtav1enc name=enc crf=25 preset=10 parameters-string=\"mbr=2500:mbr-overshoot-pct=0\" ! av1parse"
+}

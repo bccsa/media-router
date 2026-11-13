@@ -126,6 +126,34 @@ export function gstElementSupportsCaps(element: string, capsMediaType: string): 
     });
 }
 
+const enumCache = new Map<string, Promise<boolean>>();
+
+/**
+ * Does an installed element's enum property offer a value (by nick)? For enums
+ * gst builds per host — VA-API's `rate-control` lists only the modes the
+ * driver reports, so `qvbr` exists on one box and not on another. Scans the
+ * property's block in `gst-inspect-1.0 <element>` for `(N): <nick> `. Cached
+ * per (element, property, value) for the process lifetime, like the others.
+ */
+export function gstElementEnumHasValue(
+    element: string,
+    property: string,
+    value: string,
+): Promise<boolean> {
+    const key = `${element}\u0000${property}\u0000${value}`;
+    return memo(enumCache, key, async () => {
+        const stdout = await gstInspect([element]);
+        if (stdout === null) return false;
+        // The block runs from `  <property> :` to the next blank line.
+        const start = stdout.search(new RegExp(`^[ \\t]+${property}[ \\t]+:`, 'm'));
+        if (start < 0) return false;
+        const rest = stdout.slice(start);
+        const end = rest.search(/\n\s*\n/);
+        const block = end < 0 ? rest : rest.slice(0, end);
+        return new RegExp(`\\(\\d+\\):\\s+${value}\\s`).test(block);
+    });
+}
+
 let ladspaElementList: Promise<string[]> | null = null;
 
 /**

@@ -238,6 +238,90 @@ describe('buildPipeline', () => {
         expect(desc.pipeline).toContain('x265enc'); // rendition 1 codec override
     });
 
+    it('resolves QVBR quality per rendition: override, else the global, else 25', () => {
+        TranscoderModule.setAvailableImpls({ h264: ['va'], h265: ['va'], av1: [] }, { h264: true });
+        const { module } = makeModule();
+        const desc = module.buildPipeline({
+            rateControl: 'qvbr',
+            quality: 30,
+            renditions: [
+                { width: 1920, height: 1080, bitrate: 4841, quality: 20 },
+                { width: 1280, height: 720, bitrate: 2500 },
+            ],
+        })!;
+        expect(desc.pipeline).toContain(
+            'bitrate=4841 rate-control=qvbr target-percentage=100 qpi=20',
+        );
+        expect(desc.pipeline).toContain(
+            'bitrate=2500 rate-control=qvbr target-percentage=100 qpi=30',
+        );
+        const dflt = makeModule().module.buildPipeline({
+            rateControl: 'qvbr',
+            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+        })!;
+        expect(dflt.pipeline).toContain('qpi=25');
+        // An unknown global mode still falls back to CBR.
+        const junk = makeModule().module.buildPipeline({
+            rateControl: 'abr',
+            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+        })!;
+        expect(junk.pipeline).toContain('rate-control=cbr');
+    });
+
+    it('a mixed ladder: global cbr, one rendition overriding to qvbr inherits the global quality', () => {
+        TranscoderModule.setAvailableImpls({ h264: ['va'], h265: [], av1: [] }, { h264: true });
+        const { module } = makeModule();
+        const desc = module.buildPipeline({
+            rateControl: 'cbr',
+            quality: 31,
+            renditions: [
+                { width: 1920, height: 1080, bitrate: 4841, rateControl: 'qvbr' },
+                { width: 1280, height: 720, bitrate: 2500 },
+            ],
+        })!;
+        expect(desc.pipeline).toContain(
+            'bitrate=4841 rate-control=qvbr target-percentage=100 qpi=31',
+        );
+        expect(desc.pipeline).toContain('bitrate=2500 rate-control=cbr ');
+        expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
+    });
+
+    it('VA driver without QVBR: capped VBR and a warning that stands over ok and PLAYING', () => {
+        TranscoderModule.setAvailableImpls({ h264: ['va'], h265: [], av1: [] });
+        const module = new TranscoderModule();
+        (module as any).services = {
+            instanceId: 'tc-1',
+            mediaRouter: {
+                getModuleBusSource: (_id: string, portId?: string) =>
+                    portId === 'subtitles-in'
+                        ? undefined
+                        : { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
+                assignBusChannel: () => ({ port: 41000 }),
+            },
+        };
+        (module as any).setStatusData = vi.fn();
+        const desc = module.buildPipeline({
+            rateControl: 'qvbr',
+            renditions: [{ name: 'HD', width: 1920, height: 1080, bitrate: 4841 }],
+        })!;
+        expect(desc.pipeline).toContain(
+            'bitrate=4841 rate-control=vbr target-percentage=100 target-usage=7 key-int-max=50 b-frames=0 cpb-size=4841',
+        );
+        const warning = 'No VA-API QVBR for HD: VBR capped at the bitrate, quality ignored';
+        expect(module.getState().health).toBe('warning');
+        expect(module.getState().error).toBe(warning);
+        (module as any).health = 'ok'; // what PLAYING's markHealthy does
+        (module as any).onPipelinePlaying();
+        expect(module.getState().error).toBe(warning);
+        // A rebuild on a driver with QVBR clears it.
+        TranscoderModule.setAvailableImpls({ h264: ['va'], h265: [], av1: [] }, { h264: true });
+        module.buildPipeline({
+            rateControl: 'qvbr',
+            renditions: [{ name: 'HD', width: 1920, height: 1080, bitrate: 4841 }],
+        });
+        expect(module.getState().health).toBe('ok');
+    });
+
     it('flags overridden knobs in the encoder status summary', () => {
         const { module } = makeModule();
         module.buildPipeline({

@@ -1,3 +1,6 @@
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { QVBR_QUALITY_DEFAULT, RATE_CONTROLS } from '@media-router/engine';
 import { describe, expect, it } from 'vitest';
 import { pickEnum, readEncoderKnobs } from './videoEncoderConfig.js';
 
@@ -26,6 +29,7 @@ describe('readEncoderKnobs', () => {
             h264Profile: 'auto',
             sceneCut: 40,
             cpbSeconds: 1,
+            quality: 25,
         });
     });
     it('reads and validates every knob', () => {
@@ -40,6 +44,7 @@ describe('readEncoderKnobs', () => {
             h264Profile: 'baseline',
             sceneCut: 0,
             cpbSeconds: 0.5,
+            quality: 30,
         });
         expect(k).toEqual({
             codec: 'h265',
@@ -53,6 +58,7 @@ describe('readEncoderKnobs', () => {
             h264Profile: 'baseline',
             sceneCut: 0,
             cpbSeconds: 0.5,
+            quality: 30,
         });
     });
     it('rejects out-of-set enums back to the defaults', () => {
@@ -64,5 +70,35 @@ describe('readEncoderKnobs', () => {
         expect(k.rateControl).toBe('cbr');
         expect(k.speedPreset).toBe('superfast');
         expect(k.h264Profile).toBe('auto');
+    });
+    it('clamps cpbSeconds to 0.1–2 s like the transcoder', () => {
+        expect(readEncoderKnobs({ cpbSeconds: 0.01 }).cpbSeconds).toBe(0.1);
+        expect(readEncoderKnobs({ cpbSeconds: 9 }).cpbSeconds).toBe(2);
+        expect(readEncoderKnobs({ cpbSeconds: 'x' }).cpbSeconds).toBe(1);
+    });
+    it('accepts qvbr and clamps its quality to 1–51', () => {
+        expect(readEncoderKnobs({ rateControl: 'qvbr', quality: 18 })).toMatchObject({
+            rateControl: 'qvbr',
+            quality: 18,
+        });
+        expect(readEncoderKnobs({ quality: 99 }).quality).toBe(51);
+        expect(readEncoderKnobs({ quality: 0 }).quality).toBe(1);
+        expect(readEncoderKnobs({ quality: 'junk' }).quality).toBe(25);
+    });
+});
+
+describe('video-encoder manifest rate control', () => {
+    const props = JSON.parse(
+        readFileSync(join(process.cwd(), 'plugins', 'video-encoder', 'package.json'), 'utf8'),
+    ).mediaRouter.configSchema.properties;
+    it('rateControl enum is RATE_CONTROLS; quality 1–51, engine default, hidden on V4L2', () => {
+        expect(props.rateControl.enum).toEqual(RATE_CONTROLS);
+        expect(Object.keys(props.rateControl['x-enumLabels'])).toEqual(RATE_CONTROLS);
+        expect(props.quality).toMatchObject({
+            minimum: 1,
+            maximum: 51,
+            default: QVBR_QUALITY_DEFAULT,
+            'x-showWhen': 'rateControl=qvbr&encoderImpl=software,va,auto',
+        });
     });
 });

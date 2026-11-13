@@ -57,14 +57,24 @@
                             },
                             "rateControl": {
                                 "type": "string",
-                                "enum": ["cbr", "vbr"],
+                                "enum": ["cbr", "vbr", "qvbr"],
                                 "x-advanced": true,
                                 "x-enumLabels": {
                                     "cbr": "CBR (constant)",
-                                    "vbr": "VBR (variable)"
+                                    "vbr": "VBR (variable)",
+                                    "qvbr": "QVBR (quality, bitrate = ceiling)"
                                 },
                                 "title": "Rate Control",
                                 "description": "Override for this rendition. Blank = inherit."
+                            },
+                            "quality": {
+                                "type": "number",
+                                "minimum": 1,
+                                "maximum": 51,
+                                "x-advanced": true,
+                                "x-showWhen": "rateControl=qvbr",
+                                "title": "QVBR Quality",
+                                "description": "Override (lower = better). Blank = inherit."
                             },
                             "speedPreset": {
                                 "type": "string",
@@ -130,14 +140,26 @@
                 },
                 "rateControl": {
                     "type": "string",
-                    "enum": ["cbr", "vbr"],
+                    "enum": ["cbr", "vbr", "qvbr"],
                     "default": "cbr",
                     "x-enumLabels": {
                         "cbr": "CBR (constant — safest for UDP/SRT)",
-                        "vbr": "VBR (variable — better quality on motion)"
+                        "vbr": "VBR (variable — better quality on motion)",
+                        "qvbr": "QVBR (quality-targeted, bitrate = ceiling)"
                     },
                     "title": "Rate Control",
-                    "description": "CBR: constant bitrate, safest for fixed-bandwidth links. VBR: better motion quality, peak capped at 1.5x."
+                    "description": "CBR: fixed rate. VBR: bitrate = average (1.5x peaks on VA). QVBR: bitrate = ceiling, less on easy content; V4L2: VBR."
+                },
+                "quality": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 51,
+                    "default": 25,
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "title": "QVBR Quality",
+                    "x-advanced": true,
+                    "description": "QVBR quality, lower = better (a hint on VA-API); the bitrate stays the ceiling, easy content uses less."
                 },
                 "encoderImpl": {
                     "type": "string",
@@ -375,6 +397,6 @@
         "build": "tsc",
         "typecheck": "tsc --noEmit",
         "test": "pnpm run test:py",
-        "test:py": "cd py && python3 deinterlace_guard_test.py && python3 videorate_conform_test.py"
+        "test:py": "cd py && python3 deinterlace_guard_test.py && python3 videorate_conform_test.py && python3 qvbr_encoders_test.py"
     }
 }
