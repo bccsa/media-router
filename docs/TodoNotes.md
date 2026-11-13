@@ -2,6 +2,14 @@
 
 ## Open
 
+### QVBR rate control for the encoders (PR #864, 2026-11-13)
+- [x] `rateControl: qvbr` (bitrate = ceiling, `quality` 1–51) in the shared builder, the Video Transcoder (global + per rendition) and the Video Encoder. VA-API: driver QVBR with target-percentage=100, cpb-size floored at max/2; QVBR probed per VA element (`ProbedEncoders.vaQvbr`), capped VBR plus a standing warning without it and on vaav1enc. x264/x265/svtav1: capped CRF. V4L2: VBR. Status tags show what runs (`effectiveRateControl`). `py/qvbr_encoders_test.py` launches every QVBR string and reads each property back. Measured on an Intel Meteor Lake gateway (iHD, GStreamer 1.28.2): the cap holds; QVBR spends 15–25 % less than VBR on mid content (H.264), about 50 % less (H.265).
+- [ ] x264 CBR and VBR are one config (GStreamer ≥ 1.26): x264enc assigns `nal-hrd` after the option-string (`nal-hrd=cbr` there is dead) and its `pass` switch overwrites the option-string VBV, so no padding, peak 1.0x, 600 ms buffer, `cpbSeconds` ignored. Fix through x264enc's own properties (`nal-hrd`, `vbv-buf-capacity`; VBR needs a different `pass`); changes golden strings.
+- [ ] VA-API CBR/VBR: a cpb-size under max/2 is replaced by 2 s of max (`_calculate_bitrate_hrd`), so the CPB Depth help text "Lower to 0.3–0.5 s" does nothing below 0.5 s (CBR) / 0.33 s (VBR). Floor or reword; QVBR already floors.
+- [ ] The Encoder help text "Auto prefers hardware" is wrong where x264enc is installed: `resolveImpl` prefers software over VA-API.
+- [ ] The VA QVBR quality factor is a driver hint: on iHD it moves the rate a lot on some content and barely on other. Revisit if a newer driver changes it.
+- [ ] svtav1 capped CRF relies on SVT's `mbr` / `mbr-overshoot-pct` parameters (verified with SVT-AV1 4.1.0); check the image's SVT version before AV1 software QVBR is used.
+
 ### House-clock timing Phase 0 (ADR-0029, 2026-10-13)
 - [x] The time-sync contract's kill switch and its legacy path are deleted (WI-P0-5): every pipeline runs on the house clock. Where an entry below speaks of the contract being off, the kill switch or the legacy path, that is history.
 - [x] Review and fleet round (2026-10-14), recorded in ADR-0029: `synced` also needs the kernel's maxerror under 1 s (linuxptp's start-up flag flip latched a .108 clock 214 days wrong); one re-epoch per boot step (a moved E is held up to 10 s while untraceable); four `mr-clockstate` captures from .50 replayed in `HouseClock.test.ts`; `timing-in-<n>` numbered by the input's fixed place and labelled by its feeding module (mpegts-muxer declares `timingInputs`); video device latency from the output's mode; the clock tooltip on the sidebar engine card; the sidecar lateness wiring tested (hls-player, ts-splitter); aes67-output restarts with one stop and one start, keeps its free-running reason current and no longer revives a module the engine stopped mid-restart.

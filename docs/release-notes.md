@@ -3,6 +3,21 @@
 Operator-facing notes per release, newest first. What changed on the box,
 what to expect, what to do. Engineering detail is in `docs/adr/`.
 
+## Unreleased — QVBR rate control for Video Transcoder and Video Encoder
+
+- **New Rate Control choice, QVBR (quality, bitrate = ceiling).** The bitrate
+  you set becomes the most the encoder may use; easy content (static or slow
+  pictures) comes in well under it, hard content uses it all. CBR and VBR are
+  unchanged. A new **QVBR Quality** setting (1–51, default 25, lower = better)
+  applies only in QVBR; on the Video Transcoder it is under Advanced and can be
+  overridden per rendition.
+- **Where it applies.** Intel VA-API H.264/H.265 and software x264/x265/AV1
+  run it as a quality target. On VA-API the quality is a hint to the driver:
+  the ceiling always holds, how much the quality setting changes the rate
+  depends on the picture. VA-API AV1, and a VA-API driver without QVBR, run
+  VBR capped at the bitrate and show a warning saying so. Pi hardware (V4L2)
+  stays VBR, as for CBR.
+
 ## v2.0.0.103 — house-clock timing, Phase 4
 
 Phase 4 of the house-clock timing work: every output now plays what it
