@@ -6,7 +6,7 @@ transition, each PES's mapping, each program's summary) must equal trust_gate.py
   - every event list trust_ref_test.py builds (its cases, from fixture_gen version-2 traces);
   - the five pinned trust-*.expect.jsonl specs;
   - 60 random ones (seeded): generated traces with mode flips, clock losses and re-epochs, L and
-    tau moves, O and trims, natural gaps and ticks, a config line, over 30 to 120 s.
+    tau moves, O and trims, natural gaps (a re-lock's of 0 too), a config line, over 30 to 120 s.
 
 Then each of trust_ref_test.py's mutants replays its case's lists, and parity must tell it from
 mrts_cli. Needs the built natives (make in native/mrts).
@@ -117,7 +117,7 @@ def random_list(rng, i):
         elif c < 0.86:
             ev.append({"kind": "trim", "atS": at, "pid": 0x102, "ns": 40 * MS})
         else:
-            ev.append({"kind": "tick", "atS": at})
+            ev.append({"kind": "natural-gap", "atS": at, "gapNs": 0})
     ev.sort(key=lambda x: x["atS"])
     evs = rt.gen(args, ev, rng.choice([0, 2100 * MS, 2200 * MS]))
     if config:   # a config line carries no "t"
@@ -132,7 +132,7 @@ def main():
         return 1
     lists = suite_lists()
     n = sum(len(v) for v in lists.values())
-    check("trust_ref_test's cases give %d event lists" % n, n >= 38)
+    check("trust_ref_test's cases give %d event lists" % n, n >= 42)
     for case, evss in lists.items():
         bad = None
         for evs in evss:
@@ -166,14 +166,15 @@ def main():
         finally:
             undo()
         check("mutant told from mrts_cli: %s (%s)" % (label, case), told)
-    bad_lines = [('{"t":1,"kind":"nope"}', "unknown event kind"), ('{"kind":"config","zz":1}', "unknown config key"),
+    bad_lines = [('{"t":1,"kind":"nope"}', "unknown event kind"), ('{"t":1,"kind":"tick"}', "unknown event kind"),
+                 ('{"kind":"config","zz":1}', "unknown config key"),
                  ('{"t":1,"kind":"pcr","pid":1}', '"pcr"'), ('{"t":1,"kind":"decl","program":1,"present":true}', '"')]
     ok = True
     for text, want in bad_lines:
         p = subprocess.run([CLI, "trust-replay", "-"], input=(text + "\n").encode(), stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE)
         ok = ok and p.returncode == 1 and want in p.stderr.decode() and ":1:" in p.stderr.decode()
-    check("trust-replay refuses a bad line with its number (exit 1)", ok)
+    check("trust-replay refuses a bad line (a tick too: no gate steps in a silence) with its number (exit 1)", ok)
     p = subprocess.run([CLI, "trust-replay"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     check("trust-replay without input exits 2", p.returncode == 2)
     if _failures:

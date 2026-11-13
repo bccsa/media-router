@@ -3617,6 +3617,8 @@ bool TrustReplay::feed(const Json& ev, std::string* err) {
     int64_t now = 0;
     if (!get_i64(ev, "t", &now, err)) return false;
     now_ = now;
+    if (k == "psi" || k == "decl" || k == "decl2" || k == "pcr" || k == "pes" || k == "outage")
+        for (Entry& e : gates_) e.gate->on_input(now);   // what a buffer brings (the reference's INPUTS)
     std::vector<std::string> rows;
     std::vector<bool> deciding;
     auto snapshot = [&]() {
@@ -3712,7 +3714,7 @@ bool TrustReplay::feed(const Json& ev, std::string* err) {
         int64_t pid = 0, ns = 0;
         if (!get_i64(ev, "pid", &pid, err) || !get_i64(ev, "ns", &ns, err)) return false;
         trims_[(int)pid] = ns;
-    } else if (k != "tick" && k != "decl2") {
+    } else if (k != "decl2") {
         return *err = "unknown event kind " + k, false;
     }
     snapshot();

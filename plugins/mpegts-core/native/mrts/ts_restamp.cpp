@@ -240,6 +240,8 @@ RestampCore::Result RestampCore::process(uint8_t* data, size_t len, int64_t arri
     have_arrival_ = true;
     arrival_ = arrival_ns;
     arrival_h_ = arrival_ns + base_;
+    for (auto& g : progs_)                // a silence under 1 s ages no PMT past 40 ms either (B-226)
+        if (g->gate) g->gate->on_input(arrival_h_);
     if (silence >= OUTAGE_NS) {
         // Not a re-lock by itself (part 4.4): each PID's PES are checked for the gap
         // it left, from this buffer on (which may still carry content from before it).
@@ -1073,8 +1075,8 @@ void RestampCore::push_gap(Pid& p, int64_t start, int64_t end, const char* why, 
 }
 
 void RestampCore::tick(int64_t now_ns) {
-    // Not the gates: they step on input, so a silence is judged when the stream comes back,
-    // with its outage as the natural gap (a PMT older than 1 s inside it is no fault).
+    // Not the gates: they step on input only, so a silence is judged when the stream comes back,
+    // where it ages the PMT 40 ms at most (on_input), and 1 s of it is also a natural gap.
     for (auto& g : progs_) g->stc.tick(now_ns);
 }
 

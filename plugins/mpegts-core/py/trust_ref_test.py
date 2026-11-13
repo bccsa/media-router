@@ -6,8 +6,10 @@ PES's STC value (net_to_bus + K: the transit floor + D_e) added here; the pinned
 ../tests/fixtures/restamp/trust-*.expect.jsonl (a header line naming the trace and the added events,
 then the reference's lines); then the mutants, each failing its case.
 Run: python3 trust_ref_test.py [case...] [--update] (rewrites the expectations' lines)."""
+import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +28,7 @@ HOUSE0 = 1000 * SEC                   # fixture_gen's default --house0
 EPOCH_S = 1800000000                  # the sender's house (TAI-scale) time at the first send
 E_RX = EPOCH_S * SEC - HOUSE0         # the receiver's E: the transit is the path's delay
 TMP = tempfile.mkdtemp(prefix="trust-ref-", dir="/dev/shm" if os.path.isdir("/dev/shm") else None)
+atexit.register(shutil.rmtree, TMP, True)   # this run's traces only
 
 
 def clock(at_s=0, e_ns=E_RX, disciplined=True, error_us=100, seq=1):
@@ -433,6 +436,40 @@ def case_pmt_stale():
              [x["state"] for x in transitions(out)] == ["trust"])]
 
 
+def case_silence():
+    # A silence just under 1 s ages the PMT 40 ms only: no spurious no-descriptor fallback (B-226).
+    # 990 ms arrives as 1.006 s between buffers, an outage, as does 1100 ms (OUTAGE rules).
+    rows = []
+    for ms, outage in ((900, False), (950, False), (990, True), (1100, True)):
+        evs = gen(base(seconds=30, extra="--outage 20:%d" % ms), setup())
+        out = lines(evs, True)
+        pes = [r for r in out if "mapping" in r]
+        s = summary(out)
+        rows.append(("a %d ms silence keeps trust, every PES on the Trust mapping%s" % (
+            ms, ", an outage there" if outage else ""),
+            [(x["decision"], x["state"]) for x in transitions(out)] == [("release-trust", "trust")] and
+            s["failed"] is None and s["switches"] == 0 and len(pes) == s["pes"]["trust"] > 1400 and
+            any(e["kind"] == "outage" for e in evs) == outage))
+    # Inputs keep coming without a PMT: the age still runs out at 1 s; 100 ms apart, 40 ms each.
+    for gap_ms, stale_s in ((10, 1.0), (100, 2.5)):
+        g = tg.TrustGate(1, tg.Config(), tg.Clock(E_RX, 1, True, 100), True, 0, 0, 0)
+        g.on_input(0)
+        g.on_pmt({"present": True, "houseTimeTai": True, "disciplined": True, "de90k": 18000,
+                  "clockErrorClass": 10}, 0)
+        g.judged = True
+        t = 0
+        while g.failed(t) is None and t < 10 * SEC:
+            t += gap_ms * MS
+            g.on_input(t)
+        rows.append(("no PMT, inputs %d ms apart: no-descriptor at %.1f s" % (gap_ms, stale_s),
+                     g.failed(t) == "no-descriptor" and abs(t - stale_s * SEC) <= gap_ms * MS))
+    g.on_input(20 * SEC)
+    g.on_pmt(g.decl, 20 * SEC)
+    rows.append(("a step inside a silence judges the PMT as of the silence's first 40 ms",
+                 g.failed(20 * SEC + 990 * MS) is None and g.failed(20 * SEC + 5 * SEC) is None))
+    return rows
+
+
 # --- the pinned expectations ------------------------------------------------------------------
 def expect_files():
     return sorted(f for f in os.listdir(FIXTURES) if f.startswith("trust-") and f.endswith(".expect.jsonl"))
@@ -463,6 +500,7 @@ CASES = {
     "converge_partial_gap": case_converge_partial_gap, "converge_fallback": case_converge_fallback,
     "receiver_reepoch": case_receiver_reepoch, "sender_reepoch": case_sender_reepoch, "tai_unset": case_tai_unset,
     "offset_ignored": case_offset_ignored, "restamp_display": case_restamp_display, "pmt_stale": case_pmt_stale,
+    "silence": case_silence,
     "expectations": case_expectations,
 }
 
@@ -535,6 +573,7 @@ MUTANTS = [
     ("O applied in fallback", m_o_in_fallback, "offset_ignored"),
     ("a switch into Trust that drops (chapter 9's blend)", m_drop_on_switch, "converge"),
     ("no wait for a natural gap", m_no_gap_wait, "return_timing"),
+    ("a silence ages the PMT in full", lambda: _patch(tg, "SILENCE_NS", 10 * SEC), "silence"),
 ]
 
 

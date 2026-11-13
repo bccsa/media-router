@@ -37,6 +37,8 @@ class TrustGate {
     enum class Mapping { stc, restamp, trust, converging };
     static constexpr int64_t UNKNOWN_TERM_NS = 50000000;   // an unknown class or local error (p5-9)
     static constexpr int RING = 64;
+    // PCR_MAX_INTERVAL_NS (§7): a silence between inputs ages the PMT this much at most.
+    static constexpr int64_t SILENCE_NS = 40000000;
 
     // One transition, as the reference logs it: `failed` null when qualified; k into
     // converging (has_k), the gap into trust (has_gap).
@@ -70,6 +72,8 @@ class TrustGate {
     TrustGate(int program, const TrustConfig& cfg, const ClockDecl& clock, bool trust_selected, int64_t now);
 
     // Inputs. `decl` null: the PMT in force carries no MRHT (or one with house time absent).
+    // on_input: something arrived (each buffer), first; the silence before it moves the PMT's time on.
+    void on_input(int64_t now);
     void on_pmt(const HouseTimeDecl* decl, int64_t now);
     void on_pcr(int64_t pcr27, int64_t now);
     void on_natural_gap(int64_t gap_ns, int64_t now);
@@ -106,6 +110,7 @@ class TrustGate {
 
   private:
     void bounds(int64_t* lo, int64_t* hi) const;
+    int64_t silence(int64_t now) const;
     int64_t f_on(int64_t x, int64_t e_ns) const;
     void go(State s, Decision d, int64_t now);
     void go(const Transition& t);
@@ -122,6 +127,8 @@ class TrustGate {
     bool have_decl_ = false, have_pmt_ = false;
     HouseTimeDecl decl_;
     int64_t pmt_at_ = 0;
+    bool have_input_ = false;
+    int64_t last_input_ = 0;
     std::vector<int64_t> ring_;
     int bad_run_ = 0;
     const char* bad_side_ = nullptr;

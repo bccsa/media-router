@@ -66,6 +66,7 @@ struct Sim {
     template <class F>
     void run(int64_t from, int64_t to, F tr) {
         for (int64_t t = from; t < to; t += 5 * MS) {
+            g.on_input(t);
             if ((t - T0) % (100 * MS) == 0) g.on_pmt(send_decl ? &decl : nullptr, t);
             if ((t - T0) % (35 * MS) == 0) g.on_pcr(pcr_at(t, tr(t), e), t);
             const Dec d = g.step(t);
@@ -185,6 +186,41 @@ void test_failed_names() {
         g.on_natural_gap(3 * S, T0 + 2 * S);
         CHECK("a natural gap restarts the PMT's age", std::strcmp(g.failed(T0 + 2 * S), "no-descriptor") != 0);
     }
+}
+
+// B-226: a silence ages the PMT 40 ms at most, so one just under 1 s is no no-descriptor fallback.
+void test_silence() {
+    for (int64_t ms : {900, 950, 990, 1100}) {
+        Sim s(true);
+        s.run(T0, T0 + 2 * S, 1900 * MS);
+        s.run(T0 + 2 * S + ms * MS, T0 + 4 * S, 1900 * MS);
+        char name[96];
+        std::snprintf(name, sizeof name, "a %lld ms silence after trust: still trust, no switch", (long long)ms);
+        CHECK(name, s.g.state() == St::trust && s.when(Dec::switch_to_restamp) < 0 && s.g.stats(T0 + 4 * S).switches == 0);
+    }
+    for (int64_t gap : {10 * MS, 100 * MS}) {
+        TrustGate g(1, cfg_l(2 * S), good_clock(), true, T0);
+        HouseTimeDecl d = good_decl();
+        g.on_input(T0);
+        g.on_pmt(&d, T0);
+        g.on_pcr(pcr_at(T0, 1900 * MS), T0);
+        int64_t t = T0;
+        while (!g.failed(t) && t < T0 + 10 * S) g.on_input(t += gap);
+        CHECK(gap == 10 * MS ? "no PMT, inputs 10 ms apart: no-descriptor at 1 s"
+                             : "no PMT, inputs 100 ms apart: 40 ms each, no-descriptor at 2.5 s",
+              g.failed(t) && !std::strcmp(g.failed(t), "no-descriptor") &&
+                  t - T0 - (gap == 10 * MS ? S : 2500 * MS) <= gap && t - T0 - (gap == 10 * MS ? S : 2500 * MS) > -gap);
+    }
+    TrustGate g(1, cfg_l(2 * S), good_clock(), true, T0);
+    HouseTimeDecl d = good_decl();
+    g.on_input(T0);
+    g.on_pmt(&d, T0);
+    g.on_pcr(pcr_at(T0, 1900 * MS), T0);
+    CHECK("inside a silence the PMT's age stops at its first 40 ms",
+          !g.failed(T0 + 990 * MS) && !g.failed(T0 + 5 * S) && g.stats(T0 + 5 * S).failed == nullptr);
+    int64_t t = T0 + 5 * S;
+    while (!g.failed(t) && t < T0 + 10 * S) g.on_input(t += 10 * MS);
+    CHECK("inputs again from 5.01 s: the age runs on from its 40 ms, no-descriptor at 5.98 s", t == T0 + 5980 * MS);
 }
 
 void test_lo_bound() {
@@ -407,6 +443,7 @@ int main() {
     test_qualify();
     test_transit_high();
     test_failed_names();
+    test_silence();
     test_lo_bound();
     test_return_timing();
     test_operator();

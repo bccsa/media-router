@@ -1,0 +1,48 @@
+{
+  "source": "fixture_gen --trace --duration 30 --pids v,a2 --pcr-ms 35 --delay-ms 1900 --jitter-ms 2 --sender-epoch 1800000000 --decl 200 --outage 20:950",
+  "note": "As trust-silence-900 at 950 ms, the window's middle (before: fallback, 3.06 s per PID). Trust kept; one 960 ms jump gap on the AAC PID.",
+  "config": {
+    "timing_mode": "trust",
+    "l_ns": 2000000000,
+    "clock_e_ns": 1799999000000000000,
+    "clock_disciplined": true,
+    "clock_error_us": 100
+  },
+  "trustStates": [
+    "trust"
+  ],
+  "trustFinalState": "trust",
+  "trustSwitches": 0,
+  "trustFailed": "",
+  "events": [
+    {
+      "kind": "trust-switch",
+      "reason": "release-trust",
+      "state": "trust",
+      "atS": [
+        0.1,
+        0.2
+      ]
+    },
+    {
+      "kind": "gap",
+      "pid": 258,
+      "reason": "jump",
+      "atS": [
+        20.9,
+        21.0
+      ]
+    }
+  ],
+  "gaps": 1,
+  "gapMs": [
+    955,
+    965
+  ],
+  "overlaps": 0,
+  "droppedPes": 0,
+  "pesLost": 0,
+  "outCcLost": 0,
+  "monotonic": true,
+  "pcrFlagged": 0
+}

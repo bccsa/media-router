@@ -1,0 +1,55 @@
+{
+  "source": "fixture_gen --trace --duration 30 --pids v,a2 --pcr-ms 35 --delay-ms 1900 --jitter-ms 2 --sender-epoch 1800000000 --decl 200 --outage 20:1100",
+  "note": "As trust-silence-900 at 1100 ms, a real outage: OUTAGE rules (a gap per PID of the silence, the next PCR flagged, the natural gap restarting the PMT's age); Trust kept.",
+  "config": {
+    "timing_mode": "trust",
+    "l_ns": 2000000000,
+    "clock_e_ns": 1799999000000000000,
+    "clock_disciplined": true,
+    "clock_error_us": 100
+  },
+  "trustStates": [
+    "trust"
+  ],
+  "trustFinalState": "trust",
+  "trustSwitches": 0,
+  "trustFailed": "",
+  "events": [
+    {
+      "kind": "trust-switch",
+      "reason": "release-trust",
+      "state": "trust",
+      "atS": [
+        0.1,
+        0.2
+      ]
+    },
+    {
+      "kind": "gap",
+      "reason": "outage",
+      "atS": [
+        21.05,
+        21.15
+      ]
+    },
+    {
+      "kind": "gap",
+      "reason": "outage",
+      "atS": [
+        21.05,
+        21.15
+      ]
+    }
+  ],
+  "gaps": 2,
+  "gapMs": [
+    1105,
+    1125
+  ],
+  "overlaps": 0,
+  "droppedPes": 0,
+  "pesLost": 0,
+  "outCcLost": 0,
+  "monotonic": true,
+  "pcrFlagged": 1
+}

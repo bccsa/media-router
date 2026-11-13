@@ -90,8 +90,14 @@ void TrustGate::bounds(int64_t* lo, int64_t* hi) const {
     *hi = ns_to_pts90k(cfg_.l_ns + cfg_.tau_ns);
 }
 
+// What the PMT's age is not charged for: a silence since the last input (or the PMT) past 40 ms.
+int64_t TrustGate::silence(int64_t now) const {
+    if (!have_input_ || !have_pmt_) return 0;
+    return std::max<int64_t>(0, now - std::max(last_input_, pmt_at_) - SILENCE_NS);
+}
+
 const char* TrustGate::failed(int64_t now) const {
-    if (!have_decl_ || !have_pmt_ || now - pmt_at_ > cfg_.pmt_stale_ns) return "no-descriptor";
+    if (!have_decl_ || !have_pmt_ || now - pmt_at_ - silence(now) > cfg_.pmt_stale_ns) return "no-descriptor";
     if (!decl_.house_time_tai) return "not-house-time";
     if (!decl_.disciplined) return "sender-undisciplined";
     if (!clock_.disciplined || clock_.e_ns == 0) return "local-undisciplined";
@@ -101,6 +107,12 @@ const char* TrustGate::failed(int64_t now) const {
 }
 
 // --- inputs ---------------------------------------------------------------------------------
+
+void TrustGate::on_input(int64_t now) {
+    pmt_at_ += silence(now);
+    have_input_ = true;
+    last_input_ = now;
+}
 
 void TrustGate::on_pmt(const HouseTimeDecl* decl, int64_t now) {
     have_decl_ = decl != nullptr;

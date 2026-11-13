@@ -1,0 +1,48 @@
+{
+  "source": "fixture_gen --trace --duration 30 --pids v,a2 --pcr-ms 35 --delay-ms 1900 --jitter-ms 2 --sender-epoch 1800000000 --decl 200 --outage 20:900",
+  "note": "A silence of 900 ms in Trust (B-226): the PMT before it about 100 ms old, the silence ages it 40 ms only, so no no-descriptor fallback (before: switch-to-restamp, a 3 s gap per PID, a 420 s converge). Trust kept; the AAC PID marks the 896 ms hole (jump), video under its 1 s gap threshold; nothing dropped.",
+  "config": {
+    "timing_mode": "trust",
+    "l_ns": 2000000000,
+    "clock_e_ns": 1799999000000000000,
+    "clock_disciplined": true,
+    "clock_error_us": 100
+  },
+  "trustStates": [
+    "trust"
+  ],
+  "trustFinalState": "trust",
+  "trustSwitches": 0,
+  "trustFailed": "",
+  "events": [
+    {
+      "kind": "trust-switch",
+      "reason": "release-trust",
+      "state": "trust",
+      "atS": [
+        0.1,
+        0.2
+      ]
+    },
+    {
+      "kind": "gap",
+      "pid": 258,
+      "reason": "jump",
+      "atS": [
+        20.85,
+        20.95
+      ]
+    }
+  ],
+  "gaps": 1,
+  "gapMs": [
+    890,
+    900
+  ],
+  "overlaps": 0,
+  "droppedPes": 0,
+  "pesLost": 0,
+  "outCcLost": 0,
+  "monotonic": true,
+  "pcrFlagged": 0
+}

@@ -15,8 +15,9 @@ are 90 kHz ticks with the 33-bit fold, floor arithmetic as ts_house.h, so the C+
 Transit per PCR: a = ns_to_pts90k(arrival + E_rx), p = PCR / 300, transit = fold33(a - (p + D_e));
 lo = -(20 ms + 2^class us + local error) (an unknown class or local error: 50 ms each), hi = L + tau.
 Qualified while (1) the PMT in force carries MRHT with house_time_tai, seen within 1 s (a natural
-gap restarts that age), (2) the sender and this box are disciplined with a known E, (3) a PCR was
-judged and fewer than 3 in a row fell outside [lo, hi]. `failed` names the first failing one:
+gap restarts that age; a silence between inputs counts 40 ms of it at most), (2) the sender and
+this box are disciplined with a known E, (3) a PCR was judged and fewer than 3 in a row fell
+outside [lo, hi]. `failed` names the first failing one:
 no-descriptor, not-house-time, sender-undisciplined, local-undisciplined, transit-high,
 transit-negative, no-pcr (none judged yet).
 
@@ -40,9 +41,11 @@ line, `t` in ns on every line but config: trace2jsonl's psi, decl, pcr, pes (opt
 outage lines (a natural gap of silenceNs for every program), and {"kind":"config", camelCase
 TrustConfig fields}, {"kind":"mode","mode":"restamp"|"trust"}, {"kind":"l","ns"}, {"kind":"tau",
 "ns"}, {"kind":"clock","eNs","seq","disciplined","errorUs" (null: unknown)}, {"kind":"offset","ns"},
-{"kind":"trim","pid","ns"}, {"kind":"natural-gap","gapNs"[,"program"]}, {"kind":"tick"}. After
-every event each program's gate steps at its t. It prints each transition, with --pes each PES's
-mapping, and a summary per program (keys in the orders of the functions below).
+{"kind":"trim","pid","ns"}, {"kind":"natural-gap","gapNs"[,"program"]}. After every event each
+program's gate steps at its t; the input lines (psi, decl, decl2, pcr, pes, outage) come first to
+every gate's on_input. No event steps the gates in a silence alone (no tick: the restamp's gates
+step on input only). It prints each transition, with --pes each PES's mapping, and a summary per
+program (keys in the orders of the functions below).
 """
 import json
 import sys
@@ -63,10 +66,12 @@ QUALIFY_NS = 2 * SEC
 RETURN_QUALIFIED_NS = 10 * SEC
 RETURN_GAP_WAIT_NS = 30 * SEC         # OQ-35
 PMT_STALE_NS = SEC
+SILENCE_NS = 40 * MS                  # ts_house.h's PCR_MAX_INTERVAL_NS: a silence's most PMT age
 RING = 64
 CONVERGE_DIV = 200                    # k falls 1 tick per 200 of content: 5 ms/s, 0.5 % (p4-18)
 TAU_DEFAULT_NS = 200 * MS             # trustToleranceMs (Q12)
 
+INPUTS = ("psi", "decl", "decl2", "pcr", "pes", "outage")   # what a buffer brings
 MAPPED = ("trust", "converging")      # states whose PES take the Trust mapping
 STC = ("restamp", "qualifying", "fallback", "returning")
 
@@ -118,7 +123,7 @@ class TrustGate:
         self.trust_selected = trust_selected
         self.state = "deciding" if trust_selected else "restamp"
         self.since = now
-        self.decl, self.pmt_at = None, None
+        self.decl, self.pmt_at, self.last_input = None, None, None
         self.ring = []
         self.bad_run, self.bad_side, self.judged, self.good = 0, None, False, 0
         self.qual_since, self.ready_at, self.restamp_pending = None, None, None
@@ -139,9 +144,15 @@ class TrustGate:
         local = UNKNOWN_TERM_NS if err is None else err * 1000
         return -ns_to_pts90k(self.cfg.neg_base_ns + sender + local), ns_to_pts90k(self.l_ns + self.tau_ns)
 
+    def silence(self, now):
+        """What the PMT's age is not charged for: a silence since the last input (or the PMT) past 40 ms."""
+        if self.last_input is None or self.pmt_at is None:
+            return 0
+        return max(0, now - max(self.last_input, self.pmt_at) - SILENCE_NS)
+
     def failed(self, now):
         d = self.decl
-        if d is None or self.pmt_at is None or now - self.pmt_at > self.cfg.pmt_stale_ns:
+        if d is None or self.pmt_at is None or now - self.pmt_at - self.silence(now) > self.cfg.pmt_stale_ns:
             return "no-descriptor"
         if not d["houseTimeTai"]:
             return "not-house-time"
@@ -160,6 +171,12 @@ class TrustGate:
         return fold33(a - (pcr27 // 300 + self.decl["de90k"]))
 
     # --- inputs -----------------------------------------------------------------------------
+    def on_input(self, now):
+        """Something arrived (a buffer): the silence before it moves the PMT's time on (B-226)."""
+        if self.pmt_at is not None:
+            self.pmt_at += self.silence(now)
+        self.last_input = now
+
     def on_pmt(self, decl, now):
         self.decl = decl if decl and decl.get("present") else None
         self.pmt_at = now
@@ -398,6 +415,9 @@ class Replay:
             return
         now = self.now = ev["t"]
         rows = []
+        if k in INPUTS:
+            for g in self.gates.values():
+                g.on_input(now)
         if k == "psi":
             g = self.gate(ev["program"], now)
             if ev["pcrPid"]:
@@ -443,7 +463,7 @@ class Replay:
                 g.offset_ns = self.offset_ns
         elif k == "trim":
             self.trims[ev["pid"]] = ev["ns"]
-        elif k not in ("tick", "decl2"):
+        elif k != "decl2":
             raise ValueError("unknown event kind " + k)
         for g in self.gates.values():
             g.step(now)
