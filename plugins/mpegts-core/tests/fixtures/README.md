@@ -19,7 +19,17 @@ replays any fixture on its own clock after `mrts_cli rebase <in> <out> --to-ns <
 house 36 h, past the 33-bit wrap (25.5 h), their PES and their sidecar's stamps parted by 26.5 h
 on a replay's clock (the first PES - 1 h), which the conformance test now refuses.
 Arrival traces for the restamp are in `restamp/` (ch. 5 part 7.2, WI-P1-5); each
-`.expect.json` there says how its trace was recorded. The output harness's runner commands are
+`.expect.json` there says how its trace was recorded. The `.stct` format (`native/mrts/ts_trace.h`):
+a 16-byte header (`STCT`, u32 version, u64 record count) and 24-byte little-endian records
+{arrival ns, value, pid, kind, flags, int32}: `pcr` 1, `pes` 2, `psi` 3 (the table at each PMT
+change), `outage` 4. Version 2 (p5-6t, register B-224) adds the sender's `MRHT` declaration,
+written at every PMT (repeats too) of a program whose current or previous PMT carries one: `decl` 5
+{value `timeline_id`, pid the program, flags the descriptor's b7-b4 with b0 = present, int32 D_e in
+90 kHz}, then for a present one `decl2` 6 at the same arrival {value `gm_identity`, pid
+`epoch_seq`, flags `clock_error_class`, int32 `sync_source | ptp_domain << 8 | hc_version << 16 |
+tai_utc_offset_s << 24`}; a PMT without `MRHT` after one with it writes `decl` with present clear.
+`mrts_cli trace2jsonl` prints a pair as one `"kind":"decl"` line. The recorder writes version 2;
+every reader takes 1 and 2, and the 14 committed traces are version 1 (no declarations). The output harness's runner commands are
 `output/pipelines.json`, made by the real modules (`testing/outputConformance.test.ts`, `vitest -u`), with
 one `scn-*.expect.json` per scenario of `output_conformance_test.py` (ch. 8 WI-P4-14, B-174; the
 drain's `scn-out-drain-burst`, 120 s, and `scn-out-drain-group`, 170 s, B-179); its streams are

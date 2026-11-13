@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "../ts_hcdesc.h"
 #include "../ts_house.h"
 #include "../ts_rebase.h"
 #include "../ts_trace.h"
@@ -57,6 +58,12 @@ const char kUsage[] =
     "  --wrap-at S           the PCR's 33-bit base wraps S seconds in\n"
     "  --house0 S            house time of the first send (1000)\n"
     "  --sigma0 S            source time of the first send (7200; --wrap-at replaces it)\n"
+    "  --decl DE[:CLASS[:TIMELINE[:FLAGS]]]  the sender's MRHT in the PMT, repeated every\n"
+    "                        100 ms: D_e DE ms, clock_error_class CLASS (10; 255 unknown),\n"
+    "                        timeline_id as 16 hex digits (none), FLAGS the descriptor's b7-b4\n"
+    "                        as sent (0xC0: house_time_tai, disciplined; 0x10 adds PTP)\n"
+    "  --sender-epoch S      the sender's house time at the first send: its PCR is that less\n"
+    "                        D_e (in place of --sigma0; not with --wrap-at)\n"
     "  SCHED is V[,V@T...]: V from 0, then each V from T seconds.\n";
 
 int usage(const char* why) {
@@ -78,6 +85,42 @@ std::vector<std::string> split(const std::string& s, char sep) {
 
 bool seconds(const std::string& s, int64_t* ns) { return trace_gen::parse_decimal(s, trace_gen::S, ns); }
 bool millis(const std::string& s, int64_t* ns) { return trace_gen::parse_decimal(s, trace_gen::MS, ns); }
+
+// --decl's DE[:CLASS[:TIMELINE[:FLAGS]]]; the other fields a disciplined NTP sender's, or
+// a PTP one's with FLAGS b4.
+bool parse_decl(const std::string& v, mrts::HouseTimeDecl* d) {
+    const std::vector<std::string> f = split(v, ':');
+    int64_t ns = 0;
+    if (f.size() > 4 || !millis(f[0], &ns) || ns < 0 || mrts::ns_to_pts90k(ns) > 0xFFFFFFFFLL) return false;
+    unsigned long cls = 10, flags = 0xC0;
+    uint64_t timeline = 0;
+    char* end = nullptr;
+    if (f.size() > 1) {
+        cls = std::strtoul(f[1].c_str(), &end, 10);
+        if (f[1].empty() || *end || (cls > mrts::hcdesc::ERROR_CLASS_MAX && cls != mrts::hcdesc::ERROR_CLASS_UNKNOWN))
+            return false;
+    }
+    if (f.size() > 2 && !mrts::hcdesc::parse_timeline_text(f[2], &timeline)) return false;
+    if (f.size() > 3) {
+        flags = std::strtoul(f[3].c_str(), &end, 0);
+        if (f[3].empty() || *end || flags > 0xF0 || (flags & 0x0F)) return false;
+    }
+    mrts::HouseTimeDecl x;
+    x.d_e_90k = (uint32_t)mrts::ns_to_pts90k(ns);
+    x.clock_error_class = (uint8_t)cls;
+    x.timeline_id = timeline;
+    x.house_time_tai = flags & 0x80;
+    x.disciplined = flags & 0x40;
+    x.traceable = flags & 0x20;
+    x.ptp_valid = flags & 0x10;
+    x.sync_source = x.ptp_valid ? mrts::hcdesc::SYNC_PTP : mrts::hcdesc::SYNC_NTP;
+    x.tai_utc_offset_s = 37;
+    x.ptp_domain = x.ptp_valid ? 0 : 0xFF;
+    x.gm_identity = x.ptp_valid ? 0x02000000FFFE0001ULL : ~0ULL;
+    x.epoch_seq = 1;
+    *d = x;
+    return true;
+}
 
 bool write_file(const std::string& path, const ts_gen::Bytes& b) {
     std::FILE* f = std::fopen(path.c_str(), "wb");
@@ -139,7 +182,7 @@ std::string bus_path(const std::string& ts) {
 
 int main(int argc, char** argv) {
     trace_gen::Config c;
-    bool trace = false, scatter_floor = false;
+    bool trace = false, scatter_floor = false, sigma0_given = false;
     std::string out, ts_kind_name, drop_spec, shift_spec, freeze_spec, respace_spec, in;
     int64_t restart_ns = 3 * trace_gen::S;
     EgressKnobs eg;
@@ -248,6 +291,12 @@ int main(int argc, char** argv) {
             ok = seconds(v, &c.house0_ns);
         } else if (a == "--sigma0") {
             ok = seconds(v, &c.sigma0_ns);
+            sigma0_given = true;
+        } else if (a == "--decl") {
+            ok = parse_decl(v, &c.decl_v);
+            c.decl = true;
+        } else if (a == "--sender-epoch") {
+            ok = seconds(v, &c.sender_epoch_ns) && c.sender_epoch_ns >= 0;
         } else {
             return usage(("unknown option " + a).c_str());
         }
@@ -393,6 +442,8 @@ int main(int argc, char** argv) {
     if (!trace) return usage("one of --ts, --drop, --shift, --freeze-pcr, --respace or --trace is required");
     if (out.empty()) return usage("-o OUT.stct is required");
     if (scatter_floor && c.scatter_ns <= 0) return usage("--scatter-floor needs a --scatter-ms level above 0");
+    if (c.sender_epoch_ns >= 0 && (sigma0_given || c.wrap_at_ns >= 0))
+        return usage("--sender-epoch replaces --sigma0 and --wrap-at");
     const std::vector<mrts::TraceRecord> recs = trace_gen::generate(c);
     mrts::TraceWriter w;
     if (!w.open(out)) {

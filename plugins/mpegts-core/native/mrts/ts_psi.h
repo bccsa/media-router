@@ -171,6 +171,9 @@ class PsiDiscovery {
     int generation() const { return generation_; }
     // Bumps each time a new PAT section is parsed and names the followed program.
     int pat_generation() const { return pat_generation_; }
+    // Moves on every whole PMT section of the followed program whose CRC checks, an
+    // identical repeat included (p5-6t: Trust's "PMT seen", the trace's declarations).
+    uint64_t pmt_count() const { return pmt_count_; }
     // The retained PAT / own-PMT section 0, CRC included; false while none is whole.
     bool pat_section(std::vector<uint8_t>& section) const;
     bool pmt_section(std::vector<uint8_t>& section) const;
@@ -196,6 +199,11 @@ class PsiDiscovery {
     int generation_ = 0;
     int pat_generation_ = 0;
     uint64_t unsupported_ = 0;
+    // pmt_count(): the section being gathered on pmt_pid_, empty when none is open.
+    void count_pmt(const uint8_t* pkt);
+    int gather_pmt(const uint8_t* p, int n);
+    std::vector<uint8_t> pmt_acc_;
+    uint64_t pmt_count_ = 0;
 };
 
 }  // namespace mrts

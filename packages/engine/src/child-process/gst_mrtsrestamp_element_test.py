@@ -654,9 +654,9 @@ with open(_tr, "rb") as fh:
     _rb = fh.read()
 _count = struct.unpack("<Q", _tb[8:16])[0] if len(_tb) >= 16 else -1
 check(f"from the start: byte for byte the core's trace ({len(_tb)} bytes)", _tb == _rb and _tb)
-check(f"... a valid .stct at EOS, before any stop: STCT, version 1, the count patched "
+check(f"... a valid .stct at EOS, before any stop: STCT, version 2, the count patched "
       f"({_count} records)",
-      _tb[:4] == b"STCT" and struct.unpack("<I", _tb[4:8])[0] == 1
+      _tb[:4] == b"STCT" and struct.unpack("<I", _tb[4:8])[0] == 2
       and _count == (len(_tb) - 16) // 24 and _count > 1000 and (len(_tb) - 16) % 24 == 0)
 _kinds = {}
 for k in range(16, len(_tb) - 23, 24):   # whole records only

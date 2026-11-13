@@ -67,6 +67,13 @@ struct Config {
     // seed, added to every arrival of that second; on scatter_floor_pct % of the seconds the floor (0) instead.
     int64_t scatter_ns = 0, scatter_lo_ns = 0;
     int scatter_floor_pct = 0;
+    // A sender's MRHT (p5-6t): its declaration after the table, then with every PMT repeat.
+    bool decl = false;
+    mrts::HouseTimeDecl decl_v;
+    int64_t pmt_ns = 100 * MS;
+    // >= 0: the sender's house time at the first send. Its PCR is that less D_e, so with
+    // E_rx = sender_epoch_ns - house0_ns the transit is the path's delay.
+    int64_t sender_epoch_ns = -1;
 };
 
 // H.264 IPBB carrying the PCR, MPEG-1 audio, AAC, a teletext-like private stream.
@@ -190,8 +197,10 @@ inline std::vector<mrts::TraceRecord> generate(const Config& c) {
     const bool video = std::any_of(es.begin(), es.end(), [](const Es* e) { return e->pid == PCR_PID; });
     const mrts::StreamClass pcr_cls = video ? mrts::StreamClass::video : mrts::StreamClass::other;
     // The source timeline in 90 kHz ticks: PCR and PES share it, jumps included.
-    const int64_t sigma0 = c.wrap_at_ns >= 0 ? (1LL << 33) - mrts::ns_to_pts90k(c.wrap_at_ns)
-                                             : mrts::ns_to_pts90k(c.sigma0_ns);
+    const int64_t d_e90 = c.decl ? (int64_t)c.decl_v.d_e_90k : 0;
+    const int64_t sigma0 = c.wrap_at_ns >= 0         ? (1LL << 33) - mrts::ns_to_pts90k(c.wrap_at_ns)
+                           : c.sender_epoch_ns >= 0 ? mrts::ns_to_pts90k(c.sender_epoch_ns) - d_e90
+                                                    : mrts::ns_to_pts90k(c.sigma0_ns);
     auto jump90 = [&](int64_t t) {
         int64_t j = 0;
         for (const Jump& x : c.jumps)
@@ -233,6 +242,12 @@ inline std::vector<mrts::TraceRecord> generate(const Config& c) {
             t.r.flags = mrts::trace_flags(false, e->cls);
             ev.push_back(t);
         }
+    }
+    for (int64_t t = 0; c.decl && t < c.duration_ns; t += std::max<int64_t>(c.pmt_ns, MS)) {
+        if (t > 0 && !sent(t)) continue;
+        TraceRecord d[2];
+        const int n = mrts::trace_decl_records(0, PROGRAM, &c.decl_v, d);
+        for (int i = 0; i < n; i++) ev.push_back(Ev{t, -1, d[i]});
     }
     bool flag_next = false;
     size_t next_jump = 0;

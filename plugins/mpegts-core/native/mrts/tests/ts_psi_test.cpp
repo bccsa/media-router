@@ -836,5 +836,40 @@ int main() {
               joiner.feed({pkt_of(pmt_a)}) && joiner.pmt()->program_number == 1);
     }
 
+    // --- pmt_count() (p5-6t): every whole PMT section of the program, repeats too ---
+    {
+        PsiDiscovery c(128);
+        c.feed({pkt_of(gpat)});
+        const uint64_t before = c.pmt_count();
+        c.feed(gpmt({}, g264, 0));
+        for (int i = 0; i < 5; i++) c.feed(gpmt({}, g264, 0));
+        CHECK("pmt_count: the first PMT and five identical repeats move it 6, generation() once",
+              before == 0 && c.pmt_count() == 6 && c.generation() == 1);
+        c.feed(gpmt(mrht(1), g264, 1));
+        CHECK("pmt_count: a changed PMT moves both", c.pmt_count() == 7 && c.generation() == 2);
+        // A two-packet section counts once, at its tail; a bad CRC or another program not at all.
+        const Bytes big(400, 0x00);
+        Bytes info;
+        for (int i = 0; i < 2; i++) info.insert(info.end(), {0x05, 0x50}), info.insert(info.end(), big.begin(), big.begin() + 0x50);
+        const std::vector<TsPacket> two = gpmt(info, g264, 2);
+        c.feed({two[0]});
+        const uint64_t head = c.pmt_count();
+        c.feed({two[1]});
+        std::printf("  two-packet PMT: %zu packets, count %llu then %llu, generation %d\n", two.size(),
+                    (unsigned long long)head, (unsigned long long)c.pmt_count(), c.generation());
+        CHECK("pmt_count: a two-packet PMT counts once, with its tail",
+              two.size() == 2 && head == 7 && c.pmt_count() == 8 && c.generation() == 3);
+        std::vector<TsPacket> bad = gpmt(info, g264, 2);
+        bad[1].b[4] ^= 0x01;                               // in the CRC, in the tail packet
+        c.feed(bad);
+        uint8_t other[PKT];
+        build_pmt(0x0030, 2, 0x0065, g264, 0, 0, other);   // program 2 on our PMT PID
+        c.feed({pkt_of(other)});
+        CHECK("pmt_count: a section whose CRC fails, or another program's, is not counted",
+              c.pmt_count() == 8);
+        c.feed(gpmt({}, g264, 3));
+        CHECK("pmt_count: ... and the next good one is", c.pmt_count() == 9 && c.generation() == 4);
+    }
+
     return test_summary("ts_psi");
 }

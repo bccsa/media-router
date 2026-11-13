@@ -2,7 +2,8 @@
 # trace_cli_test: the arrival-trace tools at the command line (WI-P1-2): generator and replay
 # determinism, the .stct <-> JSONL round trip, every expectation in tests/fixtures/restamp (a
 # synthetic trace regenerated from its "source" line), bad input refused; the replay rebase,
-# Phase 3's --ts kinds and --respace (WI-P3-3); pcrcheck, hcdesc and dump --net (WI-P5-5); check.h's output.
+# Phase 3's --ts kinds and --respace (WI-P3-3); pcrcheck, hcdesc and dump --net (WI-P5-5);
+# trace version 2's declarations (p5-6t); check.h's output.
 #   MRTS_CLI, FIXTURE_GEN, RESTAMP_FIXTURES, TS_FIXTURES override the default paths.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -96,6 +97,65 @@ EOF
     cmp -s "$T/edge.jsonl" "$T/edge2.jsonl" && [ "$(wc -c <"$T/edge.stct" | tr -d ' ')" -eq $((16 + 6 * 24)) ]
 check "round trip: extreme values, unknown kinds and flag bits survive JSONL -> .stct -> JSONL" $?
 
+# --- Version 2 (p5-6t, B-224): the sender's declaration. fixture_gen --decl is deterministic,
+# bad values exit 2, and --sender-epoch makes the transit the path's delay.
+DECL="--seed 5 --duration 30 --outage 10:1500 --decl 500:11:00000000000000ab --sender-epoch 50000"
+# shellcheck disable=SC2086
+"$GEN" --trace -o "$T/d.stct" $DECL && "$GEN" --trace -o "$T/d2.stct" $DECL && cmp -s "$T/d.stct" "$T/d2.stct" &&
+    "$GEN" --trace -o "$T/d3.stct" --seed 5 --duration 30 --outage 10:1500 --decl 500:11 --sender-epoch 50000 &&
+    ! cmp -s "$T/d.stct" "$T/d3.stct" && [ "$(od -An -tu1 -j4 -N1 "$T/d.stct" | tr -d ' ')" = 2 ]
+check "fixture_gen --decl: the same arguments write the same version-2 bytes; another timeline_id other bytes" $?
+all=0
+for v in x -5 500:32 500:10:XYZ 500:10:00000000000000AB 500:10:00000000000000ab:0x0C \
+    500:10:00000000000000ab:0x100 500:10:00000000000000ab:0xC0:1 47721858.9; do
+    [ "$(status "$GEN" --trace -o "$T/x.stct" --decl "$v")" = 2 ] || { echo "  accepted --decl $v"; all=1; }
+done
+[ "$all" -eq 0 ] && [ "$(status "$GEN" --trace -o "$T/x.stct" --sender-epoch 50000 --sigma0 10)" = 2 ] &&
+    [ "$(status "$GEN" --trace -o "$T/x.stct" --sender-epoch 50000 --wrap-at 5)" = 2 ] &&
+    [ "$(status "$GEN" --trace -o "$T/x.stct" --sender-epoch -1)" = 2 ] &&
+    [ "$(status "$GEN" --trace -o "$T/x.stct" --decl 0:255:ffffffffffffffff:0xF0)" = 0 ]
+check "fixture_gen --decl: a bad D_e, class, timeline_id or flags, and --sender-epoch with --sigma0 or --wrap-at, exit 2" $?
+"$CLI" trace2jsonl "$T/d.stct" >"$T/d.jsonl" && "$CLI" jsonl2trace "$T/d.jsonl" "$T/d4.stct" && cmp -s "$T/d.stct" "$T/d4.stct" &&
+    recs=$(( ($(wc -c <"$T/d.stct") - 16) / 24 )) && decls=$(grep -c '"kind":"decl",' "$T/d.jsonl") &&
+    [ "$decls" -gt 250 ] && [ "$(grep -c '"gmIdentity":"FF-FF-FF-FF-FF-FF-FF-FF","clockErrorClass":11,' "$T/d.jsonl")" -eq "$decls" ] &&
+    [ "$(wc -l <"$T/d.jsonl" | tr -d ' ')" -eq $((recs - decls)) ] && ! grep -q '"kind":"decl2"' "$T/d.jsonl"
+check "round trip v2: .stct -> trace2jsonl -> jsonl2trace byte-identical, one line per declaration pair" $?
+# The first PCR: arrival + E_rx (50000 s - house0 1000 s) - (PCR + D_e 500 ms) = the 20 ms floor plus jitter.
+grep -m 1 '"kind":"pcr"' "$T/d.jsonl" | awk '{ t = $0; sub(/.*"t":/, "", t); sub(/,.*/, "", t)
+        p = $0; sub(/.*"pcr":/, "", p); sub(/,.*/, "", p)
+        x = t + 49000e9 - (p * 1000 / 27 + 500e6); exit !(x >= 20e6 - 1000 && x <= 70e6) }'
+check "fixture_gen --sender-epoch: the first PCR's transit is the path's delay" $?
+"$CLI" restamp-replay "$T/d.stct" --quiet --trace-out "$T/d-again.stct" >"$T/d.out" && cmp -s "$T/d.stct" "$T/d-again.stct" &&
+    grep -q '"faithful":true,' "$T/d.out" && grep -q '"misplaced":0,' "$T/d.out"
+check "restamp-replay: a trace with declarations records again byte for byte (each into its PMT, repeats as repeats)" $?
+# Every field of the pair at its extremes, an absent decl as written and with stray bits, a decl2 alone: lossless.
+cat >"$T/dedge.jsonl" <<'EOF'
+{"t":5,"kind":"decl","program":1,"present":false}
+{"t":6,"kind":"decl","program":2,"present":true,"houseTimeTai":false,"disciplined":true,"traceable":false,"ptpValid":true,"timelineId":"ffffffffffffffff","de90k":4294967295,"hcVersion":255,"syncSource":3,"taiUtcOffsetS":255,"ptpDomain":0,"gmIdentity":"00-11-22-33-44-55-66-77","clockErrorClass":255,"epochSeq":65535}
+{"t":7,"kind":"decl","program":65535,"present":false,"houseTimeTai":true,"disciplined":false,"traceable":false,"ptpValid":false,"timelineId":"0000000000000001","de90k":0,"flagsRest":14}
+{"t":8,"kind":"decl","program":3,"present":true,"houseTimeTai":true,"disciplined":true,"traceable":true,"ptpValid":false,"timelineId":"0000000000000000","de90k":1}
+{"t":9,"kind":"decl2","hcVersion":1,"syncSource":1,"taiUtcOffsetS":37,"ptpDomain":255,"gmIdentity":"FF-FF-FF-FF-FF-FF-FF-FF","clockErrorClass":10,"epochSeq":1}
+EOF
+"$CLI" jsonl2trace "$T/dedge.jsonl" "$T/dedge.stct" && "$CLI" trace2jsonl "$T/dedge.stct" >"$T/dedge2.jsonl" &&
+    cmp -s "$T/dedge.jsonl" "$T/dedge2.jsonl" && [ "$(wc -c <"$T/dedge.stct" | tr -d ' ')" -eq $((16 + 6 * 24)) ]
+check "round trip v2: declaration fields at their extremes, stray bits and a lone decl2 survive JSONL -> .stct -> JSONL" $?
+# Version 1, every committed trace: read, replayed faithfully, and rewritten as version 2 with only the version changed.
+n=0 bad=0
+for f in "$FIX"/*.stct; do
+    [ -e "$f" ] || continue
+    n=$((n + 1))
+    [ "$(od -An -tu1 -j4 -N1 "$f" | tr -d ' ')" = 1 ] && "$CLI" trace2jsonl "$f" >"$T/v1.jsonl" &&
+        "$CLI" jsonl2trace "$T/v1.jsonl" "$T/v1.stct" && [ "$(cmp -l "$f" "$T/v1.stct" | tr -s ' ' | sed 's/^ //')" = "5 1 2" ] &&
+        "$CLI" restamp-replay "$f" --quiet | grep -q '"faithful":true,' || { echo "  version 1: $f"; bad=$((bad + 1)); }
+done
+[ "$n" -ge 14 ] && [ "$bad" -eq 0 ]
+check "version 1: the $n committed traces read, replay faithfully, and rewrite as version 2 differing in the version alone" $?
+{ head -c 4 "$T/d.stct"; printf '\003'; tail -c +6 "$T/d.stct"; } >"$T/v3.stct"
+"$CLI" trace2jsonl "$T/v3.stct" >"$T/v3.jsonl" 2>"$T/v3.err"
+[ $? -eq 1 ] && [ ! -s "$T/v3.jsonl" ] && grep -q 'not an .stct trace of version 1 to 2' "$T/v3.err" &&
+    [ "$(status "$CLI" restamp-replay "$T/v3.stct" --quiet)" = 1 ]
+check "version 3: trace2jsonl and restamp-replay refuse the header" $?
+
 # jsonl2trace refuses a bad line with its number, and writes nothing.
 bad() {   # the JSONL line, the error expected on stderr
     printf '%s\n%s\n' '{"t":1,"kind":"pcr","pid":256,"pcr":1}' "$1" >"$T/bad.jsonl"
@@ -112,6 +172,16 @@ bad '{"t":1,"kind":"pcr","pid":256,"pcr":1,"extra":0}' 'unknown key "extra"' &&
     bad '{"t":1,"kind":"pcr","pid":1,"pcr":1,"flagsRest":1}' 'bad "flagsRest"' &&
     bad '{"t":1,"kind":"pcr","pid":1,"pcr":1' "expected ',' or '}'"
 check "jsonl2trace: a bad line exits 1 naming its line and the fault; no output file" $?
+bad '{"t":1,"kind":"decl","program":1,"present":true}' 'missing or bad "houseTimeTai"' &&
+    bad '{"t":1,"kind":"decl","program":1}' 'missing or bad "present"' &&
+    bad '{"t":1,"kind":"decl","program":65536,"present":false}' 'missing or bad "program"' &&
+    bad '{"t":1,"kind":"decl","program":1,"present":false,"epochSeq":1}' 'the decl2 fields are all given or none' &&
+    bad '{"t":1,"kind":"decl2"}' 'a decl2 line needs its fields' &&
+    bad '{"t":1,"kind":"decl","program":1,"present":false,"timelineId":"0x01"}' 'missing or bad "timelineId"' &&
+    bad '{"t":1,"kind":"decl","program":1,"present":false,"flagsRest":1}' 'bad "flagsRest"' &&
+    bad '{"t":1,"kind":"decl","program":1,"present":false,"pid":1}' 'unknown key "pid"' &&
+    bad '{"t":1,"kind":"decl2","hcVersion":1,"syncSource":1,"taiUtcOffsetS":0,"ptpDomain":0,"gmIdentity":"nope","clockErrorClass":0,"epochSeq":0}' 'bad "gmIdentity"'
+check "jsonl2trace: a bad declaration line exits 1 naming its line and the fault" $?
 
 # trace2jsonl on damage: a cut file prints its whole records and exits 1, a file whose
 # writer died (count 0) exits 0 with a note, a foreign file exits 1 printing nothing.

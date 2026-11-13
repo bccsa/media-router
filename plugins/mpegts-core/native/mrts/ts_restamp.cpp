@@ -326,6 +326,7 @@ void RestampCore::on_psi(const PacketView& v) {
     for (auto& g : progs_) {
         g->psi.feed(one);
         if (g->psi.generation() != g->gen) rebuild(*g);
+        if (g->psi.pmt_count() != g->pmt_seen) on_pmt_seen(*g);
     }
 }
 
@@ -421,10 +422,34 @@ void RestampCore::record_psi(const Program& g) {
     }
 }
 
+// Each PMT seen (repeats too) of a program that declares MRHT, or just stopped: its
+// declaration, or the absent record (p5-6t). The table comes first, from rebuild().
+void RestampCore::on_pmt_seen(Program& g) {
+    const uint64_t n = g.psi.pmt_count() - g.pmt_seen;
+    g.pmt_seen = g.psi.pmt_count();
+    HouseTimeDecl d;
+    const bool has = g.psi.pmt() && hcdesc::find_in(g.psi.pmt()->program_info, &d);
+    if (has || g.had_decl)
+        for (uint64_t k = 0; k < n && trace_; k++) record_decl(g, has ? &d : nullptr);
+    g.had_decl = has;
+}
+
+void RestampCore::record_decl(const Program& g, const HouseTimeDecl* d) {
+    if (!trace_) return;
+    TraceRecord r[2];
+    const int n = trace_decl_records(arrival_, g.number, d, r);
+    for (int i = 0; i < n; i++) trace_->write(r[i]);
+}
+
 void RestampCore::set_trace(TraceWriter* w) {
-    // A trace begun mid-stream opens with the tables in force, so it replays on its own.
+    // A trace begun mid-stream opens with the tables and declarations in force, so it
+    // replays on its own.
     trace_ = w;
-    for (const auto& g : progs_) record_psi(*g);
+    for (const auto& g : progs_) {
+        record_psi(*g);
+        HouseTimeDecl d;
+        if (g->psi.pmt() && hcdesc::find_in(g->psi.pmt()->program_info, &d)) record_decl(*g, &d);
+    }
 }
 
 void RestampCore::pull_events(Program& g) {

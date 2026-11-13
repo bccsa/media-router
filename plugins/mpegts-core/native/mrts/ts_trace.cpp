@@ -54,6 +54,47 @@ TraceRecord decode_trace_record(const uint8_t in[TRACE_RECORD_BYTES]) {
     return r;
 }
 
+int trace_decl_records(int64_t arrival, int program, const HouseTimeDecl* d, TraceRecord out[2]) {
+    out[0] = TraceRecord();
+    out[0].arrival_ns = arrival;
+    out[0].pid = (uint16_t)program;
+    out[0].kind = TraceKind::decl;
+    if (!d) return 1;
+    out[0].value = d->timeline_id;
+    out[0].flags = (uint8_t)((d->house_time_tai ? 0x80 : 0) | (d->disciplined ? 0x40 : 0) |
+                             (d->traceable ? 0x20 : 0) | (d->ptp_valid ? 0x10 : 0) | TRACE_DECL_PRESENT);
+    out[0].dts_minus_pts_90k = (int32_t)d->d_e_90k;
+    out[1] = TraceRecord();
+    out[1].arrival_ns = arrival;
+    out[1].value = d->gm_identity;
+    out[1].pid = d->epoch_seq;
+    out[1].kind = TraceKind::decl2;
+    out[1].flags = d->clock_error_class;
+    out[1].dts_minus_pts_90k = (int32_t)trace_decl2_packed(*d);
+    return 2;
+}
+
+bool trace_decl_of(const TraceRecord& a, const TraceRecord& b, HouseTimeDecl* out) {
+    if (a.kind != TraceKind::decl || !(a.flags & TRACE_DECL_PRESENT) || b.kind != TraceKind::decl2) return false;
+    HouseTimeDecl d;
+    d.timeline_id = a.value;
+    d.house_time_tai = a.flags & 0x80;
+    d.disciplined = a.flags & 0x40;
+    d.traceable = a.flags & 0x20;
+    d.ptp_valid = a.flags & 0x10;
+    d.d_e_90k = (uint32_t)a.dts_minus_pts_90k;
+    d.gm_identity = b.value;
+    d.epoch_seq = b.pid;
+    d.clock_error_class = b.flags;
+    const uint32_t x = (uint32_t)b.dts_minus_pts_90k;
+    d.sync_source = (uint8_t)x;
+    d.ptp_domain = (uint8_t)(x >> 8);
+    d.version = (uint8_t)(x >> 16);
+    d.tai_utc_offset_s = (uint8_t)(x >> 24);
+    *out = d;
+    return true;
+}
+
 bool TraceWriter::open(const std::string& path) {
     close();
     mem_.clear();
@@ -108,15 +149,18 @@ bool TraceReader::open(const std::string& path) {
     if (f_) std::fclose(f_);
     f_ = std::fopen(path.c_str(), "rb");
     read_ = header_count_ = 0;
+    version_ = 0;
     status_ = Status::bad_header;
     if (!f_) return false;
     uint8_t h[TRACE_HEADER_BYTES];
-    if (std::fread(h, 1, sizeof h, f_) != sizeof h || std::memcmp(h, kMagic, 4) != 0 ||
-        get_le(h + 4, 4) != TRACE_VERSION) {
+    const bool whole = std::fread(h, 1, sizeof h, f_) == sizeof h && std::memcmp(h, kMagic, 4) == 0;
+    const uint64_t version = whole ? get_le(h + 4, 4) : 0;
+    if (version < TRACE_VERSION_MIN || version > TRACE_VERSION) {
         std::fclose(f_);
         f_ = nullptr;
         return false;
     }
+    version_ = (uint32_t)version;
     header_count_ = get_le(h + 8, 8);
     status_ = header_count_ > 0 ? Status::ok : Status::unclosed;
     return true;
@@ -212,6 +256,14 @@ TracePlayer::TracePlayer(std::vector<TraceRecord> records, int64_t outage_ns)
             i = j;
             continue;
         }
+        if (r.kind == TraceKind::decl) {
+            // A present decl and its decl2, as record_decl writes them; an absent one alone.
+            const bool pair = (r.flags & TRACE_DECL_PRESENT) && i + 1 < recs_.size() &&
+                              recs_[i + 1].kind == TraceKind::decl2 && recs_[i + 1].arrival_ns == r.arrival_ns;
+            add_decl(i, pair);
+            i += pair ? 2 : 1;
+            continue;
+        }
         if (r.kind == TraceKind::pcr) at(r.arrival_ns).items.push_back(Item{Op::pcr, 0, (uint32_t)i, 0});
         else if (r.kind == TraceKind::pes) add_pes(i);
         else if (r.kind == TraceKind::outage) add_outage(r);
@@ -265,12 +317,54 @@ void TracePlayer::add_table(size_t first, size_t n) {
         }
         programs_.push_back({program, pmt_pid});
         pmt_version_.push_back(0);
+        table_.push_back({0, 0});
+        info_.emplace_back();
         // One PAT per buffer, listing every program known by its end.
         auto pat = std::find_if(b.items.begin(), b.items.end(), [](const Item& x) { return x.op == Op::pat; });
         if (pat != b.items.end()) pat->n = (uint32_t)programs_.size();
         else b.items.push_back(Item{Op::pat, (uint8_t)(pat_version_++ & 0x1F), 0, (uint32_t)programs_.size()});
     }
     b.items.push_back(Item{Op::pmt, (uint8_t)(pmt_version_[k]++ & 0x1F), (uint32_t)first, (uint32_t)n});
+    table_[k] = {(uint32_t)first, (uint32_t)n};
+    info_[k].clear();                     // a table with no declaration after it: no MRHT
+}
+
+void TracePlayer::add_decl(size_t i, bool pair) {
+    const TraceRecord& r = recs_[i];
+    size_t k = 0;
+    while (k < programs_.size() && programs_[k].first != r.pid) k++;
+    if (k == programs_.size() || ((r.flags & TRACE_DECL_PRESENT) && !pair)) {
+        misplaced_ += pair ? 2 : 1;       // no table to send it in, or no decl2 to rebuild it from
+        return;
+    }
+    std::vector<uint8_t> info = program_info((int64_t)i);
+    Buf& b = at(r.arrival_ns);
+    // Its table's PMT, just added: the declaration goes into it.
+    if (!b.items.empty() && b.items.back().op == Op::pmt && b.items.back().decl < 0 &&
+        b.items.back().rec == table_[k].first && b.items.back().n == table_[k].second) {
+        b.items.back().decl = (int64_t)i;
+        info_[k] = std::move(info);
+        return;
+    }
+    // Alone: the PMT in force again. A recorder writes a changed one after its table, so
+    // a declaration that changes it here is sent as a new version and records otherwise.
+    uint8_t version = (uint8_t)((pmt_version_[k] - 1) & 0x1F);
+    if (info != info_[k]) {
+        misplaced_ += pair ? 2 : 1;
+        version = (uint8_t)(pmt_version_[k]++ & 0x1F);
+    }
+    Item it{Op::pmt, version, table_[k].first, table_[k].second};
+    it.decl = (int64_t)i;
+    b.items.push_back(it);
+    info_[k] = std::move(info);
+}
+
+std::vector<uint8_t> TracePlayer::program_info(int64_t decl) const {
+    HouseTimeDecl d;
+    if (decl < 0 || (size_t)decl + 1 >= recs_.size() || !trace_decl_of(recs_[decl], recs_[decl + 1], &d)) return {};
+    uint8_t b[hcdesc::BYTES];
+    hcdesc::encode(d, b);
+    return std::vector<uint8_t>(b, b + hcdesc::BYTES);
 }
 
 void TracePlayer::add_pes(size_t i) {
@@ -344,7 +438,7 @@ void TracePlayer::put(const Item& it, std::vector<uint8_t>& out) {
         int pmt_pid = -1;
         for (const auto& e : programs_)
             if (e.first == program) pmt_pid = e.second;
-        const std::vector<uint8_t> sec = build_pmt_section(program, pcr_pid, {}, es, it.version);
+        const std::vector<uint8_t> sec = build_pmt_section(program, pcr_pid, program_info(it.decl), es, it.version);
         if (sec.empty()) {
             misplaced_ += it.n;
             return;

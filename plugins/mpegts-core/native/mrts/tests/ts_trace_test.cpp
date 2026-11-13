@@ -132,14 +132,43 @@ void test_layout() {
     CHECK("layout: decode inverts encode", decode_trace_record(b) == r);
     uint8_t h[TRACE_HEADER_BYTES];
     encode_trace_header(42, h);
-    const uint8_t hwant[TRACE_HEADER_BYTES] = {'S', 'T', 'C', 'T', 1, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0};
-    CHECK("layout: header = \"STCT\", u32 version 1, u64 count", std::memcmp(h, hwant, sizeof hwant) == 0);
+    const uint8_t hwant[TRACE_HEADER_BYTES] = {'S', 'T', 'C', 'T', 2, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0};
+    CHECK("layout: header = \"STCT\", u32 version 2, u64 count", std::memcmp(h, hwant, sizeof hwant) == 0);
     CHECK("layout: flags carry the discontinuity bit and the class",
           r.flags == 0x05 && trace_class(r.flags) == StreamClass::audio &&
               trace_class(trace_flags(false, StreamClass::video)) == StreamClass::video &&
               (trace_flags(false, StreamClass::video) & TRACE_FLAG_DISCONTINUITY) == 0);
     CHECK("layout: PSI value packs program, stream type and the PCR mark",
           trace_psi_value(1, 0x1B, false) == 0x1B0001ULL && trace_psi_value(0x1234, 0, true) == (0x1234ULL | TRACE_PSI_PCR));
+
+    // The declaration pair (p5-6t): every field where B-224 puts it.
+    HouseTimeDecl d;
+    d.house_time_tai = true;
+    d.traceable = true;
+    d.ptp_valid = true;
+    d.sync_source = hcdesc::SYNC_PTP;
+    d.tai_utc_offset_s = 37;
+    d.ptp_domain = 127;
+    d.clock_error_class = 11;
+    d.gm_identity = 0x0123456789ABCDEFULL;
+    d.epoch_seq = 0xBEEF;
+    d.d_e_90k = 0xFEDCBA98u;
+    d.timeline_id = 0x1122334455667788ULL;
+    TraceRecord pr[2];
+    const int n = trace_decl_records(77, 0x1234, &d, pr);
+    CHECK("layout: decl = {arrival, timeline_id, the program, b7-b4 and present, D_e 90 kHz}",
+          n == 2 && pr[0].kind == TraceKind::decl && pr[0].arrival_ns == 77 && pr[0].value == 0x1122334455667788ULL &&
+              pr[0].pid == 0x1234 && pr[0].flags == (0x80 | 0x20 | 0x10 | TRACE_DECL_PRESENT) &&
+              (uint32_t)pr[0].dts_minus_pts_90k == 0xFEDCBA98u);
+    CHECK("layout: decl2 = {arrival, gm_identity, epoch_seq, clock_error_class, sync | domain | version | TAI-UTC}",
+          pr[1].kind == TraceKind::decl2 && pr[1].arrival_ns == 77 && pr[1].value == 0x0123456789ABCDEFULL &&
+              pr[1].pid == 0xBEEF && pr[1].flags == 11 && (uint32_t)pr[1].dts_minus_pts_90k == 0x25017F03u);
+    HouseTimeDecl back;
+    CHECK("layout: trace_decl_of inverts the pair", trace_decl_of(pr[0], pr[1], &back) && back == d);
+    const int absent = trace_decl_records(78, 3, nullptr, pr);
+    CHECK("layout: no MRHT is one decl, present clear, every field 0",
+          absent == 1 && pr[0].kind == TraceKind::decl && pr[0].pid == 3 && pr[0].flags == 0 && pr[0].value == 0 &&
+              pr[0].dts_minus_pts_90k == 0 && !trace_decl_of(pr[0], pr[1], &back));
 }
 
 void test_round_trip() {
@@ -190,8 +219,17 @@ void test_damaged() {
     bad[0] = 'X';
     CHECK("damaged: a foreign magic does not open", !with(bad).opened);
     bad = full;
-    bad[4] = 2;
-    CHECK("damaged: version 2 does not open", !with(bad).opened);
+    bad[4] = 3;
+    CHECK("damaged: version 3 does not open", !with(bad).opened);
+    bad[4] = 0;
+    CHECK("damaged: version 0 does not open", !with(bad).opened);
+    bad[4] = 1;
+    r = with(bad);
+    bool v1 = r.opened && r.status == TraceReader::Status::ok && r.v.size() == v.size();
+    for (size_t i = 0; v1 && i < v.size(); i++) v1 = r.v[i] == v[i];
+    TraceReader rv;
+    CHECK("damaged: version 1 opens and reads record for record; version() says 1",
+          v1 && rv.open(t) && rv.version() == 1);
     CHECK("damaged: a missing file does not open", !read_all(g_dir + "/missing.stct").opened);
 
     r = with(Bytes(full.begin(), full.begin() + TRACE_HEADER_BYTES + 5 * TRACE_RECORD_BYTES + 11));
@@ -634,6 +672,123 @@ void test_player_cases() {
           pats == 1 && pmt_on_es == 0 && p.trace == t && p.stats.programs.size() == 2);
 }
 
+// --- The declaration (p5-6t, B-224): recorded at every PMT, played back into the PMT ----
+
+// A program's PAT and PMT as a sender writes them: PMT PID 0x1000, the PCR on video 0x100,
+// audio on 0x101, `info` its program_info.
+Bytes psi_buffer(const Bytes& info, int version, bool pat) {
+    Bytes out;
+    uint8_t p[PKT];
+    if (pat && build_pat(1, {{1, 0x1000}}, 0, 0, p)) out.insert(out.end(), p, p + PKT);
+    uint8_t cc = (uint8_t)version;
+    packetise_section(0x1000, build_pmt_section(1, 0x100, info, {{0x100, 0x1B, {}}, {0x101, 0x03, {}}}, version),
+                      cc, out);
+    return out;
+}
+
+Bytes mrht_info(const HouseTimeDecl& d, bool klv_first) {
+    Bytes b = klv_first ? Bytes{0x05, 0x04, 'K', 'L', 'V', 'A'} : Bytes{};
+    uint8_t x[hcdesc::BYTES];
+    hcdesc::encode(d, x);
+    b.insert(b.end(), x, x + hcdesc::BYTES);
+    return b;
+}
+
+void test_declarations() {
+    const int64_t T = 1000 * S;
+    HouseTimeDecl da;
+    da.house_time_tai = da.disciplined = true;
+    da.sync_source = hcdesc::SYNC_NTP;
+    da.tai_utc_offset_s = 37;
+    da.clock_error_class = 10;
+    da.epoch_seq = 4;
+    da.d_e_90k = 45000;
+    da.timeline_id = 0xA1B2C3D4E5F60718ULL;
+    HouseTimeDecl db = da;                // house_time_tai 0: an MRHT that is not house time
+    db.house_time_tai = false;
+    db.d_e_90k = 54000;
+    db.tai_utc_offset_s = 0;
+    const Bytes klv = {0x05, 0x04, 'K', 'L', 'V', 'A'};
+    struct Step {
+        int64_t t;
+        Bytes b;
+    };
+    const std::vector<Step> src = {
+        {T, psi_buffer(mrht_info(da, true), 0, true)},               // the first PMT: table, pair
+        {T + 100 * MS, psi_buffer(mrht_info(da, true), 0, false)},   // repeat: the pair alone
+        {T + 200 * MS, psi_buffer(mrht_info(db, false), 1, false)},  // changed: table, pair
+        {T + 300 * MS, psi_buffer(klv, 2, false)},                   // MRHT dropped: table, absent decl
+        {T + 400 * MS, psi_buffer(klv, 2, false)},                   // repeat without: nothing
+        {T + 500 * MS, psi_buffer(mrht_info(da, false), 3, false)},  // back: table, pair
+    };
+    RestampCore core(stc());
+    TraceWriter w;
+    w.open_memory();
+    core.set_trace(&w);
+    RestampCore late(stc());              // its trace begun after the first repeat
+    TraceWriter wl;
+    wl.open_memory();
+    for (size_t i = 0; i < src.size(); i++) {
+        Bytes a = src[i].b, b = src[i].b;
+        core.process(a.data(), a.size(), src[i].t);
+        if (i == 2) late.set_trace(&wl);
+        late.process(b.data(), b.size(), src[i].t);
+    }
+    const std::vector<TraceRecord> t = w.records();
+    std::string kinds;
+    for (const TraceRecord& r : t)
+        kinds += r.kind == TraceKind::psi ? (r.value & TRACE_PSI_PCR ? 'T' : 't')
+                 : r.kind == TraceKind::decl ? (r.flags & TRACE_DECL_PRESENT ? 'D' : 'a')
+                 : r.kind == TraceKind::decl2 ? '2' : '?';
+    std::printf("  declarations: recorded %s\n", kinds.c_str());
+    HouseTimeDecl got;
+    const bool first = t.size() > 4 && trace_decl_of(t[3], t[4], &got) && got == da && t[3].arrival_ns == T;
+    const bool second = t.size() > 11 && trace_decl_of(t[10], t[11], &got) && got == db && !(t[10].flags & 0x80) &&
+                        (t[10].flags & TRACE_DECL_PRESENT) && ((uint32_t)t[11].dts_minus_pts_90k >> 24) == 0;
+    CHECK("declarations: the table then the pair; a repeat the pair alone; a change table and pair; MRHT dropped "
+          "the absent decl; a repeat without nothing; back again",
+          kinds == "TttD2D2TttD2TttaTttD2" && first && t[5].arrival_ns == T + 100 * MS);
+    CHECK("declarations: MRHT found behind another registration; house_time_tai 0 kept apart from no MRHT",
+          first && second && t[15].kind == TraceKind::decl && t[15].flags == 0 && t[15].pid == 1);
+    const Played p = play(t, {0x100, 0x101});
+    CHECK("declarations: the player puts each into its PMT; recorded again, the same records",
+          p.trace == t && p.misplaced == 0);
+    std::string lk;
+    for (const TraceRecord& r : wl.records())
+        lk += r.kind == TraceKind::psi ? 't' : r.kind == TraceKind::decl ? 'D' : r.kind == TraceKind::decl2 ? '2' : '?';
+    CHECK("declarations: a trace begun mid-stream opens with the declaration in force",
+          lk == "tttD2tttD2tttDtttD2" && trace_decl_of(wl.records()[3], wl.records()[4], &got) && got == da);
+
+    // What no recorder writes: counted as misplaced; a changed declaration alone goes out as a new table.
+    std::vector<TraceRecord> odd = table(T);
+    TraceRecord pr[2];
+    trace_decl_records(T, 1, &da, pr);
+    odd.insert(odd.end(), pr, pr + 2);
+    trace_decl_records(T + 10 * MS, 9, &da, pr);          // a program with no table
+    odd.insert(odd.end(), pr, pr + 2);
+    trace_decl_records(T + 20 * MS, 1, &da, pr);          // present, its decl2 missing
+    odd.push_back(pr[0]);
+    pr[1].arrival_ns = T + 30 * MS;                       // a decl2 alone
+    odd.push_back(pr[1]);
+    CHECK("declarations: an unknown program's pair, a decl without its decl2 and a decl2 alone are misplaced",
+          [&] {
+              TracePlayer pl(odd, RestampCore::OUTAGE_NS);
+              TracePlayer::Buffer b;
+              while (pl.next(&b)) {
+              }
+              return pl.misplaced() == 4;
+          }());
+    std::vector<TraceRecord> changed = table(T);
+    trace_decl_records(T, 1, &da, pr);
+    changed.insert(changed.end(), pr, pr + 2);
+    trace_decl_records(T + 100 * MS, 1, &db, pr);
+    changed.insert(changed.end(), pr, pr + 2);
+    const Played pc = play(changed, {0x101});
+    CHECK("declarations: a changed declaration with no table goes out as a new version, recorded with one",
+          pc.misplaced == 2 && pc.trace.size() == changed.size() + 3 && pc.trace[5].kind == TraceKind::psi &&
+              pc.trace[8].kind == TraceKind::decl);
+}
+
 // --- The generator (trace_gen.h, fixture_gen --trace) ---------------------------------
 
 uint64_t fnv(const std::vector<TraceRecord>& v) {
@@ -710,6 +865,39 @@ void test_generator() {
     CHECK("generator: --wrap-at 5: the PCR wraps 5 s in; the flagged jump's PCR at 60 s; one OUTAGE of ~3 s at 93 s",
           wrap_t > 4900 * MS && wrap_t < 5100 * MS && di_t > 59900 * MS && di_t < 60100 * MS && outage > 2950 * MS &&
               outage < 3060 * MS && outage_t > 92900 * MS && outage_t < 93100 * MS);
+    // --decl and --sender-epoch (p5-6t): the pair after the table and with every 100 ms
+    // repeat but in an outage; the transit (arrival + E_rx - PCR - D_e) is the path's delay.
+    c = trace_gen::Config();
+    c.decl = true;
+    c.decl_v.house_time_tai = c.decl_v.disciplined = true;
+    c.decl_v.d_e_90k = 45000;
+    c.decl_v.clock_error_class = 10;
+    c.sender_epoch_ns = 50000 * S;
+    c.jitter_mean_ns = 0;
+    c.duration_ns = 20 * S;
+    c.outages.push_back({10 * S, 2 * S});
+    const std::vector<TraceRecord> dt = trace_gen::generate(c), dt2 = trace_gen::generate(c);
+    int decls = 0, pairs = 0, pcrs = 0;
+    bool transit = true, after_table = dt.size() > 5 && dt[4].kind == TraceKind::decl;
+    const int64_t e_rx = c.sender_epoch_ns - c.house0_ns;
+    for (size_t i = 0; i < dt.size(); i++) {
+        decls += dt[i].kind == TraceKind::decl;
+        pairs += i && dt[i].kind == TraceKind::decl2 && dt[i - 1].kind == TraceKind::decl &&
+                 dt[i - 1].arrival_ns == dt[i].arrival_ns;
+        if (dt[i].kind == TraceKind::pcr && dt[i].arrival_ns < c.house0_ns + 10 * S) {
+            const int64_t sent = pcr27_to_ns((int64_t)dt[i].value) + pts90k_to_ns(45000);
+            transit &= iabs64(dt[i].arrival_ns + e_rx - sent - 20 * MS) < 1000;
+            pcrs++;
+        }
+    }
+    std::printf("  generator --decl: %zu records, %d declarations, checksum %016llx\n", dt.size(), decls,
+                (unsigned long long)fnv(dt));
+    CHECK("generator: --decl writes the pair after the table and every 100 ms but in the outage; checksum 819e80685dc8a10f",
+          dt == dt2 && fnv(dt) == 0x819e80685dc8a10fULL && decls == 180 && pairs == 180 && after_table);
+    CHECK("generator: --sender-epoch puts the PCR at the sender's time less D_e: transit = the 20 ms floor",
+          transit && pcrs == 100);
+    const Played pd = play(dt, {0x100, 0x101, 0x102});
+    CHECK("generator: a --decl trace replays and records again as generated", pd.trace == dt && pd.misplaced == 0);
 }
 
 // Generated traces through the player into RestampCore: the epochs part 7.2 names, and
@@ -793,6 +981,7 @@ int main() {
     test_memory_writer();
     test_player_fidelity();
     test_player_cases();
+    test_declarations();
     test_generator();
     test_generated_replays();
     for (const std::string& f : g_files) std::remove(f.c_str());

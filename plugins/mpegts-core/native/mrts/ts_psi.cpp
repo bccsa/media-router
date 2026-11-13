@@ -307,6 +307,7 @@ void PsiDiscovery::select_program(int program_number) {
     pmt_sig_ = pmt_new_sig_ = SectionSig();
     pmt_resync_ = false;
     pmt_.reset();
+    pmt_acc_.clear();
 }
 
 bool PsiDiscovery::pat_section(std::vector<uint8_t>& section) const {
@@ -345,6 +346,7 @@ bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
                 pmt_resync_ = true;
             }
             if (later_section(p.b, TABLE_PMT, program_)) unsupported_++;
+            count_pmt(p.b);
             pmt_pkts_.push_back(p);
             if ((int)pmt_pkts_.size() > max_) pmt_pkts_.pop_front();
         }
@@ -368,6 +370,7 @@ bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
                 // the buffered packets belong to the old one.
                 pmt_pid_ = it->second;
                 pmt_pkts_.clear();
+                pmt_acc_.clear();
                 pmt_sig_ = SectionSig();
                 pmt_resync_ = false;
             }
@@ -394,6 +397,47 @@ bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
         }
     }
     return changed;
+}
+
+void PsiDiscovery::count_pmt(const uint8_t* pkt) {
+    if (!ts_has_payload(pkt)) return;
+    const int off = payload_offset(pkt);
+    if (off >= PKT) return;
+    if (!ts_pusi(pkt)) {
+        if (!pmt_acc_.empty()) gather_pmt(pkt + off, PKT - off);
+        return;
+    }
+    // pointer_field: the bytes before the first new section end the open one.
+    const int ptr = pkt[off];
+    int at = off + 1;
+    if (!pmt_acc_.empty()) gather_pmt(pkt + at, std::min(ptr, PKT - at));
+    pmt_acc_.clear();
+    at += ptr;
+    while (at < PKT && pkt[at] != 0xFF) {
+        pmt_acc_.push_back(pkt[at++]);
+        at += gather_pmt(pkt + at, PKT - at);
+        if (!pmt_acc_.empty()) return;            // runs on into the next packet
+    }
+}
+
+int PsiDiscovery::gather_pmt(const uint8_t* p, int n) {
+    // Up to the 3-byte header, then to its section_length; a whole one is counted
+    // when it is a current section 0 of the followed program with a good CRC.
+    int used = 0;
+    while (used < n && !pmt_acc_.empty()) {
+        const bool head = pmt_acc_.size() < 3;
+        const size_t need = head ? 3 : 3 + (size_t)(((pmt_acc_[1] & 0x0F) << 8) | pmt_acc_[2]);
+        const int take = (int)std::min<size_t>(need - pmt_acc_.size(), (size_t)(n - used));
+        pmt_acc_.insert(pmt_acc_.end(), p + used, p + used + take);
+        used += take;
+        if (pmt_acc_.size() < need || head) continue;
+        const std::vector<uint8_t>& s = pmt_acc_;
+        if (s.size() >= 16 && s[0] == TABLE_PMT && (s[1] & 0x80) && (s[5] & 0x01) && s[6] == 0 &&
+            (program_ < 0 || ((s[3] << 8) | s[4]) == program_) && crc32_mpeg(s.data(), s.size()) == 0)
+            pmt_count_++;
+        pmt_acc_.clear();
+    }
+    return used;
 }
 
 }  // namespace mrts

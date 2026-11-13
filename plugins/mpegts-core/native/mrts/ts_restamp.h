@@ -193,6 +193,8 @@ class RestampCore {
         int number, pmt_pid;
         PsiDiscovery psi;
         int gen = 0;
+        uint64_t pmt_seen = 0;            // psi.pmt_count() last handled
+        bool had_decl = false;            // the last PMT seen carried MRHT
         int pcr_pid = -1, ref_pid = -1;
         std::vector<int> es;              // PMT order
         VirtualStc stc;
@@ -248,6 +250,8 @@ class RestampCore {
     void update_pcr_shift(Program& g);
     void pull_events(Program& g);
     void record_psi(const Program& g);
+    void on_pmt_seen(Program& g);
+    void record_decl(const Program& g, const HouseTimeDecl* d);
     void record(TraceKind k, int pid, uint64_t value, int32_t d, uint8_t flags, int64_t arrival);
     void keep_es(Pid& p, uint8_t* pkt, bool span_cont = false);
     void drop_es(Pid& p, uint8_t* pkt, bool duplicate);

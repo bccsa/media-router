@@ -345,6 +345,8 @@ const char* kind_name(TraceKind k) {
         case TraceKind::pes: return "pes";
         case TraceKind::psi: return "psi";
         case TraceKind::outage: return "outage";
+        case TraceKind::decl: return "decl";
+        case TraceKind::decl2: return "decl2";
         default: return nullptr;
     }
 }
@@ -397,6 +399,128 @@ std::string record_json(const TraceRecord& r) {
     o += cn ? std::string("\"") + cn + "\"" : std::to_string((unsigned)trace_class(r.flags));
     if (r.flags & 0xF8) o += ",\"flagsRest\":" + std::to_string((unsigned)(r.flags & 0xF8));
     return o + "}";
+}
+
+// decl and decl2 (p5-6t): one line per pair, the declaration's fields by name; a decl2
+// with no decl before it at its arrival a line of its own. Lossless, as record_json.
+constexpr uint8_t DECL_FLAGS_REST = 0x0E;
+const char* const kDecl2Keys[] = {"hcVersion", "syncSource", "taiUtcOffsetS", "ptpDomain",
+                                  "gmIdentity", "clockErrorClass", "epochSeq"};
+
+std::string decl2_json(const TraceRecord& b) {
+    const uint32_t x = (uint32_t)b.dts_minus_pts_90k;
+    char o[200];
+    std::snprintf(o, sizeof o,
+                  ",\"hcVersion\":%u,\"syncSource\":%u,\"taiUtcOffsetS\":%u,\"ptpDomain\":%u,\"gmIdentity\":\"%s\","
+                  "\"clockErrorClass\":%u,\"epochSeq\":%u",
+                  (x >> 16) & 0xFF, x & 0xFF, x >> 24, (x >> 8) & 0xFF, hcdesc::gm_text(b.value).c_str(),
+                  (unsigned)b.flags, (unsigned)b.pid);
+    return o;
+}
+
+std::string decl_json(const TraceRecord& a, const TraceRecord* b) {
+    char o[320];
+    const bool present = a.flags & TRACE_DECL_PRESENT;
+    std::snprintf(o, sizeof o, "{\"t\":%lld,\"kind\":\"decl\",\"program\":%u,\"present\":%s", (long long)a.arrival_ns,
+                  (unsigned)a.pid, present ? "true" : "false");
+    std::string s = o;
+    // An absent one as a recorder writes it shows nothing more.
+    if (present || a.value || a.dts_minus_pts_90k || (a.flags & TRACE_DECL_FLAGS)) {
+        auto tf = [&](uint8_t bit) { return (a.flags & bit) ? "true" : "false"; };
+        std::snprintf(o, sizeof o,
+                      ",\"houseTimeTai\":%s,\"disciplined\":%s,\"traceable\":%s,\"ptpValid\":%s,\"timelineId\":\"%s\","
+                      "\"de90k\":%u",
+                      tf(0x80), tf(0x40), tf(0x20), tf(0x10), hcdesc::timeline_text(a.value).c_str(),
+                      (unsigned)(uint32_t)a.dts_minus_pts_90k);
+        s += o;
+    }
+    if (a.flags & DECL_FLAGS_REST) s += ",\"flagsRest\":" + std::to_string((unsigned)(a.flags & DECL_FLAGS_REST));
+    if (b) s += decl2_json(*b);
+    return s + "}";
+}
+
+std::string decl2_alone_json(const TraceRecord& b) {
+    return "{\"t\":" + std::to_string((long long)b.arrival_ns) + ",\"kind\":\"decl2\"" + decl2_json(b) + "}";
+}
+
+// A decl line's records: the decl, then its decl2 when the line names its fields (all or none).
+bool decl_from_json(const Json& j, bool decl, std::vector<TraceRecord>* out, std::string* err) {
+    std::vector<std::string> allowed = {"t", "kind"};
+    uint64_t u = 0;
+    int64_t t = 0;
+    const Json* x = j.get("t");
+    if (!x || !x->i64(&t)) return *err = "missing or bad \"t\"", false;
+    auto need_u = [&](const char* key, uint64_t max, uint64_t* v) {
+        const Json* y = j.get(key);
+        if (!y || !y->u64(v) || *v > max) return *err = std::string("missing or bad \"") + key + "\"", false;
+        return true;
+    };
+    auto boolean = [&](const char* key, bool* v) {
+        const Json* y = j.get(key);
+        if (!y || y->type != Json::Type::boolean) return *err = std::string("missing or bad \"") + key + "\"", false;
+        *v = y->b;
+        return true;
+    };
+    TraceRecord a;
+    a.arrival_ns = t;
+    a.kind = TraceKind::decl;
+    if (decl) {
+        for (const char* k : {"program", "present", "houseTimeTai", "disciplined", "traceable", "ptpValid",
+                              "timelineId", "de90k", "flagsRest"})
+            allowed.push_back(k);
+        bool present = false;
+        if (!need_u("program", 0xFFFF, &u) || !boolean("present", &present)) return false;
+        a.pid = (uint16_t)u;
+        a.flags = present ? TRACE_DECL_PRESENT : 0;
+        // The declaration's own fields: required when present, else 0 unless given.
+        const char* bits[] = {"houseTimeTai", "disciplined", "traceable", "ptpValid"};
+        for (int i = 0; i < 4; i++) {
+            bool v = false;
+            if ((present || j.get(bits[i])) && !boolean(bits[i], &v)) return false;
+            if (v) a.flags |= (uint8_t)(0x80 >> i);
+        }
+        if (present || j.get("timelineId")) {
+            const Json* y = j.get("timelineId");
+            if (!y || y->type != Json::Type::string || !hcdesc::parse_timeline_text(y->s, &a.value))
+                return *err = "missing or bad \"timelineId\"", false;
+        }
+        if (present || j.get("de90k")) {
+            if (!need_u("de90k", 0xFFFFFFFFULL, &u)) return false;
+            a.dts_minus_pts_90k = (int32_t)(uint32_t)u;
+        }
+        if (j.get("flagsRest")) {
+            if (!need_u("flagsRest", 0xFF, &u) || (u & ~(uint64_t)DECL_FLAGS_REST)) return *err = "bad \"flagsRest\"", false;
+            a.flags |= (uint8_t)u;
+        }
+        out->push_back(a);
+    }
+    int given = 0;
+    for (const char* k : kDecl2Keys) {
+        allowed.push_back(k);
+        given += j.get(k) != nullptr;
+    }
+    if (given != 0 && given != 7) return *err = "the decl2 fields are all given or none", false;
+    if (!decl && given == 0) return *err = "a decl2 line needs its fields", false;
+    if (given) {
+        TraceRecord b;
+        b.arrival_ns = t;
+        b.kind = TraceKind::decl2;
+        uint64_t ver, sync, tai, dom, cls, seq;
+        if (!need_u("hcVersion", 0xFF, &ver) || !need_u("syncSource", 0xFF, &sync) ||
+            !need_u("taiUtcOffsetS", 0xFF, &tai) || !need_u("ptpDomain", 0xFF, &dom) ||
+            !need_u("clockErrorClass", 0xFF, &cls) || !need_u("epochSeq", 0xFFFF, &seq))
+            return false;
+        const Json* g = j.get("gmIdentity");
+        if (g->type != Json::Type::string || !hcdesc::parse_gm(g->s, &b.value)) return *err = "bad \"gmIdentity\"", false;
+        b.pid = (uint16_t)seq;
+        b.flags = (uint8_t)cls;
+        b.dts_minus_pts_90k = (int32_t)(uint32_t)(sync | dom << 8 | ver << 16 | tai << 24);
+        out->push_back(b);
+    }
+    for (const auto& kv : j.keys)
+        if (std::find(allowed.begin(), allowed.end(), kv.first) == allowed.end())
+            return *err = "unknown key \"" + kv.first + "\"", false;
+    return true;
 }
 
 bool record_from_json(const Json& j, TraceRecord* out, std::string* err) {
@@ -491,7 +615,8 @@ bool record_from_json(const Json& j, TraceRecord* out, std::string* err) {
 bool read_trace(const std::string& path, std::vector<TraceRecord>* out, TraceReader::Status* status) {
     TraceReader rd;
     if (!rd.open(path)) {
-        std::fprintf(stderr, "mrts_cli: %s: not an .stct version %u trace\n", path.c_str(), TRACE_VERSION);
+        std::fprintf(stderr, "mrts_cli: %s: not an .stct trace of version %u to %u\n", path.c_str(), TRACE_VERSION_MIN,
+                     TRACE_VERSION);
         return false;
     }
     TraceRecord r;
@@ -513,7 +638,16 @@ int trace2jsonl_main(int argc, char** argv) {
     std::vector<TraceRecord> recs;
     TraceReader::Status st;
     if (!read_trace(argv[1], &recs, &st)) return 1;
-    for (const TraceRecord& r : recs) std::printf("%s\n", record_json(r).c_str());
+    for (size_t i = 0; i < recs.size(); i++) {
+        const TraceRecord& r = recs[i];
+        const bool pair = r.kind == TraceKind::decl && i + 1 < recs.size() && recs[i + 1].kind == TraceKind::decl2 &&
+                          recs[i + 1].arrival_ns == r.arrival_ns;
+        const std::string line = r.kind == TraceKind::decl    ? decl_json(r, pair ? &recs[i + 1] : nullptr)
+                                 : r.kind == TraceKind::decl2 ? decl2_alone_json(r)
+                                                              : record_json(r);
+        std::printf("%s\n", line.c_str());
+        i += pair;
+    }
     return st == TraceReader::Status::truncated ? 1 : 0;
 }
 
@@ -539,11 +673,17 @@ int jsonl2trace_main(int argc, char** argv) {
         Json j;
         std::string err;
         TraceRecord r;
-        if (!parse_json(l, &j, &err) || !record_from_json(j, &r, &err)) {
+        const Json* k = nullptr;
+        bool ok = parse_json(l, &j, &err);
+        if (ok && j.type == Json::Type::object && (k = j.get("kind")) && k->type == Json::Type::string &&
+            (k->s == "decl" || k->s == "decl2"))
+            ok = decl_from_json(j, k->s == "decl", &recs, &err);
+        else if (ok && (ok = record_from_json(j, &r, &err)))
+            recs.push_back(r);
+        if (!ok) {
             std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", argv[1], line, err.c_str());
             return 1;
         }
-        recs.push_back(r);
     }
     TraceWriter w;
     if (!w.open(argv[2])) {

@@ -9,15 +9,19 @@
 #include <utility>
 #include <vector>
 
+#include "ts_hcdesc.h"
+
 namespace mrts {
 
 // A 16-byte header {"STCT", u32 version, u64 record count}, then 24-byte records,
 // all little-endian. The count is patched on close: 0 in a file whose writer died.
-constexpr uint32_t TRACE_VERSION = 1;
+// Version 2 adds the declaration pair (p5-6t); the reader takes 1 and 2.
+constexpr uint32_t TRACE_VERSION = 2;
+constexpr uint32_t TRACE_VERSION_MIN = 1;
 constexpr size_t TRACE_HEADER_BYTES = 16;
 constexpr size_t TRACE_RECORD_BYTES = 24;
 
-enum class TraceKind : uint8_t { pcr = 1, pes = 2, psi = 3, outage = 4 };
+enum class TraceKind : uint8_t { pcr = 1, pes = 2, psi = 3, outage = 4, decl = 5, decl2 = 6 };
 
 // What the restamp keys on per PID: video guards on DTS, and the degraded mode's
 // reference PID is the first video, else the first audio PID.
@@ -38,6 +42,17 @@ inline uint64_t trace_psi_value(int program_number, int stream_type, bool pcr_pi
            (pcr_pid ? TRACE_PSI_PCR : 0);
 }
 
+// The sender's MRHT declaration (B-224), written at every PMT of a program whose current or
+// previous PMT carries one. decl: value timeline_id, pid the program, flags the descriptor's
+// b7-b4 and TRACE_DECL_PRESENT, the int32 D_e in 90 kHz. decl2 (present only, same arrival):
+// value gm_identity, pid epoch_seq, flags clock_error_class, the int32 trace_decl2_packed.
+constexpr uint8_t TRACE_DECL_PRESENT = 0x01;   // the wire's reserved b0; clear: the PMT has no MRHT
+constexpr uint8_t TRACE_DECL_FLAGS = 0xF0;     // house_time_tai, disciplined, traceable, ptp_valid
+inline uint32_t trace_decl2_packed(const HouseTimeDecl& d) {
+    return (uint32_t)d.sync_source | (uint32_t)d.ptp_domain << 8 | (uint32_t)d.version << 16 |
+           (uint32_t)d.tai_utc_offset_s << 24;
+}
+
 struct TraceRecord {
     int64_t arrival_ns = 0;
     // PCR: the 27 MHz PCR; PES: the 33-bit PTS; both raw, as on the wire.
@@ -56,6 +71,12 @@ struct TraceRecord {
 void encode_trace_header(uint64_t count, uint8_t out[TRACE_HEADER_BYTES]);
 void encode_trace_record(const TraceRecord& r, uint8_t out[TRACE_RECORD_BYTES]);
 TraceRecord decode_trace_record(const uint8_t in[TRACE_RECORD_BYTES]);
+
+// The declaration's records for `program` at `arrival`: the pair, or with d null the absent
+// decl alone. Returns how many it wrote.
+int trace_decl_records(int64_t arrival, int program, const HouseTimeDecl* d, TraceRecord out[2]);
+// The declaration of a present decl and its decl2; false for an absent one.
+bool trace_decl_of(const TraceRecord& decl, const TraceRecord& decl2, HouseTimeDecl* out);
 
 class TraceWriter {
   public:
@@ -85,7 +106,7 @@ class TraceReader {
   public:
     // ok: as many records as the header says. unclosed: the count is 0 (the writer
     // died) and every record is whole. truncated: fewer records than the count, or
-    // a partial record at the end. bad_header: not an .stct version 1 file.
+    // a partial record at the end. bad_header: not an .stct file of version 1 or 2.
     enum class Status { ok, unclosed, truncated, bad_header };
 
     TraceReader() = default;
@@ -97,10 +118,12 @@ class TraceReader {
     Status status() const { return status_; }
     uint64_t header_count() const { return header_count_; }
     uint64_t read_count() const { return read_; }
+    uint32_t version() const { return version_; }   // the header's; 0 until a file opens
 
   private:
     std::FILE* f_ = nullptr;
     uint64_t header_count_ = 0, read_ = 0;
+    uint32_t version_ = 0;
     Status status_ = Status::bad_header;
 };
 
@@ -112,6 +135,7 @@ bool trace_pes_tag(const uint8_t* payload, size_t n, uint32_t* index);
 // A trace played back as the TS its recorder (RestampCore::set_trace) read, so a
 // RestampCore fed it makes the same clock calls and records the same trace again. Not in
 // a trace, so not played: payload, CC loss, duplicates, PES without PTS, live O/trim edits.
+// A declaration goes into its table's PMT; alone, it is that PMT sent again with it.
 class TracePlayer {
   public:
     struct Buffer {
@@ -134,6 +158,7 @@ class TracePlayer {
         uint8_t version;                  // pat, pmt
         uint32_t rec;                     // the record; pmt: its table's first
         uint32_t n;                       // pmt: the table's records; pat: programs listed
+        int64_t decl = -1;                // pmt: its declaration's decl record, -1 none
     };
     struct Buf {
         int64_t arrival;
@@ -144,6 +169,8 @@ class TracePlayer {
     void add_table(size_t first, size_t n);
     void add_pes(size_t i);
     void add_outage(const TraceRecord& r);
+    void add_decl(size_t i, bool pair);
+    std::vector<uint8_t> program_info(int64_t decl) const;
     int free_pid();
     void put(const Item& it, std::vector<uint8_t>& out);
 
@@ -153,6 +180,8 @@ class TracePlayer {
     size_t pos_ = 0;
     std::vector<std::pair<int, int>> programs_;   // (number, PMT PID), by first table
     std::vector<uint8_t> pmt_version_;            // per programs_ entry
+    std::vector<std::pair<uint32_t, uint32_t>> table_;   // per programs_ entry: its last table (first, n)
+    std::vector<std::vector<uint8_t>> info_;      // per programs_ entry: the program_info last sent
     uint8_t pat_version_ = 0;
     std::vector<uint8_t> used_;                   // by PID: in the trace, or a PMT PID given
     std::vector<uint8_t> cc_;                     // next CC by PID
