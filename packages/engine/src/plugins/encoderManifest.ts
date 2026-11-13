@@ -70,12 +70,19 @@ export function applyEncoderAvailabilityToManifest(
     const autoImpl = resolveImpl('h264', 'auto', availability.h264 ?? []);
     for (const prop of Object.values(props) as Array<Record<string, unknown>>) {
         const rule = prop?.['x-showWhen'];
-        if (typeof rule !== 'string' || !rule.startsWith('encoderImpl=')) continue;
-        const impls = rule
-            .slice('encoderImpl='.length)
-            .split(',')
-            .filter((v) => v !== 'auto');
-        if (autoImpl && impls.includes(autoImpl)) impls.push('auto');
-        prop['x-showWhen'] = `encoderImpl=${impls.join(',')}`;
+        if (typeof rule !== 'string' || !rule.includes('encoderImpl=')) continue;
+        // Per `&`-joined clause (all must match), only the encoderImpl one changes.
+        prop['x-showWhen'] = rule
+            .split('&')
+            .map((clause) => {
+                if (!clause.startsWith('encoderImpl=')) return clause;
+                const impls = clause
+                    .slice('encoderImpl='.length)
+                    .split(',')
+                    .filter((v) => v !== 'auto');
+                if (autoImpl && impls.includes(autoImpl)) impls.push('auto');
+                return `encoderImpl=${impls.join(',')}`;
+            })
+            .join('&');
     }
 }

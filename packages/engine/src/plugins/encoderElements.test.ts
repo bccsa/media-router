@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildEncoderBranch, buildV4l2ExtraControls, readQvbrQuality } from './encoderElements';
+import {
+    buildEncoderBranch,
+    buildV4l2ExtraControls,
+    effectiveRateControl,
+    readQvbrQuality,
+} from './encoderElements';
 
 describe('buildEncoderBranch HRD/CPB bound (cpbSeconds)', () => {
     it('VA-API h264 CBR sets cpb-size = bitrate x cpbSeconds (default 1 s)', () => {
@@ -148,10 +153,61 @@ describe('buildEncoderBranch QVBR (bitrate = ceiling)', () => {
         expect(s).toContain('cpb-size=8000');
     });
 
-    it('VA-API av1 has no QVBR: falls back to CBR so the bitrate stays a ceiling', () => {
-        const s = buildEncoderBranch({ ...base, codec: 'av1', impl: 'va', rateControl: 'qvbr' });
-        expect(s).toContain('rate-control=cbr');
-        expect(s).not.toContain('qpi');
+    it('VA-API av1 runs capped VBR (its QVBR quality is a qindex, not 1–51)', () => {
+        expect(buildEncoderBranch({ ...base, codec: 'av1', impl: 'va', rateControl: 'qvbr' })).toBe(
+            'vaav1enc name=venc_0 bitrate=4841 rate-control=vbr target-percentage=100 target-usage=7 key-int-max=50 cpb-size=4841 ! av1parse',
+        );
+    });
+
+    it('VA-API without QVBR in the driver: vbr target-percentage=100 keeps bitrate the peak', () => {
+        const s = buildEncoderBranch({
+            ...base,
+            codec: 'h264',
+            impl: 'va',
+            rateControl: 'qvbr',
+            vaQvbr: false,
+        });
+        expect(s).toBe(
+            'vah264enc name=venc_0 bitrate=4841 rate-control=vbr target-percentage=100 target-usage=7 key-int-max=50 b-frames=0 cpb-size=4841 ! h264parse config-interval=1',
+        );
+    });
+
+    it('VA-API capped modes floor cpb-size at max/2 (GStreamer resets a smaller one to 2 s)', () => {
+        for (const vaQvbr of [true, false]) {
+            const s = buildEncoderBranch({
+                ...base,
+                codec: 'h264',
+                impl: 'va',
+                rateControl: 'qvbr',
+                cpbSeconds: 0.4,
+                vaQvbr,
+            });
+            expect(s).toContain('cpb-size=2421'); // ceil(4841 / 2), not 1936
+        }
+        const odd = buildEncoderBranch({
+            ...base,
+            codec: 'h265',
+            impl: 'va',
+            bitrateKbps: 16001,
+            rateControl: 'qvbr',
+            cpbSeconds: 0.1,
+        });
+        expect(odd).toContain('cpb-size=8001');
+        // CBR keeps its string (the same flaw there is a follow-up).
+        expect(
+            buildEncoderBranch({ ...base, codec: 'h264', impl: 'va', cpbSeconds: 0.4 }),
+        ).toContain('cpb-size=1936');
+    });
+
+    it('a stray quality never reaches the string', () => {
+        const s = buildEncoderBranch({
+            ...base,
+            codec: 'h264',
+            impl: 'va',
+            rateControl: 'qvbr',
+            quality: '30; rm' as unknown as number,
+        });
+        expect(s).toContain('qpi=25 ');
     });
 
     it('x264: capped CRF through pass=qual, cap and buffer via properties', () => {
@@ -200,10 +256,13 @@ describe('buildEncoderBranch QVBR (bitrate = ceiling)', () => {
         );
     });
 
-    it('svtav1 keeps its existing target-bitrate behaviour', () => {
+    it('svtav1: capped CRF (crf + mbr, no overshoot); CBR/VBR unchanged', () => {
         const opts = { ...base, codec: 'av1', impl: 'software' } as const;
-        expect(buildEncoderBranch({ ...opts, rateControl: 'qvbr' })).toBe(
-            buildEncoderBranch({ ...opts, rateControl: 'cbr' }),
+        expect(buildEncoderBranch({ ...opts, rateControl: 'qvbr', quality: 30 })).toBe(
+            'svtav1enc name=venc_0 crf=30 preset=10 parameters-string="mbr=4841:mbr-overshoot-pct=0" ! av1parse',
+        );
+        expect(buildEncoderBranch({ ...opts, rateControl: 'cbr' })).toBe(
+            'svtav1enc name=venc_0 target-bitrate=4841 preset=10 ! av1parse',
         );
     });
 
@@ -226,5 +285,26 @@ describe('readQvbrQuality', () => {
         expect(readQvbrQuality('')).toBeUndefined();
         expect(readQvbrQuality(undefined)).toBeUndefined();
         expect(readQvbrQuality('abc')).toBeUndefined();
+    });
+});
+
+describe('effectiveRateControl', () => {
+    const qvbr = { rateControl: 'qvbr' } as const;
+    it('names what each impl runs for QVBR', () => {
+        expect(effectiveRateControl({ ...qvbr, codec: 'h264', impl: 'va' })).toBe('qvbr');
+        expect(effectiveRateControl({ ...qvbr, codec: 'h265', impl: 'va', vaQvbr: false })).toBe(
+            'capped-vbr',
+        );
+        expect(effectiveRateControl({ ...qvbr, codec: 'av1', impl: 'va' })).toBe('capped-vbr');
+        expect(effectiveRateControl({ ...qvbr, codec: 'h264', impl: 'software' })).toBe('qvbr');
+        expect(effectiveRateControl({ ...qvbr, codec: 'av1', impl: 'software' })).toBe('qvbr');
+        expect(effectiveRateControl({ ...qvbr, codec: 'h264', impl: 'v4l2' })).toBe('vbr');
+    });
+    it('V4L2 is VBR whatever is asked; CBR is the default elsewhere', () => {
+        expect(effectiveRateControl({ codec: 'h264', impl: 'v4l2', rateControl: 'cbr' })).toBe(
+            'vbr',
+        );
+        expect(effectiveRateControl({ codec: 'h264', impl: 'va' })).toBe('cbr');
+        expect(effectiveRateControl({ codec: 'h264', impl: 'va', rateControl: 'vbr' })).toBe('vbr');
     });
 });

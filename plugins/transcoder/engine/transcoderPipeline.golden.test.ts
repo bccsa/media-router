@@ -29,7 +29,8 @@ import type { TranscoderOutput } from './transcoderPorts.js';
  *   - 2026-11-02: no `tsparse set-timestamps=false` before the demux, which
  *     re-frames itself (house-clock WI-P3-18, OQ-26).
  *   - 2026-11-09: the raw-frame queue and each leaf's decoder-pool queue are
- *     non-leaky: a slow encoder is lateness, not lost frames (B-173). *   - 2026-11-13: QVBR case added (a new string; the two above unchanged).
+ *     non-leaky: a slow encoder is lateness, not lost frames (B-173).
+ *   - 2026-11-13: QVBR case added (a new string; the two above unchanged).
  */
 
 const outputs: TranscoderOutput[] = [
@@ -46,6 +47,7 @@ const outputs: TranscoderOutput[] = [
             sceneCut: 40,
             cpbSeconds: 1,
             quality: 25,
+            vaQvbr: true,
         },
     },
     {
@@ -61,6 +63,7 @@ const outputs: TranscoderOutput[] = [
             sceneCut: 30,
             cpbSeconds: 0.5,
             quality: 25,
+            vaQvbr: true,
         },
     },
 ];
@@ -95,6 +98,7 @@ const qvbrOutputs: TranscoderOutput[] = [
             sceneCut: 40,
             cpbSeconds: 1,
             quality: 25,
+            vaQvbr: true,
         },
     },
     {
@@ -110,6 +114,7 @@ const qvbrOutputs: TranscoderOutput[] = [
             sceneCut: 0,
             cpbSeconds: 0.5,
             quality: 23,
+            vaQvbr: true,
         },
     },
 ];

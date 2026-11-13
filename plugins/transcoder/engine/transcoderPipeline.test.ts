@@ -30,6 +30,7 @@ const enc = (over: Partial<ResolvedEncode> = {}): ResolvedEncode => ({
     sceneCut: 40,
     cpbSeconds: 1,
     quality: 25,
+    vaQvbr: true,
     ...over,
 });
 
@@ -561,6 +562,7 @@ describe('subtitle burn-in', () => {
                 sceneCut: 40,
                 cpbSeconds: 1,
                 quality: 25,
+                vaQvbr: true,
             },
         },
     ];

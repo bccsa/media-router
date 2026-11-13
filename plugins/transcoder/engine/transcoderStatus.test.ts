@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { renditionStatLabel, renditionSummary, throughputSection } from './transcoderStatus.js';
+import {
+    qvbrFallbackWarning,
+    renditionStatLabel,
+    renditionSummary,
+    throughputSection,
+} from './transcoderStatus.js';
 
 const sample = (kbps: number, bytes = 0) =>
     ({ bitrateKbps: kbps, totalBytes: bytes, intervalMs: 1000 }) as any;
@@ -36,16 +41,48 @@ describe('renditionSummary', () => {
                 },
             },
         ];
-        expect(renditionSummary(outputs)).toBe('1920x1080@5000k [v4l2, cbr], 854x480@1200k');
+        // The tag is what runs: V4L2 pins VBR, so a cbr override reads vbr.
+        expect(renditionSummary(outputs)).toBe('1920x1080@5000k [v4l2, vbr], 854x480@1200k');
     });
 
-    it('tags a quality override only when the rendition runs QVBR', () => {
-        const row = (rateControl: string): any => ({
+    it('tags a quality override only when the rendition really runs QVBR', () => {
+        const row = (rateControl: string, codec = 'h264', impl = 'va', vaQvbr = true): any => ({
             rendition: { width: 1280, height: 720, bitrate: 2500, rateControl, quality: 20 },
-            encode: { codec: 'h264', impl: 'va', rateControl, quality: 20 },
+            encode: { codec, impl, rateControl, quality: 20, vaQvbr },
         });
-        expect(renditionSummary([row('qvbr'), row('cbr')])).toBe(
-            '1280x720@2500k [qvbr, q20], 1280x720@2500k [cbr]',
+        expect(
+            renditionSummary([
+                row('qvbr'),
+                row('cbr'),
+                row('qvbr', 'h264', 'va', false),
+                row('qvbr', 'av1', 'va'),
+                row('qvbr', 'av1', 'software'),
+                row('qvbr', 'h264', 'v4l2'),
+                row('qvbr', 'h265', 'software'),
+            ])
+                .split(/, (?=1280x720)/)
+                .map((s) => s.replace('1280x720@2500k ', '')),
+        ).toEqual([
+            '[qvbr, q20]',
+            '[cbr]',
+            '[capped-vbr]',
+            '[capped-vbr]',
+            '[qvbr, q20]',
+            '[vbr]',
+            '[qvbr, q20]',
+        ]);
+    });
+
+    it('warns only for QVBR renditions that fell back to capped VBR on VA-API', () => {
+        const out = (name: string, codec: string, vaQvbr: boolean, rateControl = 'qvbr'): any => ({
+            rendition: { name, width: 1280, height: 720, bitrate: 2500 },
+            encode: { codec, impl: 'va', rateControl, quality: 25, vaQvbr },
+        });
+        expect(
+            qvbrFallbackWarning([out('HD', 'h264', true), out('SD', 'h264', false, 'cbr')]),
+        ).toBe(null);
+        expect(qvbrFallbackWarning([out('HD', 'h264', false), out('AV1', 'av1', true)])).toBe(
+            'No VA-API QVBR for HD, AV1: VBR capped at the bitrate, quality ignored',
         );
     });
 });

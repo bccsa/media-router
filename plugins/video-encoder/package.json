@@ -118,7 +118,7 @@
                         "qvbr": "QVBR (quality-targeted, bitrate = ceiling)"
                     },
                     "title": "Rate Control",
-                    "description": "CBR: fixed rate. VBR: better on motion. QVBR: bitrate is the peak, easy content uses less. Hidden on V4L2 (always VBR).",
+                    "description": "CBR: fixed rate. VBR: better on motion. QVBR: bitrate = ceiling, easy content uses less. Hidden on V4L2 (always VBR).",
                     "x-showWhen": "encoderImpl=software,va,auto"
                 },
                 "quality": {
@@ -129,8 +129,8 @@
                     "x-widget": "slider",
                     "x-step": 1,
                     "title": "QVBR Quality",
-                    "description": "QVBR quality target, lower = better; the bitrate stays the ceiling, easy content comes in under it.",
-                    "x-showWhen": "rateControl=qvbr"
+                    "description": "QVBR quality, lower = better (a hint on VA-API); the bitrate stays the ceiling, easy content uses less.",
+                    "x-showWhen": "rateControl=qvbr&encoderImpl=software,va,auto"
                 },
                 "speedPreset": {
                     "type": "string",

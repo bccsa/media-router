@@ -12,6 +12,7 @@ vi.mock('child_process', () => ({
 import {
     GST_INSPECT_TIMEOUT_MS,
     gstElementSupportsCaps,
+    gstElementEnumHasValue,
     gstInspectMaxChannels,
     isGstInspectTimeout,
     probeGstElement,
@@ -582,5 +583,58 @@ describe('a slow or hung gst-inspect-1.0 on PATH (B-102)', () => {
         await expect(probeGstElement('missing-element')).resolves.toBe(false);
         await expect(probeGstElement('missing-element')).resolves.toBe(false);
         expect(runs('missing-element')).toBe(1);
+    });
+});
+
+describe('gstElementEnumHasValue', () => {
+    beforeEach(() => {
+        execFileMock.mockReset();
+    });
+
+    // Trimmed from `gst-inspect-1.0 vah264enc` (GStreamer 1.28.2, iHD driver).
+    const inspect = (modes: string) => `Element Properties:
+
+  qpi                 : The quantizer value for I frame. In CQP mode, it specifies the QP of I frame. In ICQ and QVBR modes, it specifies a quality factor. In other modes, it is ignored
+                        flags: readable, writable, changeable in NULL, READY, PAUSED or PLAYING state
+                        Unsigned Integer. Range: 0 - 51 Default: 26 
+  
+  rate-control        : The desired rate control mode for the encoder
+                        flags: readable, writable, conditionally available, changeable in NULL, READY, PAUSED or PLAYING state
+                        Enum "GstVaEncoderRateControl_H264_renderD128" Default: 2, "cbr"
+${modes}
+  
+  ref-frames          : Number of reference frames, including both the forward and the backward
+                        flags: readable, writable
+`;
+    const withQvbr = [
+        '                           (2): cbr              - Constant Bitrate',
+        '                           (4): vbr              - Variable Bitrate',
+        '                           (1024): qvbr             - Quality defined VBR',
+    ].join('\n');
+    const withoutQvbr = withQvbr.split('\n').slice(0, 2).join('\n');
+
+    it('finds a nick in that property block only', async () => {
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, null, inspect(withQvbr)),
+        );
+        await expect(gstElementEnumHasValue('vaenc-a', 'rate-control', 'qvbr')).resolves.toBe(true);
+        await expect(gstElementEnumHasValue('vaenc-a', 'rate-control', 'icq')).resolves.toBe(false);
+        // `qvbr` mentioned in another property's text is not an enum value.
+        await expect(gstElementEnumHasValue('vaenc-a', 'qpi', 'qvbr')).resolves.toBe(false);
+    });
+
+    it('a driver without the mode, or no element, reads false', async () => {
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, null, inspect(withoutQvbr)),
+        );
+        await expect(gstElementEnumHasValue('vaenc-b', 'rate-control', 'qvbr')).resolves.toBe(
+            false,
+        );
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, Object.assign(new Error('no such element'), { code: 1 })),
+        );
+        await expect(gstElementEnumHasValue('vaenc-c', 'rate-control', 'qvbr')).resolves.toBe(
+            false,
+        );
     });
 });

@@ -4,6 +4,7 @@ import {
     RATE_CONTROLS,
     QVBR_QUALITY_DEFAULT,
     parseResolution,
+    readClampedNumber,
     readQvbrQuality,
     type CodecId,
     type H264Profile,
@@ -54,7 +55,8 @@ export function readEncoderKnobs(config: Record<string, unknown>): EncoderKnobs 
         speedPreset: pickEnum<SpeedPreset>(config.speedPreset, SPEED_PRESETS, 'superfast'),
         h264Profile: pickEnum<H264Profile>(config.h264Profile, H264_PROFILES, 'auto'),
         sceneCut: typeof config.sceneCut === 'number' ? config.sceneCut : 40,
-        cpbSeconds: typeof config.cpbSeconds === 'number' ? config.cpbSeconds : 1,
+        // Clamped to 0.1–2 s like the transcoder (the manifest's range).
+        cpbSeconds: readClampedNumber(config.cpbSeconds, 0.1, 2) ?? 1,
         quality: readQvbrQuality(config.quality) ?? QVBR_QUALITY_DEFAULT,
     };
 }

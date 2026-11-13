@@ -130,6 +130,7 @@ describe('applyEncoderAvailabilityToManifest', () => {
                 properties: {
                     sceneCut: { 'x-showWhen': 'encoderImpl=software,auto' },
                     other: { 'x-showWhen': 'codec=h264' },
+                    quality: { 'x-showWhen': 'rateControl=qvbr&encoderImpl=software,va,auto' },
                 },
             },
         };
@@ -142,5 +143,7 @@ describe('applyEncoderAvailabilityToManifest', () => {
         expect(props.sceneCut['x-showWhen']).toBe('encoderImpl=software');
         // non-encoderImpl rules are left alone
         expect(props.other['x-showWhen']).toBe('codec=h264');
+        // only the encoderImpl clause of a compound rule changes
+        expect(props.quality['x-showWhen']).toBe('rateControl=qvbr&encoderImpl=software,va');
     });
 });

@@ -148,7 +148,7 @@
                         "qvbr": "QVBR (quality-targeted, bitrate = ceiling)"
                     },
                     "title": "Rate Control",
-                    "description": "CBR: fixed rate, safest for links. VBR: bitrate is the average, peak 1.5x. QVBR: bitrate is the peak, easy content less."
+                    "description": "CBR: fixed rate. VBR: bitrate = average (1.5x peaks on VA). QVBR: bitrate = ceiling, less on easy content; V4L2: VBR."
                 },
                 "quality": {
                     "type": "number",
@@ -158,8 +158,8 @@
                     "x-widget": "slider",
                     "x-step": 1,
                     "title": "QVBR Quality",
-                    "description": "QVBR quality target, lower = better; the bitrate stays the ceiling, easy content comes in under it.",
-                    "x-showWhen": "rateControl=qvbr"
+                    "x-advanced": true,
+                    "description": "QVBR quality, lower = better (a hint on VA-API); the bitrate stays the ceiling, easy content uses less."
                 },
                 "encoderImpl": {
                     "type": "string",
@@ -397,6 +397,6 @@
         "build": "tsc",
         "typecheck": "tsc --noEmit",
         "test": "pnpm run test:py",
-        "test:py": "cd py && python3 deinterlace_guard_test.py && python3 videorate_conform_test.py"
+        "test:py": "cd py && python3 deinterlace_guard_test.py && python3 videorate_conform_test.py && python3 qvbr_encoders_test.py"
     }
 }

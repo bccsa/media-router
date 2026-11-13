@@ -165,6 +165,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
                 sceneCut: e.sceneCut,
                 cpbSeconds: e.cpbSeconds,
                 quality: e.quality,
+                vaQvbr: e.vaQvbr,
                 interlacedOutput: deinterlaceMode === 'off',
             },
             muxName: `mux_${i}`,

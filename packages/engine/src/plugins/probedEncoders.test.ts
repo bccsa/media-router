@@ -3,9 +3,10 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('./gstInspect.js', async (orig) => ({
     ...(await orig<typeof import('./gstInspect.js')>()),
     probeGstElement: vi.fn(),
+    gstElementEnumHasValue: vi.fn(),
 }));
 
-import { GstInspectTimeoutError, probeGstElement } from './gstInspect.js';
+import { GstInspectTimeoutError, gstElementEnumHasValue, probeGstElement } from './gstInspect.js';
 import { ENCODER_ELEMENTS } from './encoderElements.js';
 import { ProbedEncoders } from './probedEncoders.js';
 
@@ -84,5 +85,30 @@ describe('ProbedEncoders.probe', () => {
         const host = await ProbedEncoders.probe(ENCODER_ELEMENTS, { probeHwScalers: true });
         expect(host.availability).toEqual({ h264: ['software'], h265: [], av1: [] });
         expect(host.hwScalers).toEqual({ va: false, v4l2: true });
+    });
+});
+
+describe('ProbedEncoders VA QVBR', () => {
+    it('probes rate-control=qvbr on each installed VA element only', async () => {
+        probeMock.mockImplementation(async (name: string) => name.startsWith('va'));
+        const enumMock = gstElementEnumHasValue as unknown as ReturnType<typeof vi.fn>;
+        enumMock.mockReset();
+        enumMock.mockImplementation(async (el: string) => el === 'vah264enc');
+        const host = await ProbedEncoders.probe(ENCODER_ELEMENTS);
+        expect(host.vaQvbr).toEqual({ h264: true, h265: false, av1: false });
+        expect(enumMock.mock.calls.map((c) => c.slice(1))).toEqual([
+            ['rate-control', 'qvbr'],
+            ['rate-control', 'qvbr'],
+            ['rate-control', 'qvbr'],
+        ]);
+    });
+
+    it('defaults to none: unprobed and forTest', () => {
+        expect(ProbedEncoders.unprobed().vaQvbr).toEqual({ h264: false, h265: false, av1: false });
+        expect(ProbedEncoders.forTest({}, {}, { h265: true }).vaQvbr).toEqual({
+            h264: false,
+            h265: true,
+            av1: false,
+        });
     });
 });

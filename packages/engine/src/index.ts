@@ -71,6 +71,7 @@ export {
     probeGstElement,
     gstInspectMaxChannels,
     gstElementSupportsCaps,
+    gstElementEnumHasValue,
     findLadspaElement,
     GstInspectTimeoutError,
     isGstInspectTimeout,
@@ -82,6 +83,7 @@ export {
     RATE_CONTROLS,
     QVBR_QUALITY_DEFAULT,
     readQvbrQuality,
+    effectiveRateControl,
     resolveImpl,
     buildEncoderBranch,
     buildV4l2ExtraControls,
@@ -90,6 +92,7 @@ export type {
     CodecId,
     ImplId,
     RateControl,
+    EffectiveRateControl,
     SpeedPreset,
     H264Profile,
     EncoderBranchOptions,
@@ -99,7 +102,12 @@ export {
     applyEncoderAvailabilityToManifest,
 } from './plugins/encoderManifest.js';
 export { ProbedEncoders } from './plugins/probedEncoders.js';
-export type { HwScalerAvailability, ProbeEncodersOptions } from './plugins/probedEncoders.js';
+export type {
+    HwScalerAvailability,
+    ProbeEncodersOptions,
+    VaQvbrAvailability,
+} from './plugins/probedEncoders.js';
+export { readClampedNumber } from './plugins/configNumber.js';
 export { buildEncodeLeaf, buildScaleStage } from './plugins/encoderLeaf.js';
 export { parseResolution } from './plugins/videoGeometry.js';
 export { ensureWaylandEnv } from './system/waylandEnv.js';
