@@ -2303,6 +2303,57 @@ describe('VideoPlayerModule helpers', () => {
         });
     });
 
+    describe('display status', () => {
+        function makeModule() {
+            VideoPlayerModule.setSinkAvailability({ wayland: false, kms: false });
+            const module = new VideoPlayerModule();
+            (module as any).services = {
+                instanceId: 'video-player-1',
+                mediaRouter: { getModuleBusSource: vi.fn(() => undefined) },
+            };
+            const setStatusData = vi.fn();
+            (module as any).setStatusData = setStatusData;
+            vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+            const display = () =>
+                setStatusData.mock.calls.filter((c) => c[0] === 'display').at(-1)?.[1];
+            return { module, setStatusData, display };
+        }
+
+        it('adds the video size once the probe reports the SPS', () => {
+            const { module, display } = makeModule();
+            (module as any).onPluginEvent('tsprobe:videoinfo', { pid: 256, codec: 'h264' });
+            expect(display()).toBeUndefined(); // codec-only line: nothing to show
+            (module as any).onPluginEvent('tsprobe:videoinfo', {
+                pid: 256,
+                codec: 'h264',
+                width: 1920,
+                height: 1080,
+            });
+            expect(display()).toMatchObject({ video: '1920x1080 (16:9)' });
+        });
+
+        it('does not republish for a repeated size', () => {
+            const { module, setStatusData } = makeModule();
+            const info = { pid: 256, codec: 'h264', width: 1280, height: 720 };
+            (module as any).onPluginEvent('tsprobe:videoinfo', info);
+            (module as any).onPluginEvent('tsprobe:videoinfo', info);
+            expect(setStatusData.mock.calls.filter((c) => c[0] === 'display')).toHaveLength(1);
+        });
+
+        it('drops the video rows when the fallback card is built', () => {
+            const { module, display } = makeModule();
+            (module as any).onPluginEvent('tsprobe:videoinfo', {
+                pid: 256,
+                codec: 'h264',
+                width: 1920,
+                height: 1080,
+            });
+            module.buildPipeline({});
+            expect(display()).not.toHaveProperty('video');
+            expect(display()).not.toHaveProperty('fit');
+        });
+    });
+
     describe('onLiveConfigUpdate', () => {
         function makeRunningModule(opts: {
             hasSource: boolean;

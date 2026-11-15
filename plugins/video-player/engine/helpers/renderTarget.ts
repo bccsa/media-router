@@ -188,11 +188,22 @@ export function resolveFallbackSurface(
     renderConnector: string,
     waylandFullscreen: boolean,
 ): SurfaceSize {
-    return (
-        (waylandFullscreen
-            ? resolveWestonSurface(renderConnector)
-            : resolveConnectorMode(renderConnector)) ?? DEFAULT_SURFACE
-    );
+    return resolveOutputSurface(renderConnector, waylandFullscreen) ?? DEFAULT_SURFACE;
+}
+
+/**
+ * The output's size as the renderer sees it — weston's logical canvas on the
+ * compositor path, the kernel's preferred mode on KMS — or `undefined` when it
+ * can't be read. The fallback card sizes itself from this; the `display` status
+ * reports it as the screen mode.
+ */
+export function resolveOutputSurface(
+    renderConnector: string,
+    waylandFullscreen: boolean,
+): SurfaceSize | undefined {
+    return waylandFullscreen
+        ? resolveWestonSurface(renderConnector)
+        : resolveConnectorMode(renderConnector);
 }
 
 /**

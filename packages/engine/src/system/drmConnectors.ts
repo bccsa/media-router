@@ -233,3 +233,42 @@ export function resolveConnectorId(
     }
     return undefined;
 }
+
+/**
+ * Did the screen on `connectorName` hand the kernel a usable EDID?
+ *
+ * `false` when the connector's `edid` file is empty or all zeroes: nothing
+ * answered on the DDC lines (a damaged cable, a bad adapter or extender) or the
+ * sink's EDID EEPROM is blank. The kernel then runs the output on its
+ * no-EDID fallback list (1024x768 and below, 4:3) in DVI mode with no HDMI
+ * audio, so an FHD screen shows the picture letterboxed and silent. Operators
+ * need to see this as the cause rather than chase the resolution or the audio
+ * device. `undefined` when the connector is absent or the file is unreadable.
+ *
+ * A forced EDID (`drm.edid_firmware=`) shows here as present — it replaces
+ * what the kernel exposes.
+ */
+export function connectorHasEdid(
+    connectorName: string,
+    dir: string = DRM_DIR,
+): boolean | undefined {
+    if (!connectorName) return undefined;
+    let entries: string[];
+    try {
+        entries = fs.readdirSync(dir);
+    } catch {
+        return undefined;
+    }
+    const entry = entries.find(
+        (e) => /^card\d+-/.test(e) && e.replace(/^card\d+-/, '') === connectorName,
+    );
+    if (!entry) return undefined;
+    try {
+        // sysfs reports size 0 for this binary attribute whatever it holds, so
+        // read it rather than stat it.
+        const edid = fs.readFileSync(path.join(dir, entry, 'edid'));
+        return edid.some((b) => b !== 0);
+    } catch {
+        return undefined;
+    }
+}
