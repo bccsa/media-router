@@ -1,4 +1,5 @@
 import {
+    connectorHasEdid,
     GstPluginBase,
     listDrmConnectors,
     onKernelLogSignal,
@@ -41,9 +42,12 @@ import {
     activeDisplayName,
     describeRenderPath,
     resolveFallbackSurface,
+    resolveOutputSurface,
     resolveRenderTarget,
     type SinkAvailability,
 } from './helpers/renderTarget.js';
+import { describeDisplayFit } from './helpers/displayFit.js';
+import type { SurfaceSize } from './helpers/pipelines.js';
 import {
     planFallbackPipeline,
     planLivePipeline,
@@ -217,6 +221,12 @@ export class VideoPlayerModule extends GstPluginBase {
      * EXTERNAL stop clears it — see clearDecoderState.
      */
     private detectedCodec?: string;
+    /**
+     * Coded size of the live video, from the probe's SPS report — feeds the
+     * `display` status's video / scaling rows. Cleared while the fallback card
+     * is up, so the panel never describes a picture that isn't on screen.
+     */
+    private videoSize?: SurfaceSize;
     /** Decoder rung the CURRENT live pipeline was built with; undefined while
      *  the fallback card is up (an error there must never demote a decoder). */
     private liveDecoder?: DecoderSelection;
@@ -459,6 +469,8 @@ export class VideoPlayerModule extends GstPluginBase {
             }
             this.clearRenderLagState();
         } else if (channel === 'tsprobe:videoinfo') {
+            const info = payload as { width?: number | null; height?: number | null } | null;
+            this.noteVideoSize(info?.width, info?.height);
             // The probe emits an early codec-only line as soon as the PMT
             // parses (well before the SPS), so the upgrade off decodebin3
             // happens within a second of the pipeline playing, and re-emits on
@@ -1154,6 +1166,10 @@ export class VideoPlayerModule extends GstPluginBase {
         const udpSource = this.videoSource();
         const sourceSilent = !!udpSource && this.busStallDetected;
         const useFallback = !udpSource || sourceSilent;
+        // Refresh the screen mode on every build (a compositor restart may
+        // have changed it); the fallback card has no video to describe.
+        if (useFallback) this.videoSize = undefined;
+        this.updateStatusData();
 
         this.setHealth(
             ...resolveBuildHealth({
@@ -1253,9 +1269,25 @@ export class VideoPlayerModule extends GstPluginBase {
             source: udpSource ? `bus ${udpSource.port}` : '—',
             state: udpSource ? 'connected' : 'no source',
         });
-        this.setStatusData(
-            'display',
-            describeRenderPath((this.config.display as string) ?? '', VideoPlayerModule.sinks),
+        const display = describeRenderPath(
+            (this.config.display as string) ?? '',
+            VideoPlayerModule.sinks,
         );
+        const screen = resolveOutputSurface(display.target, display.renderer === 'waylandsink');
+        this.setStatusData('display', {
+            ...display,
+            ...describeDisplayFit(screen, this.videoSize, connectorHasEdid(display.target)),
+        });
+    }
+
+    /** Record the probe's SPS size; the early codec-only report carries none. */
+    private noteVideoSize(
+        width: number | null | undefined,
+        height: number | null | undefined,
+    ): void {
+        if (!width || !height || width <= 0 || height <= 0) return;
+        if (this.videoSize?.width === width && this.videoSize?.height === height) return;
+        this.videoSize = { width, height };
+        this.updateStatusData();
     }
 }

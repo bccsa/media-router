@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+    connectorHasEdid,
     firstConnectedDisplay,
     listDrmConnectors,
     pickActiveDisplay,
@@ -346,5 +347,48 @@ describe('pickActiveDisplay', () => {
             connectorId: 32,
             substituted: false,
         });
+    });
+});
+
+describe('connectorHasEdid', () => {
+    let tmp: string;
+
+    beforeEach(() => {
+        tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'drm-edid-'));
+    });
+
+    afterEach(() => {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    });
+
+    function fixture(name: string, edid?: Buffer) {
+        const dir = path.join(tmp, name);
+        fs.mkdirSync(dir);
+        if (edid) fs.writeFileSync(path.join(dir, 'edid'), edid);
+    }
+
+    it('is true when the screen sent an EDID', () => {
+        const edid = Buffer.alloc(256);
+        edid.set([0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]);
+        fixture('card0-HDMI-A-1', edid);
+        expect(connectorHasEdid('HDMI-A-1', tmp)).toBe(true);
+    });
+
+    it('is false for an empty EDID (nothing answered on DDC)', () => {
+        fixture('card0-HDMI-A-1', Buffer.alloc(0));
+        expect(connectorHasEdid('HDMI-A-1', tmp)).toBe(false);
+    });
+
+    it('is false for an all-zero EDID', () => {
+        fixture('card0-HDMI-A-1', Buffer.alloc(128));
+        expect(connectorHasEdid('HDMI-A-1', tmp)).toBe(false);
+    });
+
+    it('is undefined for an unknown connector, an empty name or no edid file', () => {
+        fixture('card0-DSI-1');
+        expect(connectorHasEdid('HDMI-A-9', tmp)).toBeUndefined();
+        expect(connectorHasEdid('', tmp)).toBeUndefined();
+        expect(connectorHasEdid('DSI-1', tmp)).toBeUndefined();
+        expect(connectorHasEdid('HDMI-A-1', '/nonexistent-path-xyz')).toBeUndefined();
     });
 });

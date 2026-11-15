@@ -58,6 +58,7 @@ export type {
     KernelLogWatchOptions,
 } from './system/kernelLogWatch.js';
 export {
+    connectorHasEdid,
     firstConnectedDisplay,
     listDrmConnectors,
     pickActiveDisplay,

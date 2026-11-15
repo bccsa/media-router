@@ -177,7 +177,10 @@
                 "fields": [
                     { "key": "renderer", "type": "string", "label": "Renderer" },
                     { "key": "target", "type": "string", "label": "Output" },
-                    { "key": "status", "type": "string", "label": "Status" }
+                    { "key": "status", "type": "string", "label": "Status" },
+                    { "key": "mode", "type": "string", "label": "Screen mode" },
+                    { "key": "video", "type": "string", "label": "Video" },
+                    { "key": "fit", "type": "string", "label": "Scaling" }
                 ]
             }
         ],
