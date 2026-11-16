@@ -190,12 +190,16 @@ describe('DisplayStatsWatch (B-242)', () => {
         });
     });
 
-    it('a missing property, an error or a structure without the counters reads nothing', () => {
+    it('a missing property, an error or a structure without numeric counters reads nothing', () => {
         const w = new DisplayStatsWatch();
         w.take(undefined, 0);
         w.take(null, 0);
         w.take('get_property failed', 0);
         w.take({ presented: 5 }, 0);
+        // Not a number: null, an empty string or a boolean must not read as 0 or 1.
+        w.take({ replaced: null, discarded: null }, 0);
+        w.take({ replaced: '', discarded: 0 }, 0);
+        w.take({ replaced: 0, discarded: true }, 0);
         expect(w.reading(0)).toBeUndefined();
         w.take(stats(1, 1), 0);
         expect(w.reading(30_000)).toBeDefined();

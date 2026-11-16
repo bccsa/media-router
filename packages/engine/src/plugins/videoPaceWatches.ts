@@ -154,14 +154,14 @@ const DISPLAY_STATS_STALE_MS = 30_000;
 export class DisplayStatsWatch {
     private samples: StatsSample[] = [];
 
-    /** One read; anything without both counters reads nothing. A count below the last is a new
+    /** One read; anything without both counters as numbers reads nothing. A count below the last is a new
      *  sink: its counts start again. */
     take(stats: unknown, now: number): void {
         const p = (stats ?? {}) as Payload;
-        const replaced = Number(p.replaced);
-        const discarded = Number(p.discarded);
-        if (typeof stats !== 'object' || !Number.isFinite(replaced) || !Number.isFinite(discarded))
-            return;
+        const { replaced, discarded } = p;
+        // Integers only: a null, string or boolean counter must not read as 0 or 1.
+        if (typeof replaced !== 'number' || !Number.isFinite(replaced)) return;
+        if (typeof discarded !== 'number' || !Number.isFinite(discarded)) return;
         const last = this.samples[this.samples.length - 1];
         const again = !!last && (replaced < last.replaced || discarded < last.discarded);
         const kept = again ? [] : this.samples.filter((x) => now - x.at <= RATE_WINDOW_MS);
