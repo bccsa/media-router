@@ -1125,6 +1125,110 @@ def case_split_af():
     ]
 
 
+def _ticked(data, tick):
+    """ts_egress_test.cpp's ticked(): 1316-byte buffers at content + 100 ms, those of content
+    [2 s, 3 s) never coming; with `tick`, the element's timer at each pcr_due_at() between them."""
+    anchors = ec.content_anchors(data)
+    c0 = anchors[0][1]
+    lo, hi = c0 + 2 * SEC, c0 + 3 * SEC
+    core = ec.EgressCore()
+    core.set_clock(ec.clock_from_json(CLOCK))
+    out, events, ticks, nonempty = bytearray(), [], 0, True
+    last = c0
+    for off in range(0, len(data), 1316):
+        at = ec._interp(anchors, off)
+        if lo <= at < hi:
+            continue
+        while tick:
+            due = core.pcr_due_at()
+            if due is None or due > at + 100 * MS:
+                break
+            now = max(due, last + 100 * MS)
+            r = core.tick(now)
+            last = now - 100 * MS
+            if not r.edits:
+                break
+            nonempty = nonempty and r.packets == []
+            out += ec.apply_edits(r.packets, r.edits)
+            ticks += 1
+        last = at
+        r = core.process(data[off:off + 1316], at + 100 * MS)
+        out += ec.apply_edits(r.packets, r.edits)
+        events += core.take_events()
+    return bytes(out), events, ticks, nonempty
+
+
+def case_tick():
+    """F1 (B-250): the element's PCR timer, as ts_egress_test.cpp's test_tick."""
+    data = gen("--audio-only", "--duration", "5")
+    out, ev_t, ticks, only_inserts = _ticked(data, True)
+    plain, ev_p, _n, _x = _ticked(data, False)
+    iv, ivp = _pcr_intervals(Walk(out), 0x101), _pcr_intervals(Walk(plain), 0x101)
+    strip = [{k: v for k, v in e.items() if k != "packet"} for e in ev_t]
+    bad_t = [b for b in cc_walk(out)[0] if b[1] == 0x101 and b[2] == "af"]
+    bad_p = [b for b in cc_walk(plain)[0] if b[1] == 0x101 and b[2] == "af"]
+    fresh = ec.EgressCore()
+    return [
+        ("tick: before any buffer, nothing", fresh.tick(5000 * SEC).edits == [] and fresh.pcr_due_at() is None),
+        ("tick: sparse buffers and a 1 s hole ticked keep the PCR interval <= 35 ms",
+         bool(iv) and max(iv) <= 35 * MS and ticks > 28),
+        ("tick: without the ticks the interval passes 100 ms", bool(ivp) and max(ivp) > 100 * MS),
+        ("tick: inserts only, in a Result without packets", only_inserts),
+        ("tick: the same events as without the ticks",
+         bool(strip) and strip == [{k: v for k, v in e.items() if k != "packet"} for e in ev_p]),
+        ("tick: the ticked PCRs on the PID's last payload CC (no strict-walk violation added)",
+         len(bad_t) == len(bad_p)),
+    ]
+
+
+def big_pmt(data, target):
+    """Every PMT section grown to `target` bytes by private descriptors in program_info, as
+    ts_egress_test.cpp's big_pmt (fixture_gen's PMT fits one packet)."""
+    out, cc = bytearray(), 0
+    for off in range(0, len(data) - PKT + 1, PKT):
+        p = data[off:off + PKT]
+        if ((p[1] & 0x1F) << 8 | p[2]) != 0x1000:
+            out += p
+            continue
+        k, _ln, _pil, es = _pmt_es(data, off)
+        pcr, ver = ((data[k + 8] & 0x1F) << 8) | data[k + 9], (data[k + 5] >> 1) & 0x1F
+        pi, left = b"", target - len(ec.build_pmt_section(1, pcr, b"", es, ver))
+        while left > 0:
+            n = min(left, 257)
+            pi += bytes([0x80, n - 2]) + b"\xa5" * (n - 2)
+            left -= n
+        pkts, cc = ec.packetise_section(0x1000, ec.build_pmt_section(1, pcr, pi, es, ver), cc)
+        out += b"".join(pkts)
+    return bytes(out)
+
+
+def _pmts(out):
+    """The PMT sections of a TS, any length: (program_info, decl)."""
+    asm, got = ec._SectionAssembler(), []
+    for off in range(0, len(out) - PKT + 1, PKT):
+        v = hr.parse_packet(bytearray(out[off:off + PKT]))
+        if v is None or v.pid != 0x1000:
+            continue
+        for sec, _n in asm.feed(v):
+            pil = ((sec[10] & 0x0F) << 8) | sec[11]
+            got.append((sec[12:12 + pil], hcdesc.find_in(sec[12:12 + pil])))
+    return got
+
+
+def case_descriptor_dropped():
+    big = gen("--duration", "3")
+    out, lines, _c = run(big_pmt(big, 1000), spec())
+    fits, lines2, _c2 = run(big_pmt(big, 990), spec())
+    got, ok = _pmts(out), _pmts(fits)
+    return [
+        ("descriptor dropped: a 1000-byte PMT leaves without MRHT, its own loop kept",
+         len(got) > 5 and all(d is None and len(pi) == 1000 - 12 - 4 - 5 * 3 - 7 for pi, d in got)),
+        ("descriptor dropped: told once", [x["program"] for x in ev(lines, "descriptor-dropped")] == [1]),
+        ("descriptor dropped: at 990 bytes it fits (1024 with it) and nothing is told",
+         not ev(lines2, "descriptor-dropped") and all(d is not None for _pi, d in ok) and ok),
+    ]
+
+
 CASES = {
     "hcdesc": case_hcdesc, "wrap": case_wrap, "header-split": case_header_split,
     "sparse-pcr": case_sparse_pcr, "no-pcr-pid": case_no_pcr_pid, "de": case_de, "gap": case_gap,
@@ -1135,7 +1239,8 @@ CASES = {
     "unknown-e": case_unknown_e, "lateness-clock": case_lateness_clock,
     "private-pes": case_private_pes, "before-pmt": case_before_pmt,
     "shared-pmt-pid": case_shared_pmt_pid, "pcr-pid-order": case_pcr_pid_order,
-    "eps-cap": case_eps_cap, "split-af": case_split_af,
+    "eps-cap": case_eps_cap, "split-af": case_split_af, "tick": case_tick,
+    "descriptor-dropped": case_descriptor_dropped,
     "expectations": case_expectations,
 }
 
@@ -1186,7 +1291,7 @@ def _mut_error_hold():
 def _mut_pcr_before_pmt():
     def disc(self, i, prog, rebuilt=False):
         if not rebuilt:
-            self._rebuild(prog)
+            self._rebuild(i, prog)
         if prog.pcr_out is not None:
             self._insert_pcr(i, prog, True)
         self._emit_pmt(i, prog)
@@ -1236,7 +1341,7 @@ def _mut_flag_dropped():
 
 def _mut_reepoch_no_bump():
     orig = ec.EgressCore._rebuild
-    return _patch(ec.EgressCore, "_rebuild", lambda self, prog, force=False: orig(self, prog))
+    return _patch(ec.EgressCore, "_rebuild", lambda self, i, prog, force=False: orig(self, i, prog))
 
 
 def _mut_late_cut():

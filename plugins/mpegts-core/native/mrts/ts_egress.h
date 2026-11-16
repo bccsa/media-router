@@ -79,7 +79,8 @@ class EgressDelay {
 
 struct EgressEvent {
     enum class Kind : uint8_t {
-        d_e_start, d_e_raise, d_e_lower, d_e_max, re_epoch, pcr_pid_assigned, pmt_grew, cc_lost_in
+        d_e_start, d_e_raise, d_e_lower, d_e_max, re_epoch, pcr_pid_assigned, pmt_grew, cc_lost_in,
+        descriptor_dropped
     };
     Kind kind;
     uint64_t packet = 0;                      // the input packet it came at, from the start
@@ -98,6 +99,14 @@ struct EgressStats {
     uint64_t pes_rewritten = 0, pcr_written = 0, pcr_inserted = 0, pmt_sent = 0;
     std::optional<int64_t> lateness_ns;       // the last timing PES's, within 60 s
     int64_t lateness_max_ns = 0, pcr_interval_max_ns = 0;
+};
+
+// One stats interval of a program (the element's mrtsegress-stats), reset by take_window:
+// the timing PES lateness within 60 s, raw (below 0 too; D_e reads max(0, it)), and the PCR gap.
+struct EgressWindow {
+    int64_t lateness_min_ns = 0, lateness_max_ns = 0, lateness_sum_ns = 0;
+    uint64_t lateness_n = 0;
+    int64_t pcr_interval_max_ns = 0;
 };
 
 struct EgressCounters {
@@ -156,6 +165,13 @@ class EgressCore {
     const EgressResult& on_gap(const uint8_t* data, size_t len, int64_t now_ns, int64_t end_ns,
                                const ClockReader& clk);
     const EgressResult& on_gap(const uint8_t* data, size_t len, int64_t now_ns, int64_t end_ns);
+    // A bus silence (the element's PCR timer): each program's PCR-only packet when due, as
+    // inserts at 0 of a result with no packets; nothing else moves (F1, B-250).
+    const EgressResult& tick(int64_t now_ns, const ClockReader& clk);
+    const EgressResult& tick(int64_t now_ns);
+    // When the next tick has a PCR to write: the earliest program's due instant; INT64_MAX
+    // with none (no PCR PID, no PMT yet, its CC not known, or a split header held on it).
+    int64_t pcr_due_at() const;
     // EOS: a split header never completed and what it held, in order, appended to `out`.
     void flush(std::vector<uint8_t>& out);
 
@@ -163,6 +179,11 @@ class EgressCore {
     bool stats(int program, EgressStats* out) const;
     std::vector<int> programs() const;        // PAT order
     const EgressCounters& counters() const { return counters_; }
+    // The program's interval so far, then reset; false for a program not in the PAT.
+    bool take_window(int program, EgressWindow* out);
+    uint64_t desync_bytes() const { return walker_.desync_bytes(); }
+    uint64_t header_spans() const { return span_.spans(); }
+    uint64_t broken_spans() const { return span_.broken(); }
 
   private:
     struct Prog;
@@ -194,7 +215,7 @@ class EgressCore {
     Verdict on_pmt(size_t i, PacketView& v);
     int choose_pcr(const std::vector<PmtStream>& streams) const;
     void new_pmt(size_t i, Prog& p, const Pmt& pmt);
-    bool rebuild(Prog& p, bool force = false);
+    bool rebuild(size_t i, Prog& p, bool force = false);
     void emit_pmt(size_t i, Prog& p);
     void insert_pcr(size_t i, Prog& p, bool discontinuity);
     void saw_pcr(Prog& p, int64_t t);

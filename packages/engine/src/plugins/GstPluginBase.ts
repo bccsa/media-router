@@ -200,6 +200,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         const clock = this.services?.houseClock;
         if (!clock) return;
         const push = (): void => {
+            // No pipeline: nothing is sent, so nothing is recorded; the next start builds anew.
+            if (!this.childProcess) return;
             const fields = houseClockFields(clock.epoch(), clock.state());
             const key = houseClockKey(fields);
             if (key === this.houseClockSent) return;
@@ -728,6 +730,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     async onStop(): Promise<void> {
         this.houseClockUnbind?.();
+        this.houseClockSent = '';
         this.vuStall.reset();
         this.captureStall?.reset();
         if (this.vuProcess) {

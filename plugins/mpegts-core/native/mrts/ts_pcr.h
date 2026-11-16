@@ -44,6 +44,8 @@ class PcrScheduler {
     bool due(int64_t house_now_ns) const {
         return !have_pcr_ || house_now_ns - last_pcr_ns_ >= interval_ns_;
     }
+    // The first instant due() holds; INT64_MIN before any PCR.
+    int64_t next_due() const { return have_pcr_ ? last_pcr_ns_ + interval_ns_ : INT64_MIN; }
     uint8_t cc() const { return cc_; }    // 0 until the PID's first payload
     int64_t interval_ns() const { return interval_ns_; }
 

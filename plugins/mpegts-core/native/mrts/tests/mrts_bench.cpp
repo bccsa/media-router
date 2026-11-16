@@ -1,6 +1,7 @@
-// mrts_bench: median ns/packet and MB/s of three passes for the WI-S0-11 budget: walk;
+// mrts_bench: median ns/packet and MB/s of four passes for the WI-S0-11 budget: walk;
 // + PSI, PES header index and in-place PTS/DTS/PCR rewrite (the restamp); + CC and copied
-// reassembly (the demux). --wrap-at S first moves the stream so the 33-bit wrap is S s in.
+// reassembly (the demux); EgressCore with its edits copied out (the writer, S29).
+// --wrap-at S first moves the stream so the 33-bit wrap is S s in.
 // Usage: mrts_bench [--chunk N] [--min-ms M] [--wrap-at S [--write OUT]] input.ts
 #include <algorithm>
 #include <chrono>
@@ -13,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "../ts_egress.h"
 #include "../ts_house.h"
 #include "../ts_packet.h"
 #include "../ts_pcr.h"
@@ -158,6 +160,36 @@ struct Demux {
     }
 };
 
+// The writer as mrtsegress runs it: EgressCore per chunk at a clock 200 ms behind the content,
+// each changed or inserted packet copied once more, as the element copies it into new memory.
+struct Egress {
+    int64_t h0 = 0, span = 0;             // the content's first house ns and its length
+    uint64_t edits = 0, copied = 0;
+    Bytes scratch;
+
+    void run(const Bytes& b, size_t chunk) {
+        EgressCore core;
+        ClockDecl c;
+        c.known = c.traceable = c.disciplined = true;
+        c.e_ns = 1760283215123456789LL;
+        c.error_us = 1200;
+        core.set_clock(c);
+        const size_t n = (b.size() + chunk - 1) / chunk;
+        for (size_t k = 0; k < n; k++) {
+            const size_t off = k * chunk;
+            const int64_t now = h0 + (int64_t)((__int128)span * (int64_t)k / (int64_t)n) + 200000000;
+            const EgressResult& r = core.process(b.data() + off, std::min(chunk, b.size() - off), now);
+            for (const EgressEdit& e : r.edits()) {
+                edits++;
+                if (e.op == EgressEdit::Op::drop) continue;
+                std::memcpy(scratch.data(), r.bytes(e), PKT);
+                copied++;
+            }
+        }
+        g_sink = g_sink + edits;
+    }
+};
+
 struct Timing {
     double ns_per_packet, mb_per_s;
     size_t repeats;
@@ -293,6 +325,27 @@ int main(int argc, char** argv) {
         Demux d;
         d.run(b, chunk);
     });
+    // The content's span for the writer's clock, from its first and last PES PTS.
+    Egress eg;
+    {
+        int64_t last_pts = first_pts;
+        PacketWalker w;
+        w.feed(data.data(), data.size(), [&](PacketView& v) {
+            PesHeader h;
+            if (v.pusi && v.payload_off < PKT && parse_pes_header(v.p + v.payload_off, PKT - v.payload_off, &h) &&
+                h.pts >= 0)
+                last_pts = h.pts;
+        });
+        if (first_pts >= 0) {
+            eg.h0 = pts90k_to_ns((first_pts - MUX_CLOCK_BASE_90K + PTS_WRAP) % PTS_WRAP);
+            eg.span = pts90k_to_ns(((last_pts - first_pts) % PTS_WRAP + PTS_WRAP) % PTS_WRAP);
+        }
+    }
+    eg.scratch.resize(PKT);
+    const Timing egress = time_pass(data, packets, min_ms, [&](Bytes& b) {
+        Egress e = eg;
+        e.run(b, chunk);
+    });
 
     // One untimed run of each for the counts the timings were taken over.
     Bytes copy = data;
@@ -302,6 +355,7 @@ int main(int argc, char** argv) {
     copy = data;
     Demux d;
     d.run(copy, chunk);
+    eg.run(data, chunk);
 
     std::printf("mrts_bench %s: %zu bytes, %zu packets, chunk %zu bytes\n", input.c_str(),
                 data.size(), packets, chunk);
@@ -316,6 +370,9 @@ int main(int argc, char** argv) {
                 "reassemble", reassemble.ns_per_packet, reassemble.mb_per_s, reassemble.repeats,
                 (unsigned long long)d.n, (unsigned long long)d.bytes,
                 (unsigned long long)d.pes.malformed());
+    std::printf("%-11s %10.1f %10.1f %8zu  %llu edits, %llu packets copied\n", "egress",
+                egress.ns_per_packet, egress.mb_per_s, egress.repeats, (unsigned long long)eg.edits,
+                (unsigned long long)eg.copied);
     if (wrap_at >= 0) {
         size_t crossed = 0;
         for (const auto& kv : d.track) crossed += kv.second.wraps > 0;

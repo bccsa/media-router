@@ -364,6 +364,34 @@ describe('GstPluginBase.bindHouseClock', () => {
         expect(setProperty).not.toHaveBeenCalled();
     });
 
+    it('a move while no pipeline runs is not recorded as sent: the bind at the start pushes it', () => {
+        const clock = new FakeClock();
+        const { mod, setProperty } = writer(clock);
+        mod.buildPipeline();
+        const child = (mod as unknown as { childProcess: unknown }).childProcess;
+        (mod as unknown as { childProcess: unknown }).childProcess = null;
+        mod.bind();
+        clock.reEpoch(E + 2_000_000_000n); // dropped: no child process
+        expect(setProperty).not.toHaveBeenCalled();
+        (mod as unknown as { childProcess: unknown }).childProcess = child;
+        mod.bind();
+        expect(setProperty).toHaveBeenCalledTimes(2);
+        expect(setProperty.mock.calls[0][2]).toContain('seq=(uint)4');
+    });
+
+    it('onStop forgets what was sent: a bind after the restart sends the value again', async () => {
+        const clock = new FakeClock();
+        const { mod, setProperty } = writer(clock);
+        mod.buildPipeline();
+        mod.bind();
+        const child = (mod as unknown as { childProcess: unknown }).childProcess;
+        await mod.onStop();
+        (mod as unknown as { childProcess: unknown }).childProcess = child;
+        mod.bind(); // a restart that keeps no pipeline string of its own
+        expect(setProperty).toHaveBeenCalledTimes(2);
+        expect(setProperty.mock.calls[0][2]).toBe(houseClockGstString(clock.ep, clock.st, NO_ENV));
+    });
+
     it('no house clock (tests, tools): the build value declares nothing, the bind is a no-op', () => {
         const mod = new Writer();
         mod.buildPipeline();

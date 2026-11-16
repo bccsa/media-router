@@ -193,6 +193,10 @@ class PcrScheduler:
     def due(self, now_ns):
         return not self.have or now_ns - self.last_ns >= self.interval_ns
 
+    def next_due(self):
+        """The first instant due() holds; None before any PCR."""
+        return self.last_ns + self.interval_ns if self.have else None
+
     def cc(self):
         return self._cc
 
@@ -348,7 +352,7 @@ class _Prog:
         self.key = None
         self.cc_known = False                     # the PCR PID's last sent payload CC is in sched
         self.disc_pending = False                 # a flagged PCR skipped for it: the next one carries it
-        self.grew_told = False
+        self.grew_told = self.dropped_told = False
         self.pcr_last_t = None
         self.st = {"pesRewritten": 0, "pcrWritten": 0, "pcrInserted": 0, "pmtSent": 0,
                    "latenessNs": None, "latenessMaxNs": 0, "pcrIntervalMaxNs": 0}
@@ -485,6 +489,33 @@ class EgressCore:
         self._base += len(pkts)
         return Result(pkts, edits)
 
+    def tick(self, now_ns, clk=None):
+        """A bus silence (the element's PCR timer): each program's PCR-only packet when due, as
+        inserts at 0 of a Result with no packets; nothing else moves (F1, B-250)."""
+        self._now = self._t = now_ns
+        self._clk = clk or (lambda i: now_ns)
+        edits = self._edits = []
+        for prog in self._progs.values():
+            pid = prog.pcr_out
+            if pid is None or prog.section is None or self._span.held(pid):
+                continue
+            if prog.sched.due(now_ns) or prog.disc_pending:
+                self._insert_pcr(0, prog, False)
+        return Result([], edits)
+
+    def pcr_due_at(self):
+        """When the next tick has a PCR to write (the earliest program's), -inf before a
+        program's first PCR or with a flag pending; None with none."""
+        at = None
+        for prog in self._progs.values():
+            if (prog.pcr_out is None or prog.section is None or not prog.cc_known
+                    or self._span.held(prog.pcr_out)):
+                continue
+            d = prog.sched.next_due()
+            d = float("-inf") if d is None or prog.disc_pending else d
+            at = d if at is None else min(at, d)
+        return at
+
     def flush(self):
         """What is held at the end of the stream (a split header never completed), in order."""
         out = []
@@ -543,9 +574,9 @@ class EgressCore:
             if prog.section is None:
                 continue
             if reepoch:
-                self._rebuild(prog, force=True)
+                self._rebuild(0, prog, force=True)
                 self._discontinuity(0, prog, rebuilt=True)
-            elif n in dirty and self._rebuild(prog):
+            elif n in dirty and self._rebuild(0, prog):
                 self._emit_pmt(0, prog)
 
     # -- packets -------------------------------------------------------------------------------
@@ -678,20 +709,26 @@ class EgressCore:
             prog.sched.saw_payload(last or 0)
             prog.pcr_last_t = None
         self._map_pids()
-        self._rebuild(prog)
+        self._rebuild(i, prog)
 
-    def _rebuild(self, prog, force=False):
+    def _rebuild(self, i, prog, force=False):
         """The program's output section from its input PMT and declaration; True when its bytes
         (version and CRC aside) changed or `force` (a re-epoch), the version then bumped."""
         pmt = prog.pmt_in
         pi = hcdesc.strip_from(pmt.program_info) + hcdesc.encode(self._decl(prog))
         pcr = PID_NULL if prog.pcr_out is None else prog.pcr_out
 
+        dropped = [False]
+
         def build(version):
             s = build_pmt_section(prog.number, pcr, pi, pmt.streams, version)
+            dropped[0] = not s
             return s or build_pmt_section(prog.number, pcr, hcdesc.strip_from(pmt.program_info),
                                           pmt.streams, version)
         sec = build(prog.version_out)
+        if dropped[0] and not prog.dropped_told:  # past 1024 bytes with the descriptor
+            prog.dropped_told = True
+            self._event(i, "descriptor-dropped", program=prog.number)
         key = sec[:5] + bytes([sec[5] & 0xC1]) + sec[6:-4]
         if prog.key == key and not force:
             return False
@@ -735,7 +772,7 @@ class EgressCore:
     def _discontinuity(self, i, prog, rebuilt=False):
         """Part 4.2 step 7: the new PMT, then a flagged PCR-only packet, before packet i."""
         if not rebuilt:
-            self._rebuild(prog)
+            self._rebuild(i, prog)
         self._emit_pmt(i, prog)
         if prog.pcr_out is not None:
             self._insert_pcr(i, prog, True)

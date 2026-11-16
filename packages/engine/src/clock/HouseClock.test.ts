@@ -2,9 +2,15 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setLogTap, type HouseEpoch, type TimeSyncState } from '@media-router/shared-types';
+import {
+    KERNEL_ESTERROR_UNSET_US,
+    setLogTap,
+    type HouseEpoch,
+    type TimeSyncState,
+} from '@media-router/shared-types';
 import { HouseClock, type HouseClockOptions } from './HouseClock.js';
 import { SETTLE_MAX_MS, START_WAIT_MS, deltaNs } from './houseClockPolicy.js';
+import { houseClockFields, houseClockFieldsString } from './houseClockProperty.js';
 import { ProcessManager } from '../child-process/ProcessManager.js';
 import type { ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 
@@ -251,7 +257,22 @@ describe('HouseClock', () => {
             waitingForSync: false,
             traceable: false,
             epochSeq: 0,
+            estErrorUs: KERNEL_ESTERROR_UNSET_US,
         });
+    });
+
+    it('before the first sample the error is unknown: the house-clock value claims no class (B-250)', async () => {
+        const h = fakeSidecar();
+        clock = h.clock;
+        h.clock.start();
+        await polled();
+        expect(h.clock.state().estErrorUs).toBe(KERNEL_ESTERROR_UNSET_US);
+        const before = houseClockFields(h.clock.epoch(), h.clock.state(), {});
+        expect(before.errorUs).toBeUndefined();
+        expect(houseClockFieldsString(before)).not.toContain('error-us');
+        h.emit(line({ estErrorUs: 1500 }));
+        await polled();
+        expect(houseClockFields(h.clock.epoch(), h.clock.state(), {}).errorUs).toBe(1500);
     });
 
     it('a step re-polls the clock owner at once, not at the next 10 s poll', async () => {

@@ -33,7 +33,8 @@ PLUGINS = [
     {"plugin": "mpegts-core", "tool": "mrtshouse", "file": "libgstmrtshouse.so",
      "required": True, "min_abi": MRTSHOUSE_MIN_ABI,
      "factories": {"mrtsrestamp": "identity", "mrasrc": "audioresample", "mrtsdemux": None,
-                   "mralignwatch": "identity", "mrvideopace": "identity"}},
+                   "mralignwatch": "identity", "mrvideopace": "identity",
+                   "mrtsegress": "identity"}},
     # The ducker and the keyed gate's PTS keeper (WI-P2-10): neither has a stand-in.
     {"plugin": "audio-processing", "tool": "mrducker", "file": "libgstmrducker.so",
      "required": False, "min_abi": MRDUCKER_MIN_ABI,

@@ -2692,6 +2692,9 @@ std::string egress_event_json(const EgressEvent& e) {
         case K::cc_lost_in:
             kv["pid"] = n(e.pid);
             break;
+        case K::descriptor_dropped:
+            kv["program"] = n(e.program);
+            break;
     }
     return sorted_obj(kv);
 }

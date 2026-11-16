@@ -777,6 +777,156 @@ void test_bytes() {
     CHECK("bytes: an empty buffer gives no packets, no edits", r.packets() == 0 && r.edits().empty());
 }
 
+// F1 (B-250): the element's PCR timer. Ticks every 35 ms between sparse buffers and through a
+// 1 s hole keep the PCR PID's interval within 35 ms, adaptation-only on the last payload CC,
+// and move nothing else: the same events as without them.
+struct Ticked {
+    Bytes out;
+    std::vector<EgressEvent> ev;
+    int64_t ticks = 0, tick_pkts = 0;
+    bool none = true;
+    EgressWindow win;
+    bool win_ok = false;
+};
+
+Ticked ticked(const Bytes& in, bool tick) {
+    const Content c(in);
+    EgressCore core;
+    core.set_clock(clock_e());
+    Ticked r;
+    // The buffers of content [2 s, 3 s) never come.
+    const int64_t c0 = c.at(0), from = c0 + 2 * SEC, to = c0 + 3 * SEC;
+    int64_t next = c0;   // content time of the last call
+    for (size_t off = 0; off < in.size(); off += 1316) {
+        const size_t n = std::min<size_t>(1316, in.size() - off);
+        const int64_t at = c.at((int64_t)off);
+        if (at >= from && at < to) continue;
+        // The element's timer: wake at the core's next PCR instant while no buffer comes.
+        for (int64_t due; tick && (due = core.pcr_due_at()) <= at + 100 * MS;) {
+            const EgressResult& t = core.tick(std::max(due, next + 100 * MS));
+            next = std::max(due, next + 100 * MS) - 100 * MS;
+            if (t.edits().empty()) break;
+            r.none = r.none && t.packets() == 0;
+            r.tick_pkts += (int64_t)t.edits().size();
+            t.apply(r.out);
+            r.ticks++;
+        }
+        next = at;
+        core.process(in.data() + off, n, at + 100 * MS).apply(r.out);
+        for (const EgressEvent& e : core.take_events()) r.ev.push_back(e);
+    }
+    r.win_ok = core.take_window(1, &r.win);
+    EgressWindow again;
+    r.win_ok = r.win_ok && core.take_window(1, &again) && again.lateness_n == 0 &&
+               again.pcr_interval_max_ns == 0 && !core.take_window(7, &again);
+    return r;
+}
+
+void test_tick() {
+    const Bytes in = ts_gen::egress(5 * SEC, true, false);
+    {
+        EgressCore core;
+        CHECK("tick: before any buffer, nothing", core.tick(5000 * SEC).edits().empty());
+    }
+    const Ticked t = ticked(in, true), plain = ticked(in, false);
+    size_t k = 0;
+    CHECK("tick: sparse buffers and a 1 s hole ticked every 35 ms keep the PCR interval <= 35 ms",
+          max_pcr_interval(t.out, 0x101, &k) <= 35 * MS && k > 100 && t.ticks > 28 && t.tick_pkts > 28);
+    CHECK("tick: without the ticks the interval passes 100 ms (TR 101 290's jump)",
+          max_pcr_interval(plain.out, 0x101) > 100 * MS);
+    CHECK("tick: inserts only, at 0 of a result without packets", t.none);
+    bool same = t.ev.size() == plain.ev.size();
+    for (size_t i = 0; same && i < t.ev.size(); i++)
+        same = t.ev[i].kind == plain.ev[i].kind && t.ev[i].from_ns == plain.ev[i].from_ns &&
+               t.ev[i].to_ns == plain.ev[i].to_ns && t.ev[i].gap_ns == plain.ev[i].gap_ns;
+    CHECK("tick: the same events (D_e start, the hole's lowering) as without the ticks", same && !t.ev.empty());
+    // Input-caused mismatches (the hole cut payload whose CC a later PCR-only packet carries)
+    // are the plain run's too; the ticks add none.
+    auto mismatches = [](const Bytes& out, size_t* af_pcrs) {
+        int last_cc = -1, bad = 0;
+        *af_pcrs = 0;
+        for (const uint8_t* p : Walk(out).pkts) {
+            uint8_t b[PKT];
+            std::memcpy(b, p, PKT);
+            PacketView v;
+            parse_packet(b, &v);
+            if (v.pid != 0x101) continue;
+            if (v.payload_off < PKT) {
+                last_cc = v.cc;
+            } else if (v.af_pcr && last_cc >= 0) {
+                (*af_pcrs)++;
+                bad += v.cc != last_cc;
+            }
+        }
+        return bad;
+    };
+    size_t na = 0, nb = 0;
+    const int bad_t = mismatches(t.out, &na), bad_p = mismatches(plain.out, &nb);
+    CHECK("tick: the ticked PCRs adaptation-only on the PID's last payload CC (no mismatch added)",
+          bad_t == bad_p && na > nb + 28);
+    const EgressWindow& w = t.win;
+    CHECK("window: lateness min <= mean <= max over the run, the PCR gap within 35 ms",
+          t.win_ok && w.lateness_n > 0 && w.lateness_min_ns <= w.lateness_sum_ns / (int64_t)w.lateness_n &&
+              w.lateness_sum_ns / (int64_t)w.lateness_n <= w.lateness_max_ns && w.pcr_interval_max_ns <= 35 * MS);
+    CHECK("window: reset by take_window; none for a program not in the PAT", t.win_ok);
+}
+
+// A PMT that passes 1024 bytes with the descriptor leaves without it, told once (B-250).
+Bytes big_pmt(const Bytes& in, size_t target) {
+    Bytes out;
+    uint8_t cc = 0;
+    for (size_t o = 0; o + PKT <= in.size(); o += PKT) {
+        const uint8_t* p = in.data() + o;
+        if (ts_pid(p) != 0x1000) {
+            out.insert(out.end(), p, p + PKT);
+            continue;
+        }
+        std::deque<TsPacket> one(1);
+        std::memcpy(one[0].b, p, PKT);
+        Pmt m = *parse_pmt(one, 0x1000);
+        std::vector<uint8_t> pi;
+        const size_t base = build_pmt_section(1, m.pcr_pid, pi, m.streams, m.version).size();
+        for (size_t left = target - base; left > 0;) {
+            const size_t n = std::min<size_t>(left, 257);
+            pi.push_back(0x80);
+            pi.push_back((uint8_t)(n - 2));
+            pi.insert(pi.end(), n - 2, (uint8_t)0xA5);
+            left -= n;
+        }
+        packetise_section(0x1000, build_pmt_section(1, m.pcr_pid, pi, m.streams, m.version), cc, out);
+    }
+    return out;
+}
+
+void test_descriptor_dropped() {
+    const Bytes in = big_pmt(ts_gen::egress(3 * SEC, false, false), 1000);
+    const Run r = replay(in, fixed(100));
+    bool none = true, kept = true;
+    size_t n = 0;
+    std::deque<TsPacket> sec;
+    for (size_t o = 0; o + PKT <= r.out.size(); o += PKT) {
+        const uint8_t* p = r.out.data() + o;
+        if (ts_pid(p) != 0x1000) continue;
+        if (p[1] & 0x40) sec.clear();
+        sec.emplace_back();
+        std::memcpy(sec.back().b, p, PKT);
+        const std::optional<Pmt> m = parse_pmt(sec, 0x1000);
+        if (!m) continue;
+        HouseTimeDecl d;
+        none = none && !hcdesc::find_in(m->program_info, &d);
+        kept = kept && m->program_info.size() == 1000 - 12 - 4 - 5 * 3 - 7;
+        n++;
+        sec.clear();
+    }
+    CHECK("descriptor dropped: a 1000-byte PMT leaves without MRHT, its own loop kept", n > 5 && none && kept);
+    CHECK("descriptor dropped: told once", count(r.ev, EgressEvent::Kind::descriptor_dropped) == 1 &&
+                                               std::string(egress_event_name(EgressEvent::Kind::descriptor_dropped)) ==
+                                                   "descriptor-dropped");
+    const Run ok = replay(big_pmt(ts_gen::egress(3 * SEC, false, false), 990), fixed(100));
+    CHECK("descriptor dropped: at 990 bytes it fits (1024 with it) and nothing is told",
+          count(ok.ev, EgressEvent::Kind::descriptor_dropped) == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -796,5 +946,7 @@ int main() {
     test_unknown_e();
     test_lateness_cut();
     test_bytes();
+    test_tick();
+    test_descriptor_dropped();
     return test_summary("ts_egress");
 }

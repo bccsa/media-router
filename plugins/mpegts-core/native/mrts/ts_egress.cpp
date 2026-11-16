@@ -129,6 +129,7 @@ const char* egress_event_name(EgressEvent::Kind k) {
         case EgressEvent::Kind::pcr_pid_assigned: return "pcr-pid-assigned";
         case EgressEvent::Kind::pmt_grew: return "pmt-grew";
         case EgressEvent::Kind::cc_lost_in: return "cc-lost-in";
+        case EgressEvent::Kind::descriptor_dropped: return "descriptor-dropped";
     }
     return "?";
 }
@@ -180,9 +181,10 @@ struct EgressCore::Prog {
     std::vector<uint8_t> section, key;
     bool cc_known = false;                    // the PCR PID's last sent payload CC is in sched
     bool disc_pending = false;                // a flagged PCR skipped for it: the next one carries it
-    bool grew_told = false;
+    bool grew_told = false, dropped_told = false;
     std::optional<int64_t> pcr_last_t;
     EgressStats st;
+    EgressWindow win;
 };
 
 // --- PMT sections in, packet by packet ------------------------------------------------------
@@ -284,6 +286,39 @@ const EgressResult& EgressCore::on_gap(const uint8_t* data, size_t len, int64_t 
 
 const EgressResult& EgressCore::on_gap(const uint8_t* data, size_t len, int64_t now_ns, int64_t end_ns) {
     return run(data, len, now_ns, NowReader(now_ns), true, end_ns);
+}
+
+const EgressResult& EgressCore::tick(int64_t now_ns, const ClockReader& clk) {
+    t_ = now_ns;
+    clk_ = &clk;
+    res_.clear();
+    for (auto& up : progs_) {
+        Prog& p = *up;
+        if (p.pcr_out < 0 || !p.has_section || span_.held(p.pcr_out)) continue;
+        if (p.sched.due(t_) || p.disc_pending) insert_pcr(0, p, false);
+    }
+    clk_ = nullptr;
+    return res_;
+}
+
+const EgressResult& EgressCore::tick(int64_t now_ns) { return tick(now_ns, NowReader(now_ns)); }
+
+int64_t EgressCore::pcr_due_at() const {
+    int64_t at = INT64_MAX;
+    for (const auto& up : progs_) {
+        const Prog& p = *up;
+        if (p.pcr_out < 0 || !p.has_section || !p.cc_known || span_.held(p.pcr_out)) continue;
+        at = std::min(at, p.disc_pending ? INT64_MIN : p.sched.next_due());
+    }
+    return at;
+}
+
+bool EgressCore::take_window(int program, EgressWindow* out) {
+    Prog* p = prog_of(program);
+    if (!p) return false;
+    *out = p->win;
+    p->win = EgressWindow();
+    return true;
 }
 
 const EgressResult& EgressCore::run(const uint8_t* data, size_t len, int64_t now_ns, const ClockReader& clk,
@@ -426,9 +461,9 @@ void EgressCore::head() {
         Prog& p = *up;
         if (!p.has_section) continue;
         if (reepoch) {
-            rebuild(p, true);
+            rebuild(0, p, true);
             discontinuity(0, p, true);
-        } else if (dirty && rebuild(p)) {
+        } else if (dirty && rebuild(0, p)) {
             emit_pmt(0, p);
         }
     }
@@ -605,10 +640,10 @@ void EgressCore::new_pmt(size_t i, Prog& p, const Pmt& pmt) {
         p.pcr_last_t.reset();
     }
     map_pids();
-    rebuild(p);
+    rebuild(i, p);
 }
 
-bool EgressCore::rebuild(Prog& p, bool force) {
+bool EgressCore::rebuild(size_t i, Prog& p, bool force) {
     const Pmt& pmt = *p.pmt_in;
     const std::vector<uint8_t> stripped = hcdesc::strip_from(pmt.program_info);
     std::vector<uint8_t> pi = stripped;
@@ -616,11 +651,19 @@ bool EgressCore::rebuild(Prog& p, bool force) {
     hcdesc::encode(decl(p), desc);
     pi.insert(pi.end(), desc, desc + hcdesc::BYTES);
     const int pcr = p.pcr_out < 0 ? PID_NULL : p.pcr_out;
+    bool dropped = false;
     auto build = [&](int version) {
         std::vector<uint8_t> s = build_pmt_section(p.number, pcr, pi, pmt.streams, version);
-        return s.empty() ? build_pmt_section(p.number, pcr, stripped, pmt.streams, version) : s;
+        dropped = s.empty();
+        return dropped ? build_pmt_section(p.number, pcr, stripped, pmt.streams, version) : s;
     };
     std::vector<uint8_t> sec = build(p.version_out);
+    if (dropped && !p.dropped_told) {   // the section would pass 1024 bytes with the descriptor
+        p.dropped_told = true;
+        EgressEvent e{EgressEvent::Kind::descriptor_dropped};
+        e.program = p.number;
+        event(i, e);
+    }
     // The section without its version and CRC: what a change is judged on.
     std::vector<uint8_t> key;
     if (sec.size() >= 10) {
@@ -665,14 +708,17 @@ void EgressCore::insert_pcr(size_t i, Prog& p, bool disc) {
 }
 
 void EgressCore::saw_pcr(Prog& p, int64_t t) {
-    if (p.pcr_last_t) p.st.pcr_interval_max_ns = std::max(p.st.pcr_interval_max_ns, t - *p.pcr_last_t);
+    if (p.pcr_last_t) {
+        p.st.pcr_interval_max_ns = std::max(p.st.pcr_interval_max_ns, t - *p.pcr_last_t);
+        p.win.pcr_interval_max_ns = std::max(p.win.pcr_interval_max_ns, t - *p.pcr_last_t);
+    }
     p.pcr_last_t = t;
     p.sched.saw_pcr(t);
 }
 
 void EgressCore::discontinuity(size_t i, Prog& p, bool rebuilt) {
     // Part 4.2 step 7: the new PMT, then a flagged PCR-only packet, before packet i.
-    if (!rebuilt) rebuild(p);
+    if (!rebuilt) rebuild(i, p);
     emit_pmt(i, p);
     if (p.pcr_out >= 0) insert_pcr(i, p, true);
 }
@@ -742,6 +788,11 @@ void EgressCore::lateness(size_t i, Prog& p, int64_t lam) {
     if (lam <= EgressDelay::LATE_MAX_NS) {
         p.st.lateness_ns = lam;
         p.st.lateness_max_ns = std::max(p.st.lateness_max_ns, lam);
+        EgressWindow& w = p.win;
+        w.lateness_min_ns = w.lateness_n ? std::min(w.lateness_min_ns, lam) : lam;
+        w.lateness_max_ns = w.lateness_n ? std::max(w.lateness_max_ns, lam) : lam;
+        w.lateness_sum_ns += lam;
+        w.lateness_n++;
     }
     EgressDelay::Change ch[2];
     const int n = p.delay.on_pes(lam, EgressDelay::eps_ns(clock_.error_us), ch);

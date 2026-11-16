@@ -159,7 +159,8 @@ export class HouseClock extends EventEmitter {
             synced: s ? isSynced(s) : false,
             traceable: e?.traceable ?? false,
             taiOffsetS: s?.taiOffsetS ?? 0,
-            estErrorUs: s?.estErrorUs ?? 0,
+            // No sample yet, or no sidecar: unknown, so no house-clock claims an error class.
+            estErrorUs: s?.estErrorUs ?? KERNEL_ESTERROR_UNSET_US,
             maxErrorUs: s?.maxErrorUs ?? 0,
             freqPpm: s?.freqPpm ?? 0,
             waitingForSync: waiting,
