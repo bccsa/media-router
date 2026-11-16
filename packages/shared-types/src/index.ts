@@ -3,7 +3,7 @@
 // ============================================================================
 
 import type { ModuleHealth } from './health.js';
-import type { ManifestTiming } from './ingestTimingSettings.js';
+import type { EgressManifestTiming, ManifestTiming } from './ingestTimingSettings.js';
 
 export { createLogger, setLogTap } from './logger.js';
 export { REDACTED, isSecretKey, redactSecrets, redactValue } from './redact.js';
@@ -752,9 +752,9 @@ export interface PluginManifest {
     /**
      * An ingest's timing (house-clock WI-P1-9): the engine's loader and the manager's registry
      * inject Ingest Offset, Per-PID Trim when `pidTrims` is set and Smoothing Cooldown when
-     * `pcrLock` is, into `configSchema`.
+     * `pcrLock` is, into `configSchema`. An egress (`role: 'egress'`) gains none (WI-P5-10).
      */
-    timing?: ManifestTiming;
+    timing?: ManifestTiming | EgressManifestTiming;
 }
 
 /**

@@ -42,9 +42,10 @@ export function repoPlugin(pluginId: string): RigPlugin {
     const file = path.resolve(__dirname, '../../../../../plugins', pluginId, 'package.json');
     const manifest = JSON.parse(fs.readFileSync(file, 'utf8')).mediaRouter;
     const timing = parseManifestTiming(manifest.timing);
-    const schema = timing
-        ? withIngestTimingSettings(manifest.configSchema, timing)
-        : manifest.configSchema;
+    const schema =
+        timing?.role === 'ingest'
+            ? withIngestTimingSettings(manifest.configSchema, timing)
+            : manifest.configSchema;
     const props = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
     const live = Object.keys(props).filter(
         (k) => props[k]['x-live'] === true || props[k]['x-liveUpdatable'] === true,

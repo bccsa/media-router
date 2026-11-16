@@ -133,7 +133,7 @@ function manifestOf(pluginId: string): PluginManifest {
     const pkg = JSON.parse(readFileSync(join(pluginsDir, pluginId, 'package.json'), 'utf8'));
     const manifest = pkg.mediaRouter as PluginManifest;
     const timing = parseManifestTiming(pkg.mediaRouter.timing);
-    if (!timing) return manifest;
+    if (timing?.role !== 'ingest') return manifest;
     return { ...manifest, configSchema: withIngestTimingSettings(manifest.configSchema, timing) };
 }
 

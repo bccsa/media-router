@@ -21,13 +21,14 @@ avenc_mp2, mpegtsmux) and rewritten in Python, nothing committed:
   8. a 17th memory inserted into a buffer (GST_BUFFER_MEM_MAX 16) merges the 16 before it into one
      new memory, a copy of all their bytes, and appends the 17th: two memories;
   9. ffprobe -show_packets and an ffmpeg decode of a stream with a PMT version bump, then one
-     flagged backward PCR step of 1.5 s, report no error; VLC (cvlc) plays a 1.0 s step clean and
-     its log for the 1.5 s step is printed as RECORD lines, not judged (register B-218).
+     flagged backward PCR step of 1.5 s, report no error; VLC (cvlc) plays a 0.5 s step clean and
+     its logs for the 1.0 s and 1.5 s steps are RECORD lines, not judged (B-218, B-251).
 
 No gate case: loopback SRT runs on the dev Pi. srtsrc and rtpjitterbuffer are Debian's 1.22 there,
 so DEV-P5a re-runs this file on a box (1.28.2 throughout). Skips (exit 0) without GStreamer; a case
-whose element or tool is absent skips with a line."""
+whose element or tool is absent skips with a line, but case 4 fails without mr-gst-runner."""
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -252,8 +253,10 @@ def case4(bump_ts, tmp):
         "a stream added": (psi_only([(0, avc), (1, avc), (2, avc + [(0x66, ts_psi.STREAM_TYPE_AAC)])]), 2),
     }
     kinds = rig.runner_kinds()
-    if not any(k == "native" for k, _ in kinds):
-        skip("4: in mr-gst-runner", f"{rig.NATIVE_BIN} not built (make native)")
+    # The native half is the product's runner: a gate without it must not pass (B-251).
+    native = any(k == "native" for k, _ in kinds)
+    check("4: mr-gst-runner is built, so both runners are probed", native,
+          "" if native else f"{rig.NATIVE_BIN} not built (make native)")
     for label, (ts, want) in streams.items():
         path = os.path.join(tmp, "psi.ts")
         with open(path, "wb") as f:
@@ -369,15 +372,22 @@ def case8():
 
 # --- 9: third-party players ----------------------------------------------------------------------
 
-VLC_ENV_NOISE = ("interface", "hotkeys", "v4l2m2m", "cannot start codec")
+# The dev Pi's own errors, by VLC module and message start: no interface module, no V4L2 decoder.
+VLC_ENV_NOISE = (("main libvlc", 'interface "globalhotkeys'),
+                 ("main interface", "no suitable interface module"),
+                 ("avcodec decoder", "cannot start codec (h264_v4l2m2m)"))
+VLC_ERROR = re.compile(r"^\[[0-9a-f]+\] (.+?) error: (.*)$")
 
 
 def vlc_errors(path):
-    """cvlc's error lines, less the dev Pi's own (no interface module, no V4L2 decoder)."""
+    """cvlc's error lines, less VLC_ENV_NOISE."""
     r = subprocess.run(["cvlc", "-I", "dummy", "--play-and-exit", "--vout=dummy", "--aout=dummy", path],
                        capture_output=True, text=True, timeout=60)
-    lines = [ln for ln in (r.stdout + r.stderr).splitlines()
-             if " error" in ln and not any(k in ln for k in VLC_ENV_NOISE)]
+    lines = []
+    for ln in (r.stdout + r.stderr).splitlines():
+        m = VLC_ERROR.match(ln.strip())
+        if m and not any(m.group(1) == mod and m.group(2).startswith(msg) for mod, msg in VLC_ENV_NOISE):
+            lines.append(ln)
     return r.returncode, lines
 
 
@@ -398,16 +408,21 @@ def case9(enc, tmp):
         skip("9: ffmpeg", "ffprobe or ffmpeg absent")
     if not shutil.which("cvlc"):
         return skip("9: VLC", "cvlc absent")
+    # Judged at 0.5 s, well under the 1.2 s where F1 saw VLC fail; 1.0 s and 1.5 s recorded.
+    half = os.path.join(tmp, "step-0.5.ts")
+    with open(half, "wb") as f:
+        f.write(rewrite(enc, [2.8], step_at=3.0, step_s=0.5))
+    rc, lines = vlc_errors(half)
+    check("9: VLC plays a PMT bump, then a flagged 0.5 s backward PCR step, with no error", rc == 0 and not lines,
+          "; ".join(lines)[:300])
     one = os.path.join(tmp, "step-1.0.ts")
     with open(one, "wb") as f:
         f.write(rewrite(enc, [2.8], step_at=3.0, step_s=1.0))
-    rc, lines = vlc_errors(one)
-    check("9: VLC plays a PMT bump, then a flagged 1.0 s backward PCR step, with no error", rc == 0 and not lines,
-          "; ".join(lines)[:300])
-    rc, lines = vlc_errors(step)
-    print(f"RECORD 9: VLC over the 1.5 s step: rc {rc}, {len(lines)} error lines")
-    for ln in lines:
-        print(f"RECORD 9:   {ln.split('] ', 1)[-1]}")
+    for label, path in (("1.0", one), ("1.5", step)):
+        rc, lines = vlc_errors(path)
+        print(f"RECORD 9: VLC over the {label} s step: rc {rc}, {len(lines)} error lines")
+        for ln in lines:
+            print(f"RECORD 9:   {ln.split('] ', 1)[-1]}")
 
 
 def main():

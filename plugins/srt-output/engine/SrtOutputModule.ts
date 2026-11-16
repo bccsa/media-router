@@ -4,6 +4,9 @@ import {
     withLatenessTap,
     buildBusSrc,
     buildTsRechunk,
+    buildEgressWriter,
+    egressBusReports,
+    EGRESS_ELEMENT,
     tsQueueByteCap,
     SrtStatPoller,
     type PipelineDescription,
@@ -13,8 +16,8 @@ import {
 /**
  * SRT Output plugin.
  *
- * Receives local MPEG-TS via UDP multicast and sends it over the network
- * via SRT. Pure MPEG-TS passthrough — no encoding or processing.
+ * Receives local MPEG-TS off the bus and sends it over the network via SRT.
+ * MPEG-TS over SRT; PTS translated to TAI and a new PCR written (ADR-0029).
  *
  * Supports listener (accept pullers) and caller (push to remote) modes.
  * Optional AES encryption via passphrase.
@@ -38,6 +41,7 @@ export class SrtOutputModule extends GstPluginBase {
 
     async onStart(): Promise<void> {
         await super.onStart();
+        this.bindHouseClock([EGRESS_ELEMENT]);
 
         // Reflect pipeline outages immediately. pollStats only runs while the
         // pipeline is playing, so without this hook a "Connected" badge from
@@ -120,8 +124,8 @@ export class SrtOutputModule extends GstPluginBase {
         // tail of each buffer goes out at once instead of waiting for the next
         // buffer the way `tsparse alignment=7` would hold it. Whole-packet
         // buffers keep every slice 188-aligned. tsparse is only inserted when a
-        // specific datagram size is forced (>= 1); `set-timestamps=false` keeps
-        // even that a pure re-slice, never a PCR re-timing.
+        // specific datagram size is forced (>= 1); the re-chunk is still a pure
+        // re-slice, and the wire PCR is the writer's, before it.
         const repack = packetsPerDatagram >= 1 ? [buildTsRechunk(packetsPerDatagram)] : [];
         const pipeline = [
             buildBusSrc({
@@ -131,6 +135,8 @@ export class SrtOutputModule extends GstPluginBase {
             // NON-leaky: a leaky shed on muxed TS is mid-stream corruption at the wire.
             // Byte-capped (ADR-0015): a time-only bound is blind to stalled stamps.
             buildBackpressureQueue(200, tsQueueByteCap(200)),
+            // The house-time writer (ADR-0029): once, after the queue, before any re-chunk.
+            buildEgressWriter({ houseClock: this.houseClockProperty() }),
             ...repack,
             withLatenessTap(
                 'lat_egress',
@@ -142,6 +148,7 @@ export class SrtOutputModule extends GstPluginBase {
             pipeline,
             restartOnError: true,
             restartBackoffMs: { baseMs: 5000, maxMs: 10000 },
+            busReports: egressBusReports(),
         };
     }
 

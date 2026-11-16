@@ -48,9 +48,10 @@ function schemas(): Array<{ id: string; schema: Record<string, unknown> }> {
         const manifest = JSON.parse(fs.readFileSync(file, 'utf8')).mediaRouter;
         if (!manifest?.configSchema) continue;
         const timing = parseManifestTiming(manifest.timing);
-        const schema = timing
-            ? withIngestTimingSettings(manifest.configSchema, timing)
-            : manifest.configSchema;
+        const schema =
+            timing?.role === 'ingest'
+                ? withIngestTimingSettings(manifest.configSchema, timing)
+                : manifest.configSchema;
         out.push({ id, schema });
     }
     return out;

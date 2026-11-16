@@ -3,6 +3,27 @@
 Operator-facing notes per release, newest first. What changed on the box,
 what to expect, what to do. Engineering detail is in `docs/adr/`.
 
+## Unreleased — house-clock timing, Phase 5 (v2.0.0.104)
+
+**SRT Output, RIST Output and MPEG-TS IP Output put house time on the wire**
+
+- **The PTS these outputs send are now TAI** (international atomic time), the
+  same on every synchronised box, and each stream gets a new PCR from the box's
+  clock. A receiver of another make plays the stream as before.
+- **Each change of the egress delay is one flagged PCR discontinuity** with a
+  new PMT version. The delay rises only when content reaches the output late,
+  and comes down only at a pause in the stream; receivers re-sync once at each
+  change. Nothing is dropped.
+- **The Timing section** of each of these outputs shows the egress delay, its
+  changes over the last 10 minutes, the largest PCR interval, the PCR packets
+  inserted per second, the network time it declares ("TAI, epoch 3, chrony,
+  ≤ 2 ms") and the PMT descriptor ("MRHT v1"). An amber **Untraceable** badge
+  shows while the box's time is not traceable to TAI.
+- **Warnings**: "Egress delay unstable: n changes in 10 min", "Egress delay
+  held at max; receivers get late content" and, on a box with no house time,
+  "Network time unknown: the egress carries no house time". Each clears by
+  itself.
+
 ## v2.0.0.103 — house-clock timing, Phase 4
 
 Phase 4 of the house-clock timing work: every output now plays what it

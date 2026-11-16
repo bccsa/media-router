@@ -188,7 +188,10 @@ export class PluginRegistry {
                         color: pkg.mediaRouter.color,
                         icon: pkg.mediaRouter.icon,
                         ports: pkg.mediaRouter.ports ?? [],
-                        configSchema: timing ? withIngestTimingSettings(schema, timing) : schema,
+                        configSchema:
+                            timing?.role === 'ingest'
+                                ? withIngestTimingSettings(schema, timing)
+                                : schema,
                         statusSections: pkg.mediaRouter.statusSections,
                         faceWidgets: pkg.mediaRouter.faceWidgets,
                         interlock: pkg.mediaRouter.interlock === true,

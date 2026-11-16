@@ -136,4 +136,52 @@ describe('GstPluginBase timing section', () => {
         expect(m.seen.filter((c) => c === 'mrvideopace:vp_pace')).toHaveLength(4);
         await m.onStop();
     });
+
+    it("the egress writer's rows, net-time badge and E-unknown warning, cleared once E is known (WI-P5-10)", async () => {
+        vi.useFakeTimers();
+        h.FakeChildProcess.instances = [];
+        let epoch: { eNs: bigint; seq: number } | null = null;
+        const houseClock = {
+            epoch: () => epoch,
+            state: () => ({
+                source: 'chrony',
+                synced: true,
+                traceable: true,
+                estErrorUs: 1200,
+                taiOffsetS: 37,
+            }),
+        };
+        const m = new OutputModule();
+        await m.onInit({}, { instanceId: 'srt-out-1', houseClock } as unknown as ModuleServices);
+        await m.onStart();
+        const child = h.FakeChildProcess.instances[0]!;
+        child.emit('stateChange', { state: 'playing' });
+        await vi.advanceTimersByTimeAsync(0);
+        const stats = (seq: number, traceable: boolean) => ({
+            channel: 'mrtsegress-stats:egress',
+            payload: { program: 1, 'd-e-ns': 300e6, packets: 100, 'epoch-seq': seq, traceable },
+        });
+        child.emit('pluginEvent', stats(0, false));
+        let state = m.getState();
+        expect(state).toMatchObject({
+            health: 'warning',
+            error: 'Network time unknown: the egress carries no house time',
+        });
+        expect(state.statusData!.timing).toMatchObject({
+            egressDelayMs: 300,
+            netTime: 'Not traceable (no house time)',
+        });
+        expect(state.badges).toContainEqual(
+            expect.objectContaining({ id: 'net-time', text: 'Untraceable' }),
+        );
+        epoch = { eNs: 1_760_283_215_123_456_789n, seq: 1 };
+        child.emit('pluginEvent', stats(1, true));
+        state = m.getState();
+        expect(state.health).toBe('ok');
+        expect(state.statusData!.timing).toMatchObject({ netTime: 'TAI, epoch 1, chrony, ≤ 2 ms' });
+        expect(state.badges!.map((b) => b.id)).not.toContain('net-time');
+        // The base's alone, as the lateness windows are.
+        expect(m.seen.filter((c) => c.startsWith('mrtsegress'))).toEqual([]);
+        await m.onStop();
+    });
 });

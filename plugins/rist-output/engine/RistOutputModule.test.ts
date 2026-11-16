@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { REDACTED, redactSecrets } from '@media-router/engine';
+import { EventEmitter } from 'node:events';
+import { GstPluginBase, REDACTED, egressBusReports, redactSecrets } from '@media-router/engine';
 import { RistOutputModule } from './RistOutputModule.js';
 
 function makeModule() {
@@ -43,12 +44,21 @@ describe('RistOutputModule.buildPipeline', () => {
         expect(desc.pipeline).toContain(
             'mrlateness name=lat_egress reference=running-time ! mrristsink name=ristsink',
         );
+        // The writer straight after the bus source: rist-output has no queue and gains none.
+        expect(desc.pipeline.match(/mrtsegress/g)).toHaveLength(1);
+        expect(desc.pipeline).toMatch(
+            /max-size-bytes=40000000 ! mrtsegress name=egress house-clock="house-clock, (?:[^"\\]|\\.)*" ! mrlateness name=lat_egress /,
+        );
+        expect(desc.pipeline.match(/ queue /g)).toHaveLength(1);
         expect(desc.pipeline).not.toContain('appsink');
         expect(desc.pipeline).not.toContain('udpsrc');
         expect(desc.rist).toBeUndefined();
         expect(desc.restartOnError).toBe(true);
-        // Stats come back as `mrrist-stats` bus messages from the element.
-        expect(desc.busReports).toEqual([{ element: 'ristsink', structure: 'mrrist-stats' }]);
+        // Stats come back as `mrrist-stats` bus messages from the element; the writer's as its own.
+        expect(desc.busReports).toEqual([
+            { element: 'ristsink', structure: 'mrrist-stats' },
+            ...egressBusReports(),
+        ]);
     });
 
     it('carries the librist sender config with per-link rist:// URLs', () => {
@@ -438,5 +448,43 @@ describe('RistOutputModule.cleanupStalePeers', () => {
         expect(setBadge).not.toHaveBeenCalled();
         expect(clearBadge).not.toHaveBeenCalled();
         expect(module.peerLastSeen.has(1)).toBe(true);
+    });
+});
+
+describe('RistOutputModule on the egress writer (WI-P5-10)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("pushes a new house epoch to the writer once; the writer's messages never reach the rist hook", async () => {
+        const { module } = makeModule();
+        const clock = new EventEmitter() as EventEmitter & Record<string, unknown>;
+        let epoch = { eNs: 1_760_283_215_000_000_000n, seq: 1 };
+        clock.epoch = () => epoch;
+        clock.state = () => null;
+        module.services.houseClock = clock;
+        expect(module.buildPipeline({}).pipeline).toContain(
+            'e-ns=(gint64)1760283215000000000, seq=(uint)1,',
+        );
+        vi.spyOn(GstPluginBase.prototype, 'onStart').mockResolvedValue(undefined);
+        vi.spyOn(GstPluginBase.prototype, 'onStop').mockResolvedValue(undefined);
+        module.childProcess = { on: vi.fn() };
+        module.setElementProperty = vi.fn().mockResolvedValue(undefined);
+        await module.onStart();
+        epoch = { eNs: 1_760_283_216_000_000_000n, seq: 2 };
+        clock.emit('epoch', epoch);
+        clock.emit('epoch', epoch);
+        expect(module.setElementProperty).toHaveBeenCalledTimes(1);
+        expect(module.setElementProperty).toHaveBeenCalledWith(
+            'egress',
+            'house-clock',
+            expect.stringContaining('e-ns=(gint64)1760283216000000000, seq=(uint)2,'),
+        );
+        // The base's timing display takes the writer's channels (GstPluginBase.dispatchPluginEvent).
+        const hook = vi.spyOn(module, 'onPluginEvent');
+        module.dispatchPluginEvent('mrtsegress-stats:egress', {
+            program: 1,
+            'd-e-ns': 250_000_000,
+        });
+        expect(hook).not.toHaveBeenCalled();
+        await module.onStop();
     });
 });

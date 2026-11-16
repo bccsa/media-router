@@ -47,6 +47,7 @@ type OwnedWarning =
     | 'input-reanchored'
     | 'off-clock'
     | 'queue-full'
+    | 'egress-timing'
     | StreamWarning['kind'];
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
@@ -59,8 +60,8 @@ import {
 
 const defaultLog = createLogger('GstPluginBase');
 
-/** The timing display's warnings (WI-P2-13, WI-P3-6, B-203, B-205, WI-P4-12): one health text,
- *  owned by the module. */
+/** The timing display's warnings (WI-P2-13, WI-P3-6, B-203, B-205, WI-P4-12, WI-P5-10): one
+ *  health text, owned by the module. */
 const TIMING_WARNINGS: ReadonlySet<OwnedWarning> = new Set<OwnedWarning>([
     'input-absent',
     'aligner-full',
@@ -73,6 +74,7 @@ const TIMING_WARNINGS: ReadonlySet<OwnedWarning> = new Set<OwnedWarning>([
     'display-not-presenting',
     'off-clock',
     'queue-full',
+    'egress-timing',
 ]);
 
 /**
@@ -135,6 +137,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         streamWarnings: (warnings) => this.onStreamWarnings(warnings),
         queueFull: (text) => this.onQueueFull(text),
         demuxInput: (element) => this.demuxInputOf(element),
+        houseClock: () => {
+            const clock = this.services?.houseClock;
+            return clock ? houseClockFields(clock.epoch(), clock.state()) : null;
+        },
+        egressWarnings: (text) => this.onEgressWarnings(text),
     });
 
     /** Which input an aligner watch serves (WI-P2-13): `{ tap }`, `{ label }` of its own, or
@@ -616,6 +623,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         stream: [] as StreamWarning[],
         offClock: null as string | null,
         queueFull: null as string | null,
+        egress: null as string | null,
     };
 
     private onAlignerWarnings(
@@ -641,6 +649,13 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.showTimingWarnings();
     }
 
+    /** A network egress's writer (WI-P5-10): D_e unstable or held at max, E unknown. */
+    private onEgressWarnings(text: string | null): void {
+        if (this.timingWarnings.egress === text) return;
+        this.timingWarnings.egress = text;
+        this.showTimingWarnings();
+    }
+
     /** An output off the house clock (B-203): a warning while it lasts. */
     private onOffClock(text: string | null): void {
         this.timingWarnings.offClock = text;
@@ -648,10 +663,12 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     /** The aligners' (WI-P2-13, B-205), demuxes', ASRCs' (WI-P3-6), off-clock (B-203), the
-     *  presentation's and full queues' (WI-P4-12) warnings as one health text owned by its first:
-     *  only over ok or our own (ADR-0010 rule 2), never over a stopped or failed module. */
+     *  presentation's, full queues' (WI-P4-12) and egress writer's (WI-P5-10) warnings as one
+     *  health text owned by its first: only over ok or our own (ADR-0010 rule 2), never over a
+     *  stopped or failed module. */
     private showTimingWarnings(): void {
-        const { absent, full, reanchored, stream, offClock, queueFull } = this.timingWarnings;
+        const { absent, full, reanchored, stream, offClock, queueFull, egress } =
+            this.timingWarnings;
         const parts: Array<{ kind: OwnedWarning; text: string }> = [
             ...(absent !== null ? [{ kind: 'input-absent' as const, text: absent }] : []),
             ...(full !== null ? [{ kind: 'aligner-full' as const, text: full }] : []),
@@ -661,6 +678,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             ...stream,
             ...(offClock !== null ? [{ kind: 'off-clock' as const, text: offClock }] : []),
             ...(queueFull !== null ? [{ kind: 'queue-full' as const, text: queueFull }] : []),
+            ...(egress !== null ? [{ kind: 'egress-timing' as const, text: egress }] : []),
         ];
         const text = parts.map((p) => p.text).join('; ');
         const owned = this.ownedWarning;
@@ -813,7 +831,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             error: this.error ?? null,
             statusData: { ...this.statusData, ...timing.data },
             dynamicStatusSections: [...this.dynamicStatusSections, ...timing.sections],
-            badges: [...this.badges.values(), ...(timing.badge ? [timing.badge] : [])],
+            badges: [
+                ...this.badges.values(),
+                ...(timing.badge ? [timing.badge] : []),
+                ...(timing.netTime ? [timing.netTime] : []),
+            ],
             ...(Object.keys(this.fieldOptions).length ? { fieldOptions: this.fieldOptions } : {}),
         };
     }

@@ -27,12 +27,19 @@ export interface ManifestTiming {
     pcrLock: boolean;
 }
 
-/** The manifest's `"timing"` field when it declares an ingest, else null. */
-export function parseManifestTiming(value: unknown): ManifestTiming | null {
+/** An egress declares itself a house-time writer (plan ch. 9 WI-P5-10, S34): for the manager's
+ *  timing view and the sender map, never for the ingest settings. */
+export interface EgressManifestTiming {
+    role: 'egress';
+}
+
+/** The manifest's `"timing"` field when it declares an ingest or an egress, else null. */
+export function parseManifestTiming(value: unknown): ManifestTiming | EgressManifestTiming | null {
     const timing = value as
         | { role?: unknown; pidTrims?: unknown; pcrLock?: unknown }
         | null
         | undefined;
+    if (timing?.role === 'egress') return { role: 'egress' };
     if (timing?.role !== 'ingest') return null;
     return { role: 'ingest', pidTrims: timing.pidTrims === true, pcrLock: timing.pcrLock === true };
 }

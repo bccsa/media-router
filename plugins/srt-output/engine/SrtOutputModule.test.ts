@@ -1,7 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFile, spawnSync } from 'node:child_process';
 import { createSocket } from 'node:dgram';
-import { REDACTED, quoteGstString, redactSecrets } from '@media-router/engine';
+import { EventEmitter } from 'node:events';
+import {
+    GstPluginBase,
+    REDACTED,
+    egressBusReports,
+    quoteGstString,
+    redactSecrets,
+} from '@media-router/engine';
 import { SrtOutputModule } from './SrtOutputModule.js';
 
 /** Each character a passphrase or stream ID may hold, and its percent-encoded form (B-112). */
@@ -360,4 +367,84 @@ describe.skipIf(!HAVE_SRT)('SrtOutputModule on a real srtsink (B-112)', () => {
         const { caller, listener } = await callerAndListener(`${PASSPHRASE}x`);
         expect((await receives(listener, caller, 4_000)).received).toBe(false);
     }, 30_000);
+});
+
+// --- On the egress writer (WI-P5-10) -----------------------------------------------------------
+
+/** A house clock with E latched at seq 1, moved by `latch`. */
+function houseClock() {
+    const clock = new EventEmitter() as EventEmitter & Record<string, unknown>;
+    const at = (seq: number) => ({
+        eNs: 1_760_283_215_123_456_789n + BigInt(seq - 1) * 5_000_000n,
+        seq,
+    });
+    let epoch = at(1);
+    clock.epoch = () => epoch;
+    clock.state = () => null;
+    const latch = (seq: number) => {
+        epoch = at(seq);
+        clock.emit('epoch', epoch);
+    };
+    return { clock, latch };
+}
+
+describe('SrtOutputModule on the egress writer (WI-P5-10)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    const order = (pipeline: string, parts: string[]) =>
+        parts.map((p) => {
+            const i = pipeline.indexOf(p);
+            expect(i, p).toBeGreaterThanOrEqual(0);
+            return i;
+        });
+
+    it('one writer after the queue, before the re-chunk and the lateness tap', () => {
+        const { module } = makeModule();
+        for (const ppd of [0, 7]) {
+            const p: string = module.buildPipeline({ packetsPerDatagram: ppd }).pipeline;
+            expect(p.match(/mrtsegress/g)).toHaveLength(1);
+            const at = order(p, [
+                'unixfdsrc ',
+                'queue leaky=0 ',
+                'mrtsegress name=egress house-clock="house-clock, e-ns=(gint64)0, seq=(uint)0,',
+                ...(ppd ? ['tsparse alignment=7 '] : []),
+                'mrlateness name=lat_egress',
+                'srtsink name=sink',
+            ]);
+            expect([...at].sort((a, b) => a - b)).toEqual(at);
+        }
+    });
+
+    it("reports the writer's stats and events", () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({}).busReports).toEqual(egressBusReports());
+        expect(egressBusReports()).toEqual([
+            { element: 'egress', structure: 'mrtsegress-stats' },
+            { element: 'egress', structure: 'mrtsegress-event' },
+        ]);
+    });
+
+    it("puts the engine's E in the string and pushes a new epoch to the writer once", async () => {
+        const { module } = makeModule();
+        const { clock, latch } = houseClock();
+        module.services.houseClock = clock;
+        expect(module.buildPipeline({}).pipeline).toContain(
+            'mrtsegress name=egress house-clock="house-clock, e-ns=(gint64)1760283215123456789, seq=(uint)1,',
+        );
+        vi.spyOn(GstPluginBase.prototype, 'onStart').mockResolvedValue(undefined);
+        vi.spyOn(GstPluginBase.prototype, 'onStop').mockResolvedValue(undefined);
+        module.childProcess = { on: vi.fn() };
+        module.setElementProperty = vi.fn().mockResolvedValue(undefined);
+        await module.onStart();
+        expect(module.setElementProperty).not.toHaveBeenCalled(); // the string has it
+        latch(2);
+        latch(2); // the same epoch again
+        expect(module.setElementProperty).toHaveBeenCalledTimes(1);
+        expect(module.setElementProperty).toHaveBeenCalledWith(
+            'egress',
+            'house-clock',
+            expect.stringContaining('e-ns=(gint64)1760283215128456789, seq=(uint)2,'),
+        );
+        await module.onStop(); // its stats timer; the base's unbind is p5-9's (houseClockProperty.test)
+    });
 });

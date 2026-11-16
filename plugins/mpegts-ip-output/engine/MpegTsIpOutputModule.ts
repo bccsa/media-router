@@ -4,6 +4,9 @@ import {
     buildTsRechunk,
     buildNetUdpSink,
     buildBackpressureQueue,
+    buildEgressWriter,
+    egressBusReports,
+    EGRESS_ELEMENT,
     withLatenessTap,
     isMulticastAddr,
     formatBytes,
@@ -22,7 +25,7 @@ interface Destination {
  * MPEG-TS over IP output plugin.
  *
  * Receives local MPEG-TS off the loopback bus and sends it over the network as
- * plain UDP or RTP/TS. Pure passthrough — no encoding.
+ * plain UDP or RTP/TS. PTS translated to TAI and a new PCR written (ADR-0029).
  *
  * UDP has no listener/caller handshake: a single multicast destination serves
  * unlimited receivers (they IGMP-join the group), while multiple unicast
@@ -38,6 +41,7 @@ export class MpegTsIpOutputModule extends GstPluginBase {
 
     async onStart(): Promise<void> {
         await super.onStart();
+        this.bindHouseClock([EGRESS_ELEMENT]);
 
         this.childProcess?.on('stateChange', (data: { state: string }) => {
             if (data.state === 'stopped' || data.state === 'error') {
@@ -97,12 +101,13 @@ export class MpegTsIpOutputModule extends GstPluginBase {
                 socketPath: udpSource.socketPath,
             }),
             buildBackpressureQueue(200),
+            // The house-time writer (ADR-0029): once, before re-chunk, payloader and tee.
+            buildEgressWriter({ houseClock: this.houseClockProperty() }),
         ];
         // ALWAYS re-chunk in raw mode (ADR-0011): bus buffers are one access
         // unit each — tens of KB for a video keyframe — and a udpsink datagram
         // of that size fragments at the IP layer (one lost fragment loses the
-        // whole AU). `set-timestamps=false` keeps this a pure re-slice: no PCR
-        // re-timing, the producer's house stamps ride through untouched.
+        // whole AU). PTS/PCR are the writer's; tsparse only re-slices.
         // packetsPerDatagram=0 is the 1316 B default; 1/7 force a size. In RTP
         // mode rtpmp2tpay governs the final datagram size, so tsparse is only
         // inserted there when a size is explicitly forced.
@@ -142,6 +147,7 @@ export class MpegTsIpOutputModule extends GstPluginBase {
             pipeline,
             restartOnError: true,
             restartBackoffMs: { baseMs: 2000, maxMs: 10000 },
+            busReports: egressBusReports(),
         };
     }
 

@@ -107,6 +107,28 @@ export interface DrainSummary {
     drainDropsPerMin?: number;
 }
 
+/** A network egress's writer (`mrtsegress`, house-clock WI-P5-10, plan ch. 9 parts 8 and 10);
+ *  with several programmes, the largest D_e and PCR interval and the summed counts. */
+export interface EgressTimingSummary {
+    /** D_e: the wire's PCR runs this far behind house time (ms). */
+    delayMs: number;
+    /** D_e raises and lowers over the last 10 min. */
+    delayChanges: number;
+    /** The largest PCR interval in the writer's last stats window (ms). */
+    pcrIntervalMaxMs?: number;
+    /** PCR packets the writer inserted, per second over its last stats window. */
+    pcrInsertedPerS?: number;
+    /** Stats windows with a PCR interval over 40 ms while data flowed, since the start (R17). */
+    pcrLateWindows: number;
+    /** Epoch changes put on the wire since the start. */
+    reEpochs: number;
+    /** "TAI, epoch n, chrony, ≤ 2 ms" or "Not traceable (reason)". */
+    netTime: string;
+    traceable: boolean;
+    /** The PMT's house-time descriptor: "MRHT v1", or why it is left out. */
+    descriptor: string;
+}
+
 /** Built by the engine's LatenessReporter; display only, no alarm (OQ-8). */
 export interface ModuleTimingSummary {
     output?: LatenessStatsMs;
@@ -155,6 +177,8 @@ export interface ModuleTimingSummary {
     deviceStalls?: number;
     /** Device outputs: the drain back to the latency target (WI-P4-18). */
     drain?: DrainSummary;
+    /** Network egress: the writer's D_e, PCR and network time (WI-P5-10). */
+    egress?: EgressTimingSummary;
     /** False when libgstmrlateness.so is not installed. */
     instrument: boolean;
 }

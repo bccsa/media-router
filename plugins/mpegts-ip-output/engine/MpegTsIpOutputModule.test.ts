@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { formatBytes, bitrateBadge } from '@media-router/engine';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { GstPluginBase, formatBytes, bitrateBadge, egressBusReports } from '@media-router/engine';
 import { MpegTsIpOutputModule } from './MpegTsIpOutputModule.js';
 
 function makeModule(opts: { hasSource?: boolean } = {}) {
@@ -200,5 +201,94 @@ describe('MpegTsIpOutputModule.pollStats', () => {
             color: '#f59e0b',
         });
         expect(module.clearBadge).toHaveBeenCalledWith('bitrate');
+    });
+});
+
+describe('MpegTsIpOutputModule on the egress writer (WI-P5-10)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    const DEST = { host: '239.1.1.1', port: 5000 };
+    /** Where each part sits; every part present, in this order. */
+    const inOrder = (pipeline: string, parts: string[]) => {
+        const at = parts.map((p) => pipeline.indexOf(p));
+        parts.forEach((p, i) => expect(at[i], p).toBeGreaterThanOrEqual(0));
+        expect([...at].sort((a, b) => a - b)).toEqual(at);
+    };
+    const WRITER = 'mrtsegress name=egress house-clock="house-clock, ';
+
+    it('raw: bus source, queue, the writer, tsparse, the tap, the sink', () => {
+        const { module } = makeModule();
+        const p: string = module.buildPipeline({ destinations: [DEST] }).pipeline;
+        expect(p.match(/mrtsegress/g)).toHaveLength(1);
+        inOrder(p, [
+            'unixfdsrc ',
+            'queue leaky=0 ',
+            WRITER,
+            'tsparse alignment=7 ',
+            'lat_egress',
+            'udpsink',
+        ]);
+    });
+
+    it('rtp: the writer before rtpmp2tpay, and before a forced tsparse', () => {
+        const { module } = makeModule();
+        const rtp: string = module.buildPipeline({
+            destinations: [DEST],
+            encapsulation: 'rtp',
+        }).pipeline;
+        inOrder(rtp, ['queue leaky=0 ', WRITER, 'rtpmp2tpay', 'lat_egress', 'udpsink']);
+        expect(rtp).not.toContain('tsparse');
+        const forced: string = module.buildPipeline({
+            destinations: [DEST],
+            encapsulation: 'rtp',
+            packetsPerDatagram: 1,
+        }).pipeline;
+        inOrder(forced, [WRITER, 'tsparse alignment=1 ', 'rtpmp2tpay', 'lat_egress']);
+    });
+
+    it('one writer ahead of a multi-destination tee', () => {
+        const { module } = makeModule();
+        const p: string = module.buildPipeline({
+            destinations: [
+                DEST,
+                { host: '10.0.0.2', port: 5002 },
+                { host: '10.0.0.3', port: 5004 },
+            ],
+        }).pipeline;
+        expect(p.match(/mrtsegress/g)).toHaveLength(1);
+        inOrder(p, ['queue leaky=0 ', WRITER, 'tsparse', 'lat_egress', 'tee name=t', 't. ! ']);
+        expect(p.indexOf('mrtsegress')).toBeLessThan(p.indexOf('t. ! '));
+    });
+
+    it("reports the writer's stats and events", () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({ destinations: [DEST] }).busReports).toEqual(
+            egressBusReports(),
+        );
+    });
+
+    it('pushes a new house epoch to the writer once', async () => {
+        const { module } = makeModule();
+        const clock = new EventEmitter() as EventEmitter & Record<string, unknown>;
+        let epoch = { eNs: 1_760_283_215_000_000_000n, seq: 4 };
+        clock.epoch = () => epoch;
+        clock.state = () => null;
+        module.services.houseClock = clock;
+        expect(module.buildPipeline({ destinations: [DEST] }).pipeline).toContain('seq=(uint)4,');
+        vi.spyOn(GstPluginBase.prototype, 'onStart').mockResolvedValue(undefined);
+        vi.spyOn(GstPluginBase.prototype, 'onStop').mockResolvedValue(undefined);
+        module.childProcess = { on: vi.fn() };
+        module.setElementProperty = vi.fn().mockResolvedValue(undefined);
+        await module.onStart();
+        epoch = { eNs: 1_760_283_215_250_000_000n, seq: 5 };
+        clock.emit('epoch', epoch);
+        clock.emit('epoch', epoch);
+        expect(module.setElementProperty).toHaveBeenCalledTimes(1);
+        expect(module.setElementProperty).toHaveBeenCalledWith(
+            'egress',
+            'house-clock',
+            expect.stringContaining('e-ns=(gint64)1760283215250000000, seq=(uint)5,'),
+        );
+        await module.onStop();
     });
 });

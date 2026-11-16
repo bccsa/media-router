@@ -1,6 +1,9 @@
 import {
     GstPluginBase,
     buildBusSrc,
+    buildEgressWriter,
+    egressBusReports,
+    EGRESS_ELEMENT,
     withLatenessTap,
     formatBitrate,
     quoteGstString,
@@ -28,7 +31,8 @@ const RIST_STATS_STRUCTURE = 'mrrist-stats';
  * via RIST through the native `mrristsink` element (rist-core/native/mrrist,
  * librist in C). It replaced the runner's python appsink→ctypes drain, which
  * cost ~0.2 ms per 1316-byte packet on a Pi 4 (docs/TodoNotes.md); librist's
- * stats JSON comes back as `mrrist-stats` bus messages (busReports).
+ * stats JSON comes back as `mrrist-stats` bus messages (busReports). PTS are
+ * translated to TAI and a new PCR written by the egress writer (ADR-0029).
  *
  * librist (not the gst ristsink element, which is Simple-Profile/RTP only) is
  * kept for full feature support: per-link weight, cname, main/advanced
@@ -45,6 +49,7 @@ export class RistOutputModule extends GstPluginBase {
 
     async onStart(): Promise<void> {
         await super.onStart();
+        this.bindHouseClock([EGRESS_ELEMENT]);
 
         const links = this.links();
         const profile = (this.config.profile as number) ?? 1;
@@ -96,6 +101,8 @@ export class RistOutputModule extends GstPluginBase {
                 port: udpSource.port,
                 socketPath: udpSource.socketPath,
             }),
+            // The house-time writer (ADR-0029); no queue here, and the writer adds none.
+            buildEgressWriter({ houseClock: this.houseClockProperty() }),
             withLatenessTap('lat_egress', `mrristsink name=${RIST_SINK} ${props.join(' ')}`),
         ].join(' ! ');
 
@@ -105,7 +112,10 @@ export class RistOutputModule extends GstPluginBase {
             // An unresolvable caller host is a durable, looping element error
             // (mrrist); retry every 5-10 s like SRT until DNS is up.
             restartBackoffMs: { baseMs: 5000, maxMs: 10000 },
-            busReports: [{ element: RIST_SINK, structure: RIST_STATS_STRUCTURE }],
+            busReports: [
+                { element: RIST_SINK, structure: RIST_STATS_STRUCTURE },
+                ...egressBusReports(),
+            ],
         };
     }
 

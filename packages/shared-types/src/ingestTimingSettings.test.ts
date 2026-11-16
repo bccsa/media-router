@@ -7,6 +7,7 @@ import {
     SMOOTHING_COOLDOWN_KEY,
     parseManifestTiming,
     withIngestTimingSettings,
+    type ManifestTiming,
 } from './index.js';
 
 // The WI-P1-9 fragments, written out: bounds per OQ-14 and §5.5; the cooldown per b95s.
@@ -147,15 +148,23 @@ describe('parseManifestTiming', () => {
             pidTrims: false,
             pcrLock: false,
         });
-        expect(parseManifestTiming({ role: 'ingest' })?.pidTrims).toBe(false);
-        expect(parseManifestTiming({ role: 'ingest', pidTrims: 'yes' })?.pidTrims).toBe(false);
+        const ingest = (v: unknown) => parseManifestTiming(v) as ManifestTiming | null;
+        expect(ingest({ role: 'ingest' })?.pidTrims).toBe(false);
+        expect(ingest({ role: 'ingest', pidTrims: 'yes' })?.pidTrims).toBe(false);
         // Never inferred from pidTrims.
-        expect(parseManifestTiming({ role: 'ingest', pidTrims: true })?.pcrLock).toBe(false);
-        expect(parseManifestTiming({ role: 'ingest', pcrLock: 'yes' })?.pcrLock).toBe(false);
+        expect(ingest({ role: 'ingest', pidTrims: true })?.pcrLock).toBe(false);
+        expect(ingest({ role: 'ingest', pcrLock: 'yes' })?.pcrLock).toBe(false);
+    });
+
+    it('an egress declares a writer and nothing else (S34)', () => {
+        expect(parseManifestTiming({ role: 'egress' })).toEqual({ role: 'egress' });
+        expect(parseManifestTiming({ role: 'egress', pidTrims: true, pcrLock: true })).toEqual({
+            role: 'egress',
+        });
     });
 
     it('anything else declares nothing', () => {
-        for (const v of [undefined, null, 'ingest', 7, {}, { role: 'egress', pidTrims: true }]) {
+        for (const v of [undefined, null, 'ingest', 'egress', 7, {}, { role: 'output' }]) {
             expect(parseManifestTiming(v)).toBeNull();
         }
     });
@@ -164,7 +173,7 @@ describe('parseManifestTiming', () => {
 describe('the plugin manifests', () => {
     const PLUGINS_DIR = path.resolve(__dirname, '../../../plugins');
 
-    it('the three stc-mode network ingests declare pcrLock, the four captures do not (b95s)', () => {
+    it('the three stc-mode network ingests declare pcrLock, the four captures do not (b95s); the three network outputs are egress', () => {
         const timings: Record<string, unknown> = {};
         for (const dir of fs.readdirSync(PLUGINS_DIR)) {
             const file = path.join(PLUGINS_DIR, dir, 'package.json');
@@ -176,13 +185,17 @@ describe('the plugin manifests', () => {
         }
         const net = { role: 'ingest', ...NETWORK };
         const cap = { role: 'ingest', ...CAPTURE };
+        const egress = { role: 'egress' };
         expect(timings).toEqual({
             'aes67-input': cap,
             'audio-encoder': cap,
             'audio-input-302m': cap,
             'mpegts-ip-input': net,
+            'mpegts-ip-output': egress,
             'rist-input': net,
+            'rist-output': egress,
             'srt-input': net,
+            'srt-output': egress,
             'video-encoder': cap,
         });
     });

@@ -92,9 +92,10 @@ export class PluginLoader {
                 // Ensure ports is an array
                 if (!manifest.ports) manifest.ports = [];
                 if (!manifest.configSchema) manifest.configSchema = {};
-                // An ingest's timing settings, declared by `"timing"` (house-clock WI-P1-9).
+                // An ingest's timing settings, declared by `"timing"` (house-clock WI-P1-9); an
+                // egress declares a writer and gains none (WI-P5-10).
                 const timing = parseManifestTiming(pkg.mediaRouter.timing);
-                if (timing) {
+                if (timing?.role === 'ingest') {
                     manifest.configSchema = withIngestTimingSettings(manifest.configSchema, timing);
                 }
 

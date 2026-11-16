@@ -17,7 +17,7 @@ replays a recording as egress_core.py's CLI does, and its output bytes and every
     PCR-less programme, and a 4 ms gap.
 
 Then each of egress_ref_test.py's mutants replays the cases, and parity must tell it from
-mrts_cli. Skips (exit 0) without the built mrts_cli (make native).
+mrts_cli. Fails without the built mrts_cli (make native): a gate must not pass on a skip (B-251).
 
 Run:  python3 egress_parity_test.py
 """
@@ -204,8 +204,8 @@ def cases():
 
 def main():
     if not os.path.exists(CLI):
-        print("SKIP egress_parity_test: %s not built (make native)" % CLI)
-        return 0
+        print("FAIL egress_parity_test: %s not built (make native)" % CLI)
+        return 1
     cs = cases()
     refs = {}
     for c in cs:

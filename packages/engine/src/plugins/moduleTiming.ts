@@ -1,7 +1,7 @@
 // Per-module lateness display (WI-P0-9): the reporter, the 2 s tick with its change throttle,
 // the sink read for the device latency stand-in, the aligners' warnings and events (WI-P2-13),
-// the demuxes' and ASRCs' (WI-P3-6), and the queue-full warning (WI-P4-12). GstPluginBase owns
-// one and merges it into `getState()`.
+// the demuxes' and ASRCs' (WI-P3-6), the queue-full warning (WI-P4-12) and a network egress's
+// writer (WI-P5-10). GstPluginBase owns one and merges it into `getState()`.
 import type { DrainSummary, ModuleTimingSummary } from '@media-router/shared-types';
 import type { PipelineDescription, TimingInputRef, TimingSink } from './PluginModule.js';
 import { readNodeLatency } from '../audio/pipeWireLatency.js';
@@ -11,6 +11,8 @@ import { DEMUX_EVENT, type DemuxInputRef } from './demuxWatches.js';
 import { signedPpm } from './asrcWatches.js';
 import type { DrainGroupView } from './drainGroups.js';
 import { drainDoneText, drainStartText } from './drainSummary.js';
+import { EgressTimingReporter } from './egressTiming.js';
+import type { HouseClockFields } from '../clock/houseClockProperty.js';
 import {
     LatenessReporter,
     type LabelledAlignerEvent,
@@ -119,13 +121,20 @@ export interface ModuleTimingHost {
     /** The module's own answer for which input a demux, or an ASRC on one input's branch,
      *  serves; undefined: the engine's rule. */
     demuxInput?(element: string): DemuxInputRef | undefined;
+    /** The engine's house clock as the writer was given it (WI-P5-10); null: none. */
+    houseClock?(): HouseClockFields | null;
+    /** The egress writer's warnings (WI-P5-10), null when none: on a change and every tick. */
+    egressWarnings?(text: string | null): void;
 }
 
-const EMPTY: TimingPublication = { sections: [], data: {}, badge: null };
-const visible = (p: TimingPublication): boolean => p.sections.length > 0 || p.badge !== null;
+const EMPTY: TimingPublication = { sections: [], data: {}, badge: null, netTime: null };
+const visible = (p: TimingPublication): boolean =>
+    p.sections.length > 0 || p.badge !== null || p.netTime !== null;
 
 export class ModuleTiming {
     private readonly reporter: LatenessReporter;
+    /** The egress writer's stats and events (WI-P5-10); empty on every other module. */
+    private readonly egress = new EgressTimingReporter(TICK_MS);
     /** The drain's state at the last publish, for its log lines (WI-P4-18). */
     private drainWas: { state: DrainSummary['state']; capped: boolean } | undefined;
     private pub: TimingPublication = EMPTY;
@@ -202,6 +211,12 @@ export class ModuleTiming {
         if (channel === QUEUE_OVERRUN_EVENT) {
             this.onQueueOverrun(payload);
             return false;
+        }
+        const egress = this.egress.onEvent(channel, payload);
+        if (egress) {
+            for (const l of egress) this.host.log?.(l.level, l.obj, l.msg);
+            this.publish();
+            return true;
         }
         const aligner = this.reporter.onAligner(channel, payload);
         const stream = aligner ? null : this.reporter.onStream(channel, payload);
@@ -303,6 +318,7 @@ export class ModuleTiming {
         this.timer = null;
         this.stopPipeWire();
         this.reporter.reset();
+        this.egress.reset();
         this.edgeWatches.clear();
         this.sink = undefined;
         this.declared = undefined;
@@ -316,6 +332,7 @@ export class ModuleTiming {
         this.host.queueFull?.(null);
         this.host.alignerWarnings?.(null, null, null);
         this.host.offClock?.(null);
+        this.host.egressWarnings?.(null);
         if (emit && had) this.host.emit();
     }
 
@@ -326,6 +343,8 @@ export class ModuleTiming {
     /** The display when it changed (≥ 1 ms or a row), then the warnings. */
     private publish(now = Date.now()): void {
         const s = this.reporter.summary(now);
+        const egress = this.egress.summary(now, this.host.houseClock?.());
+        if (egress) s.egress = egress;
         this.logDrain(s.drain);
         if (timingChanged(this.last, s)) {
             const next = timingPublication(s);
@@ -350,6 +369,7 @@ export class ModuleTiming {
             this.host.alignerWarnings(w.absent, w.full, w.reanchored);
         }
         this.host.offClock?.(this.reporter.offClockWarning(now));
+        this.host.egressWarnings?.(this.egress.warning(now, this.host.houseClock?.()));
     }
 
     /** The module's answer, else the engine's rule. A watch whose edge left the router's list

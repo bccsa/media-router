@@ -322,6 +322,21 @@ describe('PluginRegistry', () => {
             });
         });
 
+        it('on the real manifests: the three network outputs declare egress and gain none (WI-P5-10)', () => {
+            const all = new PluginRegistry(path.resolve(__dirname, '../../../../plugins')).getAll();
+            for (const id of ['srt-output', 'rist-output', 'mpegts-ip-output']) {
+                const props = (all.find((p) => p.pluginId === id)!.configSchema as any).properties;
+                expect(props).not.toHaveProperty('ingestOffsetMs');
+                expect(props).not.toHaveProperty('pidTrimsMs');
+                expect(props).not.toHaveProperty('smoothingCooldownMin');
+            }
+            const srtIn = (all.find((p) => p.pluginId === 'srt-input')!.configSchema as any)
+                .properties;
+            expect(srtIn).toHaveProperty('ingestOffsetMs');
+            expect(srtIn).toHaveProperty('pidTrimsMs');
+            expect(srtIn).toHaveProperty('smoothingCooldownMin');
+        });
+
         it('on the real manifests: Smoothing Cooldown on the three network ingests, not the four captures', () => {
             const schemas = new PluginRegistry(path.resolve(__dirname, '../../../../plugins'))
                 .getAll()

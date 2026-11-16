@@ -1,9 +1,11 @@
 // A module's timing summary as status sections and a face badge (ADR-0007: the plugin
 // computes, the UI renders). Every row is labelled with its unit, so the operator reads a
 // number, not a colour. House-clock plan WI-P0-9; the aligner rows WI-P2-13; the demux and
-// ASRC rows WI-P3-6; the output rows WI-P4-12; the drain's rows WI-P4-18.
+// ASRC rows WI-P3-6; the output rows WI-P4-12; the drain's rows WI-P4-18; a network egress's
+// writer rows and its `net-time` badge WI-P5-10.
 import type {
     ClockCorrection,
+    EgressTimingSummary,
     LatenessStatsMs,
     ModuleBadge,
     ModuleTimingInput,
@@ -12,6 +14,7 @@ import type {
 } from '@media-router/shared-types';
 import { clockCorrectionText, signedPpm } from './asrcWatches.js';
 import { drainedText, latencyTargetText, underrunsText } from './drainSummary.js';
+import { NET_TIME_BADGE } from './egressTiming.js';
 import { latenessTrendText } from './latenessTrend.js';
 import { rateMatchText } from './videoPaceWatches.js';
 
@@ -28,6 +31,8 @@ export interface TimingPublication {
     sections: TimingSection[];
     data: Record<string, Record<string, StatusValue>>;
     badge: ModuleBadge | null;
+    /** A network egress whose wire time is not traceable (WI-P5-10); null otherwise. */
+    netTime: ModuleBadge | null;
 }
 
 const ms = (v: number): number => Math.round(v);
@@ -76,6 +81,22 @@ function inputRows(input: ModuleTimingInput): Row[] {
     return rows;
 }
 
+/** A network egress's writer (plan ch. 9 part 8). */
+const egressRows = (e: EgressTimingSummary): Row[] => [
+    ['egressDelayMs', 'Egress delay', ms(e.delayMs), 'ms'],
+    ['egressDelayChanges', 'Egress delay changes (10 min)', e.delayChanges],
+    ...(e.pcrIntervalMaxMs !== undefined
+        ? [['pcrIntervalMaxMs', 'PCR interval max', ms(e.pcrIntervalMaxMs), 'ms'] as Row]
+        : []),
+    ...(e.pcrInsertedPerS !== undefined
+        ? [['pcrInsertedPerS', 'PCR packets inserted', ms(e.pcrInsertedPerS), '/s'] as Row]
+        : []),
+    ['pcrLateWindows', 'PCR intervals over 40 ms', e.pcrLateWindows],
+    ['reEpochs', 'Re-epochs', e.reEpochs],
+    ['netTime', 'Network time', e.netTime],
+    ['pmtDescriptor', 'PMT descriptor', e.descriptor],
+];
+
 const correctionRow = (c: ClockCorrection): Row => [
     'clockCorrection',
     'Clock correction',
@@ -83,7 +104,7 @@ const correctionRow = (c: ClockCorrection): Row => [
 ];
 
 export function timingPublication(s: ModuleTimingSummary): TimingPublication {
-    const pub: TimingPublication = { sections: [], data: {}, badge: null };
+    const pub: TimingPublication = { sections: [], data: {}, badge: null, netTime: null };
     const rows: Row[] = [];
     if (!s.instrument) rows.push(['instrument', 'Lateness', 'lateness instrument missing']);
     if (s.output) {
@@ -142,6 +163,7 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     if (s.deviceRelocks !== undefined)
         rows.push(['deviceRelocks', 'Device relocks', s.deviceRelocks]);
     if (s.deviceStalls !== undefined) rows.push(['deviceStalls', 'Device stalls', s.deviceStalls]);
+    if (s.egress) rows.push(...egressRows(s.egress));
     if (rows.length) section(TIMING_SECTION, 'Timing', rows, pub);
 
     // Numbered by the input's fixed place, so one going dark never renumbers the rest.
@@ -158,6 +180,9 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     const face = s.renderMs ?? s.output?.meanMs ?? s.pipeWireLatencyMs;
     if (face !== undefined) {
         pub.badge = { id: TIMING_BADGE, icon: 'timer', text: `${ms(face)} ms`, color: '#6b7280' };
+    }
+    if (s.egress && !s.egress.traceable) {
+        pub.netTime = { id: NET_TIME_BADGE, icon: 'clock', text: 'Untraceable', color: '#f59e0b' };
     }
     return pub;
 }
@@ -191,6 +216,16 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     put('hold', s.paceHoldMs);
     put('relocks', s.deviceRelocks);
     put('stalls', s.deviceStalls);
+    // The egress rows at their display step (1 ms, 1 /s), the counts and texts as they are.
+    const e = s.egress;
+    put('egress.delay', e?.delayMs);
+    put('egress.changes', e?.delayChanges);
+    put('egress.pcrMax', e?.pcrIntervalMaxMs);
+    put('egress.inserted', e?.pcrInsertedPerS);
+    put('egress.late', e?.pcrLateWindows);
+    put('egress.reEpochs', e?.reEpochs);
+    put('egress.netTime', e?.netTime);
+    put('egress.descriptor', e?.descriptor);
     // The drain's rows as shown: the texts carry their own rounding (WI-P4-18).
     if (s.drain) {
         put('drain.target', latencyTargetText(s.drain));

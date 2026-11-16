@@ -112,9 +112,8 @@ export function buildIngestQueue(): string {
 /**
  * Re-slice bus buffers to `packets` TS packets per buffer for a datagram sink
  * that does not split on its own (udpsink; srtsink slices itself — ADR-0011
- * rule 2). `set-timestamps=false` makes this a pure re-chunk: the producer's
- * house stamps ride through, no PCR re-timing (the one thing tsparse must never
- * do mid-pipeline under ADR-0005).
+ * rule 2). A pure re-slice: tsparse never re-times (ADR-0029); the egress
+ * writer owns the wire PCR.
  */
 export function buildTsRechunk(packets: number): string {
     return `tsparse alignment=${packets} set-timestamps=false`;

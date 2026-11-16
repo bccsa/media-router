@@ -12,7 +12,11 @@ describe('readCoretempAverage', () => {
     const root = path.join(__dirname, '__test-hwmon__');
 
     /** Write a hwmon device with the given name and temp sensors [label, milliC]. */
-    function hwmon(index: number, name: string, sensors: Array<[string, string, number]> = []): void {
+    function hwmon(
+        index: number,
+        name: string,
+        sensors: Array<[string, string, number]> = [],
+    ): void {
         const dir = path.join(root, `hwmon${index}`);
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(path.join(dir, 'name'), `${name}\n`);
@@ -226,7 +230,7 @@ describe('SystemStatsCollector under-voltage debounce + latch', () => {
 describe('SystemStatsCollector features', () => {
     afterEach(() => vi.useRealTimers());
 
-    it("announces 'house-clock' so a manager can tell engines that report timeSync", () => {
+    it("announces 'house-clock' and 'egress-writer' so a manager can tell a Phase 5 engine", () => {
         vi.useFakeTimers();
         const onStats = vi.fn();
         const c = new SystemStatsCollector(onStats, 1000);
@@ -234,7 +238,7 @@ describe('SystemStatsCollector features', () => {
         vi.advanceTimersByTime(1000);
         c.stop();
         expect(onStats.mock.calls[0][0].features).toEqual(
-            expect.arrayContaining(['dashboards', 'interlocks', 'house-clock']),
+            expect.arrayContaining(['dashboards', 'interlocks', 'house-clock', 'egress-writer']),
         );
     });
 });

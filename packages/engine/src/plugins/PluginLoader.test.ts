@@ -315,6 +315,29 @@ describe('PluginLoader', () => {
                 'port,ingestOffsetMs,pidTrimsMs,smoothingCooldownMin',
             );
         });
+
+        it('the real egress manifests gain none, the real network ingest all three (WI-P5-10)', async () => {
+            const repo = path.resolve(__dirname, '../../../../plugins');
+            const real = (id: string) =>
+                JSON.parse(fs.readFileSync(path.join(repo, id, 'package.json'), 'utf8'))
+                    .mediaRouter;
+            for (const id of ['srt-output', 'rist-output', 'mpegts-ip-output', 'srt-input']) {
+                createPlugin(id, { ...real(id), engine: './engine/TestModule.ts' });
+            }
+            const loader = new PluginLoader(tmpDir);
+            await loader.load();
+            const keys = (id: string) =>
+                Object.keys((loader.getPluginSchemas()[id] as any).properties);
+            for (const id of ['srt-output', 'rist-output', 'mpegts-ip-output']) {
+                expect(real(id).timing).toEqual({ role: 'egress' });
+                expect(keys(id)).not.toContain('ingestOffsetMs');
+                expect(keys(id)).not.toContain('pidTrimsMs');
+                expect(keys(id)).not.toContain('smoothingCooldownMin');
+            }
+            expect(keys('srt-input')).toEqual(
+                expect.arrayContaining(['ingestOffsetMs', 'pidTrimsMs', 'smoothingCooldownMin']),
+            );
+        });
     });
 
     describe('an initManifest cut short by a gst-inspect timeout (B-102)', () => {

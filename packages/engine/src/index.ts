@@ -207,6 +207,18 @@ export {
     houseClockGstString,
     houseClockPipelineProperty,
 } from './clock/houseClockProperty.js';
+// The network egress's house-time writer, its reports and rows (WI-P5-10).
+export {
+    EGRESS_ELEMENT,
+    EGRESS_EVENT,
+    EGRESS_STATS,
+    EgressTimingReporter,
+    NET_TIME_BADGE,
+    buildEgressWriter,
+    egressBusReports,
+    netTimeText,
+} from './plugins/egressTiming.js';
+export type { EgressLogLine } from './plugins/egressTiming.js';
 // The `graph` status-field contract — a plugin computes its own plots and
 // publishes them with `setStatusGraph`; the UI only renders.
 export type {

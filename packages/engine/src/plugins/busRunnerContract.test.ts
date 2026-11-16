@@ -13,6 +13,7 @@ import {
 import { INGEST_QUEUE_NAME, buildIngestQueue } from './tsHelpers.js';
 import { QUEUE_OVERRUN_EVENT, WATCHED_QUEUE_NAMES } from './queueOverrun.js';
 import { OUTPUT_PREFILL_NAME } from './outputSink.js';
+import { EGRESS_ELEMENT, buildEgressWriter, egressBusReports } from './egressTiming.js';
 
 /**
  * Cross-language contract pins between the TS bus helpers and the python
@@ -526,5 +527,74 @@ describe('the no-late-drop hook and the queue watch, in both runners (B-170)', (
             expect(source).not.toContain('shed_watch');
             expect(source).not.toContain('queue_shed');
         }
+    });
+});
+
+describe('the egress writer (WI-P5-10)', () => {
+    const native = join(__dirname, '../../../../plugins/mpegts-core/native');
+    const element = readFileSync(join(native, 'mrtshouse/gstmrtsegress.cpp'), 'utf8');
+    const core = readFileSync(join(native, 'mrts/ts_egress.cpp'), 'utf8');
+
+    it('every egress module addresses one element, `egress`, by name', () => {
+        expect(EGRESS_ELEMENT).toBe('egress');
+        expect(buildEgressWriter({ houseClock: 'house-clock=""' })).toBe(
+            'mrtsegress name=egress house-clock=""',
+        );
+        expect(egressBusReports().map((r) => r.element)).toEqual(['egress', 'egress']);
+    });
+
+    it('its two messages are subscribed (busReports), with the fields and kinds the engine reads', () => {
+        for (const { structure } of egressBusReports()) {
+            expect(element).toContain(`"${structure}"`);
+            expect(runnerSource).not.toMatch(
+                new RegExp(`FORWARDED_ELEMENT_MESSAGES = \\([^)]*${structure}`),
+            );
+        }
+        const fields = [
+            'program',
+            'pid',
+            'd-e-ns',
+            'pcr-inserted',
+            'pcr-interval-max-ns',
+            'packets',
+            'epoch-seq',
+            'traceable',
+            'merged-buffers',
+            'kind',
+            'from-ns',
+            'to-ns',
+            'lateness-ns',
+            'gap-ns',
+            'seq',
+            'from-seq',
+            'delta-ns',
+        ];
+        for (const f of fields) expect(element).toContain(`"${f}"`);
+        for (const k of [
+            'd-e-start',
+            'd-e-raise',
+            'd-e-lower',
+            'd-e-max',
+            're-epoch',
+            'pcr-pid-assigned',
+            'pmt-grew',
+            'descriptor-dropped',
+            'cc-lost-in',
+        ]) {
+            expect(core).toContain(`return "${k}";`);
+        }
+    });
+
+    it('both runners stand identity in for it without the plugin (rule 6)', () => {
+        const table = readFileSync(
+            join(__dirname, '..', '..', 'native', 'mr-gst-runner', 'native_plugins.cpp'),
+            'utf8',
+        );
+        const py = readFileSync(
+            join(__dirname, '..', 'child-process', 'gst_native_plugins.py'),
+            'utf8',
+        );
+        expect(table).toContain('{"mrtsegress", "identity"}');
+        expect(py).toContain('"mrtsegress": "identity"');
     });
 });
