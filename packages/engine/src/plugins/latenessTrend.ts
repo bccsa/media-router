@@ -92,9 +92,8 @@ export class LatenessTrend {
 }
 
 /** `+12 ms/min — decode or device slower than real time`, `−3 ms/min`, `0 ms/min`, `measuring`;
- *  by the drain's state (WI-P4-18): `−300 ms/min — draining to its target`, at its cap
- *  `+40 ms/min — growing faster than it can drain (0.5 %)`; with an underrun under load in the
- *  window (B-240), `+40 ms/min — falling behind under load`. */
+ *  `−300 ms/min — draining to its target`, `+40 ms/min — growing faster than it can drain (0.5 %)`
+ *  by the drain (WI-P4-18), `+40 ms/min — falling behind under load` (B-240). */
 export function latenessTrendText(
     t: { msPerMin?: number; underLoad?: true },
     drain?: Pick<DrainSummary, 'state' | 'ppm'>,

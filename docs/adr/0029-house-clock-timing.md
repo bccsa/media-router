@@ -4146,7 +4146,9 @@ sections above give the reasons, the register rows the details.
 - **p4-23** (fix batch FB1): "behind" a member means playing later than it,
   "ahead of" earlier, and B-179's "1 s behind its group: held there" reads
   "held 1 s above its own target"; the load label before the drain-cap
-  label; no segment of two readings reads "measuring" (B-241).
+  label; no segment of two readings reads "measuring"; known limits: no
+  hysteresis at 45 ms, a lateness step one report after its mark reads as
+  growth, and the label trails a member by up to a group tick (B-241).
 - **p4-27** (fix batch FB1): the display's counts read by the engine over
   `get_property` (no new element field), only where the plan names
   waylandsink, only beside the pace's Rate match row, per minute and in

@@ -206,8 +206,9 @@ there is no in-app switch, and the stored values of the removed settings
   for example "4.50 s ahead of Video Player (held 1 s above its own
   target)", "rising to Video Player's latency at 0.20 %" or "2.10 s behind
   Audio Decoder". An audio output fed from two programmes' sources keeps
-  its own delay ("in sync with neither (two programmes)"). Outputs on different boxes, and outputs whose path crosses
-  PipeWire, are not matched. (#862)
+  its own delay ("in sync with neither (two programmes)"). Outputs on
+  different boxes, and outputs whose path crosses PipeWire, are not
+  matched. (#862)
 - **Lip sync between a Video Player and an audio output fed straight from the
   same input** (no muxer between) is not there at the start: each plays on
   arrival, so the video can lead by up to the source's own lead (often 0.3 to

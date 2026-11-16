@@ -2297,9 +2297,11 @@ the aligners' `input-absent` and `aligner-full` warnings
   over as `withRenderMs`; otherwise `4.50 s ahead of Video Player (held 1 s
   above its own target)`, `rising to Video Player's latency at 0.20 %` or
   `2.10 s behind Audio Decoder`, and `grouped with …` while one is unknown,
-  B-241; `not measured (no display rate)` without one), `Drained`, `Buffer underruns` (`15, 1 raised the
-  target, 12 while catching up, 2 under load`), Rate match's `… N drain drops/min`, and the trend's `— draining
-  to its target` and `— growing faster than it can drain (0.5 %)`. No
+  B-241; `not measured (no display rate)` without one), `Drained`,
+  `Buffer underruns` (`15, 1 raised the target, 12 while catching up, 2
+  under load`), Rate match's `… N drain drops/min`, and the trend's
+  `— draining to its target` and `— growing faster than it can drain
+  (0.5 %)`. No
   setting declares any of it (`removedTimingSettings.test.ts` holds that).
 - **Inputs whose taps are named per branch** (a source given its own name in
   `buildBusSrc({ name })` gets a tap named after it — `lat_busin_<i>` in

@@ -37,7 +37,7 @@ export interface VideoPaceWatch {
     drainDropsPerMin?: number;
     /** No display rate known: nothing drains. */
     rateKnown: boolean;
-    /** Changes at every gap the pace collapsed, a display outage and a new element. */
+    /** Resets at a new element or a display outage; steps at a gap the pace collapsed (B-241). */
     gapMark: GapMark;
 }
 

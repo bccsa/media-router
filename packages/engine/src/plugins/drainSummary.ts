@@ -111,6 +111,7 @@ export function latencyTargetText(d: DrainSummary): string {
             off ? `${off} (held 1 s above its own target)` : 'held 1 s above its own target',
         );
     else {
+        // Rising with an earlier member the furthest: that member rises to the group too.
         if (d.ppm < 0) parts.push(`rising to its group at ${pct} %`);
         if (off) parts.push(off);
     }

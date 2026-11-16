@@ -109,6 +109,12 @@ describe('the Latency target row', () => {
         expect(latencyTargetText(rising)).toBe(
             "600 ms (measured), now 200 ms · rising to Video Player's latency at 0.20 %",
         );
+        // Rising to a later member while an earlier one, itself rising, is the furthest.
+        const between = at(500, [1000, -200], { ppm: -2000, state: 'rising', groupTargetMs: 1000 });
+        expect(between.groupApart).toEqual({ name: 'Audio Output 302M', ms: 700 });
+        expect(latencyTargetText(between)).toBe(
+            '1.00 s (measured), now 500 ms · rising to its group at 0.20 % · 700 ms behind Audio Output 302M',
+        );
         // A member whose lateness is unknown: grouped, its sync not claimed.
         expect(latencyTargetText(at(300, [310, null]))).toBe(
             '300 ms (measured), now 300 ms · grouped with Video Player, Audio Output 302M',
