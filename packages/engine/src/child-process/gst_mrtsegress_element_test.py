@@ -381,20 +381,10 @@ def case_bytes():
 
 def case_gap():
     print("\n--- a GAP buffer: consumed, not sent, D_e lowered ---")
-    data = rt.fixture("syn-gap-marker.ts")
-    bus = ec.read_bus(os.path.join(_FIX, "syn-gap-marker.bus.jsonl"))
-    gap_at = next(b["pts"] for b in bus if b["flags"] & ec.GST_FLAG_GAP)
-    steps, last = [("clock", hc(), decl())], 0
-    for b in bus:
-        d = data[b["off"]:b["off"] + b["len"]]
-        if b["flags"] & ec.GST_FLAG_GAP:
-            steps.append(("buf", d, last, b["pts"]))
-            continue
-        last = max(last, b["pts"] + (1100 * MS if b["pts"] < gap_at else 200 * MS))
-        steps.append(("buf", d, last, None))
+    steps = gap_steps()
     h, ref, per, ref_events, tail = run_both(steps)
     gaps = [p for p, st in zip(per, [s for s in steps if s[0] == "buf"]) if st[3] is not None]
-    check(f"gap: each GAP buffer is consumed and nothing is pushed for it ({len(gaps)})",
+    check(f"gap: each GAP buffer is consumed and no marker is pushed ({len(gaps)})",
           len(gaps) == 2 and all(not items for _k, items, _w, _i in gaps))
     low = [e for e in h.events() if e["kind"] == "d-e-lower"]
     check(f"gap: D_e lowered at the next PES, by at most the gap ({low})",
@@ -404,6 +394,59 @@ def case_gap():
           ok and not any(ec.dc.read_gap_length(got[i:i + PKT]) >= 0 for i in range(0, len(got), PKT))
           and same_events(h.events(), ref_events))
     check("gap: the snapshot counts both markers", h.el.get_property("stats").get_value("gap-markers") == 2)
+    h.close()
+
+
+def gap_steps(before_gap=()):
+    """syn-gap-marker as the bus hands it over; before_gap goes in just ahead of the first GAP."""
+    data = rt.fixture("syn-gap-marker.ts")
+    bus = ec.read_bus(os.path.join(_FIX, "syn-gap-marker.bus.jsonl"))
+    gap_at = next(b["pts"] for b in bus if b["flags"] & ec.GST_FLAG_GAP)
+    steps, last, first = [("clock", hc(), decl())], 0, True
+    for b in bus:
+        d = data[b["off"]:b["off"] + b["len"]]
+        if b["flags"] & ec.GST_FLAG_GAP:
+            if first:
+                steps += list(before_gap)
+                first = False
+            steps.append(("buf", d, last, b["pts"]))
+            continue
+        last = max(last, b["pts"] + (1100 * MS if b["pts"] < gap_at else 200 * MS))
+        steps.append(("buf", d, last, None))
+    return steps
+
+
+def case_gap_clock():
+    print("\n--- a clock step and a timeline-id applied at a GAP buffer ---")
+    e2 = E1 + 2 * SEC
+    d_tl = decl(seq=4, e_ns=e2, timeline=0x0123456789ABCDEF)
+    steps = gap_steps([("clock", hc(seq=4, e_ns=e2), decl(seq=4, e_ns=e2)),
+                       ("timeline", "0123456789abcdef", d_tl)])
+    h, _ref, per, ref_events, tail = run_both(steps)
+    ok, got = stream_bytes_equal(per, tail)
+    want = b"".join(b"".join(w) for _k, _i, w, _x in per) + tail[1]
+    check(f"gap-clock: the whole output equals EgressCore's ({len(got) // PKT} against "
+          f"{len(want) // PKT} packets)", ok)
+    gaps = [p for p, st in zip(per, [s for s in steps if s[0] == "buf"]) if st[3] is not None]
+    _k, items, w, _i = gaps[0]
+    bufs = [b for _x, bs in items for b in bs]
+    sent = b"".join(data_of(b) for b in bufs)
+    check(f"gap-clock: that GAP buffer sends what the core inserts ({len(sent) // PKT} packets), "
+          "untimestamped, without the GAP flag, no marker",
+          sent and sent == b"".join(w) and all(b.pts == NONE and b.dts == NONE
+                                               and not b.has_flags(Gst.BufferFlags.GAP) for b in bufs)
+          and not any(ec.dc.read_gap_length(sent[i:i + PKT]) >= 0 for i in range(0, len(sent), PKT)))
+    at = sum(len(out_bytes(it)) for _k, it, _w, _i in per[:per.index(gaps[0])]) // PKT
+    recs = [r for r in rt.Walk(got).recs if at <= r[1] < at + len(sent) // PKT]
+    pmt = [r[2]["decl"] for r in recs if r[0] == "pmt" and r[2]["decl"] is not None]
+    check("gap-clock: in it a PMT with epoch_seq 4 and the timeline-id, then a flagged PCR",
+          [r[0] for r in recs] == ["pmt", "pcr"] and recs[1][2]["disc"] and len(pmt) == 1
+          and pmt[0].epoch_seq == 4 and pmt[0].timeline_id == 0x0123456789ABCDEF)
+    n_got = sum(1 for r in rt.Walk(got).of("pcr") if r[2]["disc"])
+    n_want = sum(1 for r in rt.Walk(want).of("pcr") if r[2]["disc"])
+    check(f"gap-clock: flagged PCRs as the core's ({n_got} against {n_want}), events too",
+          n_got == n_want and same_events(h.events(), ref_events)
+          and "re-epoch" in {e["kind"] for e in h.events()})
     h.close()
 
 
@@ -477,6 +520,7 @@ def case_timer():
     ticks = h.out[n0:]
     for c in chunks[20:30]:
         h.src.push(Harness.buffer(c))
+    h.eos()   # forces a stats post: the snapshot is the last post, up to 100 ms behind the ticks
     snap = h.el.get_property("stats")
     h.close()
     got = b"".join(data_of(b) for _k, bs in ticks for b in bs)
@@ -558,7 +602,8 @@ def case_runners():
 
 if __name__ == "__main__":
     only = set(sys.argv[1:])
-    for name, fn in (("bytes", case_bytes), ("gap", case_gap), ("list", case_list),
+    for name, fn in (("bytes", case_bytes), ("gap", case_gap), ("gap-clock", case_gap_clock),
+                     ("list", case_list),
                      ("merged", case_merged), ("unknown", case_unknown_clock), ("timer", case_timer),
                      ("inspect", case_inspect), ("runners", case_runners)):
         if not only or name in only:

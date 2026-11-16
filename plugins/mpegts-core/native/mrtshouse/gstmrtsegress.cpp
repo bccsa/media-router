@@ -424,7 +424,8 @@ static gint64 egress_gap_end(GstMrtsEgress* self, GstBuffer* buf, gint64 now) {
 }
 
 /* One input buffer through the core; its output, or NULL. Takes `buf`. A GAP buffer is a bus
- * marker (OQ-12): consumed, never sent (S8). */
+ * marker (OQ-12): its markers are never sent (S8), but what the core inserts ahead of them (a
+ * PMT and flagged PCR for a clock change) leaves untimestamped, without the GAP flag. */
 static GstBuffer* egress_buffer(GstMrtsEgress* self, GstBuffer* buf, gint64 now, const ElementClock& clk) {
     GstMapInfo map;
     self->buffers++;
@@ -436,7 +437,9 @@ static GstBuffer* egress_buffer(GstMrtsEgress* self, GstBuffer* buf, gint64 now,
     self->bytes_in += map.size;
     GstBuffer* out = NULL;
     if (GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_GAP)) {
-        self->core->on_gap(map.data, map.size, now, egress_gap_end(self, buf, now), clk);
+        const mrts::EgressResult& r =
+            self->core->on_gap(map.data, map.size, now, egress_gap_end(self, buf, now), clk);
+        out = egress_output(self, NULL, NULL, 0, r);
     } else {
         const gboolean timed = self->sampled++ % PROC_SAMPLE_EVERY == 0;
         struct timespec t0, t1;
@@ -501,11 +504,17 @@ static gboolean egress_sink_event(GstPad* pad, GstObject* parent, GstEvent* even
             gst_event_copy_segment(event, &self->segment);
             break;
         case GST_EVENT_FLUSH_STOP:
-            /* Nothing from before the flush joins what follows: a new core, D_e afresh. */
+            /* Nothing from before the flush joins what follows: a new core, D_e afresh, and
+             * d-e-ns and the snapshot empty until it reports. */
             delete self->core;
             self->core = NULL;
             gst_segment_init(&self->segment, GST_FORMAT_UNDEFINED);
-            self->have_now = self->eos = FALSE;
+            self->have_now = self->eos = self->have_stats_at = FALSE;
+            self->d_e_ns.store(0, std::memory_order_relaxed);
+            g_mutex_lock(&self->snap_lock);
+            if (self->snapshot) gst_structure_free(self->snapshot);
+            self->snapshot = NULL;
+            g_mutex_unlock(&self->snap_lock);
             break;
         case GST_EVENT_EOS:
             /* A split header never completed leaves as it came, then the last numbers. */
@@ -514,7 +523,10 @@ static gboolean egress_sink_event(GstPad* pad, GstObject* parent, GstEvent* even
                 self->core->flush(held);
                 if (!held.empty()) {
                     self->bytes_out += held.size();
-                    gst_pad_push(self->srcpad, gst_buffer_new_memdup(held.data(), held.size()));
+                    const GstFlowReturn fr =
+                        gst_pad_push(self->srcpad, gst_buffer_new_memdup(held.data(), held.size()));
+                    if (fr != GST_FLOW_OK)
+                        GST_DEBUG_OBJECT(self, "held bytes at EOS: %s", gst_flow_get_name(fr));
                 }
                 egress_report(self, self->last_now, TRUE);
             }
