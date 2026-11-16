@@ -4149,6 +4149,22 @@ one input silent while the others flow is absent at W and gapped (B-80); a
 single-input muxer, or a mixer whose inputs all stop, waits up to 4 s before
 its gaps (for the owner's veto: a dead source now costs 4 s, not W, there).
 
+### A muxer's silence limit counts deliveries (p4-21, B-244; F-3)
+
+After DEV-P4cd's source restarted, the muxer marked its audio absent about
+every 0.4 s until the engine restart that reconnected the source. The
+sender's AAC comes in 362 ms PES of 17 frames, and the muxer's parser hands
+each on as 17 buffers at one instant: W (3 x the p95 of the last 200 gaps,
+B-80's rhythm) saw 16 zero gaps and one of 362 ms, just over the 5 % its rank
+reads. Deliveries of two PES after the restart put the long gaps under 5 %:
+W fell to its 100 ms floor and every gap between deliveries was an absence.
+As built, `ArrivalRhythm` counts deliveries: a buffer within `TOGETHER_NS`
+(5 ms) of its delivery's first joins it, no gap taken; the next gap runs from
+its last buffer, and MIN_ARRIVALS counts deliveries. 5 ms is under every
+rhythm the aligners carry (10 ms 302M blocks); leaving gaps out only raises
+the p95, so no W is lower than before. The brief's lead (a rejoin's burst,
+the epoch change) set nothing here, and the demux delivered every PES.
+
 ### The gap rule (OQ-32)
 
 At a content gap each output lets its lateness fall by up to the gap's
@@ -4212,6 +4228,10 @@ sections above give the reasons, the register rows the details.
   as by the input's own task; the burst ended at twice the pace or past its
   silence; a never-heard input absent at W; the boxes' shortfall at the
   outputs beyond the rig's test sinks left to DEV-P4fx (B-243).
+- **p4-21** (F-3): the cause in the rhythm, not the rejoin or the demux;
+  "W back within 20 %" read against the restarted source's own deliveries;
+  no TS Splitter in the rig's restart; the decoder's underruns left to
+  DEV-P4fx (B-244).
 - **p4-24** (fix batch FB3): the second ask goes at once after a miss, so
   the warning comes 6–11 s after a freeze, not within 10 s in every phase;
   it stands over the module's own transient warnings and gives them back;

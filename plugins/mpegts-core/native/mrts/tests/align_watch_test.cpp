@@ -1,5 +1,5 @@
 // ArrivalRhythm, PaceGroup, PaceRegistry and GapPlanner (plan ch. 6 WI-P2-6): W on synthetic
-// rhythms, the pace's rules (seeds, the window, recomputed on leave, a lateness over wall time
+// rhythms and deliveries (B-244), the pace's rules (seeds, the window, recomputed on leave, a lateness over wall time
 // that a backlog's drain does not move, as the sort before a1b found it), the pace read lock-free
 // (B-79), the slew (B-80), stale arrivals (B-81), the fall (B-82), the ceiling and held arrivals
 // (B-204), the re-anchor (B-205), a freeze's burst and the common stall (p4-20), a join into a
@@ -120,6 +120,64 @@ void test_rhythm_window_and_rank() {
     r.reset();
     CHECK("reset: back to the ceiling, no arrivals",
           r.arrivals() == 0 && r.limit_ns(defaults()) == 2 * S);
+}
+
+// A delivery of `n` frames from one PES, 50 us apart (a parser's push loop) from `t`.
+void deliver(ArrivalRhythm& r, int64_t t, int n) {
+    for (int k = 0; k < n; k++) r.arrive(t + k * 50000);
+}
+
+void test_rhythm_deliveries() {
+    // F-3 (B-244): AAC in 362 ms PES of 17 frames, which aacparse hands on together.
+    const ArrivalRhythm::Config c = defaults();
+    ArrivalRhythm r;
+    deliver(r, 0, 17);
+    CHECK("one delivery of 17 frames is one arrival: still the ceiling, not the floor",
+          r.arrivals() == 1 && r.limit_ns(c) == 2 * S);
+    int64_t t = 0;
+    for (int i = 1; i < 60; i++) deliver(r, t += 362 * MS, 17);
+    const int64_t w1 = r.limit_ns(c);
+    CHECK("17 frames every 362 ms: W 3 x the gap between deliveries (about 1086 ms)",
+          w1 > 1080 * MS && w1 < 1090 * MS);
+    // The restarted source: one delivery in three carries two PES (the journal's 263 / 625 ms).
+    bool floor_seen = false;
+    for (int i = 0; i < 90; i++) {
+        t += (i % 3 == 2 ? 724 : 362) * MS;
+        deliver(r, t, i % 3 == 2 ? 34 : 17);
+        floor_seen = floor_seen || r.limit_ns(c) <= c.floor_ns;
+    }
+    CHECK("... deliveries of one or two PES: W never at the floor, 3 x 724 ms capped at 2 s",
+          !floor_seen && r.limit_ns(c) == 2 * S);
+
+    ArrivalRhythm b;
+    t = 0;
+    for (int i = 0; i < 60; i++) deliver(b, t += 362 * MS, 17);
+    const int64_t wb = b.limit_ns(c);
+    b.arrive(t += 3 * S);   // back after an absence...
+    for (int k = 1; k < 120; k++) b.arrive(t + k * 20000);   // ...with a catch-up burst
+    CHECK("a burst after a rejoin does not lower W", b.limit_ns(c) >= wb);
+    floor_seen = false;
+    for (int i = 0; i < 40; i++) {   // the new run after the source's restart
+        deliver(b, t += 362 * MS, 17);
+        floor_seen = floor_seen || b.limit_ns(c) <= c.floor_ns;
+    }
+    CHECK("... nor does the new run drop it to the floor", !floor_seen && b.limit_ns(c) >= wb);
+
+    ArrivalRhythm e;
+    e.arrive(0);
+    e.arrive(ArrivalRhythm::TOGETHER_NS - 1);
+    CHECK("an arrival under 5 ms after a delivery's first joins it", e.arrivals() == 1);
+    e.arrive(ArrivalRhythm::TOGETHER_NS);
+    CHECK("one at 5 ms is the next delivery, its gap from the last buffer (1 ns)",
+          e.arrivals() == 2 && e.p95_ns() == 1);
+    ArrivalRhythm f;
+    for (int i = 0; i < 40; i++) f.arrive(i * 4 * MS);
+    CHECK("a 4 ms rhythm keeps every other buffer's gap: W the floor, as before",
+          f.arrivals() == 20 && f.p95_ns() == 4 * MS && f.limit_ns(c) == 100 * MS);
+    f.resume(f.last_ns() + 1 * MS);
+    f.arrive(f.last_ns() + 1 * MS);
+    CHECK("a resume opens a delivery: the next buffer 1 ms on joins it, no gap taken",
+          f.arrivals() == 21 && f.p95_ns() == 4 * MS);
 }
 
 // --- the pace ------------------------------------------------------------------------------
@@ -1793,6 +1851,7 @@ int main() {
     test_rhythm_cbr();
     test_rhythm_bursts();
     test_rhythm_window_and_rank();
+    test_rhythm_deliveries();
     test_pace_window();
     test_pace_leave();
     test_pace_seeds();

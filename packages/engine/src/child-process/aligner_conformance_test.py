@@ -1027,6 +1027,113 @@ def scn_align_one_input_stall(tag, argv, exp):
         no_restart(tag, label, s.runner, rc)
 
 
+# --------------------------------------------------------------------------- scn-align-source-restart (p4-21)
+def delivery_gaps(arrivals, together_ns):
+    """Gaps between deliveries: arrivals within `together_ns` of a delivery's first are that delivery."""
+    out, first, last = [], None, None
+    for a in arrivals:
+        if first is not None and a - first < together_ns:
+            last = a
+            continue
+        if last is not None:
+            out.append(a - last)
+        first = last = a
+    return out
+
+
+def p95(values):
+    """Nearest rank, as ArrivalRhythm takes it."""
+    v = sorted(values)
+    return v[(95 * len(v) + 99) // 100 - 1] if v else None
+
+
+def scn_align_source_restart(tag, argv, exp):
+    """F-3: the source stops and comes back as a new connection whose AAC deliveries carry one or two
+    17-frame PES (DEV-P4cd's sender after its restart): audio present again, never absent after, W the
+    input's own rhythm and never at the floor (B-244). Arms: 3 s (held, p4-20) and 8 s (absent, a rejoin)."""
+    for arm in exp["arms"]:
+        source_restart_arm(tag, argv, exp, arm)
+
+
+def source_restart_arm(tag, argv, exp, arm):
+    label = f"{exp['scenario']} {arm['name']}"
+    x = exp["expect"]
+    if not os.path.exists(_HOOK_SO):
+        print(f"SKIP {label} {tag} — {_HOOK_SO} not built")
+        return
+    if not shutil.which("ffmpeg"):
+        print(f"SKIP {label} {tag} — no ffmpeg to mux the source")
+        return
+    seconds, (at_s, length_s) = exp["seconds"], arm["restart"]
+    rel = rig.generated(exp["generator"], seconds + 2)
+    apid = stream_classes(rel)["audio"]
+    p0 = next((rig.ts_psi.read_pcr(pkt) // 300 for d in rel for pkt in rig.ts_psi.iter_packets(d)
+               if rig.ts_psi.read_pcr(pkt) is not None), 0)
+
+    def build(t0):
+        shift = (t0 * 9 // 100000 + rig.MUX_BASE - p0) % rig.WRAP
+        timed = rig.ready_by_pcr([rig.rebase_ts(d, shift) for d in rel], t0)
+        return rig.hold_pes(timed, apid, x["hold_every"], t0 + int((at_s + length_s) * S))
+    s = Session(argv, exp["pipelines"])
+    s.producer("one0", ts=build, stop_s=seconds, knobs=rig.Knobs(silence=[(at_s, length_s, "drop")]))
+    try:
+        check(f"{label} {tag}: PLAYING", s.start(lead_ms=6000))
+        cons = s.consume()
+        t0 = s.begin()
+        s.run(seconds + 1.0)
+    finally:
+        rc = s.close()
+    on_time(label, tag, s)
+    lo, hi = t0 + int(at_s * S), t0 + int((at_s + length_s) * S)
+    end_ns = t0 + int((seconds - 0.5) * S)
+    reps = rig.aligner_reports(s.runner, "aw_demux_0_audio")
+    arr = [a for a, _st, d in s.producers["one0"].delivered if any(
+        (pkt[1] & 0x40) and rig.ts_psi.ts_pid(pkt) == apid for pkt in rig.ts_psi.iter_packets(d))]
+    together = x["together_ms"] * MS
+    pre_p95 = p95(delivery_gaps([a for a in arr if t0 + S <= a < lo], together))
+    post_p95 = p95(delivery_gaps([a for a in arr if hi <= a < end_ns], together))
+
+    def w_of(v):
+        return min(x["ceiling_ms"], max(x["floor_ms"], 3 * v / 1e6)) if v else None
+    w_rows = [(t, (p.get("silence-limit") or 0) / 1e6) for t, p in reps
+              if isinstance(p.get("silence-limit"), int)]
+    w_pre = [w for t, w in w_rows if lo - 3 * S <= t < lo]
+    w_late = [w for t, w in w_rows if hi + x["settle_s"] * S <= t < end_ns]
+    st = [(round(sec(t, t0), 2), v) for t, v in states(reps) if t >= lo - S]
+    ab_after = [t for t, v in st if v == "absent" and t > (hi - t0) / S + x["present_within_s"]]
+    pre, post = last_report(reps, before=hi), last_report(reps, before=end_ns)
+    stale_ms = ((post.get("stale-time") or 0) - (pre.get("stale-time") or 0)) / 1e6
+    print(f"    ledger {label} {tag}: delivery p95 {pre_p95 and round(pre_p95 / 1e6)} ms before, "
+          f"{post_p95 and round(post_p95 / 1e6)} ms after; W before {w_pre[-3:]}, after +{x['settle_s']} s "
+          f"min {min(w_late, default=None)} max {max(w_late, default=None)}; states {st[:8]}; absences "
+          f"{post.get('absences')}, stale {post.get('stale-buffers')}/{(post.get('stale-time') or 0) // MS} ms",
+          flush=True)
+    present = [v for t, v in st if t <= (hi - t0) / S + x["present_within_s"]]
+    check(f"{label} {tag}: audio present within {x['present_within_s']} s of the restart (states {st[:4]})",
+          reps and (not present or present[-1] == "present"))
+    check(f"{label} {tag}: audio never absent after that, to {seconds} s ({len(ab_after)}: {ab_after[:4]})",
+          reps and not ab_after)
+    want_pre, want_post = w_of(pre_p95), w_of(post_p95)
+    check(f"{label} {tag}: W before the restart 3 x the delivery p95 ({w_pre[-1:]} ms, want {want_pre}, "
+          f"within {x['w_tolerance'] * 100:.0f} %)",
+          w_pre and want_pre and abs(w_pre[-1] - want_pre) <= want_pre * x["w_tolerance"])
+    check(f"{label} {tag}: W from {x['settle_s']} s after the restart never at the floor and 3 x the new "
+          f"delivery p95 (min {min(w_late, default=None)}, last {w_late[-1:]} ms, want {want_post}, within "
+          f"{x['w_tolerance'] * 100:.0f} %)",
+          w_late and want_post and min(w_late) > x["floor_ms"]
+          and abs(w_late[-1] - want_post) <= want_post * x["w_tolerance"])
+    check(f"{label} {tag}: at most one PES stale after the restart ({stale_ms:.0f} ms, within "
+          f"{x['stale_ms_max']})", stale_ms <= x["stale_ms_max"])
+    # The muxer carries the audio on: its frames out continuous from the restart's settle on.
+    outs = pes_by_media(cons.records).get("audio", [])
+    ds = sorted(p["pts"] for p in outs if hi + x["present_within_s"] * S <= rig.unwrap(p["pts"], t0) < end_ns - S)
+    steps = sorted({(b - a) % rig.WRAP for a, b in zip(ds, ds[1:])})
+    check(f"{label} {tag}: the muxer's audio out continuous from {x['present_within_s']} s after the restart "
+          f"({len(ds)} frames, PTS steps {steps[:4]}: one frame, the source's 1-tick rounding)",
+          ds and all(abs(v - x["frame_ticks"]) <= 1 for v in steps))
+    no_restart(tag, label, s.runner, rc)
+
+
 # --------------------------------------------------------------------------- scn-split-passthrough
 def scn_split_passthrough(tag, _argv, exp):
     """mr-tssplit is a sidecar, not a runner pipeline: one run, the builder's argv."""
@@ -1159,6 +1266,7 @@ NEEDS = {
     "scn-align-runner-freeze": _GEN,
     "scn-align-common-stall": _GEN,
     "scn-align-one-input-stall": _GEN,
+    "scn-align-source-restart": ("aacparse", "h264parse", "mpegtsmux", "unixfdsrc", "unixfdsink"),
     "scn-split-passthrough": ("unixfdsrc", "unixfdsink"),
     "scn-837-ducker-mixer": _302M + ("audiointerleave", "deinterleave"),
 }
@@ -1180,6 +1288,7 @@ SCENARIOS = {
     "scn-align-runner-freeze": scn_align_whole_stall,
     "scn-align-common-stall": scn_align_whole_stall,
     "scn-align-one-input-stall": scn_align_one_input_stall,
+    "scn-align-source-restart": scn_align_source_restart,
 }
 
 

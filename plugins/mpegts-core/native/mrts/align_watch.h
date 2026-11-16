@@ -15,7 +15,8 @@ namespace mrts {
 
 // W, the silence limit (part 4.3 job 2): clamp(factor x p95 of the gaps before the last
 // WINDOW arrivals, floor, ceiling); the ceiling until MIN_ARRIVALS arrivals, so a fresh input
-// is never declared absent on its first buffers.
+// is never declared absent on its first buffers. An arrival is a delivery: buffers within
+// TOGETHER_NS of its first (a PES its parser split into frames, a burst) are one (B-244).
 class ArrivalRhythm {
   public:
     struct Config {
@@ -25,6 +26,7 @@ class ArrivalRhythm {
     };
     static constexpr int WINDOW = 200;
     static constexpr int MIN_ARRIVALS = 10;
+    static constexpr int64_t TOGETHER_NS = 5000000;   // 5 ms: under any rhythm carried (10 ms)
 
     void arrive(int64_t now_ns);
     // An arrival after its aligner held upstream: the wait was ours, not the input's rhythm, so
@@ -41,7 +43,8 @@ class ArrivalRhythm {
     std::vector<int64_t> gaps_;   // a ring of up to WINDOW
     size_t next_ = 0;
     uint64_t arrivals_ = 0;
-    int64_t last_ns_ = 0;
+    int64_t first_ns_ = 0;   // the delivery's first buffer
+    int64_t last_ns_ = 0;    // ...and its last
 };
 
 // The pace of one aggregator's inputs (part 4.3 job 3), under PaceRegistry's lock but `snapshot`:

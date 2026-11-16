@@ -8,18 +8,22 @@ namespace mrts {
 // --- ArrivalRhythm -----------------------------------------------------------------------
 
 void ArrivalRhythm::arrive(int64_t now_ns) {
+    if (arrivals_ > 0 && now_ns - first_ns_ < TOGETHER_NS) {   // the same delivery
+        last_ns_ = now_ns;
+        return;
+    }
     if (arrivals_ > 0) {
         const int64_t gap = std::max<int64_t>(now_ns - last_ns_, 0);
         if (gaps_.size() < (size_t)WINDOW) gaps_.push_back(gap);
         else gaps_[next_] = gap;
         next_ = (next_ + 1) % WINDOW;
     }
-    last_ns_ = now_ns;
+    first_ns_ = last_ns_ = now_ns;
     arrivals_++;
 }
 
 void ArrivalRhythm::resume(int64_t now_ns) {
-    last_ns_ = now_ns;
+    first_ns_ = last_ns_ = now_ns;
     arrivals_++;
 }
 

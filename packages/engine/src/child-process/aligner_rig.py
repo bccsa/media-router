@@ -336,7 +336,8 @@ def generated(kind, seconds):
     """Relative-time TS from GStreamer, cached per process: [bytes] of 7-packet buffers.
     `h264-aac`, `opus-32k`: the conformance scenarios' (WI-P2-14); `h264-1080p50`: the video player's
     `video-leg-pace` case (B-169), 1080p50 H.264 alone with a keyframe each second; `h264-aac-720p50`,
-    `-720p60`, `-1080p50` and `hevc-720p50`: the output harness's (WI-P4-14)."""
+    `-720p60`, `-1080p50` and `hevc-720p50`: the output harness's (WI-P4-14); `h264-aac-pes362`:
+    ffmpeg's own mux, its AAC in 362 ms PES of 17 frames as the field's sender sends (p4-21)."""
     key = (kind, seconds)
     if key not in _GENERATED:
         if kind == "h264-aac":
@@ -367,6 +368,9 @@ def generated(kind, seconds):
         elif kind == "hevc-720p50":
             _GENERATED[key] = _ffmpeg_hevc(seconds)
             return _GENERATED[key]
+        elif kind == "h264-aac-pes362":
+            _GENERATED[key] = _ffmpeg_aac_pes362(seconds)
+            return _GENERATED[key]
         else:
             raise ValueError(kind)
         _GENERATED[key] = [d for _pts, d in generate_ts(desc, timeout=300.0)]
@@ -386,6 +390,47 @@ def _ffmpeg_hevc(seconds):
                           "-preset", "ultrafast", "-x265-params", "keyint=50:min-keyint=50:bframes=0:log-level=error",
                           "-b:v", "2M", "-f", "mpegts", "-"], capture_output=True, check=True, timeout=600).stdout
     return [out[i:i + 1316] for i in range(0, len(out) - len(out) % 188, 1316)]
+
+
+def _ffmpeg_aac_pes362(seconds):
+    """320x180 H.264 at 25 fps + 128 kbit/s AAC from ffmpeg's mpegts mux, the AAC PES flushed by its
+    0.35 s audio delay only: 17 frames a PES, one every 362 ms (DEV-P4cd's fab-hevc50.ts sender)."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error",
+                          "-f", "lavfi", "-i", f"testsrc=size=320x180:rate=25:duration={seconds}",
+                          "-f", "lavfi", "-i", f"sine=frequency=1000:sample_rate=48000:duration={seconds}",
+                          "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-g", "50",
+                          "-b:v", "600k", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-pes_payload_size", "65536",
+                          "-f", "mpegts", "-"], capture_output=True, check=True, timeout=600).stdout
+    return [out[i:i + 1316] for i in range(0, len(out) - len(out) % 188, 1316)]
+
+
+def hold_pes(timed, pid, every, from_ns):
+    """`timed` [(bytes, ready)] with every `every`-th PES of `pid` whose start is ready from
+    `from_ns` on held to the next one's start: two PES in one delivery, as F-3's sender after its
+    restart (absences of 263 and 625 ms, 2:1). Packets regrouped into buffers of up to 7."""
+    pkts = [(d[i:i + 188], r) for d, r in timed for i in range(0, len(d) - 187, 188)]
+    idx, starts, k = [], [], -1
+    for pkt, r in pkts:
+        if ts_psi.ts_pid(pkt) == pid:
+            if pkt[1] & 0x40:
+                k += 1
+                starts.append(r)
+            idx.append(k)
+        else:
+            idx.append(None)
+    out = []
+    for (pkt, r), k in zip(pkts, idx):
+        if k is not None and k >= 0 and k + 1 < len(starts) and starts[k] >= from_ns and k % every == every - 1:
+            r = starts[k + 1]
+        out.append((r, len(out), pkt))
+    out.sort()
+    bufs = []
+    for r, _i, pkt in out:
+        if bufs and bufs[-1][1] == r and len(bufs[-1][0]) < 7 * 188:
+            bufs[-1][0].extend(pkt)
+        else:
+            bufs.append([bytearray(pkt), r])
+    return [(bytes(b), r) for b, r in bufs]
 
 
 def _shift_ts_field(b, at, shift):

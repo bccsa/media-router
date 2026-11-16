@@ -193,6 +193,11 @@ there is no in-app switch, and the stored values of the removed settings
   outputs play about 2 s late after a 2 s stall, then catch up as above. One
   input that stops while the others carry on is still skipped, so it never
   stops the programme; everything stopped for longer than 4 s is skipped too.
+- **After a source restarts, a muxer no longer keeps dropping its audio
+  until it is restarted.** A source that sends its audio a third of a second
+  or more at a time (a file or encoder sender's AAC) could make the muxer mark
+  that audio missing between deliveries, about twice a second, and the Audio
+  Decoder behind it drop out. The muxer now waits for the next delivery.
 - **It probes for the smallest delay that plays clean.** An audio dropout of
   up to a quarter of a second on a steady stream raises that output's margin,
   10 s after it; the margin comes back down over about 2 hours, so a source
