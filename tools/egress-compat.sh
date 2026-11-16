@@ -1,21 +1,6 @@
 #!/bin/sh
 # Third-party receivers against the egress writer (plan ch. 9 WI-P5-15, V-P5-6, register B-252).
-# Receives one egress for a set time, fans it to ffmpeg, VLC and stock tsdemux ! decodebin3 on
-# loopback, captures it for `mrts_cli pcrcheck`, fires the D_e raise and re-epoch hooks and judges.
-#
-#   egress-compat.sh run --kind KIND [--port N] [--host H] [--out DIR] [options]   (dev Pi)
-#   egress-compat.sh dry-run --kind KIND [options]   (a local sender on the dev Pi, hooks built in)
-#   egress-compat.sh mark --out DIR NAME   (an event injected by hand, from now)
-#   egress-compat.sh report --out DIR   (judge a finished run again)
-#   egress-compat.sh selftest   (the judging over synthetic logs)
-#   egress-compat.sh runners | stall -p PID [-s SECONDS]   (on the box: BusyBox sh)
-#
-# KIND is the box's output: srt-caller, srt-listener, udp, rtp, rist (box calls), rist-listener.
-# Options: --duration S (1800) --raise-at S (600) --reepoch-at S (1200) --raise-cmd CMD
-#   --reepoch-cmd CMD --window S (10) --grace S (10) --restarts N (0) --latency MS (srt, 200)
-#   --buffer MS (rist, 1000) --profile N (rist, 1) --iface IF (multicast) --fan-port N (15100)
-#   --players ffmpeg,vlc,gst --mrts-cli PATH. EGRESS_COMPAT_SECRET: SRT passphrase or RIST secret.
-# tools/egress-compat/README.md has the runs and how each verdict is reached.
+# `egress-compat.sh --help` for the commands; tools/egress-compat/README.md for the runs and verdicts.
 
 set -u
 SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
@@ -26,6 +11,28 @@ up() { read -r u _ < /proc/uptime; echo "$u"; }
 # Each line prefixed by uptime seconds: builtins only, so a burst of errors costs no forks.
 stamp() { while IFS= read -r l; do read -r u _ < /proc/uptime; printf '%s %s\n' "$u" "$l"; done; }
 ev() { echo "$(up) $1 $2" >> "$OUT/events.log"; }
+
+usage() {
+    cat <<'EOF_USAGE'
+Third-party receivers against the egress writer (plan ch. 9 WI-P5-15, V-P5-6, register B-252).
+Receives one egress for a set time, fans it to ffmpeg, VLC and stock tsdemux ! decodebin3 on
+loopback, captures it for `mrts_cli pcrcheck`, fires the D_e raise and re-epoch hooks and judges.
+
+  egress-compat.sh run --kind KIND [--port N] [--host H] [--out DIR] [options]   (dev Pi)
+  egress-compat.sh dry-run --kind KIND [options]   (a local sender on the dev Pi, hooks built in)
+  egress-compat.sh mark --out DIR NAME   (an event injected by hand, from now)
+  egress-compat.sh report --out DIR   (judge a finished run again)
+  egress-compat.sh selftest   (the judging over synthetic logs)
+  egress-compat.sh runners | stall -p PID [-s SECONDS]   (on the box: BusyBox sh)
+
+KIND is the box's output: srt-caller, srt-listener, udp, rtp, rist (box calls), rist-listener.
+Options: --duration S (1800) --raise-at S (600) --reepoch-at S (1200) --raise-cmd CMD
+  --reepoch-cmd CMD --window S (10) --grace S (10) --restarts N (0) --latency MS (srt, 200)
+  --buffer MS (rist, 1000) --profile N (rist, 1) --iface IF (multicast) --fan-port N (15100)
+  --players ffmpeg,vlc,gst --mrts-cli PATH. EGRESS_COMPAT_SECRET: SRT passphrase or RIST secret.
+Event times count from the run's start. tools/egress-compat/README.md has the runs and verdicts.
+EOF_USAGE
+}
 
 # --- the box side (BusyBox) ---------------------------------------------------------------
 
@@ -43,18 +50,28 @@ box_stall() {
         case "$1" in -p) PID=$2; shift 2 ;; -s) SEC=$2; shift 2 ;; *) die "stall: unknown $1" ;; esac
     done
     [ -n "$PID" ] && [ -d "/proc/$PID" ] || die "stall: no process $PID"
+    # A dropped session or an interrupt never leaves the runner stopped.
+    trap 'kill -CONT "$PID" 2>/dev/null' EXIT
+    trap 'exit 130' INT TERM HUP
     kill -STOP "$PID" || exit 1
-    # BusyBox sleep takes fractions only when built with them: usleep otherwise.
-    sleep "$SEC" 2>/dev/null || usleep "$(awk -v s="$SEC" 'BEGIN { printf "%d", s * 1000000 }')"
-    kill -CONT "$PID"
-    echo "stalled $PID for $SEC s"
+    # BusyBox sleep takes fractions only when built with them: usleep otherwise. In the
+    # background, so a signal runs the trap at once.
+    us=$(awk -v s="$SEC" 'BEGIN { printf "%d", s * 1000000 }')
+    if { sleep "$SEC" 2>/dev/null & wait $!; } || { usleep "$us" 2>/dev/null & wait $!; }; then
+        kill -CONT "$PID"
+        echo "stalled $PID for $SEC s"
+    else
+        kill -CONT "$PID"
+        echo "stall: neither sleep $SEC nor usleep worked; $PID resumed at once" >&2
+        exit 1
+    fi
 }
 
 # --- options -------------------------------------------------------------------------------
 
 KIND="" PORT="" HOST="" OUT="" DUR=1800 RAISE_AT=600 REEPOCH_AT=1200 RAISE_CMD="" REEPOCH_CMD=""
 WINDOW=10 GRACE=10 RESTARTS=0 LAT=200 BUF=1000 PROFILE=1 IFACE="" FAN=15100 PLAYERS=ffmpeg,vlc,gst
-MRTS_CLI=""
+MRTS_CLI="" ON_EXIT=:
 parse() {
     while [ $# -gt 0 ]; do
         [ $# -ge 2 ] || die "$1 needs a value"
@@ -155,7 +172,12 @@ run_body() {
         "$KIND" "$PORT" "$DUR" "$RAISE_AT" "$REEPOCH_AT" "$WINDOW" "$GRACE" "$RESTARTS" "$PLAYERS" > "$OUT/run.conf"
     echo "$(up) start" > "$OUT/run.log"
     : > "$OUT/events.log"
-    trap 'stop_all; exit 130' INT TERM
+    trap 'stop_all; $ON_EXIT; exit 130' INT TERM
+    # The hooks count from the start line, as the report does.
+    hook raise "$RAISE_AT" "$RAISE_CMD" &
+    echo $! > "$OUT/hook-raise.pid"
+    hook reepoch "$REEPOCH_AT" "$REEPOCH_CMD" &
+    echo $! > "$OUT/hook-reepoch.pid"
     i=0 tee_out=""
     set -f
     for pl in $(echo "$PLAYERS" | tr ',' ' '); do
@@ -183,11 +205,7 @@ run_body() {
             [ -e "$OUT/.stop" ] || { echo "$(up) front end exited" >> "$OUT/run.log"; sleep 1; }
         done
     ) 2>/dev/null &
-    hook raise "$RAISE_AT" "$RAISE_CMD" &
-    echo $! > "$OUT/hook-raise.pid"
-    hook reepoch "$REEPOCH_AT" "$REEPOCH_CMD" &
-    echo $! > "$OUT/hook-reepoch.pid"
-    sleep "$DUR"
+    sleep $((DUR > 2 ? DUR - 2 : 0))
     echo "$(up) end" >> "$OUT/run.log"
     stop_all
     trap - INT TERM
@@ -255,8 +273,8 @@ judge_lines() {
 }
 
 # Stdin: pcrcheck's lines. Prints `seen violations allowed flagged over40 intervals`. Allowed:
-# PCR intervals over 40 ms while they are at most 0.1 % (V-P5-1's 99.9th percentile), and per
-# program up to R unflagged jumps and R CC errors per ES PID (a sender restart flags neither).
+# PCR intervals over 40 ms while at most 0.1 % (V-P5-1's 99.9th percentile); per restart R, per
+# program R unflagged jumps and R CC errors per ES PID, and R per PSI PID (PAT, each PMT).
 judge_pcr() {
     awk -v r="$1" '
         /"pcrcheck":"program"/ {
@@ -269,10 +287,39 @@ judge_pcr() {
             for (i = 1; i <= m; i++) { sub(/.*:/, "", hv[i]); iv += hv[i] }
             np = gsub(/\{"pid":/, "&")
             allow += (j < r ? j : r) + (c < r * np ? c : r * np) + (rp * 1000 <= iv ? rp : 0)
-            over += rp; ivs += iv
+            over += rp; ivs += iv; escc += c; progs++
         }
-        /"pcrcheck":"summary"/ { v = $0; sub(/.*"violations":/, "", v); viol += v; seen = 1 }
-        END { printf "%d %d %d %d %d %d\n", seen, viol, allow, flagged, over, ivs }'
+        /"pcrcheck":"summary"/ {
+            v = $0; sub(/.*"violations":/, "", v); viol += v; seen = 1
+            t = $0; sub(/.*"ccErrors":/, "", t); totcc = t + 0
+        }
+        END {
+            # The summary counts every PID; the ones outside the programs ES lists are its violations.
+            o = totcc - escc
+            if (seen && o > 0) allow += (o < r * (progs + 1) ? o : r * (progs + 1))
+            printf "%d %d %d %d %d %d\n", seen, viol, allow, flagged, over, ivs
+        }'
+}
+
+# The front end's losses of the stream outside the event windows.
+frontend_losses() {
+    sed -n 's/^\([0-9.]*\) front end exited$/\1 x/p' "$OUT/run.log" \
+        | judge_lines "$1" 0 "$2" "$OUT/events.log" /dev/null | awk '/^outside/ { print $2 }'
+}
+
+# An event fallen due with no command fails unless `mark` followed it with a start.
+due_events() {
+    rc=0
+    while read -r t k p; do
+        [ "$p" = due ] || continue
+        if grep -q " $k start$" "$OUT/events.log"; then
+            echo "note: $k marked by hand"
+        else
+            echo "FAIL $k: fell due at $(awk -v a="$t" -v b="$1" 'BEGIN { printf "%.1f", a - b }') s and was never marked"
+            rc=1
+        fi
+    done < "$OUT/events.log"
+    return $rc
 }
 
 report_body() {
@@ -303,7 +350,7 @@ report_body() {
         echo "$v $pl: error lines outside the events $o, at startup $s (not judged); $proof"
         echo "$res" | awk '/^event/ { printf "    %s at %s s: %d error lines, %d glitches\n", $2, $3, $4, $5 }'
     done
-    x=$(sed -n 's/^\([0-9.]*\) front end exited$/\1 x/p' "$OUT/run.log" | judge_lines "$t0" 0 "$CONF_window" "$OUT/events.log" /dev/null | awk '/^outside/ { print $2 }')
+    x=$(frontend_losses "$t0" "$CONF_window")
     [ "${x:-0}" -eq 0 ] || { echo "FAIL receive: the front end lost the stream $x times outside the events"; fail=1; }
     segs=0
     for c in "$OUT"/capture-*.ts; do
@@ -318,10 +365,7 @@ report_body() {
         sed -n 's/.*"version":\([0-9]*\),"mrht":.*"epochSeq":\([0-9]*\),.*"dENs":\([0-9]*\),.*/    PMT v\1: MRHT epoch \2, D_e \3 ns/p; s/.*"version":\([0-9]*\),"mrht":null.*/    PMT v\1: no MRHT/p' "${c%.ts}.hcdesc.jsonl"
     done
     [ $segs -gt 0 ] || { echo "FAIL pcrcheck: nothing captured"; fail=1; }
-    while read -r t k p; do
-        [ "$p" = due ] && echo "FAIL $k: fell due at $(awk -v a="$t" -v b="$t0" 'BEGIN { printf "%.1f", a - b }') s and was never marked" && fail=1
-        [ "$p" = start ] && grep -q " $k due$" "$OUT/events.log" && echo "note: $k marked by hand"
-    done < "$OUT/events.log"
+    due_events "$t0" || fail=1
     [ $fail -eq 0 ] && echo "RESULT PASS" || echo "RESULT FAIL"
 }
 
@@ -387,6 +431,8 @@ dry_main() {
     export MR_PLUGINS_DIR=$ROOT/plugins
     export GST_PLUGIN_PATH=$ROOT/plugins/mpegts-core/native/mrtshouse:$ROOT/plugins/rist-core/native/mrrist${GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}
     mkdir -p "$OUT/sender" || die "cannot create $OUT"
+    # Never the user's registry: a private one beside the run unless one is given.
+    export GST_REGISTRY=${GST_REGISTRY:-$OUT/sender/registry.bin}
     D=$OUT/sender
     up_port=$((FAN + 90))
     runner upstream "videotestsrc is-live=true pattern=ball ! video/x-raw,width=640,height=360,framerate=25/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=1500 key-int-max=50 ! h264parse ! mux. audiotestsrc is-live=true wave=ticks ! audioconvert ! avenc_mp2 bitrate=128000 ! mux. mpegtsmux name=mux alignment=7 ! udpsink host=127.0.0.1 port=$up_port sync=false"
@@ -408,10 +454,17 @@ dry_main() {
       wait ) 2>/dev/null &
     RAISE_CMD="$SELF stall -p $(cat "$D/upstream.rpid") -s 1.5"
     REEPOCH_CMD="$SELF _reepoch $D"
+    ON_EXIT=dry_cleanup
     rc=0
     run_body || rc=$?
-    for f in "$D"/*.hpid "$D"/*.rpid; do [ -e "$f" ] && kill "$(cat "$f")" 2>/dev/null; done
+    dry_cleanup
     return $rc
+}
+
+# The runners, their FIFO holders and the FIFOs (a grep over the directory would block on one).
+dry_cleanup() {
+    for f in "$D"/*.hpid "$D"/*.rpid; do [ -e "$f" ] && kill "$(cat "$f")" 2>/dev/null; done
+    rm -f "$D"/*.fifo "$D"/*.hpid "$D"/*.rpid
 }
 
 # --- the judging over synthetic logs -------------------------------------------------------
@@ -448,6 +501,23 @@ selftest() {
     p2=$(echo "$p" | sed 's/"40":499/"40":498/')
     t "pcrcheck, over 0.1 % of intervals over 40 ms" "$(printf '%s\n%s\n' "$p2" "$sm" | judge_pcr 0)" "1 4 0 2 1 999"
     t "pcrcheck, no summary" "$(printf '%s\n' "$p" | judge_pcr 1)" "0 0 4 2 1 1000"
+    # A restart's CC errors on PAT and PMT: the summary's count over the programs'.
+    sp='{"pcrcheck":"summary","packets":9,"ccErrors":5,"violations":7}'
+    t "pcrcheck, a restart's PSI CC errors allowed" "$(printf '%s\n%s\n' "$p" "$sp" | judge_pcr 1)" "1 7 6 2 1 1000"
+    t "pcrcheck, PSI CC errors past one per PSI PID" "$(printf '%s\n%s\n' "$p" "$(echo "$sp" | sed 's/"ccErrors":5/"ccErrors":6/')" | judge_pcr 1)" "1 7 6 2 1 1000"
+    t "pcrcheck, PSI CC errors with no restart" "$(printf '%s\n%s\n' "$p" "$sp" | judge_pcr 0)" "1 7 1 2 1 1000"
+    # The window opens 1 s before the hook.
+    printf '%s\n' '159.5 [h264 @ 0x1] [error] g' > "$OUT/ffmpeg.log"
+    t "a line just before the hook is the event's" "$(j ffmpeg)" "outside 0 startup 0;event raise 60.0 1 1;event reepoch 120.0 0 0;"
+    printf '%s\n' '158.5 [h264 @ 0x1] [error] g' > "$OUT/ffmpeg.log"
+    t "a line before the window is outside" "$(j ffmpeg)" "outside 1 startup 0;event raise 60.0 0 0;event reepoch 120.0 0 0;"
+    printf '100.0 start\n103.0 data segment 1\n165.0 front end exited\n190.0 front end exited\n' > "$OUT/run.log"
+    t "the front end lost the stream once outside the events" "$(frontend_losses 100 10)" "1"
+    printf '100.0 raise due\n' > "$OUT/events.log"
+    t "an event left due fails" "$(due_events 100 >/dev/null; echo $?)" "1"
+    printf '100.0 raise due\n104.0 raise start\n' > "$OUT/events.log"
+    t "an event marked by hand passes" "$(due_events 100; echo $?)" "note: raise marked by hand
+0"
     [ $fails -eq 0 ] && echo "selftest: all passed" || echo "selftest: $fails failed"
     [ $fails -eq 0 ]
 }
@@ -463,6 +533,6 @@ case "$cmd" in
     runners) box_runners ;;
     stall) box_stall "$@" ;;
     _reepoch) dry_reepoch "$1" ;;
-    ""|-h|--help) sed -n '2,18p' "$SELF" ;;
+    ""|-h|--help) usage ;;
     *) die "unknown command $cmd (--help)" ;;
 esac

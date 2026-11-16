@@ -26,13 +26,15 @@ listener. The players are judged as demuxers and decoders; the network leg is th
 | `rist` | `mrristsrc` listening on `--port` (`--profile` 1, `--buffer` 1000 ms), in a stock `gst-launch-1.0` |
 | `rist-listener` | `mrristsrc` calling `--host`:`--port` |
 
-`EGRESS_COMPAT_SECRET`, when set, is the SRT passphrase or the RIST secret; it is never logged.
+`EGRESS_COMPAT_SECRET`, when set, is the SRT passphrase or the RIST secret; it is never logged
+(the dry run hands it to its sender runner in the pipeline string, which the runner does not log).
 
 The players run from the start (each restarted if it exits, which counts against it); the front
 end opens a new capture segment each time it restarts. At `--raise-at` and `--reepoch-at` seconds
-the tool runs `--raise-cmd` and `--reepoch-cmd` (any shell command: `mrssh` to the box, see below)
+from the run's start the tool runs `--raise-cmd` and `--reepoch-cmd` (any shell command: `mrssh` to the box, see below)
 and logs when each starts and returns. Without a command it prints "inject the raise now" and the
-operator marks the event by hand: `egress-compat.sh mark --out DIR raise`.
+operator marks the event by hand: `egress-compat.sh mark --out DIR raise`; the event's window then
+starts at the mark, and an event never marked fails the run.
 
 ## The verdict
 
@@ -55,8 +57,9 @@ Every player line is stamped with the dev Pi's uptime. The report (`DIR/report.t
   VLC reports none, so only its errors are read.
 - **pcrcheck** on each segment, as V-P5-1: no unflagged PCR jump, no PES at or behind its PCR, no CC
   or CRC error; PCR intervals over 40 ms pass while they are at most 0.1 % (the 99.9th percentile).
-  `--restarts N` allows, per program, N unflagged jumps and N CC errors per PID for a re-epoch done
-  by restarting the engine, which cannot flag either. `hcdesc` lists each PMT's `MRHT` epoch and D_e,
+  `--restarts N` allows, per program, N unflagged jumps and N CC errors per ES PID, and N CC errors
+  per PSI PID (the PAT and each PMT, which `pcrcheck` counts only in its summary) for a re-epoch
+  done by restarting the engine, which cannot flag either. `hcdesc` lists each PMT's `MRHT` epoch and D_e,
   so the raise and the re-epoch are seen on the wire.
 
 `RESULT PASS` needs every player, the front end and every segment to pass and no event left due.
