@@ -147,10 +147,12 @@ export interface LivePlanInput {
     subtitles?: { port: number; socketPath?: string; config: Record<string, unknown> };
 }
 
-const videoTimingSink = (refreshHz: number | undefined): TimingSink => ({
+const videoTimingSink = (refreshHz: number | undefined, sinkElement: string): TimingSink => ({
     element: 'sink',
     kind: 'video',
     ...(refreshHz ? { refreshHz } : {}),
+    // 0008's counters: waylandsink only, nothing on kmssink (B-242).
+    ...(sinkElement.startsWith('waylandsink') ? { displayStats: true as const } : {}),
 });
 
 export function planLivePipeline(input: LivePlanInput): PipelineDescription {
@@ -197,7 +199,7 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
         // The pace's rate drops count as kept up: a display slower than the content takes no more.
         ...(namedSink ? { renderWatch: { sink: 'sink', pace: VIDEO_PACE_NAME } } : {}),
         // The timing section's device latency is one refresh of the output's mode.
-        ...(namedSink ? { timingSink: videoTimingSink(input.refreshHz) } : {}),
+        ...(namedSink ? { timingSink: videoTimingSink(input.refreshHz, input.sinkElement) } : {}),
         // EXPLICIT rungs only. A live TS join lands mid-GOP, and feeding a
         // stateless V4L2 decoder delta units before its first keyframe leaves
         // the kernel driver holding a decode request that never completes —

@@ -1,7 +1,7 @@
 // Per-module lateness display (WI-P0-9): the reporter, the 2 s tick with its change throttle,
 // the sink read for the device latency stand-in, the aligners' warnings and events (WI-P2-13),
-// the demuxes' and ASRCs' (WI-P3-6), and the queue-full warning (WI-P4-12). GstPluginBase owns
-// one and merges it into `getState()`.
+// the demuxes' and ASRCs' (WI-P3-6), the queue-full warning (WI-P4-12) and waylandsink's
+// display-stats (B-242). GstPluginBase owns one and merges it into `getState()`.
 import type { DrainSummary, ModuleTimingSummary } from '@media-router/shared-types';
 import type { PipelineDescription, TimingInputRef, TimingSink } from './PluginModule.js';
 import { readNodeLatency } from '../audio/pipeWireLatency.js';
@@ -33,6 +33,7 @@ const TICK_MS = 2000;
 /** A video output whose mode is unknown: one refresh at this rate stands in, and says so. */
 const ASSUMED_REFRESH_HZ = 60;
 const PIPEWIRE_POLL_MS = 10_000;
+const DISPLAY_STATS_POLL_MS = 10_000;
 
 export interface BusSourceRef {
     port: number;
@@ -133,6 +134,7 @@ export class ModuleTiming {
     private timer: ReturnType<typeof setInterval> | null = null;
     private pwTimer: ReturnType<typeof setInterval> | null = null;
     private pwGen = 0;
+    private statsTimer: ReturnType<typeof setInterval> | null = null;
     private sink: TimingSink | undefined;
     private readonly queues = new QueueFullWatch();
     /** Watches that served a bus edge: once its connection is gone, the input was removed. */
@@ -175,6 +177,13 @@ export class ModuleTiming {
         this.reporter.setInstrument(!onBus || latenessTapAvailable());
         this.timer = setInterval(() => this.tick(), TICK_MS);
         this.timer.unref?.();
+        if (this.sink?.displayStats) {
+            this.statsTimer = setInterval(
+                () => void this.readDisplayStats(),
+                DISPLAY_STATS_POLL_MS,
+            );
+            this.statsTimer.unref?.();
+        }
         this.tick();
     }
 
@@ -301,6 +310,8 @@ export class ModuleTiming {
     stop(emit = true): void {
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
+        if (this.statsTimer) clearInterval(this.statsTimer);
+        this.statsTimer = null;
         this.stopPipeWire();
         this.reporter.reset();
         this.edgeWatches.clear();
@@ -539,6 +550,18 @@ export class ModuleTiming {
             { asrcEvent: { name: e.event.name, ...payload } },
             text,
         );
+    }
+
+    /** waylandsink's replaced and discarded frames (B-242); a failed read or a sink without the
+     *  property reads nothing. */
+    private async readDisplayStats(): Promise<void> {
+        const sink = this.sink;
+        if (!sink) return;
+        const stats = await this.host
+            .getProperty(sink.element, 'display-stats')
+            .catch(() => undefined);
+        if (this.sink !== sink) return; // stopped or restarted meanwhile
+        this.reporter.takeDisplayStats(stats);
     }
 
     /** The device latency stand-in, at each PLAYING: the audio ring, or one display refresh. */

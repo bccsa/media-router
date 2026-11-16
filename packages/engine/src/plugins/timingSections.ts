@@ -125,7 +125,7 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
         rows.push([
             'rateMatch',
             'Rate match',
-            rateMatchText(s.rateMatch, s.drain?.drainDropsPerMin),
+            rateMatchText(s.rateMatch, s.drain?.drainDropsPerMin, s.displayFrames),
         ]);
     }
     if (s.lateReleasesPerMin !== undefined) {
@@ -188,6 +188,10 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     put('rate.hz', s.rateMatch && s.rateMatch.displayHz * 100);
     put('rate.source', s.rateMatch?.displaySource);
     put('rate.drops', s.rateMatch?.dropsPerMin);
+    put('display.replaced', s.displayFrames?.replaced);
+    put('display.discarded', s.displayFrames?.discarded);
+    put('display.replacedPerMin', s.displayFrames?.replacedPerMin);
+    put('display.discardedPerMin', s.displayFrames?.discardedPerMin);
     put('late', s.lateReleasesPerMin);
     put('hold', s.paceHoldMs);
     put('relocks', s.deviceRelocks);

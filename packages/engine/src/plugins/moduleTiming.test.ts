@@ -96,6 +96,60 @@ describe('ModuleTiming', () => {
         t.stop(false);
     });
 
+    it("reads waylandsink's display-stats every 10 s into the Rate match row; nothing on other sinks (B-242)", async () => {
+        vi.useFakeTimers();
+        const pace = {
+            released: 500,
+            'content-fps-x100': 5000,
+            'refresh-ns': 20_000_000,
+            'refresh-source': 'measured',
+            'display-presenting': true,
+        };
+        const run = async (sink: Record<string, unknown>, read: () => Promise<unknown>) => {
+            const asked: string[] = [];
+            const t = new ModuleTiming({
+                emit: () => {},
+                getProperty: async (el, prop) => {
+                    asked.push(`${el}.${prop}`);
+                    return read();
+                },
+                busSources: () => [],
+            });
+            t.start({
+                pipeline: 'fakesrc ! fakesink',
+                timingSink: { element: 'sink', kind: 'video', ...sink },
+            });
+            // The pace posts every 2 s; the sink is read at 10 s and 20 s.
+            for (let i = 0; i < 10; i++) {
+                t.onEvent('mrvideopace:vp_pace', pace);
+                await vi.advanceTimersByTimeAsync(2_000);
+            }
+            t.onEvent('mrvideopace:vp_pace', pace);
+            t.tick();
+            const row = t.publication.data.timing?.rateMatch;
+            t.stop(false);
+            return { asked, row };
+        };
+        let replaced = 0;
+        const wayland = await run({ displayStats: true }, async () => ({
+            replaced: (replaced += 1),
+            discarded: 0,
+        }));
+        expect(wayland.asked).toEqual(['sink.display-stats', 'sink.display-stats']);
+        expect(wayland.row).toBe(
+            '50.00 fps → 50.00 Hz measured, 0 drops/min; replaced 6/min (2 total), discarded 0/min (0 total)',
+        );
+        // A sink without the property: the read fails, the row reads as before.
+        const missing = await run({ displayStats: true }, () =>
+            Promise.reject(new Error('no property')),
+        );
+        expect(missing.row).toBe('50.00 fps → 50.00 Hz measured, 0 drops/min');
+        // kmssink: never asked.
+        const kms = await run({}, async () => ({ replaced: 1, discarded: 1 }));
+        expect(kms.asked).toEqual([]);
+        expect(kms.row).toBe('50.00 fps → 50.00 Hz measured, 0 drops/min');
+    });
+
     it('a video sink adds one refresh of its output mode; with the mode unknown, 60 Hz and says so', async () => {
         const deviceRow = async (refreshHz?: number) => {
             const t = new ModuleTiming({

@@ -75,6 +75,16 @@ export interface RateMatch {
     dropsPerMin: number;
 }
 
+/** waylandsink's (Yocto 0008) `display-stats`, read every 10 s (B-242): frames the sink replaced
+ *  before committing them, and presentation feedback the compositor discarded. Totals since the
+ *  sink started; per minute over the last minute. */
+export interface DisplayFrames {
+    replaced: number;
+    discarded: number;
+    replacedPerMin: number;
+    discardedPerMin: number;
+}
+
 /** An output's drain back to its latency target (house-clock WI-P4-18, B-179): `mrasrc`'s or
  *  `mrvideopace`'s servo. No setting, no alarm. */
 /** Why an underrun did not raise the margin (B-240): the first test it failed. */
@@ -150,6 +160,8 @@ export interface ModuleTimingSummary {
     renderMs?: number;
     /** Video outputs: the content's rate against the rate the display takes (`mrvideopace`). */
     rateMatch?: RateMatch;
+    /** Video outputs on waylandsink: the display's replaced and discarded frames (B-242). */
+    displayFrames?: DisplayFrames;
     /** Video outputs: frames the pace released after their slot, per minute. */
     lateReleasesPerMin?: number;
     /** Video outputs: the pace's mean hold of a frame before its slot (ms). */

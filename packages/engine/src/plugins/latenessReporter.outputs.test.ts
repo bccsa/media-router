@@ -103,6 +103,44 @@ describe('LatenessReporter at outputs', () => {
         expect(pub.badge!.text).toBe('240 ms');
     });
 
+    it("video on waylandsink: the Rate match row adds the display's replaced and discarded frames (B-242)", () => {
+        const r = video();
+        r.onEvent('mrvideopace:vp_pace', pace(), 0);
+        r.takeDisplayStats({ presented: 100, replaced: 2, discarded: 0 }, 0);
+        r.takeDisplayStats({ presented: 3100, replaced: 5, discarded: 4 }, 60_000);
+        r.onEvent('mrvideopace:vp_pace', pace(), 60_000);
+        const s = r.summary(60_000);
+        expect(s.displayFrames).toEqual({
+            replaced: 5,
+            discarded: 4,
+            replacedPerMin: 3,
+            discardedPerMin: 4,
+        });
+        expect(timingPublication(s).data.timing.rateMatch).toBe(
+            '50.00 fps → 50.00 Hz measured, 0 drops/min; replaced 3/min (5 total), discarded 4/min (4 total)',
+        );
+        // Three reads missed: the counts go, the row stays.
+        r.onEvent('mrvideopace:vp_pace', pace(), 91_000);
+        const later = r.summary(91_000);
+        expect(later.displayFrames).toBeUndefined();
+        expect(timingPublication(later).data.timing.rateMatch).toBe(
+            '50.00 fps → 50.00 Hz measured, 0 drops/min',
+        );
+    });
+
+    it('a display-stats read without the counters, or without a pace, shows nothing (B-242)', () => {
+        const r = video();
+        r.takeDisplayStats({ replaced: 1, discarded: 0 }, 0);
+        expect(r.summary(0).displayFrames).toBeUndefined(); // no pace: no Rate match row
+        r.onEvent('mrvideopace:vp_pace', pace(), 0);
+        expect(r.summary(0).displayFrames).toMatchObject({ replaced: 1, discarded: 0 });
+        r.reset();
+        r.onEvent('mrvideopace:vp_pace', pace(), 0);
+        r.takeDisplayStats(undefined, 0);
+        r.takeDisplayStats({ presented: 9 }, 0);
+        expect(r.summary(0).displayFrames).toBeUndefined();
+    });
+
     it('video before its first release: λ(render) + one refresh, the stand-in noted', () => {
         const r = video();
         r.setDeviceStandIn({ deviceLatencyMs: 1000 / 60, deviceLatencyNote: '60 Hz assumed' });

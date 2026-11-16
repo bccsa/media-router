@@ -4624,6 +4624,41 @@ def test_drain_rpc():
         check("DR: both runners forward the same fields", seen["native"] == seen["python"])
 
 
+def test_display_stats_rpc():
+    """DS (B-242), both runners: `get_property` of a structure-valued property, 0008's `display-stats` on
+    `mrtestvideosink`, comes back as an object with integer `replaced` and `discarded` (the engine's Rate match
+    row reads them every 10 s); a sink without the property answers command_error (the row reads nothing)."""
+    if not os.path.exists(os.path.join(_TEST_VIDEO_DIR, "libgstmrtestvideo.so")):
+        print("SKIP DS — mrtshouse/tests/mrtestvideo not built (make native-test)")
+        return
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    pipe = ("videotestsrc is-live=true ! video/x-raw,width=64,height=48,framerate=50/1 ! tee name=t "
+            "t. ! queue ! mrtestvideosink name=sink period-ns=20000000 t. ! queue ! fakesink name=fsink sync=false")
+    seen = {}
+    for tag, argv in (("native", None), ("python", _PY_RUNNER)):
+        r = RunnerProc(argv, env=_test_video_env(tmp))
+        try:
+            r.wait_event(ev_is("ready"), timeout=10)
+            r.send({"cmd": "start", "pipeline": pipe, "useStdioForData": False, "linkOnPadAdded": [],
+                    "decoderThreadType": "auto"})
+            playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+            time.sleep(1.0)
+            ds = _runner_prop(r, "sink", "display-stats", f"ds{tag}")
+            r.send({"cmd": "get_property", "id": f"dn{tag}", "element": "fsink", "property": "display-stats"})
+            none = r.wait_event(lambda e: e.get("id") == f"dn{tag}" and e.get("event") in ("property", "command_error"))
+            code = r.stop_and_wait()
+        finally:
+            r.kill()
+        counts = isinstance(ds, dict) and all(type(ds.get(k)) is int for k in ("replaced", "discarded", "presented"))
+        check(f"DS {tag}: display-stats over the RPC is an object with integer replaced and discarded "
+              f"({ds}), the display presenting", playing and code == 0 and counts and ds["presented"] > 0)
+        check(f"DS {tag}: a sink without display-stats answers command_error ({none})",
+              none is not None and none.get("event") == "command_error")
+        seen[tag] = sorted(ds) if isinstance(ds, dict) else None
+    shutil.rmtree(tmp, ignore_errors=True)
+    if len(seen) == 2:
+        check(f"DS: both runners give the same fields ({seen['native']})", seen["native"] == seen["python"])
+
 test_runner_gone()
 test_plain_pipeline()
 test_identity_egress()
@@ -4661,6 +4696,7 @@ test_render_watch_pace()
 test_mrasrc_device()
 test_mrasrc_device_hole()
 test_drain_rpc()
+test_display_stats_rpc()
 test_decoder_hole()
 test_subtitle_overlay_formula()
 test_ttx_formula()

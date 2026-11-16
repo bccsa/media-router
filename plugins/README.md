@@ -2238,7 +2238,10 @@ the aligners' `input-absent` and `aligner-full` warnings
   kept one plus a period), `Rate match` (`50.00 fps → 50.00 Hz measured, 0
   drops/min`: the content's rate, the display's as the pace sees it,
   `achieved`, else the mode's `measured` or `nominal` refresh, and its rate
-  drops, those made as the display fell behind included, per minute over the last minute),
+  drops, those made as the display fell behind included, per minute over the last minute;
+  on waylandsink also `; replaced 0/min (0 total), discarded 0/min (0 total)`,
+  0008's `display-stats` counters read every 10 s over `get_property` where the
+  plan's `timingSink` says `displayStats`, B-242),
   `Late releases` (/min) and `Pace hold` (its mean hold, ms). From an ASRC
   with a device term: Render lateness = `render-lateness-ns` once known (0:
   not yet), and `Device relocks` and `Device stalls` beside Device clock (no

@@ -134,7 +134,13 @@ there is no in-app switch, and the stored values of the removed settings
   50.00 Hz measured, 0 drops/min": the stream's frame rate, the rate the
   display takes, and the frames dropped each minute to match it. **Late
   releases** counts frames a minute shown after their slot, and **Pace hold**
-  how long a frame waits for its slot.
+  how long a frame waits for its slot. On a Wayland display the row also
+  shows the frames the display itself lost, for example "replaced 0/min
+  (0 total), discarded 0/min (0 total)": **replaced** frames were dropped by
+  Video Player's display before they reached the screen, **discarded** ones
+  were sent but the compositor showed a newer frame in their place. Both
+  should stay at 0; they are read every 10 s. A display driven directly
+  (no Wayland) does not show them.
 - **The audio outputs' Timing section adds Device relocks and Device
   stalls** under Device clock: how often the card's clock was taken afresh,
   and how often the card stopped taking sound.

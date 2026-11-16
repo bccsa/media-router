@@ -3945,8 +3945,10 @@ Phase 3 ships as v2.0.0.102).
   plus a stand-in. **Device latency** = Render lateness − λ(`lat_render`). The
   Presentation delay row is gone (there is no D).
 - **Rows**: Video Player's Rate match ("50.00 fps → 50.00 Hz measured, 0
-  drops/min"), Late releases and Pace hold; the audio outputs' Device relocks
-  and Device stalls beside Phase 3's Device clock (S9); a Lateness trend on
+  drops/min"; on waylandsink "…; replaced 0/min (0 total), discarded 0/min
+  (0 total)", 0008's `display-stats` read by the engine every 10 s over
+  `get_property`, B-242), Late releases and Pace hold; the audio outputs'
+  Device relocks and Device stalls beside Phase 3's Device clock (S9); a Lateness trend on
   every output that renders (the slope over 180 s, "measuring" until 3 min
   ran since a reset), with no alarm and no setting: OQ-34's `capacity` alarm and
   its setting are not built. A collapsed hole or a gap (on audio a source
@@ -4145,6 +4147,10 @@ sections above give the reasons, the register rows the details.
   "ahead of" earlier, and B-179's "1 s behind its group: held there" reads
   "held 1 s above its own target"; the load label before the drain-cap
   label; no segment of two readings reads "measuring" (B-241).
+- **p4-27** (fix batch FB1): the display's counts read by the engine over
+  `get_property` (no new element field), only where the plan names
+  waylandsink, only beside the pace's Rate match row, per minute and in
+  all, dropped after three missed reads (B-242).
 
 ### What this phase supersedes
 

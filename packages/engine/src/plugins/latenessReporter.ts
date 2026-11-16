@@ -42,6 +42,7 @@ import {
 } from './asrcWatches.js';
 import {
     DISPLAY_NOT_PRESENTING_TEXT,
+    DisplayStatsWatch,
     VIDEO_PACE_EVENT,
     VideoPaceWatches,
     type VideoPaceWatch,
@@ -258,6 +259,7 @@ export class LatenessReporter {
     private readonly demuxes = new DemuxWatches();
     private readonly asrcs = new AsrcWatches();
     private readonly paces = new VideoPaceWatches();
+    private readonly display = new DisplayStatsWatch();
     private readonly trend: LatenessTrend;
     /** Each demux's `media` as the description builds it, for the no-stream text. */
     private demuxMedia = new Map<string, string>();
@@ -398,6 +400,11 @@ export class LatenessReporter {
         this.processingLatencyMs = ms;
     }
 
+    /** A read of the sink's `display-stats` (waylandsink, B-242): shown in the Rate match row. */
+    takeDisplayStats(stats: unknown, now = Date.now()): void {
+        this.display.take(stats, now);
+    }
+
     setInstrument(present: boolean): void {
         this.instrument = present;
     }
@@ -416,6 +423,7 @@ export class LatenessReporter {
         this.demuxes.clear();
         this.asrcs.clear();
         this.paces.clear();
+        this.display.clear();
         this.trend.gap();
         this.configure(undefined);
         this.deviceLatencyMs = this.pipeWireLatencyMs = undefined;
@@ -712,6 +720,8 @@ export class LatenessReporter {
         const pace = paces[0];
         if (pace) {
             out.rateMatch = pace.rateMatch;
+            const display = this.display.reading(now);
+            if (display) out.displayFrames = display;
             out.lateReleasesPerMin = pace.lateReleasesPerMin;
             out.paceHoldMs = pace.meanHoldMs;
         }
