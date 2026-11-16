@@ -263,7 +263,12 @@ def _caps_of(pad):
     return caps.get_structure(0) if caps and caps.get_size() else None
 
 
-def adec_run(desc, path, secs=4.0):
+# 4.5 s: the sink's 130 ms start margin (B-249) holds the output labels back, so mrasrc's 4 s stats post
+# comes after a 4 s run.
+ADEC_SECS = 4.5
+
+
+def adec_run(desc, path, secs=ADEC_SECS):
     """An audio-decoder string on `path` (on the house clock half a second from its start) into
     mrtestaudiosink 40 ppm fast: what each element saw, or why it did not parse."""
     try:
@@ -316,7 +321,7 @@ else:
               f"then the one ASRC on the sink (no tsdemux, no audioresample; the sink sync=false, no slave-method)",
               " ! mrtsdemux name=addemux media=audio ! " in _desc
               and re.search(r" ! audioconvert ! mrlateness name=lat_render \S+ ! mrasrc name=asrc "
-                            r"bypass-below-ppm=0\.5 device-sink=sink ! audioconvert ! ", _desc) is not None
+                            r"bypass-below-ppm=0\.5 device-sink=sink margin-ms=60 ! audioconvert ! ", _desc) is not None
               and not re.search(r"\btsdemux\b", _desc) and "audioresample" not in _desc
               and " sync=false " in _desc and "slave-method" not in _desc)
         _r = adec_run(_desc, os.path.join(_FIX, _fx))
@@ -325,7 +330,7 @@ else:
             continue
         _linked = [int(n.rsplit("_", 1)[1], 16) for n, linked in _r["pads"] if linked]
         check(f"{_key}: plays in real time without an error ({_r['errors'][:1]}; {_r['played_s']:.2f} s "
-              f"into the sink in 4 s)", not _r["errors"] and 2.0 <= _r["played_s"] <= 4.6)
+              f"into the sink in {ADEC_SECS} s)", not _r["errors"] and 2.0 <= _r["played_s"] <= ADEC_SECS + 0.6)
         check(f"{_key}: the demux offers audio only and the first audio PID plays ({_r['pads']})",
               all(n.startswith("audio_") for n, _ in _r["pads"]) and _linked == [_pid])
         _in, _out = _r["asrc_in"], _r["dec_out"].get(_dec)

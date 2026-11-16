@@ -41,20 +41,14 @@ export const SINK_DECLARED_LATENCY_MS = 100;
  *
  * The route's playout offset D (engine default, or the route head's override —
  * resolved through the SAME `effectivePlayoutOffsetNs` the video-player and the
- * audio-decoder call, so one route resolves to one number on every leg), plus
- * this output's `lipSyncMs` trim, MINUS the sink's own declared latency
- * (`SINK_DECLARED_LATENCY_MS`). The same in both fan-in arms: the aligned
- * mixer adds no latency (house-clock Phase 2), so there is nothing else to
- * give back.
+ * audio-decoder call, so one route resolves to one number on every leg),
+ * MINUS the sink's own declared latency (`SINK_DECLARED_LATENCY_MS`). The same
+ * in both fan-in arms: the aligned mixer adds no latency (house-clock Phase 2),
+ * so there is nothing else to give back. No Lip-Sync Trim since B-249: the sink
+ * runs `sync=false`, so this times nothing; it bounds the aligner seeds below.
  *
- * NEVER NEGATIVE. A trim past D is clamped to 0, for two reasons.
- * Audio cannot be presented before it arrives, so a negative offset buys
- * nothing: the buffers are simply "late" and `max-lateness=-1` plays them on
- * arrival. And the backlog shedder reads this very `ts-offset` as the leg's
- * budget (`lateness = now − rt − ts_offset`), so a negative value makes every
- * buffer read as retained backlog — field, the Pi 5 test box, 2026-09-03 11:28:53:
- * the trim slider at −2000 ms put the sink at −1700 ms, the shedder saw a
- * "1943 ms backlog" and dropped 458 buffers (~10 s of audio) chasing it.
+ * NEVER NEGATIVE: a D under the ring clamps to 0 (audio cannot be presented
+ * before it arrives).
  *
  * TWIN: `audioTsOffsetNs` in `plugins/audio-decoder/engine/AudioDecoderModule.ts`
  * cancels the same declared ring latency and clamps the same way. Two copies on
@@ -62,12 +56,11 @@ export const SINK_DECLARED_LATENCY_MS = 100;
  */
 export function audio302mTsOffsetNs(
     services: PlayoutOffsetServices | null | undefined,
-    config: Record<string, unknown>,
+    _config: Record<string, unknown>,
 ): number {
     return Math.max(
         0,
-        effectivePlayoutOffsetNs(services, { trimMs: Number(config.lipSyncMs ?? 0) || 0 }) -
-            SINK_DECLARED_LATENCY_MS * 1_000_000,
+        effectivePlayoutOffsetNs(services, { trimMs: 0 }) - SINK_DECLARED_LATENCY_MS * 1_000_000,
     );
 }
 

@@ -91,6 +91,8 @@ const ASRC_NAME = 'asrc';
  *
  * Under the time-sync contract (ADR-0005) this module's sink takes `ts-offset` = the route's
  * playout offset D; since B-166 it runs `sync=false`, so that offset times nothing until D goes.
+ * `asrc` keeps a 60 ms margin in the sink's ring and rebuilds it after a hole (B-249), so late
+ * audio plays late and a feed may get that much later again without a hole.
  *
  * CLOCKS (house-clock part 4.4). `asrc` resamples a source on a clock of its own to house rate
  * where it is decoded, and follows the null sink's clock, read on a timer (B-166): one

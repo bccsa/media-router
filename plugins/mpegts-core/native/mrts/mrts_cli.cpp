@@ -9,6 +9,7 @@
 //                           [--bus in.bus.jsonl]
 //        mrts_cli asrc seq.txt|-
 //        mrts_cli asrc-device seq.jsonl|-
+//        mrts_cli sink-margin cases.jsonl|-
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -1958,6 +1959,43 @@ int asrc_device_main(int argc, char** argv) {
     if (term) print_device_summary(*term);
     return 0;
 }
+
+// --- sink-margin: the sink margin (B-249), py/sink_margin_ref.py's line format ---------------------
+
+int sink_margin_main(int argc, char** argv) {
+    if (argc != 2) {
+        std::fprintf(stderr, "usage: mrts_cli sink-margin cases.jsonl|-\n");
+        return 2;
+    }
+    std::string text, err;
+    if (!read_file(argv[1], &text)) {
+        std::perror(argv[1]);
+        return 1;
+    }
+    size_t at = 0, lineno = 0;
+    while (at < text.size()) {
+        size_t nl = text.find('\n', at);
+        if (nl == std::string::npos) nl = text.size();
+        const std::string line = text.substr(at, nl - at);
+        at = nl + 1;
+        lineno++;
+        if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
+        Json o;
+        int64_t next = 0, segdone = 0, sps = 0, margin = 0, play = 0;
+        bool ok = parse_json(line, &o, &err) && op_i64(o, "next", &next, &err) && op_i64(o, "segdone", &segdone, &err) &&
+                  op_i64(o, "sps", &sps, &err) && op_i64(o, "margin", &margin, &err);
+        const bool play_given = ok && o.get("play") && o.get("play")->type != Json::Type::null;
+        if (ok && play_given) ok = op_i64(o, "play", &play, &err);
+        if (!ok) {
+            std::fflush(stdout);
+            std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", argv[1], lineno, err.c_str());
+            return 1;
+        }
+        std::printf("{\"silence\":%lld}\n",
+                    (long long)asrc_sink_silence(next, segdone, sps, margin, play_given, play));
+    }
+    return 0;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1969,6 +2007,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "demux") == 0) return demux_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "asrc") == 0) return asrc_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "asrc-device") == 0) return asrc_device_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "sink-margin") == 0) return sink_margin_main(argc - 1, argv + 1);
     std::fprintf(stderr,
                  "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
@@ -1979,6 +2018,7 @@ int main(int argc, char** argv) {
                  "       mrts_cli demux in.ts [--chunk N] [--media M] [--select CAPS] [--program P] "
                  "[--house-ns T] [--bus in.bus.jsonl]\n"
                  "       mrts_cli asrc seq.txt|-\n"
-                 "       mrts_cli asrc-device seq.jsonl|-\n");
+                 "       mrts_cli asrc-device seq.jsonl|-\n"
+                 "       mrts_cli sink-margin cases.jsonl|-\n");
     return 2;
 }

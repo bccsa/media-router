@@ -1655,7 +1655,7 @@ async onRoutePlayoutOffsetChanged(): Promise<void> {
 Two rules make this work:
 
 1. **One resolver.** Both legs of a route (e.g. a video-player and an audio-decoder split off one ts-splitter) call `effectivePlayoutOffsetMs` against the same route, so they get the same D by construction. Re-implementing the arithmetic in a plugin is the bug this exists to prevent.
-2. **Trims stack, they don't replace.** `lipSyncMs` / `syncOffsetMs` are deprecated as sync controls and survive as per-sink trims added on top of D — for skew a specific display or DAC chain adds, which D cannot know about.
+2. **Trims stack, they don't replace.** `lipSyncMs` / `syncOffsetMs` are deprecated as sync controls and survive as per-sink trims added on top of D — for skew a specific display or DAC chain adds, which D cannot know about. The Audio Output (302M) has none since B-249: its sink runs `sync=false`, where a ts-offset times nothing.
 
 **Runtime raise — playout re-anchor (`EngineServices.playoutReanchor`).** With `MR_PLAYOUT_REANCHOR` not `0`, a late leg never drops: it asks the engine to raise its route head's D (in memory, up to +2000 ms), and `effectivePlayoutOffsetMs` already includes that raise, so `onRoutePlayoutOffsetChanged` is all a leg needs. An edit of the head's `playoutOffsetMs` clears the raise. ADR-0005 decision 4 amendment 2026-10-08.
 
@@ -2347,26 +2347,27 @@ hold), `reanchorRetryMs` (30 000, re-ask gap unless the budget moved),
 before a rebase) and `rebaseCooldownMs` (60 000, at most one rebase per
 leg). Numbers live in `playoutReanchor.ts`; absent `onLateness` = shed.
 
-**A launch's catch-up and the playout watch (B-206, native runner).**
-`PipelineDescription.catchUp: { prefix }` makes the runner probe the sink pad
+**A launch's catch-up (B-206, B-167, native runner).**
+`PipelineDescription.catchUp: { prefix, render? }` makes the runner probe the sink pad
 of every element whose name starts with `prefix` (the launch's and any added
 live) and drop the buffers and GAPs that end before the launch's first buffer
 there, until one does not: what an input sends at once after an outage
 (its producer's backlog) was due before the module played. Content that
 arrives about as fast as it plays (at most 1.5× over 1 s) is a stream behind
 the house clock, not a backlog, and passes after that second, for the
-re-anchor. One `catch_up` plugin event per launch, `{ inputs: [{ element,
+re-anchor. With `render`, that element's sink pad is probed too, once: what
+ends before its own first buffer, less the inputs' most lag and 200 ms
+(`RENDER_SLACK_NS`), was queued there before it first played (a mixer that
+waited out an absent input) and is dropped (`native_runner_protocol_test.py`
+case CR). One `catch_up` plugin event per launch, `{ inputs: [{ element,
 skippedMs, buffers }], skippedMs }` (`readCatchUp`, `catchUpText`): the launch's
-inputs together once all delivered or 3 s after its first buffer, a later or
-live one alone. `backlogShedConfig({ watchPlayout: true })` sets
-`BacklogShedConfig.missWatchMs` (`PLAYOUT_MISS_MS`, 1000): every buffer past
-the budget + `reanchorToleranceMs` that long reports `playout_watch`
-`{ playing: false, lateMs, budgetMs }`, 200 ms in budget `{ playing: true }`,
-on a change only (`readPlayoutWatch`). Audio Output (302M) sets the catch-up,
-on its inputs' ingress taps (`LAT_IN_PREFIX`; `busSrcTapName` names one), so
-the stale TS goes in the thread that reads the socket, undecoded; since B-166
-its sink runs `sync=false` and it arms no shedder, so no playout watch. The
-python runner ignores both.
+inputs and render point together once all delivered or 3 s after its first
+buffer, a later or live one alone. Audio Output (302M) sets both, on its
+inputs' ingress taps (`LAT_IN_PREFIX`; `busSrcTapName` names one), so the
+stale TS goes in the thread that reads the socket, undecoded, and on its
+render tap `lat_render`. Its sink runs `sync=false` and it arms no shedder
+(B-166, B-217); the playout watch that went with that shedder is gone
+(B-249). The python runner ignores the catch-up.
 
 **Where stamper lines come from (debugging).** Each armed egress logs two
 lines from the runner's stamping subsystem (`stamper.cpp` in the native

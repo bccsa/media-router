@@ -63,18 +63,6 @@
                     "x-live": true,
                     "x-contextMenu": true
                 },
-                "lipSyncMs": {
-                    "type": "number",
-                    "default": 0,
-                    "minimum": -1000,
-                    "maximum": 1000,
-                    "x-widget": "slider",
-                    "x-step": 10,
-                    "x-unit": "ms",
-                    "x-live": true,
-                    "title": "Lip-Sync Trim",
-                    "description": "Trim on top of the route's playout offset. Positive delays audio. Keep to tens of ms."
-                },
                 "channels": {
                     "type": "number",
                     "minimum": 1,

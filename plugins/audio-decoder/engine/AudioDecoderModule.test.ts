@@ -22,7 +22,7 @@ const BUS_IN =
 function decodeString(decoder: string): string {
     return (
         `${BUS_IN} ! mrtsdemux name=addemux media=audio ! queue leaky=0 max-size-time=300000000 max-size-buffers=0 max-size-bytes=0 ! ${decoder}` +
-        ' ! audioconvert ! mrlateness name=lat_render reference=running-time ! mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink' +
+        ' ! audioconvert ! mrlateness name=lat_render reference=running-time ! mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60' +
         ' ! audioconvert ! volume name=vol volume=1.00 ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
         ' ! pulsesink name=sink device=MR_PW_dec-1 sync=false provide-clock=false processing-deadline=100000000 buffer-time=100000 ts-offset=200000000 max-lateness=-1' +
         ' stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true"'
@@ -284,7 +284,7 @@ describe('AudioDecoderModule playout offset', () => {
         const { module } = makeModule({ playoutOffsetMs: 300 });
         module.probeResult = { codec: 'opus' };
         const p = module.buildPipeline({})!.pipeline;
-        expect(p).toContain('mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink !');
+        expect(p).toContain('mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60 !');
         expect(p).toContain('pulsesink name=sink device=MR_PW_dec-1 sync=false ');
         expect(p).not.toContain('slave-method');
         expect(p.match(/\bmrasrc /g)).toHaveLength(1);

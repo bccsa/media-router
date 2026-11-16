@@ -121,26 +121,6 @@ describe('Audio Output (302M) that plays nothing (B-197)', () => {
         await module.onStop();
     });
 
-    it('B-206: every buffer past its playout time is said the moment the runner reports it, and withdrawn when it plays', async () => {
-        const { module, child } = await started(2);
-        child.emit('vuData', { peak: [-18, -18] });
-        child.emit('pluginEvent', {
-            channel: 'playout_watch',
-            payload: { element: 'sink', playing: false, lateMs: 1555.3, budgetMs: 90 },
-        });
-        expect(module.getState()).toMatchObject({
-            health: 'warning',
-            error: 'Plays nothing: every buffer reaches the sink 1555 ms past its playout time',
-        });
-        expect(child.restartPipeline).not.toHaveBeenCalled();
-        child.emit('pluginEvent', {
-            channel: 'playout_watch',
-            payload: { element: 'sink', playing: true, lateMs: -12, budgetMs: 90 },
-        });
-        expect(module.getState().health).toBe('ok');
-        await module.onStop();
-    });
-
     it("B-206: a launch that skipped its inputs' backlog says so in one INFO line, by producer", async () => {
         const { module, child, log } = await started(2);
         child.emit('pluginEvent', {
@@ -172,7 +152,7 @@ describe('Audio Output (302M) that plays nothing (B-197)', () => {
         await module.onStop();
     });
 
-    it('B-210: a raise that did not help is held: the sink plays at its pace, the held warning, not "Plays nothing"', async () => {
+    it('B-210: a raise that did not help is held: the held warning, not "Plays nothing"', async () => {
         const route = {
             getRoutePlayoutHead: vi.fn(() => ({
                 headId: 'srt',
@@ -185,13 +165,6 @@ describe('Audio Output (302M) that plays nothing (B-197)', () => {
         };
         const { module, child } = await started(2, route);
         child.emit('vuData', { peak: [-18, -18] });
-        child.emit('pluginEvent', {
-            channel: 'playout_watch',
-            payload: { element: 'sink', playing: false, lateMs: 88, budgetMs: 200 },
-        });
-        expect(module.getState().error).toBe(
-            'Plays nothing: every buffer reaches the sink 88 ms past its playout time',
-        );
         child.emit('pluginEvent', {
             channel: 'playout_reanchor',
             payload: {

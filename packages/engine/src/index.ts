@@ -262,16 +262,13 @@ export {
     BACKLOG_SHED_HOLD_MS,
     BACKLOG_SHED_COOLDOWN_MS,
     BACKLOG_SHED_SANITY_MS,
-    PLAYOUT_MISS_MS,
-    PLAYOUT_WATCH_EVENT,
-    readPlayoutWatch,
 } from './plugins/backlogShed.js';
 export type { BacklogShedOptions, BacklogShedServices } from './plugins/backlogShed.js';
 export {
-    OUTPUT_PREFILL_MS,
-    OUTPUT_PREFILL_NAME,
+    OUTPUT_MARGIN_MS,
+    OUTPUT_QUEUE_NAME,
     OUTPUT_RING_US,
-    buildOutputPrefill,
+    buildOutputQueue,
 } from './plugins/outputSink.js';
 export { CATCH_UP_EVENT, catchUpText, readCatchUp } from './plugins/catchUp.js';
 export type { CaughtUpInput } from './plugins/catchUp.js';

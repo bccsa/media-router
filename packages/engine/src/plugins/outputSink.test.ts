@@ -1,22 +1,26 @@
 import { describe, it, expect } from 'vitest';
-import {
-    OUTPUT_PREFILL_MS,
-    OUTPUT_PREFILL_NAME,
-    OUTPUT_RING_US,
-    buildOutputPrefill,
-} from './outputSink.js';
+import { OUTPUT_MARGIN_MS, OUTPUT_QUEUE_NAME, OUTPUT_RING_US, buildOutputQueue } from './outputSink.js';
+import { buildAsrc } from './ingestTiming.js';
 
-describe("the audio outputs' sink end (OQ-31)", () => {
-    it('pins the 100 ms ring and the 40 ms prefill', () => {
+describe("the audio outputs' sink end (OQ-31, B-249)", () => {
+    it('pins the 100 ms ring and the 60 ms margin', () => {
         expect(OUTPUT_RING_US).toBe(100_000);
-        expect(OUTPUT_PREFILL_MS).toBe(40);
+        expect(OUTPUT_MARGIN_MS).toBe(60);
     });
 
-    it('the prefill holds 40 ms, never leaks, and is bounded by time alone', () => {
-        expect(buildOutputPrefill()).toBe(
-            `queue name=${OUTPUT_PREFILL_NAME} leaky=0 min-threshold-time=40000000` +
-                ' max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0',
+    it('the queue never leaks, holds no threshold, and is bounded by time alone', () => {
+        expect(buildOutputQueue()).toBe(
+            `queue name=${OUTPUT_QUEUE_NAME} leaky=0 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0`,
         );
-        expect(OUTPUT_PREFILL_NAME).toBe('prefill');
+        expect(buildOutputQueue()).not.toContain('min-threshold');
+        expect(OUTPUT_QUEUE_NAME).toBe('outq');
+    });
+
+    it("every output's ASRC keeps the margin in its sink; no other mode has one", () => {
+        expect(buildAsrc({ name: 'a', deviceSink: 'sink' })).toBe(
+            'mrasrc name=a device-sink=sink margin-ms=60',
+        );
+        expect(buildAsrc({ name: 'a', bypassBelowPpm: 0.5 })).not.toContain('margin-ms');
+        expect(buildAsrc({ name: 'a' })).not.toContain('margin-ms');
     });
 });

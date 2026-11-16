@@ -6,8 +6,6 @@ import {
     BACKLOG_SHED_HOLD_MS,
     BACKLOG_SHED_SANITY_MS,
     BACKLOG_SHED_TOLERANCE_MS,
-    PLAYOUT_MISS_MS,
-    readPlayoutWatch,
 } from './backlogShed.js';
 import { MAX_PLAYOUT_OFFSET_MS } from './playoutOffset.js';
 import {
@@ -36,24 +34,8 @@ describe('backlogShedConfig', () => {
         expect(backlogShedConfig(undefined, VIDEO)).toEqual(want);
     });
 
-    it('a leg that watches its playout gets the miss watch, the others nothing new (B-206)', () => {
-        const watched = backlogShedConfig(
-            {},
-            { element: 'sink', sink: 'sink', keyframeAligned: false, watchPlayout: true },
-        );
-        expect(watched.missWatchMs).toBe(PLAYOUT_MISS_MS);
-        expect(watched).not.toHaveProperty('watchPlayout');
+    it('no leg gets the playout watch: it went with the 302M shedder (B-249)', () => {
         expect(backlogShedConfig({}, VIDEO)).not.toHaveProperty('missWatchMs');
-    });
-
-    it('reads a playout_watch report; anything else is null', () => {
-        expect(readPlayoutWatch({ playing: false, lateMs: 1555.2, budgetMs: 90 })).toEqual({
-            playing: false,
-            lateMs: 1555.2,
-        });
-        expect(readPlayoutWatch({ playing: true })).toEqual({ playing: true, lateMs: 0 });
-        expect(readPlayoutWatch({ playing: 'yes' })).toBeNull();
-        expect(readPlayoutWatch(null)).toBeNull();
     });
 
     it('carries the leg-specific names through untouched', () => {

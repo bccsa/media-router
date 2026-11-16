@@ -4057,52 +4057,50 @@ def test_catch_up_backlog():
             r.kill()
 
 
-# --------------------------------------------------------------------------- PW: playout watch (B-206)
-def test_playout_watch():
-    """PW (B-206): `missWatchMs` on the backlog shed reports the sink missing its playout once
-    every buffer has been past budget + tolerance that long, and playing once it is back in budget
-    200 ms; each on a change only. A sink ts-offset of -400 ms puts every buffer 400 ms (less the
-    sink's latency) late; a live ts-offset of 0 puts it back."""
-    r = RunnerProc()
-    watch = lambda: [e["payload"] for e in r.events  # noqa: E731
-                     if e.get("event") == "plugin_event" and e.get("channel") == "playout_watch"]
-    try:
-        r.send({"cmd": "start", "eosDrain": False,
-                "pipeline": "audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,rate=48000,channels=2"
-                            " ! fakesink name=sink sync=true ts-offset=-400000000 max-lateness=-1",
-                "backlogShed": {"element": "sink", "sink": "sink", "keyframeAligned": False,
-                                "toleranceMs": 250, "holdMs": 5000, "cooldownMs": 60000, "sanityMs": 10000,
-                                "onLateness": "reanchor", "reanchorToleranceMs": 40, "reanchorHoldMs": 15000,
-                                "reanchorRetryMs": 30000, "rebaseHoldMs": 3000, "rebaseCooldownMs": 60000,
-                                "missWatchMs": 1000}})
-        check("PW reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
-        t0 = time.monotonic()
-        miss = r.wait_event(lambda e: e.get("channel") == "playout_watch", timeout=4)
-        took = time.monotonic() - t0
-        p = miss["payload"] if miss else {}
-        check(f"PW missing after a second of late buffers ({took:.1f} s, {p})",
-              p.get("playing") is False and 0.9 <= took <= 2.5 and 330 <= p.get("lateMs", 0) <= 420
-              and p.get("element") == "sink")
-        time.sleep(1.5)
-        r.pump()
-        check(f"PW said once while it stays missing ({len(watch())})", len(watch()) == 1)
-        r.send({"cmd": "set_property", "id": "pw1", "element": "sink", "property": "ts-offset", "value": 0})
-        back = r.wait_event(lambda e: e.get("channel") == "playout_watch" and e["payload"].get("playing"),
-                            timeout=3)
-        check(f"PW playing once back in budget ({back['payload'] if back else None})", back is not None)
-        time.sleep(1.0)
-        r.pump()
-        check(f"PW two reports in all ({watch()})", len(watch()) == 2)
-        check("PW no lifecycle error", not r.has_event(ev_is("error")))
-        check("PW exits 0", r.stop_and_wait() == 0)
-    finally:
-        r.kill()
+# --------------------------------------------------------------------------- CR: render catch-up (B-167)
+def test_catch_up_render():
+    """CR (B-167, the c38 review's minor 5): `catchUp` {prefix, render} skips, once, at the render
+    element's sink pad, what its mix queued before that element first played: an input on time
+    (its tap keeps its first buffer), a queue that holds 1 s before it lets anything through, then
+    the render tap. Its first buffer comes 1 s after the launch: what ends before that, less the
+    inputs' lag and RENDER_SLACK_NS (200 ms), is dropped (about 0.8 s) and reported by element;
+    the rest plays. Without `render` nothing is dropped there (the mutant)."""
+    pipe = ("audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,rate=48000,channels=2"
+            " ! identity name=cr_in ! queue min-threshold-time=1000000000 max-size-time=3000000000"
+            " max-size-buffers=0 max-size-bytes=0 ! identity name=cr_render ! level interval=100000000"
+            " ! fakesink name=sink sync=false async=false")
+    for render in (True, False):
+        tag = "render" if render else "no render (mutant)"
+        cfg = {"prefix": "cr_in", **({"render": "cr_render"} if render else {})}
+        r = RunnerProc()
+        try:
+            r.send({"cmd": "start", "eosDrain": False, "pipeline": pipe, "catchUp": cfg})
+            check(f"CR {tag} PLAYING", r.wait_event(ev_is("state_change", state="playing"), timeout=8) is not None)
+            ev = r.wait_event(lambda e: e.get("channel") == "catch_up", timeout=5)
+            got = {i.get("element"): i for i in (ev["payload"].get("inputs", []) if ev else [])}
+            rend = got.get("cr_render", {})
+            if render:
+                check(f"CR the render tap skipped what queued before it first played, once ({got})",
+                      ev is not None and 600 <= rend.get("skippedMs", 0) <= 1000
+                      and 60 <= rend.get("buffers", 0) <= 100 and "cr_in" not in got)
+            else:
+                check(f"CR without render nothing is skipped there, nor at the on-time input ({got})", not got)
+            time.sleep(1.5)
+            r.pump()
+            vu = sum(1 for e in r.events if e.get("event") == "vu_data")
+            check(f"CR {tag}: the rest plays (vu_data {vu})", vu >= 1)
+            check(f"CR {tag}: one report at most",
+                  sum(1 for e in r.events if e.get("channel") == "catch_up") <= 1)
+            check(f"CR {tag} no lifecycle error", not r.has_event(ev_is("error")))
+            check(f"CR {tag} exits 0", r.stop_and_wait() == 0)
+        finally:
+            r.kill()
+
 
 # --------------------------------------------------------------------------- RA: a raise that cannot help (B-210)
 _RA_SHED = {"element": "lag", "sink": "sink", "keyframeAligned": False, "toleranceMs": 250, "holdMs": 5000,
             "cooldownMs": 60000, "sanityMs": 10000, "onLateness": "reanchor", "reanchorToleranceMs": 40,
-            "reanchorHoldMs": 600, "reanchorRetryMs": 1500, "rebaseHoldMs": 3000, "rebaseCooldownMs": 60000,
-            "missWatchMs": 1000}
+            "reanchorHoldMs": 600, "reanchorRetryMs": 1500, "rebaseHoldMs": 3000, "rebaseCooldownMs": 60000}
 
 
 def test_reanchor_sink_paced():
@@ -4113,7 +4111,7 @@ def test_reanchor_sink_paced():
     after a landed raise reads the same excess, one hold after the landing; unanswered (held), it
     asks again on the retry, the same. RA 2: a late timeline (the sink's budget short): once a
     raise covers it, it asks nothing more. RA 3: a raise taken back in one step on an on-time leg
-    (the decay): no request, no rebase, never missing, and it keeps playing."""
+    (the decay): no request, no rebase, and it keeps playing."""
     def start(lag_ms, sink_ms, element="lag"):
         r = RunnerProc()
         r.wait_event(ev_is("ready"))
@@ -4202,12 +4200,10 @@ def test_reanchor_sink_paced():
         time.sleep(3.0)
         r3.pump()
         vu1 = sum(1 for e in r3.events if e.get("event") == "vu_data")
-        missing = [e["payload"] for e in r3.events if e.get("channel") == "playout_watch"
-                   and e["payload"].get("playing") is False]
         rebases = [e for e in r3.events if e.get("channel") == "playout_reanchor"
                    and e["payload"].get("kind") == "rebase"]
-        check(f"RA 3 the step down asks nothing, rebases nothing, never misses ({len(raises(r3))}, "
-              f"{len(rebases)}, {missing})", not raises(r3) and not rebases and not missing)
+        check(f"RA 3 the step down asks nothing, rebases nothing ({len(raises(r3))}, {len(rebases)})",
+              not raises(r3) and not rebases)
         # The runner forwards the meter about once a second (case N 6's count).
         check(f"RA 3 and it keeps playing through it (vu_data {vu0} -> {vu1})", vu1 - vu0 >= 2)
         check("RA no lifecycle error", not any(r.has_event(ev_is("error")) for r in runs))
@@ -4262,7 +4258,7 @@ test_transcode_rate()
 test_stop_while_starting()
 test_catch_up()
 test_catch_up_backlog()
-test_playout_watch()
+test_catch_up_render()
 test_reanchor_sink_paced()
 
 if _failures:

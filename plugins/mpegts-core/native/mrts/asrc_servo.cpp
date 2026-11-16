@@ -754,4 +754,35 @@ bool AsrcRenderLateness::at(int64_t now_ns, int64_t dev_ns, int64_t* lateness_ns
     return true;
 }
 
+int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos) {
+    const int64_t c = (segdone + 1) * sps;
+    return have_play && play_pos > c ? play_pos : c;
+}
+
+int64_t asrc_sink_write_pos(int64_t next_sample, int64_t segdone, int64_t sps) {
+    int64_t p = next_sample < 0 ? 0 : next_sample;
+    if (p / sps < segdone) p = (segdone + 1) * sps;   // gst_audio_base_sink_get_offset's realign
+    return p;
+}
+
+int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int64_t margin, bool have_play,
+                          int64_t play_pos) {
+    if (sps <= 0 || margin < 0) return 0;
+    const int64_t c = asrc_sink_consumed(segdone, sps, have_play, play_pos);
+    if (next_sample >= 0 && next_sample >= c) return 0;
+    const int64_t want = next_sample >= 0 ? margin : 2 * margin;   // a start: the device takes its buffer from it
+    const int64_t n = c + want - asrc_sink_write_pos(next_sample, segdone, sps);
+    return n > 0 ? n : 0;
+}
+
+int64_t AsrcSinkMargin::silence(int64_t next_sample, int64_t segdone, int64_t sps, bool have_play,
+                                int64_t play_pos) {
+    const int64_t n = margin_ ? asrc_sink_silence(next_sample, segdone, sps, margin_, have_play, play_pos) : 0;
+    if (n) {
+        refills_++;
+        silence_ += n;
+    }
+    return n;
+}
+
 }  // namespace mrts

@@ -676,8 +676,22 @@ elements" below do not start.
   source of a multichannel output its own map (Input 1 to Output 1, say) to
   have it play on that one channel. A mono or stereo output on a device of two
   channels (an SSL 2) is unchanged.
-- **Audio Output (302M) never drops audio that arrives late: it plays it late
-  instead (MR-057).**
+- **Audio Output (302M) plays audio that arrives late, late, instead of
+  cutting it (MR-057).** On v2.0.0.101, on a busy box, an Audio Output (302M)
+  cut every sample that reached its device after its slot into silence:
+  hundreds of short holes a minute behind a clean mix, or nothing at all while
+  it showed ok. It now plays what it gets, late if it came late, and keeps
+  60 ms in hand at its device (120 ms when it starts): its feed may come up to
+  that much later than before without a hole. If the feed falls further
+  behind, or stops, you hear one gap; the output then plays on as late as the
+  feed now comes, with 60 ms in hand again. It does not get earlier again by
+  itself: after its feed has run late it stays that late until the output
+  restarts. The Audio Decoder's output does the same. The output now plays
+  behind a video player on the same route by about its feed's lateness, the
+  60-120 ms it keeps in hand and its device's own delay, less the route's
+  playout offset (60 ms by default); raise the route's playout offset to bring
+  the picture back in line. The Audio Output (302M)'s Lip-Sync Trim is gone
+  from its settings: it no longer moved anything.
 - **Audio inputs capture again by themselves after PipeWire restarts.** Up to
   v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
   buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and

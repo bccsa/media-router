@@ -3345,6 +3345,32 @@ int sweep(int n) {
 
 }  // namespace
 
+// The sink margin (B-249): py/sink_margin_ref_test.py's rule cases, same names, same order.
+static void test_sink_margin() {
+    std::printf("\n--- the sink margin (B-249) ---\n");
+    const int64_t SPS = 480, M = 2880;
+    CHECK("a contiguous write past the segment in flight: no silence", asrc_sink_silence(5 * SPS, 3, SPS, M, false, 0) == 0);
+    CHECK("... with a frame of margin left, still none (a hole of our own otherwise)",
+          asrc_sink_silence(4 * SPS, 3, SPS, M, false, 0) == 0);
+    CHECK("a write into the segment in flight: silence to margin past it",
+          asrc_sink_silence(3 * SPS + 100, 3, SPS, M, false, 0) == 4 * SPS + M - (3 * SPS + 100));
+    CHECK("a write behind the read (the base sink realigns to segdone + 1): silence = the margin",
+          asrc_sink_silence(1 * SPS, 7, SPS, M, false, 0) == M);
+    CHECK("the first write (next -1): twice the margin past the segment in flight",
+          asrc_sink_silence(-1, 0, SPS, M, false, 0) == SPS + 2 * M && asrc_sink_silence(-1, 9, SPS, M, false, 0) == 2 * M);
+    CHECK("the device clock past a stale segdone moves `consumed`",
+          asrc_sink_silence(5 * SPS, 3, SPS, M, true, 6 * SPS) == 6 * SPS + M - 5 * SPS);
+    CHECK("... a clock behind it does not", asrc_sink_silence(5 * SPS, 3, SPS, M, true, 2 * SPS) == 0);
+    AsrcSinkMargin z(0);
+    CHECK("margin 0 (mrasrc margin-ms 0): never, not even into the segment in flight",
+          z.silence(3 * SPS + 100, 3, SPS, false, 0) == 0 && z.silence(-1, 0, SPS, false, 0) == 0);
+    AsrcSinkMargin m(M);
+    m.silence(-1, 0, SPS, false, 0);
+    m.silence(5 * SPS, 3, SPS, false, 0);
+    m.silence(1 * SPS, 7, SPS, false, 0);
+    CHECK("stats count the refills and their silence", m.refills() == 2 && m.silence_total() == SPS + 2 * M + M);
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && !std::strcmp(argv[1], "--sweep")) return sweep(std::atoi(argv[2]));
     if (const char* e = std::getenv("MRTS_FIXTURES")) {
@@ -3398,5 +3424,6 @@ int main(int argc, char** argv) {
     test_dev_render_lateness_ring();
     test_dev_replay_format();
     test_dev_recalibrated();
+    test_sink_margin();
     return test_summary("asrc_servo");
 }

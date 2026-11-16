@@ -1,6 +1,7 @@
 // The ASRC (plan ch. 5 part 4.5, WI-P1-8; ch. 7 part 4.4, WI-P3-5, B-148), py/asrc_bypass_ref.py ported rule
 // for rule (OQ-1, S30): a ClockLock gives the source rate and a phase servo commands the resampler; its device
-// term follows the sink's clock on a timer (ch. 8 WI-P4-4, B-166: py/asrc_device_ref.py). Integer-only.
+// term follows the sink's clock on a timer (ch. 8 WI-P4-4, B-166: py/asrc_device_ref.py), its sink margin rebuilt
+// after a hole (B-249: py/sink_margin_ref.py). Integer-only.
 #pragma once
 #include <cstdint>
 #include <deque>
@@ -233,7 +234,7 @@ struct AsrcDeviceConfig {
     int relock_samples = 2;              // ... in this many fed samples in a row
     int64_t flat_den = 10;               // flat: the clock moved under 1/flat_den of house time
     int64_t stall_ns = 1000000000;       // the sink took nothing this long while samples waited
-    int64_t waiting_ns = 100000000;      // samples waiting beyond what the 40 ms prefill holds back
+    int64_t waiting_ns = 100000000;      // samples waiting beyond what a queue before the sink holds
     int64_t probe_ns = 500000000;        // while stalled, a flush this often
     int64_t resume_ns = 200000000;       // taken since a flush past an empty 100 ms ring: resumed
     int64_t rate_hz = 48000;
@@ -335,6 +336,30 @@ class AsrcRenderLateness {
     };
     int64_t rate_;
     std::deque<Seg> map_;
+};
+
+// The sink margin (B-249): py/sink_margin_ref.py. Before a sync=false sink renders a buffer: if its next write is
+// behind the first frame the device can still play (past the segment in flight, or the clock's position), or there is
+// none (a start, a flush), the frames of silence to put first so the buffer lands `margin` frames past that frame
+// (twice that at a start: a device that starts takes its own buffer out of it).
+int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos);
+int64_t asrc_sink_write_pos(int64_t next_sample, int64_t segdone, int64_t sps);
+int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int64_t margin, bool have_play,
+                          int64_t play_pos);
+
+class AsrcSinkMargin {
+  public:
+    explicit AsrcSinkMargin(int64_t margin_frames = 0) : margin_(margin_frames > 0 ? margin_frames : 0) {}
+    // next_sample < 0: none; have_play false: the clock must not be read (before the first render).
+    int64_t silence(int64_t next_sample, int64_t segdone, int64_t sps, bool have_play, int64_t play_pos);
+    int64_t margin() const { return margin_; }
+    uint64_t refills() const { return refills_; }
+    int64_t silence_total() const { return silence_; }
+
+  private:
+    int64_t margin_;
+    uint64_t refills_ = 0;
+    int64_t silence_ = 0;
 };
 
 }  // namespace mrts

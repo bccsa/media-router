@@ -27,9 +27,9 @@ describe('audio302mTsOffsetNs', () => {
         );
     });
 
-    it('stacks the lipSyncMs trim on top, either sign', () => {
-        expect(audio302mTsOffsetNs(services(), { lipSyncMs: 40 })).toBe(240 * MS);
-        expect(audio302mTsOffsetNs(services(), { lipSyncMs: -60 })).toBe(140 * MS);
+    it('has no Lip-Sync Trim (B-249): a saved lipSyncMs moves nothing', () => {
+        expect(audio302mTsOffsetNs(services(), { lipSyncMs: 40 })).toBe(200 * MS);
+        expect(audio302mTsOffsetNs(services(), { lipSyncMs: -60 })).toBe(200 * MS);
     });
 
     it('has no mixer term: the aligned fan-in adds no latency to give back', () => {
@@ -37,8 +37,7 @@ describe('audio302mTsOffsetNs', () => {
         expect(audio302mTsOffsetNs(services(), { mixLatencyMs: 100 })).toBe(200 * MS);
     });
 
-    it('never goes negative — a trim past D, or a D under the ring, clamps to 0', () => {
-        expect(audio302mTsOffsetNs(services(), { lipSyncMs: -2000 })).toBe(0);
+    it('never goes negative — a D under the ring clamps to 0', () => {
         expect(audio302mTsOffsetNs(services({ engineMs: 50 }), {})).toBe(0);
     });
 

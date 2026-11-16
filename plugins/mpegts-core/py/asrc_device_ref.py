@@ -43,8 +43,8 @@ buffer). A device that stops taking data blocks the sink's render, its clock sto
 PipeWire node, DEV-P4a case 8) running on, so the rule reads the render, never the clock (and the
 ratio never reads the counts):
   - stalled: for stall_ns (1 s) the sink took nothing while more than waiting_ns of samples waited
-    for it (pushed less taken, beyond the 40 ms the prefill holds back): event device-stalled, and
-    the timer flushes downstream (FLUSH_START/STOP from the src pad: the prefill, the ring and a
+    for it (pushed less taken, beyond what a queue before the sink holds): event device-stalled, and
+    the timer flushes downstream (FLUSH_START/STOP from the src pad: the queue, the ring and a
     blocked push hold only what no one can hear). The streaming thread keeps pushing live input;
     while the device stays stopped what reaches downstream is flushed every probe_ns (500 ms).
   - resumed: since the last flush the sink took more than an empty ring holds (resume_ns): the
@@ -115,7 +115,7 @@ class DeviceTermConfig:
         self.relock_samples = 2          # ... in this many fed samples in a row
         self.flat_den = 10               # flat: the clock moved under 1/flat_den of house time
         self.stall_ns = 1 * SEC          # the sink took nothing this long while samples waited
-        self.waiting_ns = 100 * MS       # samples waiting beyond what the 40 ms prefill holds back
+        self.waiting_ns = 100 * MS       # samples waiting beyond what a queue before the sink holds
         self.probe_ns = 500 * MS         # while stalled, a flush this often
         self.resume_ns = 200 * MS        # taken since a flush past an empty 100 ms ring: resumed
         self.rate_hz = 48000

@@ -111,9 +111,12 @@ B-126): the engine's `demuxWatches` and `asrcWatches` tests read them, and the e
 `native_runner_protocol_test.py` holds every payload of its mrtsdemux-messages and mrasrc-device
 cases to its entry's fields and their types, so a field the element renames fails there before
 the engine reads it wrong. Recorded on the dev Pi from those two cases (2026-10-27); the entries no
-run of theirs posts (no-stream, the mrasrc events but device-relock) are as the elements post them.
-B-148 added `mrasrc-stats`' `rate-known` and `device-resyncs`, the engage's `rate-known` and the
-`device-resync` and lost-time `gap` events.
+run of theirs posts (no-stream, the mrasrc events but relock-device) are as the elements post them.
+B-148 added `mrasrc-stats`' `rate-known`, the engage's `rate-known` and the lost-time `gap` event.
+B-166 (B-217) replaced the custom slaving's `device-resyncs` and its `device-relock` and
+`device-resync` events with `device-relocks`, `device-stalls` and `render-lateness-ns` and the
+`relock-device`, `device-stalled` and `device-resumed` events; B-249 added `margin-refills` and
+`margin-silence-ns`.
 
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|

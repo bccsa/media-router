@@ -3,12 +3,10 @@ import {
     DECODE_BYPASS_PPM,
     GstPluginBase,
     LAT_IN_PREFIX,
-    PLAYOUT_WATCH_EVENT,
     buildAsrc,
     buildLatenessTap,
-    buildOutputPrefill,
+    buildOutputQueue,
     pulsePinnedStreamProps,
-    readPlayoutWatch,
     type LiveInputBranch,
     type ModuleServices,
     type PipelineDescription,
@@ -49,9 +47,10 @@ const MIXER = 'mixin';
  * (`pulsesink device=…`); it is not a routing fabric here: no remap-sink,
  * no pw-links, no pactl volume.
  *
- * TIMING (B-217, MR-057). The sink runs `sync=false` behind a 40 ms non-leaky prefill and no shedder
- * is armed: late audio plays late, never cut to silence as `sync=true` did on a loaded box. Its
- * `ts-offset` (D + `lipSyncMs`) is still pushed and times nothing; the render tap shows the lateness.
+ * TIMING (B-217, B-249, MR-057). The sink runs `sync=false` and no shedder is armed: late audio plays
+ * late, never cut to silence as `sync=true` did on a loaded box. `outasrc` keeps a 60 ms margin in the
+ * sink's ring (120 ms at a start) and rebuilds it after a hole, so a feed may get 60 ms later again
+ * without one. Its `ts-offset` (D) is still pushed and times nothing; the render tap shows the lateness.
  *
  * CLOCKS (house-clock part 4.4). A source on a clock of its own is resampled to house rate where
  * it is decoded; `outasrc` follows the device's clock, read on a timer (B-166), so the
@@ -82,7 +81,7 @@ const MIXER = 'mixin';
  *   what its inputs deliver from before it plays (B-206).
  */
 export class AudioOutput302mModule extends GstPluginBase {
-    protected liveUpdatableParams = ['volume', 'audioEnabled', 'lipSyncMs'];
+    protected liveUpdatableParams = ['volume', 'audioEnabled'];
 
     private deviceName = '';
     /** The device's channel count, read before each start: `buildPipeline` cannot wait (B-200). */
@@ -109,7 +108,6 @@ export class AudioOutput302mModule extends GstPluginBase {
         pipeline: () => this.childProcess,
         playing: () => this.childProcess?.isRunning === true,
         mixes: () => this.mixerLaunched,
-        held: () => this.playoutHeld(),
         warn: (text) => {
             if (text === null || this.error !== text) this.setPlaysNothing(text);
         },
@@ -149,17 +147,7 @@ export class AudioOutput302mModule extends GstPluginBase {
 
     protected onPluginEvent(channel: string, payload: unknown): void {
         this.settleRestart.onPluginEvent(channel, payload);
-        if (channel === PLAYOUT_WATCH_EVENT) this.onPlayoutWatch(payload);
-        else if (channel === CATCH_UP_EVENT) this.logCatchUp(payload);
-    }
-
-    /** The runner's playout watch (B-206): on time again settles a raise first, so the warning
-     *  "Plays nothing" stood over is not posted again when it withdraws. */
-    private onPlayoutWatch(payload: unknown): void {
-        const watch = readPlayoutWatch(payload);
-        if (!watch) return;
-        if (watch.playing) this.notePlayoutOnTime();
-        this.silent.onPlayout(watch.playing, watch.lateMs);
+        if (channel === CATCH_UP_EVENT) this.logCatchUp(payload);
     }
 
     /** One INFO line per launch that skipped its inputs' backlog (B-206) or its mix's (B-167). */
@@ -184,11 +172,6 @@ export class AudioOutput302mModule extends GstPluginBase {
     protected onPipelinePlaying(): void {
         this.settleRestart.cancel();
         this.silent.onPlaying();
-    }
-
-    /** A held raise (B-210): the watch's miss is the sink's own pace, not "Plays nothing". */
-    protected onPlayoutHeldChanged(): void {
-        this.silent.refresh();
     }
 
     protected getWatchedDeviceName(): string | null {
@@ -235,13 +218,10 @@ export class AudioOutput302mModule extends GstPluginBase {
         this.deviceChannels = info?.channels ?? null;
     }
 
+    /** No Lip-Sync Trim (B-249): on a `sync=false` sink a ts-offset times nothing, and moving a
+     *  playing output later or earlier costs a hole or a cut; the trim returns with Phase 4. */
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
         await this.applyVolumeLiveUpdate(changes);
-        // `lipSyncMs` is a per-sink trim on top of the route's D — live for the
-        // same reason the video-player's is: an operator trims it while
-        // listening. (`applyVolumeLiveUpdate` has already merged `changes` into
-        // `this.config`, which the push reads.)
-        if ('lipSyncMs' in changes) await this.pushSinkTsOffset();
     }
 
     /**
@@ -341,8 +321,8 @@ export class AudioOutput302mModule extends GstPluginBase {
             // Placement (if any) sits between the VU and the sink: the level meter
             // reads the mix, the sink receives the device-wide spread.
             placement.fragment,
-            // The ring's start margin; never leaks: a late or bursty feed waits, it is not dropped.
-            buildOutputPrefill(),
+            // Its own thread before the sink; never leaks: a late or bursty feed waits, it is not dropped.
+            buildOutputQueue(),
             sink,
         ];
         const pipeline = `${fragment} ${chain.filter((e) => e).join(' ! ')}`;

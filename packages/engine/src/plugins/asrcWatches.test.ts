@@ -56,6 +56,7 @@ describe('launchElements', () => {
             name: 'outasrc',
             'bypass-below-ppm': '0.5',
             'device-sink': 'sink',
+            'margin-ms': '60',
         });
         expect(els.get('devasrc')!['device-sink']).toBe('out sink');
         expect(launchElements('xmrasrc name=a ! mrasrcx name=b', 'mrasrc').size).toBe(0);

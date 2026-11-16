@@ -11,6 +11,7 @@ import {
     SMOOTHING_COOLDOWN_MAX_MIN,
 } from '@media-router/shared-types';
 import { quoteGstString } from './busHelpers.js';
+import { OUTPUT_MARGIN_MS } from './outputSink.js';
 import type { BusReport } from './PluginModule.js';
 
 export { INGEST_OFFSET_KEY, PID_TRIMS_KEY, SMOOTHING_COOLDOWN_KEY };
@@ -114,7 +115,8 @@ export interface AsrcOptions {
      *  this many ppm of house time; resampled once it does not. Unset or 0: capture mode. */
     bypassBelowPpm?: number;
     /** The `GstAudioBaseSink` downstream (run `sync=false`) whose clock the output follows, read on
-     *  a timer (B-166); with no bypass, that device term alone (S17). */
+     *  a timer (B-166); with no bypass, that device term alone (S17). It keeps the sink's margin too
+     *  (`OUTPUT_MARGIN_MS`, B-249). */
     deviceSink?: string;
     /** A `pipewiresrc` capture, one buffer per graph cycle, so lost cycles are a gap and no
      *  relock (B-180); capture mode only. */
@@ -140,6 +142,7 @@ export function buildAsrc({
     if (deviceSink) {
         props.push(
             `device-sink=${/^[\w.-]+$/.test(deviceSink) ? deviceSink : quoteGstString(deviceSink)}`,
+            `margin-ms=${OUTPUT_MARGIN_MS}`,
         );
     }
     if (outRate && outRate > 0) props.push(`out-rate=${Math.round(outRate)}`);

@@ -870,13 +870,12 @@ live test needs PTP on the devices and is a later phase.
 Partly superseded by ADR-0029 (Phase 3). No consumer's bus input goes
 through `tsdemux` any more, so the re-slave probe below
 (`gst_tsdemux_slave_test.py`) is deleted with branch alignment. The audio
-legs (audio-decoder, audio-output-302m) measure and shed at their `mrasrc`'s
-input, the last pad on content time, not at the sink: after the device term
-a sink's PTS are device-time labels that ramp at the device's rate, and a
-shed there is a PTS jump without DISCONT that the ASRC's output counter runs
-through (a decode + device ASRC re-anchors its labels once the jump holds,
-B-127). The shedder, the re-anchor and the raise stay until Phase 4 deletes
-them with D.
+legs (audio-decoder, audio-output-302m) shed at their `mrasrc`'s input, the
+last pad on content time, until their sinks went `sync=false` (B-166, carried
+into v2.0.0.102 by B-217): neither arms a shedder now, late audio plays late,
+and `mrasrc` keeps a margin in the sink's ring (B-249). The shedder, the
+re-anchor and the raise stay on the video legs until Phase 4 deletes them
+with D.
 
 A fault the contract CREATED, found in the field on a Pi 400 ~16 h
 after Stage 3a shipped: 50 fps decoded (codec IRQ ~100/s), 2.5 fps on the glass

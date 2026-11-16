@@ -1,0 +1,4 @@
+{
+  "about": "The Audio Output (302M)'s sink end as its mixer arm builds it (AudioOutput302mModule.buildPipeline, a stereo device's default range, D under the sink's ring so ts-offset 0), from its live upstream on; %SINK% stands for `pulsesink name=sink device=<device>` and its stream-properties are left off. AudioOutput302mModule.test.ts holds the module's string to it; gst_302m_late_feed_test.py runs it into mrtestaudiosink (B-249).",
+  "tail": "identity name=live_upstream sync=true ! mrlateness name=lat_render reference=running-time ! audioconvert ! mrasrc name=outasrc device-sink=sink margin-ms=60 ! volume name=vol volume=1.00 ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000 ! queue name=outq leaky=0 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! %SINK% sync=false provide-clock=false max-lateness=-1 buffer-time=100000 ts-offset=0"
+}

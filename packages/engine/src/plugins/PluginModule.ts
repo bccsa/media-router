@@ -574,9 +574,6 @@ export interface BacklogShedConfig {
     reanchorRetryMs?: number;
     rebaseHoldMs?: number;
     rebaseCooldownMs?: number;
-    /** Playout watch (B-206, native runner): every buffer past budget for this long reports the
-     *  sink missing, `playout_watch` {playing:false}; in budget again, {playing:true}. */
-    missWatchMs?: number;
 }
 
 /** See PipelineDescription.catchUp. */
