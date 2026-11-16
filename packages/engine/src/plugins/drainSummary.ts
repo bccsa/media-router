@@ -13,6 +13,8 @@ export const DRAIN_MAX_PPM = 5000;
 const TAU_S = 30;
 const SATURATED_MS = 150;
 const NEAR_MS = 20;
+/** V-P4-5: members within this of each other in render lateness are in sync (B-241). */
+export const GROUP_SYNC_MS = 45;
 
 /** The summary from an element's fields, its render lateness, its group as the engine set it. */
 export function drainSummary(
@@ -39,10 +41,34 @@ export function drainSummary(
     if (f.publishedMs !== undefined) d.publishedMs = f.publishedMs;
     if (video && !video.rateKnown) d.notMeasured = true;
     if (f.capped) d.capped = true;
-    if (grouped) d.groupWith = group!.with;
+    if (grouped) Object.assign(d, groupSync(nowMs, group!));
     if (group?.neither?.length) d.neither = true;
     if (video?.drainDropsPerMin !== undefined) d.drainDropsPerMin = video.drainDropsPerMin;
     return d;
+}
+
+/** The group's members against this one's render lateness: the furthest past 45 ms, or unjudged
+ *  while one is unknown (B-241). */
+function groupSync(
+    nowMs: number,
+    g: DrainGroupView,
+): Pick<DrainSummary, 'groupWith' | 'groupApart' | 'groupUnjudged'> {
+    const out: Pick<DrainSummary, 'groupWith' | 'groupApart' | 'groupUnjudged'> = {
+        groupWith: g.with,
+    };
+    let unknown = !g.withRenderMs;
+    g.with!.forEach((name, i) => {
+        const theirs = g.withRenderMs?.[i];
+        if (theirs === undefined || theirs === null) {
+            unknown = true;
+            return;
+        }
+        const ms = nowMs - theirs;
+        if (Math.abs(ms) > GROUP_SYNC_MS && Math.abs(ms) > Math.abs(out.groupApart?.ms ?? 0))
+            out.groupApart = { name, ms };
+    });
+    if (!out.groupApart && unknown) out.groupUnjudged = true;
+    return out;
 }
 
 /** Part 5's time to within 20 ms of the target at the cap: (E - 150 ms) / 5 ms/s + 30 s ln(150 / 20),
@@ -63,7 +89,9 @@ function about(seconds: number): string {
         : `about ${Math.round(seconds / 60)} min`;
 }
 
-/** `95 ms (measured), now 2.41 s · draining at 0.50 % (about 7 min) · in sync with Video Player`. */
+/** `95 ms (measured), now 2.41 s · draining at 0.50 % (about 7 min) · in sync with Video Player`;
+ *  out of sync (B-241): `4.50 s ahead of Video Player (held 1 s above its own target)`,
+ *  `rising to Video Player's latency at 0.20 %`, `2.10 s behind Audio Decoder`. */
 export function latencyTargetText(d: DrainSummary): string {
     if (d.notMeasured) return 'not measured (no display rate)';
     const parts = [`${msOrS(d.targetMs)} (measured), now ${msOrS(d.nowMs)}`];
@@ -71,10 +99,26 @@ export function latencyTargetText(d: DrainSummary): string {
     if (d.state === 'warm-up') parts.push('measuring');
     else if (d.ppm > 0)
         parts.push(`draining at ${pct} % (${about(drainSeconds(d.nowMs - d.targetMs))})`);
-    if (d.capped) parts.push('1 s behind its group: held there');
-    else if (d.ppm < 0) parts.push(`rising to its group at ${pct} %`);
+    const apart = d.groupApart;
+    // Behind: it plays later than the member; ahead of: earlier.
+    const off =
+        apart &&
+        `${msOrS(Math.abs(apart.ms))} ${apart.ms > 0 ? 'behind' : 'ahead of'} ${apart.name}`;
+    if (apart && apart.ms < 0 && d.ppm < 0 && !d.capped)
+        parts.push(`rising to ${apart.name}'s latency at ${pct} %`);
+    else if (d.capped)
+        parts.push(
+            off ? `${off} (held 1 s above its own target)` : 'held 1 s above its own target',
+        );
+    else {
+        if (d.ppm < 0) parts.push(`rising to its group at ${pct} %`);
+        if (off) parts.push(off);
+    }
     if (d.neither) parts.push('in sync with neither (two programmes)');
-    else if (d.groupWith?.length) parts.push(`in sync with ${d.groupWith.join(', ')}`);
+    else if (d.groupWith?.length && !apart)
+        parts.push(
+            `${d.groupUnjudged ? 'grouped with' : 'in sync with'} ${d.groupWith.join(', ')}`,
+        );
     return parts.join(' · ');
 }
 

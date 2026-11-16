@@ -2244,10 +2244,15 @@ the aligners' `input-absent` and `aligner-full` warnings
   not yet), and `Device relocks` and `Device stalls` beside Device clock (no
   second clock row). `Lateness trend` on every output that renders: the
   least-squares slope of Render lateness over the last 3 min, `+12 ms/min —
-  decode or device slower than real time` when it rises, `measuring` until
-  3 min ran with no gap; a gap is a reading missing for 6 s, a gap the pace
-  collapsed, a relock, a device relock or stall, a display outage, a new
-  element or a change of where the reading comes from. Three warnings join
+  decode or device slower than real time` when it rises (`— falling behind
+  under load` when its drain counted a `load` underrun in the window),
+  `measuring` until 3 min ran since a reset. The watches' `gapMark` has two
+  parts (B-241): a reset (a reading missing for 6 s, a device relock or
+  stall, a display outage, a new element or a change of where the reading
+  comes from) empties the window; a step (a gap the pace collapsed, a source
+  relock or gap) starts a segment, and the slope is one line through the
+  segments of two or more readings, each at its own level, so a step is no
+  growth. Three warnings join
   the module's timing warnings (one health text it owns, ADR-0010 rule 2);
   they warn, nothing drops: `display-not-presenting` (`Display not
   presenting (output off?)`, while the pace reads `display-presenting`
@@ -2284,8 +2289,12 @@ the aligners' `input-absent` and `aligner-full` warnings
   to 0.5 % slower to reach it, at most 1 s above its own; `DRAIN_GROUP_ALONE_NS`
   (−1 h, the property's minimum and default) says alone (B-177). Rows:
   `Latency target` (`95 ms (measured), now 2.41 s · draining at 0.50 %
-  (about 8 min) · in sync with Video Player`; `not measured (no display
-  rate)` without one), `Drained`, `Buffer underruns` (`15, 1 raised the
+  (about 8 min) · in sync with Video Player`, the last part only while its
+  Render lateness is within 45 ms of each member's, which the engine hands
+  over as `withRenderMs`; otherwise `4.50 s ahead of Video Player (held 1 s
+  above its own target)`, `rising to Video Player's latency at 0.20 %` or
+  `2.10 s behind Audio Decoder`, and `grouped with …` while one is unknown,
+  B-241; `not measured (no display rate)` without one), `Drained`, `Buffer underruns` (`15, 1 raised the
   target, 12 while catching up, 2 under load`), Rate match's `… N drain drops/min`, and the trend's `— draining
   to its target` and `— growing faster than it can drain (0.5 %)`. No
   setting declares any of it (`removedTimingSettings.test.ts` holds that).

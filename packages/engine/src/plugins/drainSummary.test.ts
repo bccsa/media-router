@@ -50,6 +50,7 @@ describe('the Latency target row', () => {
             200,
             {
                 with: ['Video Player', 'Audio Output 302M'],
+                withRenderMs: [210, 230],
             },
         );
         expect(g.targetMs).toBe(300);
@@ -61,17 +62,59 @@ describe('the Latency target row', () => {
             1200,
             {
                 with: ['Video Player'],
+                withRenderMs: [1230],
             },
         );
         expect(capped.targetMs).toBe(2200);
         expect(latencyTargetText(capped)).toBe(
-            '2.20 s (measured), now 1.20 s · 1 s behind its group: held there · in sync with Video Player',
+            '2.20 s (measured), now 1.20 s · held 1 s above its own target · in sync with Video Player',
         );
         const two = drainSummary(fields({ ppm: 0, state: 'idle', excessMs: 5 }), 100, {
             neither: ['A', 'B'],
         });
         expect(latencyTargetText(two)).toBe(
             '95 ms (measured), now 100 ms · in sync with neither (two programmes)',
+        );
+    });
+
+    it('in sync only within 45 ms of every member; otherwise how far, and why (B-241)', () => {
+        const at = (nowMs: number, theirs: Array<number | null>, o: Partial<DrainFields> = {}) =>
+            drainSummary(
+                fields({ ppm: 0, state: 'idle', groupTargetMs: 300, excessMs: 0, ...o }),
+                nowMs,
+                {
+                    with: ['Video Player', 'Audio Output 302M'].slice(0, theirs.length),
+                    withRenderMs: theirs,
+                },
+            );
+        // 30 ms off: in sync.
+        expect(latencyTargetText(at(300, [330]))).toBe(
+            '300 ms (measured), now 300 ms · in sync with Video Player',
+        );
+        expect(at(300, [345]).groupApart).toBeUndefined();
+        expect(at(300, [346]).groupApart).toEqual({ name: 'Video Player', ms: -46 });
+        // The python vpq60 run: the video 4.5 s behind its audio, under "in sync with".
+        const video = at(4800, [300], {});
+        expect(latencyTargetText(video)).toBe(
+            '300 ms (measured), now 4.80 s · 4.50 s behind Video Player',
+        );
+        // The audio, held at its cap: the furthest member named, and why it stays apart.
+        const audio = at(1300, [5800, 1310], { capped: true, groupTargetMs: 5800 });
+        expect(audio.groupApart).toEqual({ name: 'Video Player', ms: -4500 });
+        expect(latencyTargetText(audio)).toBe(
+            '2.30 s (measured), now 1.30 s · 4.50 s ahead of Video Player (held 1 s above its own target)',
+        );
+        // Rising to it, while further than 45 ms.
+        const rising = at(200, [600], { ppm: -2000, state: 'rising', groupTargetMs: 600 });
+        expect(latencyTargetText(rising)).toBe(
+            "600 ms (measured), now 200 ms · rising to Video Player's latency at 0.20 %",
+        );
+        // A member whose lateness is unknown: grouped, its sync not claimed.
+        expect(latencyTargetText(at(300, [310, null]))).toBe(
+            '300 ms (measured), now 300 ms · grouped with Video Player, Audio Output 302M',
+        );
+        expect(latencyTargetText(at(300, [900, null]))).toBe(
+            '300 ms (measured), now 300 ms · 600 ms ahead of Video Player',
         );
     });
 
@@ -85,7 +128,7 @@ describe('the Latency target row', () => {
                 publishedMs: -520,
             }),
             -520,
-            { with: ['Audio Decoder'] },
+            { with: ['Audio Decoder'], withRenderMs: [-500] },
         );
         expect(early.targetMs).toBe(-110);
         expect(latencyTargetText(early)).toBe(

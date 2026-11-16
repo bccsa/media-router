@@ -113,6 +113,10 @@ export interface DrainSummary {
     capped?: true;
     /** The other modules of its A/V group. */
     groupWith?: string[];
+    /** The member furthest from it in render lateness, past 45 ms (ms, positive: it plays later). */
+    groupApart?: { name: string; ms: number };
+    /** A member's render lateness unknown: the group's sync not judged (B-241). */
+    groupUnjudged?: true;
     /** Its origins touch two groups: it drains alone (two programmes). */
     neither?: true;
     /** Video: frames the drain skipped, per minute. */
@@ -150,9 +154,10 @@ export interface ModuleTimingSummary {
     lateReleasesPerMin?: number;
     /** Video outputs: the pace's mean hold of a frame before its slot (ms). */
     paceHoldMs?: number;
-    /** Outputs that render: the slope of render lateness over 3 min with no gap; no msPerMin
-     *  while it measures (no alarm, OQ-34). */
-    latenessTrend?: { msPerMin?: number };
+    /** Outputs that render: the slope of render lateness over 3 min, across collapsed holes and
+     *  gaps (B-241); no msPerMin while it measures (no alarm, OQ-34); `underLoad`: an underrun
+     *  under load (B-240) in the window. */
+    latenessTrend?: { msPerMin?: number; underLoad?: true };
     /** PipeWire-graph modules carry no PTS; they show the graph's latency. */
     pipeWireLatencyMs?: number;
     /** What the module's processing delays its content by that its PTS do not carry (a

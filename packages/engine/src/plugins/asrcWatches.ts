@@ -5,6 +5,7 @@
 // card's alone.
 import type { ClockCorrection, UnderrunReason } from '@media-router/shared-types';
 import { DRAIN_GROUP_ALONE_NS } from './drainSummary.js';
+import type { GapMark } from './latenessTrend.js';
 import { ASRC_EVENT, ASRC_STATS } from './ingestTiming.js';
 import { launchElements } from './launchElements.js';
 
@@ -53,8 +54,8 @@ export interface AsrcWatch {
     stalled?: boolean;
     /** A device term: its drain (B-179). */
     drain?: DrainFields;
-    /** Changes at every relock, gap and stall the element counts, and at a new element. */
-    gapMark: string;
+    /** Resets at a new element, a device relock or stall; steps at a relock or a gap (B-241). */
+    gapMark: GapMark;
 }
 
 /** The drain's stats fields (`mrasrc-stats`, `mrvideopace`), in ms and ppm. */
@@ -270,8 +271,13 @@ export class AsrcWatches {
     list(): AsrcWatch[] {
         const out: AsrcWatch[] = [];
         for (const [name, e] of this.entries) {
-            const mark = [e.generation, e.relocks, e.gaps, e.deviceRelocks, e.deviceStalls];
-            const w: AsrcWatch = { name, gapMark: mark.join('/') };
+            const w: AsrcWatch = {
+                name,
+                gapMark: {
+                    reset: [e.generation, e.deviceRelocks, e.deviceStalls].join('/'),
+                    step: [e.relocks, e.gaps].join('/'),
+                },
+            };
             const engaged = e.mode === 'decode' || e.mode === 'decode+device';
             // `device` from a decode + device element: its source still passes at house rate.
             const decode =

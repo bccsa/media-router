@@ -183,6 +183,7 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     // The trend at its display step (1 ms/min), the rates at theirs (0.01 fps or Hz, 1 /min).
     const trend = s.latenessTrend;
     put('trend', trend && (trend.msPerMin === undefined ? 'measuring' : trend.msPerMin));
+    put('trend.load', trend?.underLoad ? 'load' : undefined);
     put('rate.fps', s.rateMatch && s.rateMatch.contentFps * 100);
     put('rate.hz', s.rateMatch && s.rateMatch.displayHz * 100);
     put('rate.source', s.rateMatch?.displaySource);

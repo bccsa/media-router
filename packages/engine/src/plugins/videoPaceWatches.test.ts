@@ -78,7 +78,7 @@ describe('VideoPaceWatches', () => {
         const before = one(w).gapMark;
         w.take('p', pace({ released: 10, 'rate-drops': 0 }), 2_000);
         expect(one(w).rateMatch.dropsPerMin).toBe(0);
-        expect(one(w).gapMark).not.toBe(before);
+        expect(one(w).gapMark.reset).not.toBe(before.reset);
     });
 
     it('display not presenting: a change when it stops and when it presents again', () => {
@@ -88,11 +88,15 @@ describe('VideoPaceWatches', () => {
         expect(w.take('p', pace({ 'display-presenting': false }), 2_000).changed).toBe(true);
         expect(one(w).presenting).toBe(false);
         expect(w.take('p', pace({ 'display-presenting': false }), 4_000).changed).toBe(false);
+        // Not presenting resets the trend (B-241).
+        expect(one(w).gapMark.reset).not.toBe(mark.reset);
         expect(w.take('p', pace(), 6_000).changed).toBe(true);
         expect(one(w).presenting).toBe(true);
-        expect(one(w).gapMark).toBe(mark);
+        expect(one(w).gapMark).toEqual(mark);
+        // A collapsed hole steps it, no reset.
         w.take('p', pace({ 'gaps-collapsed': 1 }), 8_000);
-        expect(one(w).gapMark).not.toBe(mark);
+        expect(one(w).gapMark.reset).toBe(mark.reset);
+        expect(one(w).gapMark.step).not.toBe(mark.step);
         expect(DISPLAY_NOT_PRESENTING_TEXT).toBe('Display not presenting (output off?)');
     });
 

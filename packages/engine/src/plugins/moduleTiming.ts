@@ -485,7 +485,7 @@ export class ModuleTiming {
             this.host.log?.('info', { drain: d }, drainDoneText(d));
         }
         if (d.capped && !was?.capped) {
-            this.host.log?.('info', { drain: d }, 'Latency 1 s behind its group: held there');
+            this.host.log?.('info', { drain: d }, 'Latency held 1 s above its own target: its group plays later');
         }
     }
 

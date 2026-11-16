@@ -205,13 +205,12 @@ describe('LatenessReporter at outputs', () => {
         );
     });
 
-    it('the trend never spans a gap the pace collapsed: it measures afresh', () => {
+    it('a gap the pace collapsed steps the trend, its step no growth; a display outage resets it (B-241)', () => {
         const r = video();
-        let gaps = 0;
         for (let at = 0; at <= 300_000; at += 2_000) {
-            // A 2 s stall at 150 s, then a gap: lateness steps up, then back to baseline.
-            if (at === 150_000) gaps = 1;
-            const late = at < 140_000 ? 240 : at < 150_000 ? 2240 : 240;
+            // A collapsed hole at 150 s with a +2 s step in lateness: flat on both sides.
+            const gaps = at < 150_000 ? 0 : 1;
+            const late = at < 150_000 ? 240 : 2240;
             r.onEvent('mrlateness:lat_render', win(215), at);
             r.onEvent(
                 'mrvideopace:vp_pace',
@@ -220,13 +219,18 @@ describe('LatenessReporter at outputs', () => {
             );
             r.summary(at);
         }
-        expect(r.summary(300_000).latenessTrend).toEqual({});
-        for (let at = 302_000; at <= 330_000; at += 2_000) {
-            r.onEvent('mrlateness:lat_render', win(215), at);
-            r.onEvent('mrvideopace:vp_pace', pace({ 'gaps-collapsed': 1 }), at);
-            r.summary(at);
-        }
-        expect(r.summary(330_000).latenessTrend).toEqual({ msPerMin: 0 });
+        expect(r.summary(300_000).latenessTrend).toEqual({ msPerMin: 0 });
+        r.onEvent('mrlateness:lat_render', win(215), 302_000);
+        r.onEvent(
+            'mrvideopace:vp_pace',
+            pace({
+                'present-lateness-ns': 2240 * MS,
+                'gaps-collapsed': 1,
+                'display-presenting': false,
+            }),
+            302_000,
+        );
+        expect(r.summary(302_000).latenessTrend).toEqual({});
     });
 
     it('a hole in the readings is a gap too, and a reset forgets the trend', () => {
@@ -242,6 +246,42 @@ describe('LatenessReporter at outputs', () => {
         expect(r.summary(210_000).latenessTrend).toEqual({});
         r.reset();
         expect(r.summary(212_000).latenessTrend).toBeUndefined();
+    });
+
+    it('audio: a relock steps the trend, a device stall resets it; growth under load says so (B-241)', () => {
+        const r = audio();
+        const drain = (load: number) => ({
+            'drain-ppm': 0,
+            'drain-state': 'idle',
+            underruns: load,
+            'underruns-load': load,
+        });
+        for (let at = 0; at <= 180_000; at += 2_000) {
+            const ns = (182 + (30 * at) / 60_000) * MS;
+            r.onEvent('mrlateness:lat_render', win(60), at);
+            r.onEvent(
+                'mrasrc-stats:outasrc',
+                asrcStats({
+                    'render-lateness-ns': ns,
+                    relocks: Math.floor(at / 30_000),
+                    ...drain(at < 100_000 ? 0 : 4),
+                }),
+                at,
+            );
+            r.summary(at);
+        }
+        const s = r.summary(180_000);
+        expect(s.latenessTrend).toEqual({ msPerMin: expect.closeTo(30, 6), underLoad: true });
+        expect(timingPublication(s).data.timing.latenessTrend).toBe(
+            '+30 ms/min — falling behind under load',
+        );
+        r.onEvent('mrlateness:lat_render', win(60), 182_000);
+        r.onEvent(
+            'mrasrc-stats:outasrc',
+            asrcStats({ relocks: 6, 'device-stalls': 1, ...drain(4) }),
+            182_000,
+        );
+        expect(r.summary(182_000).latenessTrend).toEqual({});
     });
 });
 

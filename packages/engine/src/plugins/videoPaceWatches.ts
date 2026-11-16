@@ -4,6 +4,7 @@
 // target (WI-P4-18): its fields and its drops per minute.
 import type { RateMatch } from '@media-router/shared-types';
 import { drainFieldsOf, type DrainFields } from './asrcWatches.js';
+import type { GapMark } from './latenessTrend.js';
 
 /** The structure name; the runners forward it as `mrvideopace:<element>`. */
 export const VIDEO_PACE_EVENT = 'mrvideopace';
@@ -36,7 +37,7 @@ export interface VideoPaceWatch {
     /** No display rate known: nothing drains. */
     rateKnown: boolean;
     /** Changes at every gap the pace collapsed, a display outage and a new element. */
-    gapMark: string;
+    gapMark: GapMark;
 }
 
 interface Sample {
@@ -115,7 +116,11 @@ export class VideoPaceWatches {
                 meanHoldMs: num(p, 'mean-hold-ns') / NS_PER_MS,
                 presenting,
                 rateKnown: p['drain-rate-known'] !== false,
-                gapMark: `${e.generation}/${num(p, 'gaps-collapsed')}/${presenting}`,
+                // A collapsed hole steps the trend; a new element or a display outage resets it.
+                gapMark: {
+                    reset: `${e.generation}/${presenting}`,
+                    step: `${num(p, 'gaps-collapsed')}`,
+                },
             };
             const drain = drainFieldsOf(p);
             if (drain) {

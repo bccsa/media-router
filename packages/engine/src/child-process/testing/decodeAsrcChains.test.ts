@@ -151,7 +151,9 @@ describe('the decode ASRC chains', () => {
             'device-ppb': 0,
         });
         // No device term: no device clock, render lateness or counts.
-        const only = (correction: object) => [{ name: 'asrc', correction, gapMark: '0/0/0/0/0' }];
+        const only = (correction: object) => [
+            { name: 'asrc', correction, gapMark: { reset: '0/0/0', step: '0/0' } },
+        ];
         w.take('mrasrc-stats', 'asrc', stats('bypass', 0), 0);
         expect(w.list()).toEqual(only({}));
         w.take('mrasrc-stats', 'asrc', stats('decode', -40_000), 2000);

@@ -21,6 +21,8 @@ export interface DrainMemberRef {
 export interface DrainGroupView {
     /** The other members' names. */
     with?: string[];
+    /** Their render lateness (ms) in `with`'s order, null where unknown; absent: none known (B-241). */
+    withRenderMs?: Array<number | null>;
     /** Its origins touch two groups: it drains alone (two programmes). */
     neither?: string[];
 }
@@ -98,6 +100,8 @@ export interface DrainMember extends DrainMemberRef {
     name: string;
     /** Its published target (`drain-target-lateness-ns`, ms); absent: it publishes none. */
     publishedMs?: number;
+    /** Its render lateness as its drain last read it (ms). */
+    renderMs?: number;
     apply(targetNs: number, view: DrainGroupView): void;
 }
 
@@ -144,11 +148,14 @@ export class DrainGroupLoop {
             for (const m of live) {
                 grouped.add(m.id);
                 this.alone.delete(m.id);
-                const others = live.filter((o) => o !== m).map((o) => o.name);
+                const others = live.filter((o) => o !== m);
                 const p = published.length
                     ? Math.max(DRAIN_GROUP_ALONE_NS + 1, Math.round(Math.max(...published) * 1e6))
                     : DRAIN_GROUP_ALONE_NS;
-                m.apply(p, { with: others });
+                const view: DrainGroupView = { with: others.map((o) => o.name) };
+                if (others.some((o) => o.renderMs !== undefined))
+                    view.withRenderMs = others.map((o) => o.renderMs ?? null);
+                m.apply(p, view);
             }
         }
         for (const m of members) {

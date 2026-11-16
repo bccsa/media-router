@@ -140,8 +140,12 @@ there is no in-app switch, and the stored values of the removed settings
   and how often the card stopped taking sound.
 - **Lateness trend, on every output that renders:** how fast its lateness
   grows over the last 3 minutes, for example "+12 ms/min — decode or device
-  slower than real time". It reads "measuring" for 3 minutes after a start
-  or a gap. It is a number to read, with no alarm and no setting.
+  slower than real time", or "+40 ms/min — falling behind under load" when
+  the output also ran short under load in that time. It reads "measuring" for
+  3 minutes after a start, a restart, a display or audio device going off, or
+  another source; a short hole in the stream, such as the join of a looped
+  file, no longer starts it again, and the jump at the hole does not count as
+  growth. It is a number to read, with no alarm and no setting.
 - **New warnings, which only warn: nothing is dropped.** "Display not
   presenting (output off?)" while Video Player's display shows nothing (a
   monitor off or unplugged); "Audio device stalled — nothing plays until it
@@ -190,10 +194,13 @@ there is no in-app switch, and the stored values of the removed settings
   2.30 s".
 - **A member of a programme waits for the slowest, at most 1 s:** an output
   of the programme that is ahead of the others plays up to 0.5 % slower until
-  it is level with them, and stays at most 1 s behind its own target for it
-  ("1 s behind its group: held there"). An audio output fed from two
-  programmes' sources keeps its own delay ("in sync with neither (two
-  programmes)"). Outputs on different boxes, and outputs whose path crosses
+  it is level with them, and goes at most 1 s above its own target for it.
+  The Latency target says "in sync with Video Player" only while the two
+  play within 45 ms of each other; otherwise it says how far apart and why,
+  for example "4.50 s ahead of Video Player (held 1 s above its own
+  target)", "rising to Video Player's latency at 0.20 %" or "2.10 s behind
+  Audio Decoder". An audio output fed from two programmes' sources keeps
+  its own delay ("in sync with neither (two programmes)"). Outputs on different boxes, and outputs whose path crosses
   PipeWire, are not matched. (#862)
 - **Lip sync between a Video Player and an audio output fed straight from the
   same input** (no muxer between) is not there at the start: each plays on

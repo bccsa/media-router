@@ -58,6 +58,27 @@ describe('ModuleManager: the A/V groups', () => {
         await manager.destroyAll();
     });
 
+    it("the others' render lateness from their drains goes with the names (B-241)", async () => {
+        const { manager, vp, dec } = rig();
+        const summary = (publishedMs: number, nowMs: number) => () => ({
+            drain: { publishedMs, nowMs },
+        });
+        (vp.plugin as any).getTimingSummary = summary(-520, 4800);
+        (dec.plugin as any).getTimingSummary = summary(-110, 300);
+        await manager.startModule('vp');
+        await manager.startModule('dec');
+        manager.refreshDrainGroups();
+        expect(vp.apply).toHaveBeenLastCalledWith(-110_000_000, {
+            with: ['DEC'],
+            withRenderMs: [300],
+        });
+        expect(dec.apply).toHaveBeenLastCalledWith(-110_000_000, {
+            with: ['VP'],
+            withRenderMs: [4800],
+        });
+        await manager.destroyAll();
+    });
+
     it('a stopped module is left out: the other drains alone', async () => {
         const { manager, vp, dec } = rig();
         await manager.startModule('vp');

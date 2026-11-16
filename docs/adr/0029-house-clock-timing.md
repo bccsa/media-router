@@ -3948,8 +3948,12 @@ Phase 3 ships as v2.0.0.102).
   drops/min"), Late releases and Pace hold; the audio outputs' Device relocks
   and Device stalls beside Phase 3's Device clock (S9); a Lateness trend on
   every output that renders (the slope over 180 s, "measuring" until 3 min
-  ran with no gap), with no alarm and no setting: OQ-34's `capacity` alarm and
-  its setting are not built.
+  ran since a reset), with no alarm and no setting: OQ-34's `capacity` alarm and
+  its setting are not built. A collapsed hole or a gap (on audio a source
+  relock) starts a segment and the slope is one line through the segments,
+  each at its own level; only a new element, a display or device outage or
+  another source empties the window; "— falling behind under load" when an
+  underrun under load was counted in the window (B-241).
 - **Warnings, which only warn**: `queue-full` (two texts by `leaky`, S15),
   `display-not-presenting` ("Display not presenting (output off?)", from the
   pace's `display-presenting`, S31) and `device-stalled` ("Audio device
@@ -4053,13 +4057,18 @@ Phase 3 ships as v2.0.0.102).
   P = the largest goes to every member as `group-target-ns`: a member above
   drains to it, one below plays up to 0.5 % slower to rise to it, clamped
   continuously at 1 s above its own target, so every member ends within 45 ms.
+  The members' render lateness goes with their names, and a member's row says
+  "in sync with" only while it is within 45 ms of each; otherwise how far it
+  plays behind or ahead of the furthest and why (B-241).
   P may be below 0 (outputs fed from a network input with no Ingest Offset
   play early); −1 h, the property's minimum and default, says alone (B-177).
 - **Bounds.** While the box cannot keep up nothing is early, nothing drains
   and lateness grows until the path's non-leaky queues fill; the leaky bus
   ingress then loses at capacity with `queue-full` (the queue table above).
 - **Seen**: Latency target ("95 ms (measured), now 2.41 s · draining at 0.50 %
-  (about 8 min) · in sync with Video Player"), Drained, Buffer underruns
+  (about 8 min) · in sync with Video Player"; apart, "4.50 s ahead of Video
+  Player (held 1 s above its own target)", "rising to Video Player's latency
+  at 0.20 %", B-241), Drained, Buffer underruns
   ("15, 1 raised the target, 12 while catching up, 2 under load", B-240),
   Rate match's drain drops, the trend's "— draining to its target"; INFO lines
   at a drain's start and end.
@@ -4132,6 +4141,10 @@ sections above give the reasons, the register rows the details.
   starvation, not at it (the fill's own fall is in the window by then); the
   video half (a late frame never raises) withheld on part B's finding, B4
   kept for video (B-240).
+- **p4-23** (fix batch FB1): "behind" a member means playing later than it,
+  "ahead of" earlier, and B-179's "1 s behind its group: held there" reads
+  "held 1 s above its own target"; the load label before the drain-cap
+  label; no segment of two readings reads "measuring" (B-241).
 
 ### What this phase supersedes
 

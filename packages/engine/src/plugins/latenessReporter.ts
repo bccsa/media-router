@@ -46,7 +46,7 @@ import {
     VideoPaceWatches,
     type VideoPaceWatch,
 } from './videoPaceWatches.js';
-import { LatenessTrend } from './latenessTrend.js';
+import { LatenessTrend, type GapMark } from './latenessTrend.js';
 import { launchElements } from './launchElements.js';
 import type { DrainGroupView } from './drainGroups.js';
 import { drainSummary } from './drainSummary.js';
@@ -135,15 +135,17 @@ const STREAM_CHANNELS = [DEMUX_EVENT, ASRC_STATS, ASRC_EVENT, VIDEO_PACE_EVENT].
 /** The presentation's own render lateness (the largest of several), and its gap mark. */
 interface RenderReading {
     ms: number;
-    mark: string;
+    mark: GapMark;
 }
 
 function renderReading(paces: VideoPaceWatch[], asrcs: AsrcWatch[]): RenderReading | undefined {
-    const from = (xs: Array<{ ms?: number; mark: string }>, kind: string) => {
-        const known = xs.filter((x): x is { ms: number; mark: string } => x.ms !== undefined);
+    const from = (xs: Array<{ ms?: number; mark: GapMark }>, kind: string) => {
+        const known = xs.filter((x): x is { ms: number; mark: GapMark } => x.ms !== undefined);
         if (!known.length) return undefined;
         const ms = Math.max(...known.map((x) => x.ms));
-        return { ms, mark: `${kind}:${known.map((x) => x.mark).join(',')}` };
+        // Another source (kind or element set) is a reset.
+        const reset = `${kind}:${known.map((x) => x.mark.reset).join(',')}`;
+        return { ms, mark: { reset, step: known.map((x) => x.mark.step).join(',') } };
     };
     return (
         from(
@@ -729,7 +731,8 @@ export class LatenessReporter {
             );
         }
         if (out.renderMs !== undefined) {
-            this.trend.add(now, out.renderMs, reading?.mark ?? 'tap');
+            const load = out.drain?.underrunReasons?.load ?? 0;
+            this.trend.add(now, out.renderMs, reading?.mark ?? { reset: 'tap', step: '' }, load);
             const trend = this.trend.slope();
             if (trend) out.latenessTrend = trend;
         }
