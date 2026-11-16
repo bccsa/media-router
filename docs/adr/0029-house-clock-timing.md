@@ -4109,6 +4109,46 @@ Phase 3 ships as v2.0.0.102).
   group. Neither chains two groups; as built, that player is held to gate A's
   latency. The owner has been asked.
 
+### A whole-programme stall is a delay through a muxer (p4-20, B-243; V-P4-2, Q-A)
+
+DEV-P4cd stopped a muxer's runner for 2 s and the outputs read +1.24 to
++1.66 s, the muxer's pace then holding about +0.9 s for 3 minutes. The rig's
+ledger of the 2 s (B-243) found nothing lost on the bus path at 2 s (the
+producer's edge queue, the muxer's ingress queue and its demux) and three
+faults in `mralignwatch` (B-80, B-82, B-204 left them): (a) its own freeze read
+as the inputs' silence, so an input whose task ran first after the stop went
+absent and its backlog was discarded; (b) the one stretch between the last
+arrival before the stop and the first after it, 2 s long and rising, carried
+the member's 1 s median to about +0.9 s, which B-82 kept for `fall-after`;
+(c) a stop upstream of the muxer made every input absent at W and its backlog
+stale. The owner answered Q-A on 2026-11-15, "carry it", and as built:
+
+- **A freeze is held.** A task whose wake is overdue by more than
+  `FREEZE_NS` (250 ms) adds the overdue time to the input's held time; each
+  member's task publishes its wake time lock-free to its pace group, so an
+  arrival of any member that finds a task overdue, or a thaw since its last
+  arrival, knows the process stood still.
+- **A common stall is a hold.** An input silent past W is absent only if
+  another member that counts (present, not sparse) arrived more than W/2
+  after its last arrival and has flowed for a whole W since its run began
+  (`PaceGroup::quiet`); with every member quiet it is held, no absence and no
+  gap, up to `PACE_CEILING_NS` (4 s), then absent and gapped as before. An
+  input that has not arrived since it joined or since it was absent stalled
+  nothing and is absent at W as before.
+- **The burst moves no pace.** After a freeze or a common stall (every
+  member that counts silent past its own W until an arrival), arrivals are
+  observed `held` (B-204) until one is due within twice the pace, or one is
+  later than the silence explains (its own lateness, for B-205), or 4 s have
+  passed; the first is no gap of the rhythm.
+
+So a stall of every input together, up to 4 s, reaches the outputs as delay
+with nothing lost and the pace unchanged, and the outputs drain it (B-179;
+a stop of the common source reads 2 s less what the running muxer still held,
+its interleave wait, 60 to 80 ms in the rig);
+one input silent while the others flow is absent at W and gapped (B-80); a
+single-input muxer, or a mixer whose inputs all stop, waits up to 4 s before
+its gaps (for the owner's veto: a dead source now costs 4 s, not W, there).
+
 ### The gap rule (OQ-32)
 
 At a content gap each output lets its lateness fall by up to the gap's
@@ -4168,6 +4208,10 @@ sections above give the reasons, the register rows the details.
   `get_property` (no new element field), only where the plan names
   waylandsink, only beside the pace's Rate match row, per minute and in
   all, dropped after three missed reads (B-242).
+- **p4-20** (V-P4-2, Q-A): the freeze told through the pace group as well
+  as by the input's own task; the burst ended at twice the pace or past its
+  silence; a never-heard input absent at W; the boxes' shortfall at the
+  outputs beyond the rig's test sinks left to DEV-P4fx (B-243).
 - **p4-24** (fix batch FB3): the second ask goes at once after a miss, so
   the warning comes 6–11 s after a freeze, not within 10 s in every phase;
   it stands over the module's own transient warnings and gives them back;

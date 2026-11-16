@@ -17,6 +17,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -835,6 +836,197 @@ def stream_classes(buffers):
     return out
 
 
+# --------------------------------------------------------------------------- whole-programme stalls (p4-20)
+def with_fall_after(entry, ns):
+    """`entry` (deep) with every mralignwatch's fall-after at `ns`: the rig's short B-82 window."""
+    if isinstance(entry, str):
+        return entry.replace("mralignwatch name=", f"mralignwatch fall-after={ns} name=")
+    if isinstance(entry, list):
+        return [with_fall_after(v, ns) for v in entry]
+    if isinstance(entry, dict):
+        return {k: with_fall_after(v, ns) for k, v in entry.items()}
+    return entry
+
+
+def media_of(sid):
+    return "video" if 0xE0 <= sid <= 0xEF else "audio" if 0xC0 <= sid <= 0xDF or sid == 0xBD else None
+
+
+def pes_by_media(records):
+    """{'video' | 'audio': [PES]} of a stream's records, by PES stream id (the muxer renumbers PIDs)."""
+    out = {}
+    for lst in rig.pes_of(records).values():
+        for p in lst:
+            m = media_of(p["sid"])
+            if m and p["pts"] is not None:
+                out.setdefault(m, []).append(p)
+    return out
+
+
+def cc_breaks(records):
+    """Continuity-counter breaks on every PID with payload in a consumer's records."""
+    last, bad = {}, 0
+    for _a, _s, _f, data in records:
+        for pkt in rig.ts_psi.iter_packets(data):
+            pid_ = rig.ts_psi.ts_pid(pkt)
+            if pid_ == 0x1FFF or not (pkt[3] & 0x10):
+                continue
+            cc = pkt[3] & 0x0F
+            if pid_ in last and cc != (last[pid_] + 1) % 16:
+                bad += 1
+            last[pid_] = cc
+    return bad
+
+
+def stall_ledger(label, tag, s, t0, at_s, length_s, cons, reps, prods):
+    """What the 2 s did, in the notes' ledger terms: the producers' edge (what the engine's 5 s / 4 MB
+    edge queue would hold), the muxer's ingress queue and demux, each aligner, the muxer's output."""
+    lo, hi = t0 + int(at_s * S), t0 + int((at_s + length_s) * S)
+    lines = []
+    for p in prods:
+        held = sum(len(d) for a, _st, d in p.delivered if lo <= a < hi + 200 * MS)
+        lines.append(f"producer {p.name}: {sum(1 for a, _st, _d in p.delivered if lo <= a < hi + 200 * MS)} "
+                     f"bufs/{held} B delivered over the stall (+200 ms); the engine's edge queue holds 4000000 B")
+    ov = [(round(sec(t, t0), 2), p.get("element"), p.get("overruns")) for t, p in s.runner.plugin("queue_overrun")]
+    lines.append(f"muxer queue overruns {ov[:4]}")
+    dm = [p for _t, p in s.runner.plugin("mrtsdemux:") if p.get("reason") == "interval"]
+    if dm:
+        d = dm[-1]
+        lines.append("muxer demux " + ", ".join(f"{k} {d.get(k)}" for k in ("gaps", "cc-lost", "pes-dropped-cc",
+                                                                             "discont") if k in d))
+    for name, r in reps.items():
+        rows = [(t, p) for t, p in r if lo - 2 * S <= t <= hi + 30 * S]
+        pre = [p.get("pace") for t, p in r if lo - 3 * S <= t < lo and isinstance(p.get("pace"), int)]
+        post = [p.get("pace") for t, p in rows if t >= lo and isinstance(p.get("pace"), int)]
+        lvl = max((p.get("level-time") or 0 for t, p in rows), default=0)
+        last_ = last_report(r)
+        fells = [(round(sec(t, t0), 1), (p.get("fell") or 0) // MS) for t, p in r if p.get("reason") == "pace-fell"]
+        lines.append(f"{name}: states {[(round(sec(t, t0), 2), st) for t, st in states(r) if t >= lo - S][:6]}, "
+                     f"pace {pre and max(pre) // MS} -> max {post and max(post) // MS} ms, fell {fells[:4]}, "
+                     f"FIFO max {lvl // MS} ms, stale {last_.get('stale-buffers')}/{(last_.get('stale-time') or 0) // MS} ms, "
+                     f"gaps {last_.get('gaps')}, absences {last_.get('absences')}")
+    late = [(round(sec(a, t0), 2), round((a - st) / 1e6)) for a, st, _f, _d in cons.records
+            if st is not None and lo <= a <= hi + 3 * S]
+    top = max(late, key=lambda v: v[1]) if late else None
+    lines.append(f"muxer output: lateness before {rig.median(rig.lateness_ms(cons.records, lo - 3 * S, lo))} ms, "
+                 f"max {top} after the resume, after +5 s {rig.median(rig.lateness_ms(cons.records, hi + 5 * S, hi + 8 * S))} ms")
+    for ln in lines:
+        print(f"    ledger {label} {tag}: {ln}", flush=True)
+
+
+def stall_run(tag, argv, exp, arm):
+    """One arm of a whole-programme stall: `arm` names the pipelines, the producers (generator, held or
+    not) and the stall, by a 2 s SIGSTOP of the muxer's runner (`freeze`) or a producer hold."""
+    label = f"{exp['scenario']} {arm['name']}"
+    x = exp["expect"]
+    if not os.path.exists(_HOOK_SO):
+        print(f"SKIP {label} {tag} — {_HOOK_SO} not built")
+        return
+    seconds, (at_s, length_s) = exp["seconds"], exp["stall"]
+    s = Session(argv, arm["pipelines"])
+    s.entry = with_fall_after(s.entry, int(x["fall_after_s"] * S))
+    for name, v in arm["inputs"].items():
+        rel = rig.generated(v["generator"], seconds + 2)
+        p0 = next((rig.ts_psi.read_pcr(pkt) // 300 for d in rel for pkt in rig.ts_psi.iter_packets(d)
+                   if rig.ts_psi.read_pcr(pkt) is not None), 0)
+
+        def build(t0, rel=rel, p0=p0):
+            shift = (t0 * 9 // 100000 + rig.MUX_BASE - p0) % rig.WRAP
+            return rig.ready_by_pcr([rig.rebase_ts(d, shift) for d in rel], t0)
+        hold = [(at_s, length_s, "hold")] if v.get("held") else None
+        s.producer(name, ts=build, stop_s=seconds, knobs=rig.Knobs(silence=hold))
+    actions = []
+    if arm.get("freeze"):
+        actions = [(at_s, lambda: os.kill(s.runner.proc.pid, signal.SIGSTOP)),
+                   (at_s + length_s, lambda: os.kill(s.runner.proc.pid, signal.SIGCONT))]
+    try:
+        check(f"{label} {tag}: PLAYING", s.start(lead_ms=6000))
+        cons = s.consume()
+        t0 = s.begin()
+        s.run(seconds + 1.0, actions)
+    finally:
+        rc = s.close()
+    on_time(label, tag, s)
+    lo, hi = t0 + int(at_s * S), t0 + int((at_s + length_s) * S)
+    end_ns = t0 + int((seconds - 0.5) * S)
+    reps = {r: rig.aligner_reports(s.runner, f"aw_{r}") for r in arm["routes"]}
+    stall_ledger(label, tag, s, t0, at_s, length_s, cons, reps, list(s.producers.values()))
+    return s, cons, reps, t0, lo, hi, end_ns, rc, label
+
+
+def scn_align_whole_stall(tag, argv, exp):
+    """scn-align-runner-freeze and scn-align-common-stall (p4-20): every input of a muxer stalled 2 s
+    together, by a SIGSTOP of its runner or of their producer: carried as delay, nothing lost (Q-A)."""
+    x = exp["expect"]
+    for arm in exp["arms"]:
+        got = stall_run(tag, argv, exp, arm)
+        if not got:
+            continue
+        s, cons, reps, t0, lo, hi, end_ns, rc, label = got
+        ins = pes_by_media([(a, st, 0, d) for p in s.producers.values() for a, st, d in p.delivered])
+        outs = pes_by_media(cons.records)
+        from_ns = t0 + 2 * S
+
+        def key(p):
+            return p["dts"] if p["dts"] is not None else p["pts"]
+        for media, lst in sorted(ins.items()):
+            want = sorted(p["pts"] for p in lst if from_ns <= rig.unwrap(key(p), t0) < end_ns)
+            got_pts = sorted(p["pts"] for p in outs.get(media, []))
+            have = set(got_pts)
+            missing = [round(sec(rig.unwrap(v, t0), t0), 2) for v in want if v not in have]
+            ds = sorted(key(p) for p in outs.get(media, []) if from_ns <= rig.unwrap(key(p), t0) < end_ns)
+            steps = sorted({(b - a) % rig.WRAP for a, b in zip(ds, ds[1:])})
+            check(f"{label} {tag}: every {media} PES from 2 s on out at its PTS ({len(want) - len(missing)} of "
+                  f"{len(want)}, missing {missing[:4]}), its decode times continuous (steps {steps[:4]})",
+                  want and not missing and len(steps) <= x["dts_steps_max"])
+        bad = cc_breaks(cons.records)
+        check(f"{label} {tag}: the muxer output's continuity counters unbroken ({bad} breaks)", bad == 0)
+        for r, rows in reps.items():
+            ab = [t for t, st in states(rows) if st == "absent" and t0 < t < end_ns]
+            last_ = last_report(rows, before=end_ns)
+            pre = [p.get("pace") for t, p in rows if lo - 3 * S <= t < lo and isinstance(p.get("pace"), int)]
+            post = [p.get("pace") for t, p in rows if lo <= t < end_ns and isinstance(p.get("pace"), int)]
+            rise = (max(post) - max(pre)) / 1e6 if pre and post else None
+            fells = [round((p.get("fell") or 0) / 1e6) for t, p in rows
+                     if p.get("reason") == "pace-fell" and lo <= t < end_ns]
+            big = [f for f in fells if f > x["fell_ms_max"]]
+            check(f"{label} {tag}: {r} never absent ({len(ab)}), nothing stale ({last_.get('stale-buffers')}), "
+                  f"no gap ({last_.get('gaps')}); its pace never rises ({rise} ms, within {x['pace_rise_ms']}) "
+                  f"and no pace fell after the resume over {x['fell_ms_max']} ms in {exp['seconds'] - exp['stall'][0]:.0f} s "
+                  f"(falls {fells[:4]}; fall-after {x['fall_after_s']} s)",
+                  rows and not ab and not last_.get("stale-buffers") and not last_.get("gaps")
+                  and rise is not None and rise <= x["pace_rise_ms"] and not big)
+        no_restart(tag, label, s.runner, rc)
+
+
+def scn_align_one_input_stall(tag, argv, exp):
+    """One input's producer stopped 2 s while the other flows: its routes absent at W and gapped, its
+    backlog stale; the other never absent (Phase 2's rule, B-80)."""
+    x = exp["expect"]
+    for arm in exp["arms"]:
+        got = stall_run(tag, argv, exp, arm)
+        if not got:
+            continue
+        s, cons, reps, t0, lo, hi, end_ns, rc, label = got
+        for r, rows in reps.items():
+            ab = rig.first_state(rows, "absent", after=lo)
+            last_ = last_report(rows, before=end_ns)
+            pre = last_report(rows, before=lo)
+            w = (pre.get("silence-limit") or 0) / 1e6
+            if r in arm["stalled"]:
+                # As today: silent from its last PES out (a demux holds an AAC PES to the next start).
+                after = (ab[0] - lo) / 1e6 if ab else None
+                check(f"{label} {tag}: {r} absent {after and round(after)} ms into the stall (W {round(w)} ms, at "
+                      f"least W less {x['absent_slack_ms']} and before the resume), gapped ({last_.get('gaps')}), "
+                      f"its backlog stale ({last_.get('stale-buffers')} buffers)",
+                      ab is not None and w - x["absent_slack_ms"] <= after < (hi - lo) / 1e6
+                      and (last_.get("gaps") or 0) > 0 and (last_.get("stale-buffers") or 0) > 0)
+            else:
+                n = [t for t, st in states(rows) if st == "absent" and t0 < t < end_ns]
+                check(f"{label} {tag}: {r} never absent ({len(n)})", rows and not n)
+        no_restart(tag, label, s.runner, rc)
+
+
 # --------------------------------------------------------------------------- scn-split-passthrough
 def scn_split_passthrough(tag, _argv, exp):
     """mr-tssplit is a sidecar, not a runner pipeline: one run, the builder's argv."""
@@ -957,11 +1149,16 @@ def identity_check(records, t_lo):
     return n, bad
 
 
+_GEN = ("x264enc", "avenc_aac", "opusenc", "h264parse", "aacparse", "opusparse", "videotestsrc", "mpegtsmux",
+        "unixfdsrc", "unixfdsink")
 _302M = ("avenc_s302m", "avdec_s302m", "mpegtsmux", "audiomixer", "unixfdsrc", "unixfdsink")
 NEEDS = {
     "scn-align-bursty": ("x264enc", "avenc_aac", "opusenc", "h264parse", "aacparse", "opusparse",
                          "videotestsrc", "mpegtsmux", "unixfdsrc", "unixfdsink"),
     "scn-mux-klv": ("mpegtsmux", "unixfdsrc", "unixfdsink"),
+    "scn-align-runner-freeze": _GEN,
+    "scn-align-common-stall": _GEN,
+    "scn-align-one-input-stall": _GEN,
     "scn-split-passthrough": ("unixfdsrc", "unixfdsink"),
     "scn-837-ducker-mixer": _302M + ("audiointerleave", "deinterleave"),
 }
@@ -980,6 +1177,9 @@ SCENARIOS = {
     "scn-mux-klv": scn_mux_klv,
     "scn-837-ducker-mixer": scn_837_ducker_mixer,
     "scn-split-passthrough": scn_split_passthrough,
+    "scn-align-runner-freeze": scn_align_whole_stall,
+    "scn-align-common-stall": scn_align_whole_stall,
+    "scn-align-one-input-stall": scn_align_one_input_stall,
 }
 
 

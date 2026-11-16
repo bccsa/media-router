@@ -1,0 +1,15 @@
+{
+  "scenario": "scn-align-one-input-stall",
+  "graph": "H.264 + AAC on one input held 2 s at 12 s while Opus on the other flows -> mpegts-muxer: the held input's routes absent at W and gapped, its backlog stale; the other never absent (Phase 2's rule, B-80; p4-20)",
+  "seconds": 24,
+  "stall": [12, 2],
+  "arms": [
+    {"name": "one", "pipelines": "muxBursty", "stalled": ["demux_0_video", "demux_0_audio"],
+     "inputs": {"burst0": {"generator": "h264-aac", "held": true}, "burst1": {"generator": "opus-32k"}},
+     "routes": ["demux_0_video", "demux_0_audio", "demux_1_audio"]}
+  ],
+  "expect": {
+    "fall_after_s": 10,
+    "absent_slack_ms": 80
+  }
+}

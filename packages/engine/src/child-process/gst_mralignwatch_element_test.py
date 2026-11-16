@@ -31,8 +31,10 @@ whatever the tick, an input held behind the pace too, and (16) an absent input's
 mixer's block at least (B-79); (17) the pace falls by itself once every input is steady under it
 for fall-after, in one skip, content continuous (B-82), (17b) into mpegtsmux; (18) a fall wakes
 an input held behind the pace at its next arrival, not at its old release (the armed check reads
-the pace as of the arrival). And the PCM edges toward audiomixer (B-83), to the sample: (F1) an
-absence fades out, (F2) a rejoin fades in from the horizon, (F3) a forwarded GAP's two edges,
+the pace as of the arrival); (19) its own process frozen 2 s (a test clock jumped), the chain or
+the task first after it: no absence, nothing stale, the pace unchanged; 800 ms under a long W; a
+300 ms stop a freeze, 200 ms not (B-243). And the PCM edges toward audiomixer (B-83), to the
+sample: (F1) an absence fades out, (F2) a rejoin fades in from the horizon, (F3) a forwarded GAP's two edges,
 (F4) a joiner's entry, (F5) the fade before a forwarded EOS, (F7) a hole in the data, (F8) the
 formats and channel counts, (F9) a fade-in over short buffers, (F10) a tail under 1 ms, (F11) no
 fade after a discard with sound before; (F6) nothing fades toward mpegtsmux.
@@ -2664,6 +2666,118 @@ check(f"sparse 20 s behind: every cue written, those before the move at their ow
       own == list(range(0, 10 * len(own), 10)) and len(own) + len(moved) == 40
       and r.pes_ok(0, range(400)) and eos and not r.errors)
 r.stop()
+
+
+# (19) Our own process standing still (p4-20). The least invasive freeze in one process: the
+# pipeline on a GstTestClock, its time jumped while nothing pushes and no clock wait is released,
+# so neither the src task nor the chain runs over the jump; then one or the other runs first.
+def _freeze(jump_ms, first, floor_ms=100, late_ms=30, before_s=3, after_s=3):
+    """One input 30 ms late every 10 ms into mpegtsmux; the clock jumped `jump_ms` at `before_s`
+    with the backlog pushed `first` ("chain") or after the task's release ("task"). -> props."""
+    clock = GstCheck.TestClock.new_with_start_time(0)
+    pipe = Gst.parse_launch(f"mralignwatch name=aw aligner=frz input=in0 silence-floor={floor_ms * MS} "
+                            "! mpegtsmux latency=0 ! fakesink sync=false async=false")
+    pipe.use_clock(clock)
+    pipe.set_start_time(NONE)
+    pipe.set_base_time(0)
+    aw = pipe.get_by_name("aw")
+    src = Gst.Pad.new("src", Gst.PadDirection.SRC)
+    src.set_active(True)
+    src.link(aw.get_static_pad("sink"))
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_state(5 * S)
+    src.push_event(Gst.Event.new_stream_start("frz"))
+    src.push_event(Gst.Event.new_caps(Gst.Caps.from_string(CAPS["mpegtsmux"])))
+    seg = Gst.Segment()
+    seg.init(Gst.Format.TIME)
+    src.push_event(Gst.Event.new_segment(seg))
+    paces, k = [], 0
+
+    def release(now):
+        # Every wait due by `now`, each after the task re-armed (it always sleeps on the clock).
+        while True:
+            give_up = time.monotonic() + 2
+            while clock.peek_id_count() < 1:   # (the wait call's id list does not cross to Python)
+                if time.monotonic() > give_up:
+                    return
+                time.sleep(0.0002)
+            t = clock.get_next_entry_time()
+            if t == NONE or t > now:
+                return
+            clock.crank()   # the clock is past it already: only releases the wait
+
+    def push_due(now):
+        nonlocal k
+        while 200 * MS + k * 10 * MS + late_ms * MS <= now:
+            b = Gst.Buffer.new_wrapped(payload(0, k))
+            b.pts = b.dts = 200 * MS + k * 10 * MS
+            b.duration = 10 * MS
+            src.push(b)
+            k += 1
+
+    def run(from_ns, to_ns):
+        for now in range(from_ns, to_ns, 10 * MS):
+            clock.set_time(now)
+            push_due(now)
+            release(now)
+            paces.append((now, aw.get_property("pace")))
+    try:
+        run(10 * MS, before_s * S)
+        freeze = before_s * S + jump_ms * MS
+        clock.set_time(freeze)
+        if first == "chain":
+            push_due(freeze)
+            release(freeze)
+        else:
+            release(freeze)
+            push_due(freeze)
+        run(freeze + 10 * MS, freeze + after_s * S)
+        pre = [p for t, p in paces if before_s * S - S <= t < before_s * S]
+        post = [p for t, p in paces if t >= freeze]
+        return {"absences": aw.get_property("absences"), "stale": aw.get_property("stale-buffers"),
+                "gaps": aw.get_property("gaps"), "pre": max(pre), "post": max(post), "pushed": k}
+    finally:
+        src.set_active(False)
+        pipe.set_state(Gst.State.NULL)
+
+
+try:
+    gi.require_version("GstCheck", "1.0")
+    from gi.repository import GstCheck  # noqa: E402
+except (ImportError, ValueError):
+    GstCheck = None
+if GstCheck is None:
+    print("SKIP freeze — GstCheck (the test clock) unavailable")
+else:
+    for first in ("chain", "task"):
+        f = _freeze(2000, first)
+        check(f"freeze 2 s, the {first} first after it: no absence ({f['absences']}), 0 stale ({f['stale']}), "
+              f"no gap ({f['gaps']}), the pace unchanged ({in_ms(f['pre'])} -> {in_ms(f['post'])} ms)",
+              f["absences"] == 0 and f["stale"] == 0 and f["gaps"] == 0 and f["post"] <= f["pre"] + 2 * MS)
+    # Under W (1.5 s) a common silence holds nothing by itself: only the overdue task tells.
+    short = _freeze(800, "chain", floor_ms=1500)
+    check(f"freeze 800 ms under a W of 1.5 s: no absence ({short['absences']}), the pace unchanged "
+          f"({in_ms(short['pre'])} -> {in_ms(short['post'])} ms)",
+          short["absences"] == 0 and short["post"] <= short["pre"] + 2 * MS)
+    # The 250 ms boundary: the element's own word for it (the task's wake against its deadline).
+    woke = []
+
+    def _on_log(_cat, _level, _file, _fn, _line, _obj, msg, *_a):
+        if "held as delay" in msg.get():
+            woke.append(msg.get())
+    Gst.debug_remove_log_function(Gst.debug_log_default)   # this case's lines only to _on_log
+    Gst.debug_set_threshold_for_name("mrtshouse", Gst.DebugLevel.INFO)
+    Gst.debug_add_log_function(_on_log, None)
+    seen = {}
+    for jump in (300, 200):
+        woke.clear()
+        _freeze(jump, "task", floor_ms=1500, after_s=1)
+        seen[jump] = list(woke)
+    Gst.debug_remove_log_function(_on_log)
+    Gst.debug_set_threshold_for_name("mrtshouse", Gst.DebugLevel.NONE)
+    Gst.debug_add_log_function(Gst.debug_log_default, None)
+    check(f"freeze boundary: a 300 ms stop is a freeze ({seen[300][:1]}), a 200 ms one is not ({seen[200][:1]})",
+          len(seen[300]) == 1 and not seen[200])
 
 print()
 if _failures:

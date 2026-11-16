@@ -150,6 +150,8 @@ describe('the conformance runner commands', () => {
         // real H.264 + AAC beside Opus.
         const muxKlv = muxer('klv', 41030, { inputs: [{}, {}], videoParserBypass: true }, 2);
         const muxBursty = muxer('burst', 41031, { inputs: [{}, {}] }, 2);
+        // mpegts-muxer, one input (a runner freeze and a common stall, p4-20).
+        const muxOne = muxer('one', 41032, { inputs: [{}] }, 1);
 
         // ts-splitter on the OCC capture: video (the PCR PID), one AAC PID, teletext.
         const splitter = buildSpawnArgs({
@@ -169,6 +171,7 @@ describe('the conformance runner commands', () => {
             mixer837,
             muxKlv,
             muxBursty,
+            muxOne,
             splitter: { argv: splitter },
         };
         await expect(`${JSON.stringify(out, null, 2)}\n`).toMatchFileSnapshot(FIXTURE);

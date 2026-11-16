@@ -187,6 +187,12 @@ there is no in-app switch, and the stored values of the removed settings
   source, 10 to 11 s elsewhere); past that the input queue loses content and
   the queue-full warning says so. Once the box keeps up, the delay comes back
   down: 1 s of it in about 4 minutes, 2 s in about 7.
+- **When everything feeding a muxer is held up for a moment** (up to 4 s: a
+  busy box, a stalled source), the muxer passes what was held up late instead
+  of skipping it, and does not hold its outputs back for minutes after: the
+  outputs play about 2 s late after a 2 s stall, then catch up as above. One
+  input that stops while the others carry on is still skipped, so it never
+  stops the programme; everything stopped for longer than 4 s is skipped too.
 - **It probes for the smallest delay that plays clean.** An audio dropout of
   up to a quarter of a second on a steady stream raises that output's margin,
   10 s after it; the margin comes back down over about 2 hours, so a source

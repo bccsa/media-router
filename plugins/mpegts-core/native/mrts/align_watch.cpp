@@ -189,6 +189,7 @@ void PaceGroup::join(Member m, int64_t seed_ns, int64_t now_ns) {
     rotate();
     State& s = members_[m];
     s = State();
+    s.asleep = std::make_shared<std::atomic<int64_t>>(NONE);
     if (seed_ns >= 0) enter(s, seed_ns);
     // A fall a rotation made due waits for the members' next tick: the joiner reports none.
     settle(t, cur, was, nullptr, false);
@@ -411,6 +412,62 @@ int64_t PaceGroup::anchor(Member m) const {
     return it != members_.end() ? it->second.anchor : 0;
 }
 
+bool PaceGroup::hear(Member m, int64_t now_ns, int64_t limit_ns) {
+    auto it = members_.find(m);
+    if (it == members_.end()) return false;
+    // A task overdue, or every member that counts silent past its W until now: the process, or
+    // what feeds the whole group, stood still (a common stall) and this arrival ends it.
+    bool any = false, common = true;
+    for (const auto& kv : members_) {
+        const State& o = kv.second;
+        const int64_t a = o.asleep ? o.asleep->load(std::memory_order_acquire) : NONE;
+        if (a != NONE && now_ns - a > FREEZE_NS) thaw(now_ns);
+        if (o.heard == NONE) continue;
+        any = true;
+        if (now_ns - o.heard < o.limit) common = false;
+    }
+    if (any && common) thaw(now_ns);
+    State& s = it->second;
+    const bool froze = s.heard != NONE && froze_to_ != NONE && froze_to_ > s.heard;
+    // A first arrival (or one after a mute) flows since before anyone's silence: no grace.
+    if (s.heard == NONE) s.flow_from = NONE;
+    else if (now_ns - s.heard > s.limit / 2) s.flow_from = now_ns;
+    s.heard = now_ns;
+    s.limit = limit_ns;
+    return froze;
+}
+
+void PaceGroup::thaw(int64_t now_ns) { froze_to_ = std::max(froze_to_, now_ns); }
+
+std::shared_ptr<std::atomic<int64_t>> PaceGroup::sleeper(Member m) const {
+    auto it = members_.find(m);
+    return it != members_.end() ? it->second.asleep : nullptr;
+}
+
+void PaceGroup::mute(Member m) {
+    auto it = members_.find(m);
+    if (it != members_.end()) it->second.heard = it->second.flow_from = NONE;
+}
+
+// Another member flowed while this one was silent: heard well after its last arrival (half its W:
+// in a common stall they stop together), and for a whole W since its run began, so a group's
+// resume gives the slower member its W (p4-20).
+PaceGroup::Quiet PaceGroup::quiet(Member m, int64_t last_ns, int64_t limit_ns,
+                                  int64_t now_ns) const {
+    const int64_t silent = now_ns - last_ns;
+    if (silent < limit_ns) return Quiet::no;
+    if (silent >= PACE_CEILING_NS) return Quiet::absent;
+    // One that never came in, or not since it was absent, stalled nothing: absent at W as before.
+    auto me = members_.find(m);
+    if (me == members_.end() || me->second.heard == NONE) return Quiet::absent;
+    for (const auto& [o, s] : members_) {
+        if (o == m || s.heard == NONE) continue;
+        if (s.heard > last_ns + limit_ns / 2 && now_ns >= std::max(s.flow_from, last_ns) + limit_ns)
+            return Quiet::absent;
+    }
+    return Quiet::held;
+}
+
 // --- PaceRegistry ------------------------------------------------------------------------
 
 PaceRegistry& PaceRegistry::global() {
@@ -430,6 +487,7 @@ PaceRegistry::Membership PaceRegistry::join(const std::string& key, int64_t seed
     m.late = g.started();
     m.group = &g;
     g.join(m.member, seed_ns, now_ns);
+    m.asleep = g.sleeper(m.member);
     return m;
 }
 
@@ -442,6 +500,7 @@ void PaceRegistry::leave(Membership* m, int64_t now_ns) {
     }
     m->member = 0;
     m->group = nullptr;
+    m->asleep.reset();
 }
 
 void PaceRegistry::observe(const Membership& m, int64_t now_ns, int64_t lateness_ns, bool fresh,
@@ -455,6 +514,28 @@ void PaceRegistry::raise(const Membership& m, int64_t pace_ns, int64_t now_ns,
                          PaceGroup::Event* ev) {
     std::lock_guard<std::mutex> lk(mu_);
     if (m.member && m.group) m.group->raise(m.member, pace_ns, now_ns, ev);
+}
+
+bool PaceRegistry::hear(const Membership& m, int64_t now_ns, int64_t limit_ns) {
+    std::lock_guard<std::mutex> lk(mu_);
+    return m.member && m.group && m.group->hear(m.member, now_ns, limit_ns);
+}
+
+void PaceRegistry::thaw(const Membership& m, int64_t now_ns) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (m.member && m.group) m.group->thaw(now_ns);
+}
+
+void PaceRegistry::mute(const Membership& m) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (m.member && m.group) m.group->mute(m.member);
+}
+
+PaceGroup::Quiet PaceRegistry::quiet(const Membership& m, int64_t last_ns, int64_t limit_ns,
+                                     int64_t now_ns) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (m.member && m.group) return m.group->quiet(m.member, last_ns, limit_ns, now_ns);
+    return now_ns - last_ns < limit_ns ? PaceGroup::Quiet::no : PaceGroup::Quiet::absent;
 }
 
 void PaceRegistry::tick(const Membership& m, int64_t now_ns, PaceGroup::Event* ev) {

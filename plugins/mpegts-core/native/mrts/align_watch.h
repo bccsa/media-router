@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -100,6 +101,9 @@ class PaceGroup {
     static constexpr int64_t FALL_MIN_NS = 10000000;
     static constexpr int64_t FALL_MAX_NS = 1000000000;
     static constexpr int64_t FALL_SPACING_NS = 2000000000;
+    // A member's task waking this late is our own process standing still (a stop, a starved box):
+    // what then comes in is a burst, no lateness of the inputs' (p4-20).
+    static constexpr int64_t FREEZE_NS = 250000000;
 
     explicit PaceGroup(int64_t fall_after_ns = FALL_AFTER_NS);
     PaceGroup(const PaceGroup&) = delete;
@@ -144,6 +148,24 @@ class PaceGroup {
     int64_t anchor(Member m) const;
     size_t size() const { return members_.size(); }
 
+    // A silent member's state (p4-20): `held`, every other member quiet with it, a common stall up
+    // to the ceiling; `absent`, another flowed for W while it was silent, or past the ceiling.
+    enum class Quiet { no, held, absent };
+    // An arrival of a member that counts toward a common stall (present, not sparse), its W as last
+    // taken: a silence of over half of it before this arrival starts a new run. True: the process
+    // or the group's feed stood still since its last arrival (a task overdue past FREEZE_NS, every
+    // member silent past its W until now, or a thaw since): its arrivals are a burst.
+    bool hear(Member m, int64_t now_ns, int64_t limit_ns);
+    // A member's task woke overdue past FREEZE_NS at `now_ns`.
+    void thaw(int64_t now_ns);
+    // Where the member's task publishes the time it sleeps to, NONE awake: lock-free (p4-20).
+    std::shared_ptr<std::atomic<int64_t>> sleeper(Member m) const;
+    // The member no longer counts (absent, ended) until it is heard again.
+    void mute(Member m);
+    // The member silent since `last_ns` against its W `limit_ns`; one not heard since it joined or
+    // was muted is absent at W.
+    Quiet quiet(Member m, int64_t last_ns, int64_t limit_ns, int64_t now_ns) const;
+
     static constexpr int64_t NONE = INT64_MIN;
 
   private:
@@ -174,6 +196,9 @@ class PaceGroup {
         int64_t need = 0;    // the last level that counted
         int64_t peaks[BUCKETS] = {NONE, NONE, NONE};   // the window's, oldest first
         int64_t anchor = 0;
+        // Its arrivals for a common stall (p4-20): the last, its run's first and its W; NONE muted.
+        int64_t heard = NONE, flow_from = NONE, limit = 0;
+        std::shared_ptr<std::atomic<int64_t>> asleep;   // its task's wake time, NONE awake
     };
     static bool falling(const State& s, int64_t now_ns);
     static int64_t recent(const State& s, int64_t now_ns);
@@ -206,6 +231,7 @@ class PaceGroup {
     int64_t clock_ = 0, next_rotation_ = 0;
     int64_t next_skip_ = NONE;
     bool quiet_ = false;   // the fall under way is for a member that left: its skips report nothing
+    int64_t froze_to_ = NONE;   // when the process was last seen to have stood still (p4-20)
     // The snapshot: odd `seq_` while it is written.
     std::atomic<uint32_t> seq_{0};
     std::atomic<int64_t> pub_target_{0}, pub_base_{0}, pub_base_at_{0}, pub_next_at_{0};
@@ -222,6 +248,8 @@ class PaceRegistry {
         bool late = false;              // joined a running group: gapped while it catches up
         // The member's group while joined: only its last member's leave erases it.
         PaceGroup* group = nullptr;
+        // Its task's sleep, published lock-free (PaceGroup::sleeper); null when not joined.
+        std::shared_ptr<std::atomic<int64_t>> asleep;
         // The group's pace at `now_ns`, lock-free; 0 when not joined.
         int64_t pace_ns(int64_t now_ns) const;
         PaceGroup::Snapshot snapshot() const;
@@ -247,6 +275,12 @@ class PaceRegistry {
     void raise(const Membership& m, int64_t pace_ns, int64_t now_ns = -1,
                PaceGroup::Event* ev = nullptr);
     void tick(const Membership& m, int64_t now_ns, PaceGroup::Event* ev = nullptr);
+    // PaceGroup's hear, thaw, mute and quiet; a member not joined is absent at W.
+    bool hear(const Membership& m, int64_t now_ns, int64_t limit_ns);
+    void thaw(const Membership& m, int64_t now_ns);
+    void mute(const Membership& m);
+    PaceGroup::Quiet quiet(const Membership& m, int64_t last_ns, int64_t limit_ns,
+                           int64_t now_ns) const;
     // The member pushed something timed: whoever joins its group from now on is `late`.
     void start(const Membership& m);
     // The pace at `now_ns` (< 0: at the group's clock), the target and this member's lateness.
