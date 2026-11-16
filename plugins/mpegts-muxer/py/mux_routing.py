@@ -40,6 +40,13 @@ What one input does at pad-added time:
     `no-more-pads`, so there the pads take PIDs in PMT order. Once a class
     has a PID in this run it keeps it. `prog-map` gets an entry for every
     extra PID before the pad is requested;
+  * a NEW PROGRAM's pad of a routed class (another generation in the pad
+    name: a codec change, A/V to video only and back) takes the route over:
+    the old branch is stopped and removed and its request pad released (the
+    old program's last items in it are dropped), then the new pad links to the
+    same request pad. An old program's EOS is held back from the mux (a mux
+    whose pads all end stops for good): a class the new program lacks keeps
+    its route, silent, absent and gapped, until it comes back (B-245);
   * everything else — a class without a route, a second pad of a routed
     class, an ignored PID — is sunk into a `fakesink` so the demuxer keeps
     flowing: it combines its pads' flow returns (mrtsdemux as tsdemux), a TS
@@ -157,6 +164,18 @@ def pid_from_pad_name(pad_name):
         return None
     try:
         return int(pad_name.rsplit("_", 1)[-1], 16)
+    except ValueError:
+        return None
+
+
+def generation_from_pad_name(pad_name):
+    """The generation field of a demuxer pad's name (`<media>_<gen>_<pidhex>`):
+    a new program's pads carry the next one. None when the name does not fit."""
+    parts = (pad_name or "").split("_")
+    if len(parts) < 3 or not parts[-2]:
+        return None
+    try:
+        return int(parts[-2], 16)
     except ValueError:
         return None
 
@@ -364,6 +383,8 @@ def _install_input(pipe, entry):
     if link_to and pcr:
         _state["pcr"].pop(link_to, None)
     linked = {}   # class → demux pad already routed on this input
+    branches = {}   # class → its branch bin, while linked
+    demux_gen = {"gen": None}   # the demux's program, as its last pad named it
     input_pid = entry.get("pid")
     # Generic input state: its PID, the classes its PMT carries, and the
     # output PID each routed class got (sticky for the run).
@@ -393,13 +414,18 @@ def _install_input(pipe, entry):
         route = routes.get(media)
         if not route or (inp["pid"] is None and not route.get("padName")):
             return f"no route for {media} ({caps_name or 'unknown caps'})", None, None, None
+        replaced = None
         if media in linked:
-            return f"second {media} stream (already routed {linked[media]})", None, None, None
+            was, now = generation_from_pad_name(linked[media]), generation_from_pad_name(pad.get_name())
+            if was is None or now is None or was == now:
+                return f"second {media} stream (already routed {linked[media]})", None, None, None
+            _log(f"{rule_id}: {pad.get_name()} of a new program takes the {media} route over from {linked[media]}")
+            replaced = take_branch(media)
         pad_name, out_pid = out_pad_name(media, route)
         if pad_name is None:
             _emit({"event": "error",
                    "message": f"mux_routing: no free output PID above {inp['pid']} for {media} on {rule_id}"})
-            return "no free output PID", None, None, None
+            return "no free output PID", None, None, None, replaced
         linked[media] = pad.get_name()
         if inp["pid"] is not None and out_pid != inp["pid"]:
             _log(f"{rule_id}: {media} spills to output PID {out_pid} (input PID {inp['pid']} "
@@ -409,7 +435,27 @@ def _install_input(pipe, entry):
             _ensure_prog_map(pipe, link_to, program, pad_name)
         if link_to and pcr and media in ("video", "audio"):
             _pin_pcr_before_link(pipe, link_to, program, media, pad_name, rule_id)
-        return None, pad_name, out_pid, branch
+        return None, pad_name, out_pid, branch, replaced
+
+    def take_branch(media):
+        """The class's route out of this input, for _drop_branch. Caller holds `_lock`."""
+        linked.pop(media, None)
+        return branches.pop(media, None)
+
+    def drop_program_eos(pad, info):
+        """An old program's EOS (its pads end once the demux planned the next) never reaches
+        the mux, whose pads all ending would stop it for good: the route goes silent, absent
+        and gapped. The stream's own end, on the current program's pads, passes."""
+        _, Gst = _gst()
+        ev = info.get_event()
+        if ev is None or ev.type != Gst.EventType.EOS:
+            return Gst.PadProbeReturn.OK
+        with _lock:
+            now = demux_gen["gen"]
+        gen = generation_from_pad_name(pad.get_name())
+        if gen is not None and now is not None and gen != now:
+            return Gst.PadProbeReturn.DROP
+        return Gst.PadProbeReturn.OK
 
     def on_pad_added(_element, pad):
         caps = pad.get_current_caps() or pad.query_caps(None)
@@ -419,17 +465,48 @@ def _install_input(pipe, entry):
         # Each demux adds its pads on its own streaming thread: one decision and one
         # prog-map edit at a time (two inputs' edits at once double-freed the map).
         with _lock:
-            why, pad_name, out_pid, branch = plan_route(pad, caps, caps_name, pid, media)
+            gen = generation_from_pad_name(pad.get_name())
+            if gen is not None:
+                demux_gen["gen"] = gen
+            why, pad_name, out_pid, branch, *rest = plan_route(pad, caps, caps_name, pid, media)
+        _drop_branch(pipe, link_to, rest[0] if rest else None)
         if why is not None:
             _sink_unrouted(pipe, pad, rule_id, why)
             return
-        ok = _link_pad(pipe, pad, rule_id, media, branch, link_to, pad_name,
-                       {"media": media, "pid": pid, "outPid": out_pid})
+        bin_ = _link_pad(pipe, pad, rule_id, media, branch, link_to, pad_name,
+                         {"media": media, "pid": pid, "outPid": out_pid})
+        ok = bin_ is not None
+        if ok:
+            with _lock:
+                branches[media] = bin_
+            pad.add_probe(_gst()[1].PadProbeType.EVENT_DOWNSTREAM, drop_program_eos)
         if ok and _emit_plugin_event:
             _emit_plugin_event("mux:routed", {"demux": demux_name, "media": media, "srcPid": pid,
                                               "outPid": out_pid, "caps": caps.to_string() if caps else ""})
 
     _state["handlers"].append((src, src.connect("pad-added", on_pad_added)))
+
+
+def _drop_branch(pipe, link_to, branch):
+    """A route a new program's pad takes over: its request pad released (a push held in it
+    returns flushing), its branch stopped and removed. The caller must not hold `_lock`:
+    stopping the branch posts messages."""
+    if branch is None:
+        return
+    _, Gst = _gst()
+    bin_ = branch
+    src = bin_.get_static_pad("src")
+    req = src.get_peer() if src is not None else None
+    target = pipe.get_by_name(link_to) if link_to else None
+    if target is not None and req is not None:
+        target.release_request_pad(req)
+    sink = bin_.get_static_pad("sink")
+    up = sink.get_peer() if sink is not None else None
+    if up is not None:
+        up.unlink(sink)
+    bin_.set_locked_state(True)
+    bin_.set_state(Gst.State.NULL)
+    pipe.remove(bin_)
 
 
 def _parser_prefix(pad, caps, rule_id, mode):
@@ -507,6 +584,7 @@ def _pin_pcr_before_link(pipe, target_name, program, media, pad_name, rule_id):
 
 
 def _link_pad(pipe, pad, rule_id, media, branch_str, link_to, pad_name, extra):
+    """The branch bin, linked; None when it could not be."""
     GLib, Gst = _gst()
     try:
         bin_ = Gst.parse_bin_from_description(branch_str, True)
@@ -517,30 +595,30 @@ def _link_pad(pipe, pad, rule_id, media, branch_str, link_to, pad_name, extra):
         sink_pad = bin_.get_static_pad("sink")
         if sink_pad is None:
             _emit({"event": "error", "message": f"mux_routing: branch has no sink pad ({rule_id})"})
-            return False
+            return None
         ret = pad.link(sink_pad)
         if ret != Gst.PadLinkReturn.OK:
             _emit({"event": "error", "message": f"mux_routing: pad link failed ({ret}) on {rule_id}"})
-            return False
+            return None
         if link_to:
             target = pipe.get_by_name(link_to)
             if target is None:
                 _emit({"event": "error", "message": f"mux_routing: linkTo target not found: {link_to}"})
-                return False
+                return None
             src_pad = bin_.get_static_pad("src")
             req_pad = target.request_pad_simple(pad_name)
             if src_pad is None or req_pad is None:
                 _emit({"event": "error",
                        "message": f"mux_routing: could not request {pad_name} on {link_to} ({rule_id})"})
-                return False
+                return None
             outer = src_pad.link(req_pad)
             if outer != Gst.PadLinkReturn.OK:
                 _emit({"event": "error",
                        "message": f"mux_routing: could not link branch to {link_to} ({outer}) ({rule_id})"})
-                return False
+                return None
         bin_.sync_state_with_parent()
         _emit({"event": "pad_linked", "rule": rule_id, "padName": pad.get_name(), **extra})
-        return True
+        return bin_
     except GLib.Error as e:
         _emit({"event": "error", "message": f"mux_routing: branch parse failed: {e.message}"})
-        return False
+        return None

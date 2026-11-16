@@ -371,6 +371,9 @@ def generated(kind, seconds):
         elif kind == "h264-aac-pes362":
             _GENERATED[key] = _ffmpeg_aac_pes362(seconds)
             return _GENERATED[key]
+        elif kind in _FF_KINDS:
+            _GENERATED[key] = _ffmpeg_ts(seconds, *_FF_KINDS[kind])
+            return _GENERATED[key]
         else:
             raise ValueError(kind)
         _GENERATED[key] = [d for _pts, d in generate_ts(desc, timeout=300.0)]
@@ -402,6 +405,57 @@ def _ffmpeg_aac_pes362(seconds):
                           "-b:v", "600k", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-pes_payload_size", "65536",
                           "-f", "mpegts", "-"], capture_output=True, check=True, timeout=600).stdout
     return [out[i:i + 1316] for i in range(0, len(out) - len(out) % 188, 1316)]
+
+
+# A source's streams from ffmpeg's mux, video PID 0x100 and AAC on 0x101 (p4-22): video codec, AAC
+# packets, AAC in the PMT. `-pmt`: an AAC stream listed that never carries a packet.
+_FF_KINDS = {"ff-hevc-aac": ("hevc", True, True), "ff-h264": ("h264", False, False),
+             "ff-h264-aac": ("h264", True, True), "ff-h264-aac-pmt": ("h264", False, True)}
+
+
+def _ffmpeg_ts(seconds, video, audio, listed):
+    """320x180 at 25 fps from ffmpeg's mpegts mux, a keyframe a second, with 128 kbit/s AAC one PES a
+    frame when `listed` (its packets dropped unless `audio`), as 7-packet buffers."""
+    enc = (["-c:v", "libx265", "-preset", "ultrafast", "-x265-params",
+            "keyint=25:min-keyint=25:bframes=0:log-level=error"] if video == "hevc" else
+           ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-g", "25"])
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+           f"testsrc=size=320x180:rate=25:duration={seconds}"]
+    if listed:
+        cmd += ["-f", "lavfi", "-i", f"sine=frequency=1000:sample_rate=48000:duration={seconds}",
+                "-c:a", "aac", "-b:a", "128k", "-ac", "2"]
+    cmd += enc + ["-b:v", "600k", "-pes_payload_size", "0", "-max_delay", "100000", "-f", "mpegts", "-"]
+    out = subprocess.run(cmd, capture_output=True, check=True, timeout=600).stdout
+    pkts = [out[i:i + 188] for i in range(0, len(out) - len(out) % 188, 188)]
+    if listed and not audio:
+        pkts = [p for p in pkts if ts_psi.ts_pid(p) != 0x101]
+    return [b"".join(pkts[i:i + 7]) for i in range(0, len(pkts), 7)]
+
+
+def spliced(segments, t0):
+    """[(bytes, ready)] of a source that switches streams: each of `segments` [(kind, from_s, to_s)]
+    rebased so its content starts at t0 + from_s and cut at to_s, as a new connection would come."""
+    out = []
+    for kind, a, b in segments:
+        rel = generated(kind, b - a + 2)
+        p0 = next(ts_psi.read_pcr(pkt) // 300 for d in rel for pkt in ts_psi.iter_packets(d)
+                  if ts_psi.read_pcr(pkt) is not None)
+        shift = ((t0 + int(a * 1e9)) * 9 // 100000 + MUX_BASE - p0) % WRAP
+        out += [(d, r) for d, r in ready_by_pcr([rebase_ts(d, shift) for d in rel], t0)
+                if r < t0 + int(b * 1e9)]
+    return out
+
+
+def split(timed, pids):
+    """{pid: [(bytes, ready)]}: `timed` through the splitter's core (ts_split, the reference of
+    mr-tssplit's), one single-PID TS per pid, each batch ready with the input buffer it came in."""
+    import ts_split
+    core = ts_split.SplitterCore(1, [(p, None) for p in pids])
+    out = {p: [] for p in pids}
+    for data, ready in timed:
+        for pid_, batch in core.feed(data).items():
+            out[pid_].append((bytes(batch), ready))
+    return out
 
 
 def hold_pes(timed, pid, every, from_ns):

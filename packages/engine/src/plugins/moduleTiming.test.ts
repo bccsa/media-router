@@ -760,7 +760,7 @@ describe('aligner inputs (WI-P2-13)', () => {
         t.stop(false);
     });
 
-    it('a producer stopped while wired keeps its row: absent, warned, waited for (B-93)', () => {
+    it('a producer stopped while wired keeps its row: absent and warned (B-93), not waited for (B-245)', () => {
         let sources = [A, B];
         const host = {
             emit: vi.fn(),
@@ -783,7 +783,7 @@ describe('aligner inputs (WI-P2-13)', () => {
             [1, 'enc-a (audio-in)', 'present'],
             [2, 'enc-b (audio-in)', 'absent'],
         ]);
-        expect(s.waitingFor).toBe('enc-b (audio-in)');
+        expect(s.waitingFor).toBeUndefined(); // gapped, not waited for (B-245)
         expect(host.alignerWarnings).toHaveBeenLastCalledWith(
             'Input enc-b (audio-in) silent for 100 ms — continuing without it',
             null,
@@ -824,7 +824,7 @@ describe('aligner inputs (WI-P2-13)', () => {
         }
         const s = t.summary()!;
         expect(s.inputs.map((i) => [i.n, i.state, i.lateness])).toEqual([[1, 'absent', undefined]]);
-        expect(s.waitingFor).toBe('enc-a (input-0)');
+        expect(s.waitingFor).toBeUndefined(); // gapped, not waited for (B-245)
         expect(host.alignerWarnings).toHaveBeenLastCalledWith(
             'Input enc-a (input-0) silent for 6000 ms — continuing without it',
             null,

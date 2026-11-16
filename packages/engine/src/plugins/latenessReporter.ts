@@ -565,8 +565,9 @@ export class LatenessReporter {
     }
 
     /** The pace's added latency (the most any aligner adds to its fastest present member) and
-     *  what the module waits for: the absent inputs, else the slowest present member of the
-     *  aligner that adds the most, among two or more. Internal stages are never named. */
+     *  what the module waits for: the slowest present member of the aligner that adds the most,
+     *  among two or more. An absent input is gapped, never waited for: its row and warning say
+     *  so (B-245). Internal stages are never named. */
     private alignerPace(rows: InputRow[], internal: AlignerWatch[]): Partial<ModuleTimingSummary> {
         const groups = new Map<string, Array<{ w: AlignerWatch; label?: string }>>();
         const join = (w: AlignerWatch, label?: string): void => {
@@ -592,8 +593,7 @@ export class LatenessReporter {
             );
             if (!held || addedMs > held.addedMs) held = { addedMs, label: slowest.label! };
         }
-        const absent = rows.filter((r) => r.state === 'absent').map((r) => r.label);
-        const waitingFor = absent.length ? absent.join(', ') : held?.label;
+        const waitingFor = held?.label;
         return {
             ...(paceMs !== undefined ? { paceMs } : {}),
             ...(waitingFor !== undefined ? { waitingFor } : {}),

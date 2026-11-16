@@ -198,6 +198,13 @@ there is no in-app switch, and the stored values of the removed settings
   or more at a time (a file or encoder sender's AAC) could make the muxer mark
   that audio missing between deliveries, about twice a second, and the Audio
   Decoder behind it drop out. The muxer now waits for the next delivery.
+- **A muxer whose source loses its audio keeps sending the video.** When a
+  source changed from video and audio to video only, or to another video
+  codec, the muxer stopped sending anything (0 kbps) until it was restarted.
+  It now carries the new stream within about a second, and audio that comes
+  back later is muxed again. A missing input is shown on its row and in the
+  warning; the muxer's
+  "Waiting for" no longer names it, as the muxer does not wait for it.
 - **It probes for the smallest delay that plays clean.** An audio dropout of
   up to a quarter of a second on a steady stream raises that output's margin,
   10 s after it; the margin comes back down over about 2 hours, so a source

@@ -4165,6 +4165,32 @@ rhythm the aligners carry (10 ms 302M blocks); leaving gaps out only raises
 the p95, so no W is lower than before. The brief's lead (a rejoin's burst,
 the epoch change) set nothing here, and the demux delivered every PES.
 
+### A muxer input with no stream does not hold the output (p4-22, B-245; F-4)
+
+When DEV-P4cd's source went from HEVC with AAC to H.264 alone, its muxer
+sent nothing until restarted. Not the aligner's gaps (an input absent before
+any horizon is gapped from now less the pace): the TS Splitter's video output
+changed its stream type, so the muxer's demux planned a new program, a new
+video pad beside the old one, and the routing hook sank it as a "second video
+stream", the class being routed already. As built, `mux_routing` (native and
+python) hands a class's route to a pad of another generation (the demux's
+program count in the pad name): the old branch is stopped and removed, its
+request pad released, and the new pad links to the same request pad (same
+PID, a new stream in the PMT; the old program's last items in the old branch,
+under one pace, are dropped). An old program's EOS is held back from the mux
+by an event probe on each routed pad (a mux whose pads all end, as the
+takeover left it for a moment in the first build, stops for good): a class
+the new program lacks keeps its route, silent, absent and gapped, until it
+comes back; releasing it would change the output's PMT for every consumer
+downstream.
+An input that sends nothing from the start (a PMT that lists AAC and carries
+none) still holds the muxer's start for its W, the 2 s ceiling: a bound of
+500 ms was built and taken out again, since it broke Phase 2's tested start
+rule (an input up to 2 s late at the start sets the pace, never absent on its
+first buffers). The engine's "Waiting for" names the slowest present input
+only: an absent input is gapped, and its row and warning say so (B-93's
+"waited for" amended).
+
 ### The gap rule (OQ-32)
 
 At a content gap each output lets its lateness fall by up to the gap's
@@ -4232,6 +4258,10 @@ sections above give the reasons, the register rows the details.
   "W back within 20 %" read against the restarted source's own deliveries;
   no TS Splitter in the rig's restart; the decoder's underruns left to
   DEV-P4fx (B-244).
+- **p4-22** (F-4): the cause in the routing hook, not the aligner; an old
+  program's EOS held back from the mux, a vanished class's route kept,
+  absent and gapped; the start hold of a stream that never comes left at its
+  2 s W; "Waiting for" no longer names absent inputs (B-245).
 - **p4-24** (fix batch FB3): the second ask goes at once after a miss, so
   the warning comes 6–11 s after a freeze, not within 10 s in every phase;
   it stands over the module's own transient warnings and gives them back;

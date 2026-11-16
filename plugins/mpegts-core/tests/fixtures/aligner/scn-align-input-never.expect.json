@@ -1,0 +1,26 @@
+{
+  "scenario": "scn-align-input-never",
+  "graph": "mpegts-muxer whose input has no stream (F-4): its legacy audio port on a TS Splitter output with no PID, a PMT that lists AAC with no packets (from the start, or for 5 s), and a source that switches A/V -> video only (HEVC -> H.264 through the splitter, H.264 direct, then A/V again): the video out within 1 s of its first buffer (a listed AAC that never comes holds the start its W, the 2 s ceiling: 2.5 s), within W + 1 s of a switch; audio that starts late, or comes back, plays (p4-22, B-245)",
+  "arms": [
+    {"name": "fresh-legacy", "pipelines": "muxLegacy", "split": true, "feeds": {"lv0": 256, "la0": 257},
+     "routes": ["aw_256", "aw_320"], "segments": [["ff-h264", 0, 20]], "check": [["video"]]},
+    {"name": "fresh-pmt", "pipelines": "muxOne", "feeds": {"one0": null},
+     "routes": ["aw_demux_0_video", "aw_demux_0_audio"], "fresh_within_s": 2.5, "segments": [["ff-h264-aac-pmt", 0, 20]],
+     "check": [["video"]]},
+    {"name": "fresh-late-audio", "pipelines": "muxOne", "feeds": {"one0": null},
+     "routes": ["aw_demux_0_video", "aw_demux_0_audio"], "fresh_within_s": 2.5,
+     "segments": [["ff-h264-aac-pmt", 0, 5], ["ff-h264-aac", 5, 20]], "check": [["video"], ["video", "audio"]]},
+    {"name": "switch-legacy", "pipelines": "muxLegacy", "split": true, "feeds": {"lv0": 256, "la0": 257},
+     "routes": ["aw_256", "aw_320"], "segments": [["ff-hevc-aac", 0, 10], ["ff-h264", 11.5, 28]],
+     "check": [["video", "audio"], ["video"]]},
+    {"name": "switch-generic", "pipelines": "muxOne", "feeds": {"one0": null},
+     "routes": ["aw_demux_0_video", "aw_demux_0_audio"],
+     "segments": [["ff-h264-aac", 0, 10], ["ff-h264", 11.5, 20], ["ff-h264-aac", 21.5, 32]],
+     "check": [["video", "audio"], ["video"], ["video", "audio"]]}
+  ],
+  "expect": {
+    "fresh_within_s": 1.0,
+    "switch_slack_s": 1.0,
+    "ceiling_ms": 2000
+  }
+}

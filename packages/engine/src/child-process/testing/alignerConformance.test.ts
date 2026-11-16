@@ -126,6 +126,19 @@ function muxer(name: string, outPort: number, config: Record<string, unknown>, i
     return startCommand(module, module.buildPipeline(config));
 }
 
+/** A muxer on its legacy ports (`video-0`, `audio-0`), each fed one TS Splitter output (p4-22). */
+function legacyMuxer(outPort: number) {
+    const module = new MpegTsMuxerModule();
+    const wired = wire(module, 'mux-legacy', outPort);
+    const config = { videoStreamCount: 1, audioStreamCount: 1 };
+    (module as unknown as { config: unknown }).config = config;
+    wired.sources = [
+        source('lv0', 40310, 'video-0', 'muxed/mpegts'),
+        source('la0', 40311, 'audio-0', 'muxed/mpegts'),
+    ];
+    return startCommand(module, module.buildPipeline(config));
+}
+
 describe('the conformance runner commands', () => {
     it('fixtures/aligner/pipelines.json is what the modules make (`vitest -u` rewrites it)', async () => {
         // audio-mixer, three sources (absent-rejoin, late-delivering, wrap, aligner-absent).
@@ -152,6 +165,8 @@ describe('the conformance runner commands', () => {
         const muxBursty = muxer('burst', 41031, { inputs: [{}, {}] }, 2);
         // mpegts-muxer, one input (a runner freeze and a common stall, p4-20).
         const muxOne = muxer('one', 41032, { inputs: [{}] }, 1);
+        // mpegts-muxer on its legacy video and audio ports (an input with no stream, p4-22).
+        const muxLegacy = legacyMuxer(41033);
 
         // ts-splitter on the OCC capture: video (the PCR PID), one AAC PID, teletext.
         const splitter = buildSpawnArgs({
@@ -172,6 +187,7 @@ describe('the conformance runner commands', () => {
             muxKlv,
             muxBursty,
             muxOne,
+            muxLegacy,
             splitter: { argv: splitter },
         };
         await expect(`${JSON.stringify(out, null, 2)}\n`).toMatchFileSnapshot(FIXTURE);

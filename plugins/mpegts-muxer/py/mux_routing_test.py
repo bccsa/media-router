@@ -52,6 +52,11 @@ for caps_name, want in TABLE:
     check(f"route {caps_name or '<empty>'}", m.route_media_for_caps(caps_name), want)
 check("pid from tsdemux pad name", m.pid_from_pad_name("private_0_0181"), 0x181)
 check("pid from odd pad name", m.pid_from_pad_name("sink"), None)
+# A new program's pads carry the next generation (B-245): the route goes over to them.
+check("generation from a demuxer pad name", m.generation_from_pad_name("video_1_0100"), 1)
+check("generation 0xa", m.generation_from_pad_name("audio_a_0101"), 0xA)
+check("generation from odd pad names", [m.generation_from_pad_name(n) for n in ("sink", "a_0100", "v__0100", None)],
+      [None, None, None, None])
 check("aac parser", m.parser_for_caps_name("audio/mpeg", 4), "aacparse")
 check("mpeg audio parser", m.parser_for_caps_name("audio/mpeg", 1), "mpegaudioparse")
 check("klv is parser-free", m.parser_for_caps_name("meta/x-klv"), "")
@@ -108,8 +113,9 @@ Gst.init([])
 events = []
 CTX = {"emit_event": events.append, "emit_plugin_event": lambda c, p: None}
 
-# Every GLib timer and pad probe the hook itself adds (none since WI-P2-12: a
-# cue route's aligner fills between cues, so the hook keeps no GAP keepalive).
+# Every GLib timer and data pad probe the hook itself adds (none since WI-P2-12: a
+# cue route's aligner fills between cues, so the hook keeps no GAP keepalive). The
+# event-only probe that holds an old program's EOS back from the mux (B-245) is no data work.
 hook_added = []
 
 
@@ -117,7 +123,8 @@ def _spy(owner, name):
     real = getattr(owner, name)
 
     def wrapper(*args, **kwargs):
-        if sys._getframe(1).f_globals.get("__name__") == m.__name__:
+        event_only = name == "add_probe" and len(args) > 1 and args[1] == Gst.PadProbeType.EVENT_DOWNSTREAM
+        if sys._getframe(1).f_globals.get("__name__") == m.__name__ and not event_only:
             hook_added.append(name)
         return real(*args, **kwargs)
     setattr(owner, name, wrapper)

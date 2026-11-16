@@ -1134,6 +1134,95 @@ def source_restart_arm(tag, argv, exp, arm):
     no_restart(tag, label, s.runner, rc)
 
 
+# --------------------------------------------------------------------------- scn-align-input-never (p4-22)
+def scn_align_input_never(tag, argv, exp):
+    """F-4: an input that has no stream, from the start or after its source drops it (A/V to video
+    only, a new codec), never holds the muxer for good: the video out within a second of its first
+    buffer (a listed stream that never comes: within its 2 s W), and within W + 1 s of a switch;
+    audio that starts late or comes back plays (B-245)."""
+    for arm in exp["arms"]:
+        input_never_arm(tag, argv, exp, arm)
+
+
+def input_never_arm(tag, argv, exp, arm):
+    label = f"{exp['scenario']} {arm['name']}"
+    x = exp["expect"]
+    if not os.path.exists(_HOOK_SO):
+        print(f"SKIP {label} {tag} — {_HOOK_SO} not built")
+        return
+    if not shutil.which("ffmpeg"):
+        print(f"SKIP {label} {tag} — no ffmpeg to mux the source")
+        return
+    segs = [tuple(v) for v in arm["segments"]]
+    seconds = segs[-1][2]
+    for kind, a, b in segs:   # encoded before the lead: the feed only keeps time
+        rig.generated(kind, b - a + 2)
+    made = {}
+
+    def feed(name):
+        def build(t0):
+            if t0 not in made:
+                timed = rig.spliced(segs, t0)
+                made[t0] = rig.split(timed, [0x100, 0x101]) if arm.get("split") else {"one": timed}
+            return made[t0][arm["feeds"][name]] if arm.get("split") else made[t0]["one"]
+        return build
+    s = Session(argv, arm["pipelines"])
+    for name in arm["feeds"]:
+        s.producer(name, ts=feed(name), stop_s=seconds)
+    try:
+        check(f"{label} {tag}: PLAYING", s.start(lead_ms=6000))
+        cons = s.consume()
+        t0 = s.begin()
+        s.run(seconds + 1.0)
+    finally:
+        rc = s.close()
+    on_time(label, tag, s)
+    reps = {r: rig.aligner_reports(s.runner, r) for r in arm["routes"]}
+    ins = pes_by_media([(a, st, 0, d) for p in s.producers.values() for a, st, d in p.delivered])
+    outs = pes_by_media(cons.records)
+    for r, rows in reps.items():
+        print(f"    ledger {label} {tag}: {r} states {[(round(sec(t, t0), 2), v) for t, v in states(rows)][:8]}, "
+              f"W {[round((p.get('silence-limit') or 0) / 1e6) for _t, p in rows[-1:]]} ms, "
+              f"gaps {last_report(rows).get('gaps')}, absences {last_report(rows).get('absences')}", flush=True)
+    for i, (kind, a, b) in enumerate(segs):
+        lo, hi = t0 + int(a * S), t0 + int(b * S)
+        if i == 0:
+            # A listed stream that never comes holds the start for its W, the 2 s ceiling (Phase 2).
+            bound, why = arm.get("fresh_within_s", x["fresh_within_s"]), "its first buffer"
+        else:
+            # W: the most any route had as the source switched (its last report before).
+            ws = [last_report(rows, before=lo).get("silence-limit") for rows in reps.values()]
+            ws = [v for v in ws if isinstance(v, int)]
+            w = (max(ws) if ws else x["ceiling_ms"] * MS) / 1e9
+            bound, why = w + x["switch_slack_s"], f"the switch (W {w:.2f} s + {x['switch_slack_s']} s)"
+        for media in arm["check"][i]:
+            src = [p for p in ins.get(media, []) if lo <= p["arrival"] < hi]
+            if not src:
+                check(f"{label} {tag}: segment {i} ({kind}) delivered {media}", False)
+                continue
+            first_in = min(p["arrival"] for p in src)
+            pts_in = {p["pts"] for p in src}
+            got = [p for p in outs.get(media, []) if p["pts"] in pts_in and p["arrival"] >= lo]
+            first_out = min((p["arrival"] for p in got), default=None)
+            after = None if first_out is None else (first_out - first_in) / 1e9
+            check(f"{label} {tag}: segment {i} ({kind}) {media} out {after and round(after, 2)} s after "
+                  f"{why} (within {bound:.2f} s)", after is not None and after <= bound)
+            # From then on every PES of the segment out (the last half second may still be queued).
+            want = sorted(p["pts"] for p in src if first_in + bound * S + S // 2 <= p["arrival"] < hi - S // 2)
+            have = {p["pts"] for p in got}
+            missing = [round(sec(p["arrival"], t0), 2) for p in src
+                       if p["pts"] in set(want) and p["pts"] not in have]
+            check(f"{label} {tag}: segment {i} {media} continuous after that ({len(want) - len(missing)} of "
+                  f"{len(want)} PES out, missing at {missing[:4]})", want and not missing)
+        # A programme a receiver can lock: PCR in the output again within the bound.
+        pcrs = [a_ for a_, _st, _f, d in cons.records if lo <= a_ < hi
+                and any(rig.ts_psi.read_pcr(pkt) is not None for pkt in rig.ts_psi.iter_packets(d))]
+        gap = (min(pcrs) - lo) / 1e9 if pcrs else None
+        check(f"{label} {tag}: segment {i} PCR out {gap and round(gap, 2)} s into it (within {bound:.2f} s)",
+              gap is not None and gap <= bound)
+    no_restart(tag, label, s.runner, rc)
+
+
 # --------------------------------------------------------------------------- scn-split-passthrough
 def scn_split_passthrough(tag, _argv, exp):
     """mr-tssplit is a sidecar, not a runner pipeline: one run, the builder's argv."""
@@ -1267,6 +1356,7 @@ NEEDS = {
     "scn-align-common-stall": _GEN,
     "scn-align-one-input-stall": _GEN,
     "scn-align-source-restart": ("aacparse", "h264parse", "mpegtsmux", "unixfdsrc", "unixfdsink"),
+    "scn-align-input-never": ("aacparse", "h264parse", "h265parse", "mpegtsmux", "unixfdsrc", "unixfdsink"),
     "scn-split-passthrough": ("unixfdsrc", "unixfdsink"),
     "scn-837-ducker-mixer": _302M + ("audiointerleave", "deinterleave"),
 }
@@ -1289,6 +1379,7 @@ SCENARIOS = {
     "scn-align-common-stall": scn_align_whole_stall,
     "scn-align-one-input-stall": scn_align_one_input_stall,
     "scn-align-source-restart": scn_align_source_restart,
+    "scn-align-input-never": scn_align_input_never,
 }
 
 
