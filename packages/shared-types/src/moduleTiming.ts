@@ -77,6 +77,16 @@ export interface RateMatch {
 
 /** An output's drain back to its latency target (house-clock WI-P4-18, B-179): `mrasrc`'s or
  *  `mrvideopace`'s servo. No setting, no alarm. */
+/** Why an underrun did not raise the margin (B-240): the first test it failed. */
+export type UnderrunReason =
+    | 'drain'
+    | 'after-drain'
+    | 'video'
+    | 'warm-up'
+    | 'input'
+    | 'load'
+    | 'not-margin';
+
 export interface DrainSummary {
     /** What it holds to: its own target, or its group's while it follows one (ms). */
     targetMs: number;
@@ -92,6 +102,8 @@ export interface DrainSummary {
     /** Short starvations (audio) or late frames (video) counted, and those that raised the margin. */
     underruns: number;
     raises: number;
+    /** Those that did not raise, by reason (B-240); absent from an element that has none. */
+    underrunReasons?: Partial<Record<UnderrunReason, number>>;
     state: 'warm-up' | 'idle' | 'draining' | 'rising';
     /** The target it publishes to its group (ms); absent: none (a device stalled, a display off). */
     publishedMs?: number;

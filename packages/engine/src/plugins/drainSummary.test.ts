@@ -120,6 +120,31 @@ describe('the Latency target row', () => {
     it('Drained and Buffer underruns; the log lines', () => {
         expect(underrunsText(summary({ underruns: 3, raises: 3 }))).toBe('3, 3 raised the target');
         expect(underrunsText(summary())).toBe('0');
+        // B-240: why the others did not raise, in the row's words.
+        expect(
+            underrunsText(
+                summary({
+                    underruns: 15,
+                    raises: 1,
+                    underrunReasons: { drain: 9, 'after-drain': 3, load: 2 },
+                }),
+            ),
+        ).toBe('15, 1 raised the target, 12 while catching up, 2 under load');
+        expect(
+            underrunsText(
+                summary({
+                    underruns: 6,
+                    raises: 0,
+                    underrunReasons: { 'warm-up': 1, input: 1, 'not-margin': 1, video: 3 },
+                }),
+            ),
+        ).toBe(
+            '6, 0 raised the target, 1 while settling, 1 after an input break, 1 not short of margin, 3 on a steady stream',
+        );
+        // The element's fields carry through the summary.
+        const r = drainSummary(fields({ underruns: 2, reasons: { load: 2 } }), 2410, undefined);
+        expect(r.underrunReasons).toEqual({ load: 2 });
+        expect(underrunsText(r)).toBe('2, 0 raised the target, 2 under load');
         expect(drainStartText(summary())).toBe(
             'Draining 2.31 s of built-up latency at up to 0.5 % (about 8 min)',
         );

@@ -985,8 +985,8 @@ def scn_out_drain_group(tag, argv, exp):
     """-group (design part 12 item 7): a Video Player and an Audio Decoder of one muxed source and an Audio Output
     302M on the same house timeline, the rig playing the engine (P = the max every 2 s). The clean link first: no
     underrun, nobody above the group's early level. Then a shared 200 ms stall (the 302M feed's 0.1 s later, the
-    same length, so the rig's two feeds never push a burst at once): the 302M side's one underrun raises its margin,
-    and every two members end within 45 ms. MR_DRAIN_MUTANT=ignore: the group target never set; the check fails."""
+    same length, so the rig's two feeds never push a burst at once): the 302M side's one underrun, counted by its reason
+    and no raise (B-240), and every two members end within 45 ms. MR_DRAIN_MUTANT=ignore: the group target never set; the check fails."""
     label, x = f"{exp['scenario']} {tag}", exp["expect"]
     at, length = exp["stall"]
     run = Run(argv)
@@ -1042,10 +1042,13 @@ def scn_out_drain_group(tag, argv, exp):
           and all(raised[k] <= under[k] for k in under)
           and all(v <= early + x["rise_ms"] for v in tops.values()) and ptop <= early + x["rise_ms"])
     ao = last(series["aout"])
-    check(f"{label}: the 302M side took its underrun and raised its margin ({ao.get('underruns')} underrun, "
-          f"{ao.get('drain-raises')} raise, {ao.get('drain-outages')} outage, margin "
+    why = {k[10:]: v for k, v in ao.items() if k.startswith("underruns-") and v}
+    check(f"{label}: the 302M side took its underrun and did not raise its margin: the shared stall's starvation is "
+          f"no steady one at its margin (B-240: seen as warm-up on both runners; {ao.get('underruns')} underrun, "
+          f"{ao.get('drain-raises')} raise, reasons {why}, {ao.get('drain-outages')} outage, margin "
           f"{ao.get('drain-margin-ns', 0) / 1e6} ms)",
-          ao.get("underruns") == 1 and ao.get("drain-raises") == 1 and ao.get("drain-outages") == 0)
+          ao.get("underruns") == 1 and ao.get("drain-raises") == 0 and ao.get("drain-outages") == 0
+          and sum(why.values()) == 1)
     tail = group_spread(run, keys, t0, end - 8, end)
     ends = {k: orig.mid([ms for t, ms in renders_of(run.outputs[k], k) if t >= t0 + (end - 8) * S]) for k in keys}
     pubs = {k: round(role.latest(k).get("drain-target-lateness-ns", 0) / 1e6, 1) for k in keys}
@@ -1060,6 +1063,48 @@ def scn_out_drain_group(tag, argv, exp):
               f"{behind})",
               abs(st.get("drain-ppm") or 0) <= 5000 and not st.get("dropped-frames")
               and (st.get("rate-drops") or 0) <= behind)
+
+def decoder_drain(tag, argv, exp, holds):
+    """The audio decoder alone on a generated feed, its input held at `holds` [(s, length)] (the content waits,
+    none lost): its device stats at the end, the raise events it posted."""
+    run = av_run(argv, dict(exp, seconds=exp["seconds"]), knobs=rig.Knobs(silence=[(a, n, "hold") for a, n in holds]),
+                 keys=("decoder",))
+    run.on_time(f"{exp['scenario']} {tag}")
+    run.clean(f"{exp['scenario']} {tag}")
+    dec = run.outputs["decoder"]
+    st = last(device_stats(dec))
+    raised = [(round((t - run.t0) / S, 1), p.get("length-ns", 0) // MS, p.get("from-ns", 0) // MS,
+               p.get("margin-ns", 0) // MS) for t, p in dec.asrc_events() if p.get("kind") == "underrun"]
+    return st, raised, {k[10:]: v for k, v in st.items() if k.startswith("underruns-") and v}
+
+
+def scn_out_drain_cpu(tag, argv, exp):
+    """B-240, V-P4-12's CPU arm at CI length: a 60 s load on the audio decoder (its input held at each of 20 stalls
+    3 s apart, none lost: it falls further behind each time) raises nothing, the margin unchanged; each underrun
+    under `load` or `warm-up`."""
+    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+    at, n = exp["load"]
+    holds = [(at + 3 * k, x["hold_ms"][0] / 1000 + k * x["hold_ms"][1] / 1000) for k in range(n)]
+    st, raised, why = decoder_drain(tag, argv, exp, holds)
+    check(f"{label} decoder: {st.get('underruns')} underruns ({st.get('drain-outages')} outages), no raise "
+          f"({st.get('drain-raises')}, posted {raised}), margin {st.get('drain-margin-ns', 0) // MS} ms, the reasons "
+          f"{why} only load and warm-up",
+          (st.get("underruns") or 0) >= x["underruns_min"] and st.get("drain-raises") == 0 and not raised
+          and st.get("drain-margin-ns") == 20 * MS and why.get("load", 0) >= 1 and set(why) <= {"load", "warm-up"})
+
+
+def scn_out_drain_dip(tag, argv, exp):
+    """B-240, B3's rhythm compressed: the decoder's input held briefly twice; the first dip on a steady stream at its
+    margin raises it (once, 10 s after it, its evidence posted), the next inside that one's hold does not; any
+    other underrun (the shared host's) is counted by its reason."""
+    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+    st, raised, why = decoder_drain(tag, argv, exp, [(a, x["hold_ms"] / 1000) for a in exp["dips"]])
+    first = exp["dips"][0]
+    check(f"{label} decoder: underruns {st.get('underruns')}, one raise ({st.get('drain-raises')}; posted {raised}: s, "
+          f"length, margin from, to) about 10 s after the dip at {first} s; the others {why}",
+          st.get("drain-raises") == 1 and len(raised) == 1 and first + 10 <= raised[0][0] <= first + 13
+          and raised[0][2] == 20 and raised[0][3] == 40 and (st.get("underruns") or 0) == 1 + sum(why.values()))
+
 
 SCENARIOS = {
     "scn-out-stall": scn_out_stall,
@@ -1077,6 +1122,8 @@ SCENARIOS = {
     "scn-burnin-late-cues": scn_burnin_late_cues,
     "scn-out-drain-burst": scn_out_drain_burst,
     "scn-out-drain-group": scn_out_drain_group,
+    "scn-out-drain-cpu": scn_out_drain_cpu,
+    "scn-out-drain-dip": scn_out_drain_dip,
 }
 _NEEDS = ("unixfdsrc", "unixfdsink", "mpegtsmux", "x264enc", "avdec_h264", "h264parse", "avenc_aac", "avdec_aac",
           "aacparse", "avdec_s302m", "textoverlay")

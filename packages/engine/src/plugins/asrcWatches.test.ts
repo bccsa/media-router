@@ -402,6 +402,7 @@ describe('the drain (WI-P4-18, B-179)', () => {
             drainedMs: 41.25,
             raises: 0,
             underruns: 0,
+            reasons: {},
             outages: 0,
             groupTargetMs: 0,
             state: 'draining',
@@ -420,6 +421,13 @@ describe('the drain (WI-P4-18, B-179)', () => {
         expect(f.publishedMs).toBeUndefined();
         expect(f.learnedMs).toBe(60);
         expect(drainFieldsOf({ mode: 'device' })).toBeUndefined();
+        // B-240: the underruns that did not raise, by reason; none from an element without the fields.
+        const r = drainFieldsOf({ ...p, 'underruns-load': 3, 'underruns-after-drain': 1 })!;
+        expect(r.reasons).toEqual({ load: 3, 'after-drain': 1 });
+        const old = Object.fromEntries(
+            Object.entries(fixture['mrasrc-stats']).filter(([k]) => !k.startsWith('underruns-')),
+        );
+        expect(drainFieldsOf(old)!.reasons).toBeUndefined();
     });
 
     it('logs its events: drain-start, drain-done and underrun pass through as events', () => {

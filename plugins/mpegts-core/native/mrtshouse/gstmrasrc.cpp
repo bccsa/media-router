@@ -70,6 +70,7 @@ struct AsrcDrainStats {
     int64_t ppb = 0, excess = 0, margin = 0, learned = -1, trough = 0, drained = 0, target = 0,
             group = mrts::DrainServo::GROUP_ALONE_NS;
     uint64_t raises = 0, underruns = 0, outages = 0;
+    uint64_t reasons[mrts::UNDERRUN_REASONS] = {};   // B-240
     const char* state = "warm-up";
     bool capped = false, member = false;
 };
@@ -215,6 +216,7 @@ static GstStructure* asrc_stats_structure(const AsrcServo::Stats& s, AsrcDevice*
                       (gint64)ds.target, "group-target-ns", G_TYPE_INT64, (gint64)ds.group, "drain-state",
                       G_TYPE_STRING, ds.state, "drain-capped", G_TYPE_BOOLEAN, (gboolean)ds.capped,
                       "drain-member", G_TYPE_BOOLEAN, (gboolean)ds.member, NULL);
+    mrtshouse_set_underrun_reasons(st, ds.reasons);
     return st;
 }
 
@@ -734,17 +736,25 @@ static void asrc_drain_tick(AsrcDevice* d, int64_t dev_ns, int64_t mono, int64_t
     t.raises = s.raises();
     t.underruns = s.underruns();
     t.outages = s.outages();
+    for (int r = 0; r < mrts::UNDERRUN_REASONS; r++) t.reasons[r] = s.reason_count((mrts::UnderrunReason)r);
     t.state = mrts::drain_state_name(s.state());
     t.capped = s.capped();
     t.member = !stalled;
 }
 
 /* The drain's events as mrasrc-event (B-179): drain-start (the excess it drains), drain-done (drained so far),
- * underrun (its length, the margin it raised to); an outage and a raise are the stats'. */
-static void asrc_post_drain(GstMrAsrc* self, const std::vector<mrts::DrainEvent>& events, gint64 margin) {
+ * underrun at a raise (B-240: its length, the margins, its start trough, how long it was steady); an underrun that
+ * did not raise and an outage are the stats' (its reason counted there). */
+static void asrc_post_drain(GstMrAsrc* self, const std::vector<mrts::DrainEvent>& events) {
     for (const mrts::DrainEvent& e : events) {
         using K = mrts::DrainEvent::Kind;
-        if (e.kind == K::raise || e.kind == K::outage) continue;
+        if (e.kind == K::outage) continue;
+        if (e.kind == K::underrun) {
+            if (e.reason != mrts::UnderrunReason::raised)
+                GST_DEBUG_OBJECT(self, "underrun of %" G_GINT64_FORMAT " ms, no raise: %s",
+                                 (gint64)e.value / GST_MSECOND, mrts::underrun_reason_name(e.reason));
+            continue;
+        }
         GstStructure* s = gst_structure_new("mrasrc-event", "kind", G_TYPE_STRING, mrts::drain_event_name(e.kind),
                                             "reason", G_TYPE_STRING, "", "house-ns", G_TYPE_INT64, (gint64)e.at, NULL);
         if (e.kind == K::drain_start) {
@@ -756,9 +766,16 @@ static void asrc_post_drain(GstMrAsrc* self, const std::vector<mrts::DrainEvent>
             GST_INFO_OBJECT(self, "back at its latency target: drained %" G_GINT64_FORMAT " ms in all",
                             (gint64)e.value / GST_MSECOND);
         } else {
-            gst_structure_set(s, "length-ns", G_TYPE_INT64, (gint64)e.value, "margin-ns", G_TYPE_INT64, margin, NULL);
-            GST_INFO_OBJECT(self, "underrun of %" G_GINT64_FORMAT " ms: the margin to %" G_GINT64_FORMAT " ms",
-                            (gint64)e.value / GST_MSECOND, margin / GST_MSECOND);
+            gst_structure_set(s, "kind", G_TYPE_STRING, "underrun", "length-ns", G_TYPE_INT64, (gint64)e.length,
+                              "margin-ns", G_TYPE_INT64, (gint64)e.value, "from-ns", G_TYPE_INT64, (gint64)e.from,
+                              "trough-ns", G_TYPE_INT64, (gint64)e.trough, "steady-ns", G_TYPE_INT64, (gint64)e.steady,
+                              NULL);
+            GST_INFO_OBJECT(self,
+                            "underrun of %" G_GINT64_FORMAT " ms at the margin (trough %" G_GINT64_FORMAT
+                            " ms), steady for %" G_GINT64_FORMAT " s: the margin %" G_GINT64_FORMAT " -> %" G_GINT64_FORMAT
+                            " ms",
+                            (gint64)e.length / GST_MSECOND, (gint64)e.trough / GST_MSECOND, (gint64)e.steady / GST_SECOND,
+                            (gint64)e.from / GST_MSECOND, (gint64)e.value / GST_MSECOND);
         }
         asrc_post(self, s);
     }
@@ -770,7 +787,6 @@ static void asrc_device_tick(GstMrAsrc* self) {
     AsrcDevice* d = self->dev;
     std::vector<AsrcDeviceEvent> ev;
     std::vector<mrts::DrainEvent> dev_drain;
-    gint64 margin = 0;
     bool flush = false;
     gint64 now = 0;
     {
@@ -787,7 +803,6 @@ static void asrc_device_tick(GstMrAsrc* self) {
         for (const AsrcDeviceEvent& e : ev) relocked |= e.kind == AsrcDeviceEvent::Kind::relock_device;
         asrc_drain_tick(d, dev, mono, now, relocked || flush, known);
         dev_drain = d->drain.take_events();
-        margin = d->drain.margin();
         if (d->term.take_recalibrated()) d->recalibrated.store(true);
         const mrts::AsrcDeviceTerm::Stats st = d->term.stats();
         d->eps_ppb.store(d->term.device_ppb());
@@ -798,7 +813,7 @@ static void asrc_device_tick(GstMrAsrc* self) {
         d->reads.fetch_add(1);
     }
     asrc_post_device(self, ev, now);
-    asrc_post_drain(self, dev_drain, margin);
+    asrc_post_drain(self, dev_drain);
     if (flush) asrc_device_flush(self);
 }
 

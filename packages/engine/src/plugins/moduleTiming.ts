@@ -512,12 +512,15 @@ export class ModuleTiming {
         // The drain's start and end are logged from the summary (logDrain), the video's alike.
         if (kind === 'drain-start' || kind === 'drain-done') return;
         if (kind === 'underrun') {
+            // Posted at a raise only (B-240): a short starvation on a steady stream, the margin the limit.
             const len = Number(payload['length-ns']) / 1e6;
             const margin = Number(payload['margin-ns']) / 1e6;
+            const steady = Number(payload['steady-ns']) / 1e9;
+            const steadyText = Number.isFinite(steady) ? ` on a stream steady for ${Math.round(steady)} s` : '';
             this.host.log?.(
                 'info',
                 { asrcEvent: { name: e.event.name, ...payload } },
-                `Buffer underrun (${Math.round(len)} ms): its latency margin raised to ${Math.round(margin)} ms`,
+                `Buffer underrun (${Math.round(len)} ms)${steadyText}: its latency margin raised to ${Math.round(margin)} ms`,
             );
             return;
         }

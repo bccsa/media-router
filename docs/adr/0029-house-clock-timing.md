@@ -4019,8 +4019,15 @@ Phase 3 ships as v2.0.0.102).
   after a window clear, nor while an audio starvation runs or for 30 s after.
 - **The learned margin.** It starts at its floor (audio 20 ms, video 1
   frame), ceiling 500 ms. An audio starvation (the sink's own underflow, or
-  the slack under −30 ms on two ticks) of at most 250 ms raises it whatever
-  the drain did; longer is an outage, counted, no raise. A late video release
+  the slack under −30 ms on two ticks) of at most 250 ms is judged 10 s after
+  its end and raises it only on a steady stream with the margin the limit
+  (B-240, the owner's decision of 2026-11-13): the servo warm at its start
+  (window full, no starvation hold), δ = 0 from 30 s before it to the
+  judgement, no epoch break, outage or window clear in that span, the render
+  lateness then no more than its start's plus the episode's length plus 20
+  ms, and the trough 1–2 s before it within the margin ± 20 ms. Any other is
+  counted by its first failed test (drain, after-drain, warm-up, input, load,
+  not-margin); longer is an outage, counted, no raise. A late video release
   raises it only while δ > 0 or within 30 s after; a release under a quarter
   frame late is jitter, one more than 250 ms late an outage. A raise sets L =
   the margin that underran and m = min(500 ms, max(2L, L + 20 ms)); m falls 5
@@ -4052,14 +4059,17 @@ Phase 3 ships as v2.0.0.102).
   and lateness grows until the path's non-leaky queues fill; the leaky bus
   ingress then loses at capacity with `queue-full` (the queue table above).
 - **Seen**: Latency target ("95 ms (measured), now 2.41 s · draining at 0.50 %
-  (about 8 min) · in sync with Video Player"), Drained, Buffer underruns,
+  (about 8 min) · in sync with Video Player"), Drained, Buffer underruns
+  ("15, 1 raised the target, 12 while catching up, 2 under load", B-240),
   Rate match's drain drops, the trend's "— draining to its target"; INFO lines
   at a drain's start and end.
 - **Engineering choices for the owner's veto** (E21–E23 and the design's
-  owner-level items): any short audio dropout raises the margin, which decays
-  5 ms/h (a source with a recurring short dip gets one re-probe dropout about
-  every 2 h; 5 ms per 4 h would make it 8 h); a late video frame raises the
-  margin only while draining or within 30 s after; grouping by common origin,
+  owner-level items): a short audio dropout on a steady stream at its margin
+  raises the margin (B-240 replaced "any"), which decays 5 ms/h (a source with
+  a recurring short dip gets one re-probe dropout about every 2 h; 5 ms per
+  4 h would make it 8 h); a late video frame raises the margin only while
+  draining or within 30 s after (B-240's video half, "never", withheld on its
+  part B finding); grouping by common origin,
   audio-only outputs not grouped; the 1 s rise cap; a member of two programmes
   joins neither; a restarted output rises to its group's latency on purpose
   (a member below the target plays up to 0.5 % slower: audio pitch down by up
@@ -4118,6 +4128,10 @@ sections above give the reasons, the register rows the details.
   stale-PES arm waiting on the owner's p3-23 veto (B-174).
 - **p4-18** (WI-P4-18): margins from their floors; the starvation as the
   sink's own; the two-origin Video Player rule (B-179).
+- **p4-19** (fix batch FB1): S6 reads the trough 1–2 s before the
+  starvation, not at it (the fill's own fall is in the window by then); the
+  video half (a late frame never raises) withheld on part B's finding, B4
+  kept for video (B-240).
 
 ### What this phase supersedes
 

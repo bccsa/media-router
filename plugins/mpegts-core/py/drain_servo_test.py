@@ -122,7 +122,7 @@ def steady(period):
 
 
 def events(log, kind):
-    return [(t, v) for (t, _p, _e, _m, _r, _tg, ev) in log for (k, at, v) in ev if k == kind]
+    return [(t, e[2]) for (t, _p, _e, _m, _r, _tg, ev) in log for e in ev if e[0] == kind]
 
 
 def predicted_ns(e0):
@@ -210,18 +210,18 @@ def case_step():
 
 
 def case_starve():
-    """4. A 200 ms starvation with delta 0 throughout raises once, at its end; a 2 s one is an
-    outage and raises nothing."""
+    """4. A 200 ms starvation with delta 0 throughout, the fill at the margin, raises once, 10 s after
+    its end (t_c, B-240); a 2 s one is an outage and raises nothing."""
     out = []
     for length, raises in ((200 * MS, 1), (2 * SEC, 0)):
         s = DrainServo()
-        ln = Link(s, source(steady(20 * MS), stalls=[(20 * SEC, length)]), fill_ns=30 * MS)
+        ln = Link(s, source(steady(20 * MS), stalls=[(40 * SEC, length)]), fill_ns=30 * MS)
         r = Run([ln])
-        r.until(25 * SEC)
+        r.until(55 * SEC)
         ur = events(r.log[0], "raise")
-        end = 20 * SEC + length
-        out.append(("starve %d ms: %d raise(s), at its end" % (length // MS, raises),
-                    s.raises == raises and all(end <= t <= end + 2 * TICK for t, _v in ur)
+        tc = 40 * SEC + length + ds.CONFIRM_NS
+        out.append(("starve %d ms: %d raise(s), at its end + 10 s" % (length // MS, raises),
+                    s.raises == raises and all(tc <= t <= tc + 2 * TICK for t, _v in ur)
                     and max(abs(p) for (_t, p, *_x) in r.log[0]) == 0))
     return out
 
@@ -326,8 +326,8 @@ class Group:
 
 def case_group():
     """10. A group of three (a video, two audio; different margins and structures) given the max
-    of their targets every 2 s: after one audio's raise and a shared 2 s stall all end within 20 ms
-    of P; a low member rises at <= 0.5 %, its published T held; a member restarted low rises to P."""
+    of their targets every 2 s: after one audio's starvation (held above its margin by the group: no
+    raise, `not-margin`, B-240) and a shared 2 s stall all end within 20 ms of P; a low member rises at <= 0.5 %, its published T held; a member restarted low rises to P."""
     stall = (8 * MIN, 2 * SEC)
     v = Link(DrainServo(True, 40 * MS, 20 * MS), source(steady(40 * MS), stalls=[stall]),
              fill_ns=200 * MS, base_ns=120 * MS)
@@ -358,7 +358,8 @@ def case_group():
     r.until(32 * MIN, each)
     spread2 = max(abs(ln.render() - g.p) for ln in links)
     return [
-        ("group: a's raise", a.s.raises == 1),
+        ("group: a's starvation, grouped above its margin, does not raise (not-margin)",
+         a.s.raises == 0 and a.s.reasons["not-margin"] == 1),
         ("group: all within 20 ms of P after the stall", spread <= 20 * MS),
         ("group: a low member rose, at <= 0.5 %", -ds.DMAX_PPB <= rose < 0 and r.cap_ok),
         ("group: a rising member's published T held", held_ok[0]),
@@ -396,7 +397,8 @@ def case_group_cap():
 
 def case_video_late():
     """10c. B4: a jittery video input (a late frame every 20 s) with the drain idle raises neither
-    the margin nor P; the same late frame 10 s after a drain let go raises once."""
+    the margin nor P; the same late frame 10 s after a drain let go raises once, as does one while it
+    drains (B-240's video half withheld: part B's finding)."""
     s = DrainServo(True, 40 * MS, 20 * MS)
     ln = Link(s, source(steady(40 * MS)), fill_ns=40 * MS, base_ns=100 * MS)
     r = Run([ln])
@@ -414,8 +416,16 @@ def case_video_late():
     r2.until(r2.t + 10 * SEC)
     s2.late(r2.t, 80 * MS)
     r2.until(r2.t + 2 * SEC)
-    return [("late: drain idle, no raise and P steady", idle_ok),
-            ("late: 10 s after a drain let go, one raise", bool(done) and s2.raises == 1)]
+    s3 = DrainServo(True, 40 * MS, 20 * MS)
+    ln3 = Link(s3, source(steady(40 * MS)), fill_ns=400 * MS, base_ns=100 * MS)
+    r3 = Run([ln3])
+    while s3.ppb <= 0 and r3.t < 6 * MIN:
+        r3.until(r3.t + TICK)
+    s3.late(r3.t, 80 * MS)
+    r3.until(r3.t + 2 * SEC)
+    return [("late: drain idle, no raise and P steady", idle_ok and s.reasons["video"] == s.underruns),
+            ("late: 10 s after a drain let go, one raise", bool(done) and s2.raises == 1),
+            ("late: while it drains, one raise", s3.raises == 1)]
 
 
 def case_hysteresis():
@@ -503,12 +513,219 @@ def case_hole():
             ("hole: then it drains", max(after) > 0)]
 
 
+# --- B-240: the raise rule (owner decision 2026-11-13) and the video trough ------------------------
+
+class Drive:
+    """The servo alone on synthetic 100 ms ticks (B-240): its slack and render lateness as functions
+    of time and short starvations [(start, length)]: one of a tick or more feeds slack 0 while it runs
+    (the fill showed it), a shorter one is the sink's own skip (no zero). `hold`: a group target at
+    its render lateness, so nothing drains and the trough may sit above the margin."""
+
+    def __init__(self, s, slack, render=lambda t: 100 * MS, episodes=(), hold=False):
+        self.s, self.slack, self.render, self.eps, self.hold = s, slack, render, list(episodes), hold
+        self.t = 0
+        self.ev = []
+
+    def until(self, t_end, each=None):
+        while self.t < t_end:
+            self.t += TICK
+            t = self.t
+            on = any(a <= t < a + n for a, n in self.eps if n >= TICK)
+            self.s.starve(t, on)
+            for a, n in self.eps:
+                if n < TICK and t - TICK < a + n <= t:
+                    self.s.starve(t - n, True)
+                    self.s.starve(t, False)
+            self.s.sample(t, 0 if on else self.slack(t))
+            if self.hold:
+                self.s.set_group(t, self.render(t))
+            self.s.update(t, self.render(t), True)
+            self.ev += [(t,) + tuple(e) for e in self.s.take_events()]
+            if each:
+                each(t)
+
+    def of(self, kind):
+        return [e for e in self.ev if e[1] == kind]
+
+
+def reasons_of(d):
+    return [e[4] for e in d.of("underrun")]
+
+
+def case_f1_pin():
+    """12a. F-1's recorded state (103/v1hevc 12:04-12:15): a 50p Video Player, margin 260 ms, trough
+    100 ms (excess -160 ms: it never drains), a late frame on each 40.02 s seam adding a 26-38 ms cadence
+    step, input lateness flat, 20 min: no raise, every late release counted `video`."""
+    s = DrainServo(True, 260 * MS, 20 * MS)
+    seams = [k * 40020 * MS for k in range(1, 30)]
+    steps = [0]
+
+    def render(t):
+        return 120 * MS + sum(26 * MS + (k % 13) * MS for k, at in enumerate(seams) if at <= t)
+
+    def each(t):
+        s.queue_level(t, 100 * MS)
+        for at in seams:
+            if t - TICK < at <= t:
+                s.late(t, 30 * MS)
+                steps[0] += 1
+
+    d = Drive(s, lambda t: 0, render)
+    d.until(20 * MIN, each)
+    return [("f1 pin: no raise", s.raises == 0),
+            ("f1 pin: every late release counted `video` (%d of %d)" % (s.reasons["video"], steps[0]),
+             s.reasons["video"] == steps[0] == s.underruns),
+            ("f1 pin: it never drains", max(abs(e[0]) for e in [(0,)]) == 0 and not d.of("drain-start"))]
+
+
+def case_cpu():
+    """13. The CPU arm (V-P4-12): a 60 s consumer slowdown, audio held longer at each stall every 3 s
+    (T4's duty) with its margin at the floor, video late every 1.5 s with its drain idle: no raise during or after, the load's last
+    episode included (inside the hold of the one before: warm-up); `load` and `warm-up` count the
+    audio's underruns; then back to its target in part 5's time +-10 %."""
+    s = DrainServo()
+    # The consumer falls further behind at each: every stall outlasts the fill the last one left.
+    stalls = [(60 * SEC + k * 3 * SEC, 100 * MS * (k + 1) + 20 * MS) for k in range(20)]
+    ln = Link(s, source(steady(20 * MS), stalls=stalls), fill_ns=30 * MS)
+    r = Run([ln])
+    r.until(15 * MIN)
+    st = events(r.log[0], "drain-start")
+    near = [t for (t, p, e, *_x) in r.log[0] if st and t > st[0][0] and e <= 20 * MS]
+    took = near[0] - st[0][0] if st and near else None
+    pred = predicted_ns(st[0][1]) if st else 0
+    v = DrainServo(True, 20 * MS, 20 * MS)
+    d = Drive(v, lambda t: 20 * MS)
+    d.until(3 * MIN, lambda t: v.late(t, 30 * MS) if 60 * SEC <= t < 120 * SEC and t % (1500 * MS) == 0 else None)
+    return [
+        ("cpu: audio, no raise during or after the load", s.raises == 0 and s.margin == 20 * MS),
+        ("cpu: audio, every underrun under `load` or `warm-up` (%s of %d)" % (s.reasons, s.underruns),
+         s.underruns >= 10 and s.reasons["load"] >= 1
+         and s.reasons["load"] + s.reasons["warm-up"] == s.underruns),
+        ("cpu: audio, back to its target in part 5's time +-10 %",
+         took is not None and abs(took - pred) <= pred / 10),
+        ("cpu: video, the drain idle, no raise (B4)", v.raises == 0 and v.underruns == v.reasons["video"] >= 30),
+    ]
+
+
+def case_stall_arm():
+    """14. The stall arm: a 2 s producer stop with a DISCONT at the resume: an outage, no raise; the
+    backlog drains back in part 5's time +-10 %."""
+    s = DrainServo()
+    ln = Link(s, source(steady(20 * MS), stalls=[(60 * SEC, 2 * SEC)]), fill_ns=30 * MS)
+    r = Run([ln])
+    r.until(12 * MIN, lambda t: s.epoch_break() if t == 62 * SEC else None)
+    st = events(r.log[0], "drain-start")
+    near = [t for (t, p, e, *_x) in r.log[0] if st and t > st[0][0] and e <= 20 * MS]
+    took = near[0] - st[0][0] if st and near else None
+    pred = predicted_ns(st[0][1]) if st else 0
+    return [("stall arm: an outage, no raise", s.raises == 0 and s.outages == 1 and s.margin == 20 * MS),
+            ("stall arm: back on time", took is not None and abs(took - pred) <= pred / 10)]
+
+
+def drained_then(at=None):
+    """A servo that drains 180 ms from 30 s, lets go at 60 s (delta 0 by about 70 s); a starvation at `at`."""
+    s = DrainServo()
+    d = Drive(s, lambda t: 200 * MS if t < 60 * SEC else 20 * MS, episodes=[(at, 200 * MS)] if at else [])
+    return s, d
+
+
+def case_drain_timing():
+    """15. Audio: a starvation inside a drain and one 20 s after its end raise nothing (`drain`,
+    `after-drain`); one 40 s after, on a flat stream at the margin, raises once, at its t_c."""
+    out = []
+    s, d = drained_then(45 * SEC)
+    d.until(80 * SEC)
+    out.append(("drain timing: inside a drain, no raise (drain)", s.raises == 0 and reasons_of(d) == ["drain"]))
+    for when, reason, raises in ((20 * SEC, "after-drain", 0), (40 * SEC, "raised", 1)):
+        s, d = drained_then()
+        d.until(60 * SEC)
+        while s.ppb:
+            d.until(d.t + TICK)
+        quiet = d.t
+        d.eps = [(quiet + when, 200 * MS)]
+        d.until(quiet + when + 15 * SEC)
+        rs = d.of("raise")
+        tc = quiet + when + 200 * MS + ds.CONFIRM_NS
+        out.append(("drain timing: %d s after its end, %d raise (%s)" % (when // SEC, raises, reason),
+                    s.raises == raises and reasons_of(d) == [reason]
+                    and all(tc <= e[0] <= tc + TICK for e in rs)))
+    return out
+
+
+def case_keep_up():
+    """16. S4's edge: an episode followed by render growth of its length + 19 ms raises, + 21 ms does
+    not (`load`); judged at t_c, after the growth."""
+    out = []
+    for extra, raises in ((19 * MS, 1), (21 * MS, 0)):
+        s = DrainServo()
+        at, n = 60 * SEC, 200 * MS
+        d = Drive(s, lambda t: 20 * MS, lambda t, x=extra: 100 * MS + (n + x if t >= at + n + 2 * SEC else 0),
+                  episodes=[(at, n)])
+        d.until(80 * SEC)
+        out.append(("keep up: + %d ms, %d raise" % (extra // MS, raises),
+                    s.raises == raises and reasons_of(d) == (["raised"] if raises else ["load"])))
+    return out
+
+
+def case_spacing():
+    """17. S1: two steady margin-limited starvations (sink skips, 30 ms) 20 s apart: the first raises at
+    its t_c, the second reads `warm-up` (inside the first's 30 s hold); 31 s apart, both raise."""
+    out = []
+    for gap, want in ((20 * SEC, ["raised", "warm-up"]), (31 * SEC, ["raised", "raised"])):
+        s = DrainServo()
+        d = Drive(s, lambda t: 20 * MS, episodes=[(65 * SEC, 30 * MS), (65 * SEC + gap, 30 * MS)])
+        d.until(65 * SEC + gap + 15 * SEC)
+        out.append(("spacing: %d s apart, %s" % (gap // SEC, want), reasons_of(d) == want))
+    return out
+
+
+def case_band():
+    """18. S6's band, both edges in: the trough (held above its own target by a group, so nothing drains)
+    at margin + 20 ms and margin - 20 ms raises; + 21, - 21, + 25 ms do not (`not-margin`), nor
+    v1hevc's 100 ms under a 260 ms margin."""
+    out = []
+    for start, slack, raises in ((20 * MS, 40 * MS, 1), (40 * MS, 20 * MS, 1), (20 * MS, 41 * MS, 0),
+                                 (41 * MS, 20 * MS, 0), (20 * MS, 45 * MS, 0), (260 * MS, 100 * MS, 0)):
+        s = DrainServo(False, start, 20 * MS)
+        d = Drive(s, lambda t, v=slack: v, episodes=[(60 * SEC, 30 * MS)], hold=True)
+        d.until(75 * SEC)
+        off = (slack - start) // MS
+        out.append(("band: trough at margin %+d ms, %d raise" % (off, raises),
+                    s.raises == raises and reasons_of(d) == (["raised"] if raises else ["not-margin"])))
+    return out
+
+
+def case_hold_state():
+    """18b. S1 is the servo's own state: a steady starvation 25 s after another (its hold still set)
+    reads `warm-up`; 31 s after (hold expired, window full) it raises."""
+    out = []
+    for gap, second in ((25 * SEC, "warm-up"), (31 * SEC, "raised")):
+        s = DrainServo()
+        d = Drive(s, lambda t: 20 * MS, episodes=[(62 * SEC, 30 * MS), (62 * SEC + gap, 30 * MS)])
+        d.until(62 * SEC + gap + 15 * SEC)
+        out.append(("hold state: %d s after another, %s" % (gap // SEC, second), reasons_of(d)[1:] == [second]))
+    return out
+
+
+def case_dip_drain():
+    """5b. B3's dip meeting a drain does not raise (`drain`); the first steady dip after does, once."""
+    s = DrainServo()
+    d = Drive(s, lambda t: 200 * MS if t < 60 * SEC else 20 * MS,
+              episodes=[(45 * SEC, 200 * MS), (150 * SEC, 200 * MS)])
+    d.until(3 * MIN)
+    return [("dip+drain: the dip in the drain raises nothing, the first steady one raises",
+             reasons_of(d) == ["drain", "raised"] and s.raises == 1)]
+
+
 CASES = {
     "backlog": case_backlog, "steady": case_steady, "steady_raise": case_steady_raise,
     "step": case_step, "starve": case_starve, "dip": case_dip, "creep": case_creep,
     "outage": case_outage, "discont": case_discont, "paced": case_paced, "group": case_group,
     "group_cap": case_group_cap, "video_late": case_video_late, "hysteresis": case_hysteresis,
     "live": case_live, "hole": case_hole, "group_early": case_group_early,
+    "dip_drain": case_dip_drain, "f1_pin": case_f1_pin, "cpu": case_cpu, "stall_arm": case_stall_arm,
+    "drain_timing": case_drain_timing, "keep_up": case_keep_up, "spacing": case_spacing, "band": case_band,
+    "hold_state": case_hold_state,
 }
 
 
@@ -660,8 +877,35 @@ def m_r2_video():
         joins = self.late_at is not None and now - self.late_at <= ds.JOIN_NS
         orig(self, now, by)
         if not joins and self.raises == 0 and by <= ds.SHORT_NS:
-            self._raise(now)
+            self._raise(now, 0, None, 0)
     return _patch(DrainServo, "late", late)
+
+
+def m_s1_window_only():
+    orig = DrainServo.starve
+
+    def starve(self, now, on):
+        orig(self, now, on)
+        if self.episode is not None and self.episode["start"] == now:
+            self.episode["warm"] = self.sampled and now - self.warm_from >= ds.WINDOW_NS
+    return _patch(DrainServo, "starve", starve)
+
+
+def m_s2_off():
+    orig = DrainServo._judge
+    return _patch(DrainServo, "_judge", lambda self, now, ep, r: orig(self, now, dict(ep, drain=False, quiet=None), r))
+
+
+def m_s4_off():
+    return _patch(ds, "KEEP_UP_NS", 10 ** 15)
+
+
+def m_s6_off():
+    return _patch(ds, "LIMIT_BAND_NS", 10 ** 15)
+
+
+def m_s6_exclusive():
+    return _patch(ds, "LIMIT_BAND_NS", ds.ENGAGE_NS - 1)
 
 
 MUTANTS = [
@@ -685,6 +929,15 @@ MUTANTS = [
     ("the target carrying a negative excess (r3)", m_negative_target, "live"),
     ("warm across a hole (fix 2)", m_warm_across_hole, "hole"),
     ("grouped by the target's sign (B-177)", m_group_by_sign, "group_early"),
+    ("S1 as the window only, no hold (B-240)", m_s1_window_only, "cpu"),
+    ("S1 as the window only, no hold (B-240)", m_s1_window_only, "spacing"),
+    ("S1 as the window only, no hold (B-240)", m_s1_window_only, "hold_state"),
+    ("S2 off", m_s2_off, "drain_timing"),
+    ("S4 off", m_s4_off, "cpu"),
+    ("S6 off", m_s6_off, "band"),
+    ("S6's edges exclusive", m_s6_exclusive, "band"),
+    ("Q as 0", lambda: _patch(ds, "QUIET_NS", 0), "drain_timing"),
+    ("C as 0", lambda: _patch(ds, "CONFIRM_NS", 0), "keep_up"),
 ]
 
 

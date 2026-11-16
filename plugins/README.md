@@ -2271,7 +2271,11 @@ the aligners' `input-absent` and `aligner-full` warnings
   answers `isLatencyGroupAnchor()` true), and a Video Player's pace takes
   `backlog-queue=<its ES queue>`. Each plays what it holds up to 0.5 % faster
   (`mrts::DrainServo`: the 30 s minimum of what was ready early, less a
-  measured margin) until it is back at its target. The engine groups the
+  measured margin) until it is back at its target. An audio output's margin
+  rises only at a short starvation on a steady stream with its buffer at the
+  margin, judged 10 s after it; one while catching up, under load, while
+  settling or after an input break raises nothing and is counted by reason
+  (B-240). The engine groups the
   running outputs of one bus origin (`plugins/drainGroups.ts`: Video Players
   anchor, audio outputs join, one touching two programmes joins neither) and
   every 2 s calls `applyLatencyGroupTarget(ns)`, which sets `group-target-ns`
@@ -2281,8 +2285,8 @@ the aligners' `input-absent` and `aligner-full` warnings
   (−1 h, the property's minimum and default) says alone (B-177). Rows:
   `Latency target` (`95 ms (measured), now 2.41 s · draining at 0.50 %
   (about 8 min) · in sync with Video Player`; `not measured (no display
-  rate)` without one), `Drained`, `Buffer underruns` (`3, 3 raised the
-  target`), Rate match's `… N drain drops/min`, and the trend's `— draining
+  rate)` without one), `Drained`, `Buffer underruns` (`15, 1 raised the
+  target, 12 while catching up, 2 under load`), Rate match's `… N drain drops/min`, and the trend's `— draining
   to its target` and `— growing faster than it can drain (0.5 %)`. No
   setting declares any of it (`removedTimingSettings.test.ts` holds that).
 - **Inputs whose taps are named per branch** (a source given its own name in

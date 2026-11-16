@@ -1,6 +1,6 @@
 // The drain's summary and its rows (house-clock WI-P4-18, B-179): an output's built-up latency
 // played back down to its target at up to 0.5 %, in sync with its A/V group. No setting, no alarm.
-import type { DrainSummary } from '@media-router/shared-types';
+import type { DrainSummary, UnderrunReason } from '@media-router/shared-types';
 import type { DrainFields } from './asrcWatches.js';
 import type { DrainGroupView } from './drainGroups.js';
 
@@ -35,6 +35,7 @@ export function drainSummary(
         raises: f.raises,
         state: f.state,
     };
+    if (f.reasons) d.underrunReasons = f.reasons;
     if (f.publishedMs !== undefined) d.publishedMs = f.publishedMs;
     if (video && !video.rateKnown) d.notMeasured = true;
     if (f.capped) d.capped = true;
@@ -82,9 +83,25 @@ export function drainedText(d: DrainSummary): string {
     return msOrS(d.drainedMs);
 }
 
-/** `3, 3 raised the target`; `0`. */
+/** The reasons an underrun did not raise (B-240) in the row's words, in the row's order. */
+const REASON_WORDS: readonly [string, readonly UnderrunReason[]][] = [
+    ['while catching up', ['drain', 'after-drain']],
+    ['while settling', ['warm-up']],
+    ['after an input break', ['input']],
+    ['under load', ['load']],
+    ['not short of margin', ['not-margin']],
+    ['on a steady stream', ['video']],
+];
+
+/** `15, 1 raised the target, 12 while catching up, 2 under load`; `3, 3 raised the target`; `0`. */
 export function underrunsText(d: DrainSummary): string {
-    return d.underruns ? `${d.underruns}, ${d.raises} raised the target` : '0';
+    if (!d.underruns) return '0';
+    const parts = [`${d.underruns}, ${d.raises} raised the target`];
+    for (const [words, reasons] of REASON_WORDS) {
+        const n = reasons.reduce((a, r) => a + (d.underrunReasons?.[r] ?? 0), 0);
+        if (n) parts.push(`${n} ${words}`);
+    }
+    return parts.join(', ');
 }
 
 /** `Draining 2.30 s of built-up latency at up to 0.5 % (about 8 min)`. */

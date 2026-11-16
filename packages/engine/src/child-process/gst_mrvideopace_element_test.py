@@ -365,7 +365,9 @@ def case_pacing():
             "drain-ppm", "drain-excess-ns", "drain-margin-ns", "drain-learned-ns", "fill-trough-ns",
             "drained-ns", "drain-raises", "underruns", "drain-outages", "drain-target-lateness-ns",
             "group-target-ns", "drain-state", "drain-capped", "drain-member", "drain-rate-known",
-            "drain-drops"}
+            "drain-drops",
+            # B-240: the underruns that did not raise, by reason
+            *("underruns-" + r for r in ("drain", "after-drain", "video", "warm-up", "input", "load", "not-margin"))}
     last = rig.messages[-1][1] if rig.messages else {}
     check("pacing: the message carries the plan's fields, display-presenting, unpaced, achieved-ns "
           "and display-behind",

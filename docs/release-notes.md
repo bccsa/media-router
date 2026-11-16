@@ -166,11 +166,17 @@ there is no in-app switch, and the stored values of the removed settings
   source, 10 to 11 s elsewhere); past that the input queue loses content and
   the queue-full warning says so. Once the box keeps up, the delay comes back
   down: 1 s of it in about 4 minutes, 2 s in about 7.
-- **It probes for the smallest delay that plays clean.** A dropout of up to a
-  quarter of a second raises that output's margin at once; the margin comes
-  back down over about 2 hours, so a source with a recurring short dip gives
-  one dropout about every 2 hours, not one per dip. A late video frame raises
-  nothing unless the output was catching up.
+- **It probes for the smallest delay that plays clean.** An audio dropout of
+  up to a quarter of a second on a steady stream raises that output's margin,
+  10 s after it; the margin comes back down over about 2 hours, so a source
+  with a recurring short dip gives one dropout about every 2 hours, not one
+  per dip. A late video frame raises nothing unless the output was catching
+  up.
+- **An audio output no longer raises its buffer while it is catching up or
+  while the box is overloaded,** so its latency no longer creeps up after a
+  stall or a busy minute. The Buffer underruns row says why each one did not
+  raise, for example "15, 1 raised the target, 12 while catching up, 2 under
+  load".
 - **The Timing section shows it:** **Latency target**, for example "95 ms
   (measured), now 2.41 s · draining at 0.50 % (about 8 min) · in sync with
   Video Player"; **Drained**, the delay taken off so far; **Buffer

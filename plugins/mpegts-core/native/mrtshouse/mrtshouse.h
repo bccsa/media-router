@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdint>
 
+#include "mrts/drain_servo.h"
 #include "mrtshouse_abi.h"
 
 GST_DEBUG_CATEGORY_EXTERN(mrtshouse_debug);
@@ -39,6 +40,15 @@ class MrtsHouseCommon {
   private:
     std::atomic<uint64_t> counters_[N_COUNTERS]{};
 };
+
+/* The drain's underruns that did not raise, by reason (B-240), as `underruns-<reason>` fields. */
+inline void mrtshouse_set_underrun_reasons(GstStructure* st, const uint64_t* counts) {
+    for (int r = 0; r < mrts::UNDERRUN_REASONS; r++) {
+        gchar* k = g_strconcat("underruns-", mrts::underrun_reason_name((mrts::UnderrunReason)r), NULL);
+        gst_structure_set(st, k, G_TYPE_UINT64, (guint64)counts[r], NULL);
+        g_free(k);
+    }
+}
 
 /* The elements of the factory table, one source file each. */
 GType gst_mrtsrestamp_get_type(void);

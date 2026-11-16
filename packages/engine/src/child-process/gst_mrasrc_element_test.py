@@ -372,12 +372,15 @@ ALONE_NS = -3600 * 1000000000
 DRAIN_FIELDS = ["drain-ppm", "drain-excess-ns", "drain-margin-ns", "drain-learned-ns", "fill-trough-ns",
                 "drained-ns", "drain-raises", "underruns", "drain-outages", "drain-target-lateness-ns",
                 "group-target-ns", "drain-state", "drain-capped", "drain-member"]
+# B-240: the underruns that did not raise, by reason.
+REASON_FIELDS = ["underruns-" + r for r in ("drain", "after-drain", "video", "warm-up", "input", "load", "not-margin")]
+DRAIN_FIELDS += REASON_FIELDS
 STATS_FIELDS = BASE_FIELDS + DRAIN_FIELDS
 COUNT_FIELDS = [k for k in BASE_FIELDS[1:] if k not in ("mode", "rate-known")]
 NO_DRAIN = {"drain-ppm": 0, "drain-excess-ns": 0, "drain-margin-ns": 0, "drain-learned-ns": -1,
             "fill-trough-ns": 0, "drained-ns": 0, "drain-raises": 0, "underruns": 0, "drain-outages": 0,
             "drain-target-lateness-ns": 0, "group-target-ns": ALONE_NS, "drain-state": "warm-up",
-            "drain-capped": False, "drain-member": False}
+            "drain-capped": False, "drain-member": False, **dict.fromkeys(REASON_FIELDS, 0)}
 check("stats is read-only; a fresh element's: mrasrc-stats, acquiring, mode capture, no rate, every count 0",
       not _st.flags & GObject.ParamFlags.WRITABLE and _s0.get_name() == "mrasrc-stats"
       and [_s0.nth_field_name(i) for i in range(_s0.n_fields())] == STATS_FIELDS
@@ -1608,6 +1611,56 @@ else:
           and all(s["group-target-ns"] == _gt["own"] + 100 * MS for s in _rise[3:]))
     check(f"not refreshed for 10 s, the target is dropped: alone again, delta never below 0 from 12 s after the "
           f"last refresh ({len(_alone)} posts)", _alone and all(s["drain-ppm"] >= 0 for s in _alone) and not _errors)
+
+    # B-240: only a steady short starvation the margin limited raises it; a load's starvations do not.
+    def held_feeder(cap, holds):
+        """A live source whose content waits `holds` [(clock s, length s)]: none lost, all later by the holds."""
+        def feed(p, stop):
+            src, clk, i, shift, todo = p.get_by_name("src"), p.get_clock(), 0, 0, sorted(holds)
+            while not stop.is_set():
+                pts = i * S // FS
+                while todo and pts + shift >= int(todo[0][0] * S):
+                    shift += int(todo.pop(0)[1] * S)
+                due = p.get_base_time() + pts + shift
+                if clk.get_time() < due:
+                    Gst.Clock.id_wait(clk.new_single_shot_id(due))
+                b = Gst.Buffer.new_wrapped(cap.render(i, BUF))
+                b.pts = pts
+                if i == 0:
+                    b.set_flags(Gst.BufferFlags.DISCONT)
+                if src.emit("push-buffer", b) != Gst.FlowReturn.OK:
+                    break
+                i += BUF
+        return feed
+
+    # A 2x clock: the device term locks about 50 s in, the drain is warm 30 s later; at 4x the thin live fill
+    # starves now and then on its own.
+    print("\n--- B-240: one 150 ms starvation on a steady stream at its margin: one raise, 10 s after it (2x, 125 s) ---")
+    _ev, _stats, _errors, _lost, _p = clock_run(_DRAIN_DESC.format(caps=Capture(channels=2).caps()), 2, 125,
+                                                feed=held_feeder(Capture(channels=2), [(100, 0.15)]))
+    _st = sdict(_p.get_by_name("asrc").get_property("stats"))
+    _p.set_state(Gst.State.NULL)
+    _ur = kinds(_ev, "underrun")
+    check(f"one underrun, one raise at about 90 s ({[(round(t, 1), e.get('length-ns', 0) // MS, e.get('from-ns', 0) // MS, e.get('margin-ns', 0) // MS, e.get('steady-ns', 0) // S) for t, e in _ur]}: "
+          f"time, length, margin from, to, steady s; a follow-on starvation inside its hold is warm-up), the stats agree (underruns {_st.get('underruns')}, raises "
+          f"{_st.get('drain-raises')}, margin {_st.get('drain-margin-ns', 0) // MS} ms)",
+          not _errors and len(_ur) == 1 and 109 <= _ur[0][0] <= 113 and _ur[0][1]["from-ns"] == 20 * MS
+          and _ur[0][1]["margin-ns"] == 40 * MS and _ur[0][1]["steady-ns"] >= 30 * S
+          and _st.get("underruns", 0) >= 1 and _st.get("drain-raises") == 1)
+
+    print("\n--- B-240: a 60 s load (the source held 150 ms every 3 s, falling behind each time): no raise (2x, 180 s) ---")
+    _holds = [(100 + 3 * k, 0.15) for k in range(20)]
+    _ev, _stats, _errors, _lost, _p = clock_run(_DRAIN_DESC.format(caps=Capture(channels=2).caps()), 2, 180,
+                                                feed=held_feeder(Capture(channels=2), _holds))
+    _st = sdict(_p.get_by_name("asrc").get_property("stats"))
+    _p.set_state(Gst.State.NULL)
+    _why = {k[10:]: v for k, v in _st.items() if k.startswith("underruns-") and v}
+    check(f"underruns {_st.get('underruns')} (outages {_st.get('drain-outages')}), none raised "
+          f"({_st.get('drain-raises')}, margin {_st.get('drain-margin-ns', 0) // MS} ms), each under load or warm-up "
+          f"({_why}); no raise event ({len(kinds(_ev, 'underrun'))})",
+          not _errors and (_st.get("underruns") or 0) >= 5 and _st.get("drain-raises") == 0
+          and _st.get("drain-margin-ns") == 20 * MS and set(_why) <= {"load", "warm-up"} and _why.get("load", 0) >= 1
+          and not kinds(_ev, "underrun"))
 
 print("\n--- a device-sink that cannot be followed is an error naming it; no custom slaving left ---")
 for desc, what in (("fakesink name=sink", "not a GstAudioBaseSink"),
