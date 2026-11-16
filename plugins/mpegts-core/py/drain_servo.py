@@ -31,7 +31,8 @@ the margin limited raises it (B-240, owner decision 2026-11-13): one of at most 
 full, no starvation hold), (S2) delta was 0 from 30 s before its start to t_c, (S3) no epoch
 break, outage or window clear from 30 s before its start to t_c, (S4) the render lateness at t_c
 is at most its start's + the episode's length + 20 ms, and (S6) the trough 1-2 s before its start
-(the fill's own fall into it left out) was within the margin +- 20 ms; a longer one is an outage, counted apart. Each that does not raise counts under
+(the fill's own fall into it left out) was within the margin +- 20 ms; a longer one is an outage,
+counted apart. Each that does not raise counts under
 its first failed test: drain (delta != 0 in it), after-drain (within 30 s after), warm-up, input,
 load, not-margin. A video late release raises it only while delta > 0 or within 30 s after delta
 last was (B4); others count as `video`. Late frames within 1 s of the last are one episode; one
@@ -267,22 +268,26 @@ class DrainServo:
                 self._outage(now, length)
             self.episode = None
 
+    @staticmethod
+    def _first_reason(ep):
+        """The first of drain, after-drain and warm-up (S2, Q, S1) that applies to `ep`, else None."""
+        if ep["drain"]:
+            return "drain"
+        if ep["quiet"] is not None and ep["quiet"] >= ep["start"] - QUIET_NS:
+            return "after-drain"
+        return None if ep["warm"] else "warm-up"
+
     def _judge(self, now, ep, render_ns):
         """S1-S4, S6 at t_c (B-240): raise, or count under the first test that fails."""
         start = ep["start"]
-        if ep["drain"]:
-            reason = "drain"
-        elif ep["quiet"] is not None and ep["quiet"] >= start - QUIET_NS:
-            reason = "after-drain"
-        elif not ep["warm"]:
-            reason = "warm-up"
-        elif self.broken_at is not None and self.broken_at >= start - WINDOW_NS:
+        reason = self._first_reason(ep)
+        if reason is None and self.broken_at is not None and self.broken_at >= start - WINDOW_NS:
             reason = "input"
-        elif render_ns > ep["render"] + ep["length"] + KEEP_UP_NS:
+        if reason is None and render_ns > ep["render"] + ep["length"] + KEEP_UP_NS:
             reason = "load"
-        elif ep["trough"] is None or abs(ep["trough"] - ep["margin"]) > LIMIT_BAND_NS:
+        if reason is None and (ep["trough"] is None or abs(ep["trough"] - ep["margin"]) > LIMIT_BAND_NS):
             reason = "not-margin"
-        else:
+        if reason is None:
             since = max(t for t in (self.nonzero_at, self.broken_at, self.warm_from) if t is not None)
             self.events.append(("underrun", now, ep["length"], "raised"))
             self._raise(now, ep["length"], ep["trough"], start - since)
@@ -326,8 +331,8 @@ class DrainServo:
         self.hold_until = None
         self.broken_at = now
         self.settled = self.next_trough = self.next_at = None
-        for ep in self.pending:     # judged at once: a clear inside [start - W, t_c] is S3's
-            self._count(now, "input", ep["length"])
+        for ep in self.pending:     # judged at once: S3's, unless an earlier test fails first
+            self._count(now, self._first_reason(ep) or "input", ep["length"])
         self.pending = []
 
     def epoch_break(self):

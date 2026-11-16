@@ -120,6 +120,7 @@ class DrainServo {
     void outage(int64_t now, int64_t length);
     bool trough_at(int64_t now, int64_t* out);
     void count(int64_t now, UnderrunReason r, int64_t length);
+    static bool first_reason(const Episode& ep, UnderrunReason* r);
     void judge(int64_t now, const Episode& ep, int64_t render_ns);
 
     bool video_;

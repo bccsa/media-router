@@ -513,7 +513,7 @@ def case_hole():
             ("hole: then it drains", max(after) > 0)]
 
 
-# --- B-240: the raise rule (owner decision 2026-11-13) and the video trough ------------------------
+# --- B-240: the raise rule (owner decision 2026-11-13) ------------------------------------------------
 
 class Drive:
     """The servo alone on synthetic 100 ms ticks (B-240): its slack and render lateness as functions
@@ -570,12 +570,13 @@ def case_f1_pin():
                 s.late(t, 30 * MS)
                 steps[0] += 1
 
+    ppbs = []
     d = Drive(s, lambda t: 0, render)
-    d.until(20 * MIN, each)
+    d.until(20 * MIN, lambda t: (each(t), ppbs.append(s.ppb)))
     return [("f1 pin: no raise", s.raises == 0),
             ("f1 pin: every late release counted `video` (%d of %d)" % (s.reasons["video"], steps[0]),
              s.reasons["video"] == steps[0] == s.underruns),
-            ("f1 pin: it never drains", max(abs(e[0]) for e in [(0,)]) == 0 and not d.of("drain-start"))]
+            ("f1 pin: it never drains", max(map(abs, ppbs)) == 0 and not d.of("drain-start"))]
 
 
 def case_cpu():
@@ -717,6 +718,49 @@ def case_dip_drain():
              reasons_of(d) == ["drain", "raised"] and s.raises == 1)]
 
 
+def steady_at(episode_end_act=None, at=60 * SEC, n=200 * MS, until=80 * SEC, slack=lambda t: 20 * MS,
+              margin=20 * MS):
+    """A steady stream at its margin, one starvation at `at`; `episode_end_act(s, t)` each tick."""
+    s = DrainServo(False, margin, 20 * MS)
+    d = Drive(s, slack, episodes=[(at, n)])
+    d.until(until, (lambda t: episode_end_act(s, t)) if episode_end_act else None)
+    return s, d
+
+
+def case_input():
+    """19. S3, and a clear with episodes pending: a break 10 s before a steady margin-limited starvation
+    or 5 s after its end reads `input`, one 35 s before raises; a clear 5 s after its end counts it at
+    once, `input`, and one meeting an episode a drain caught counts `drain` (the first test that fails)."""
+    out = []
+    end = 60 * SEC + 200 * MS
+    for when, want in ((50 * SEC, ["input"]), (25 * SEC, ["raised"]), (end + 5 * SEC, ["input"])):
+        s, d = steady_at(lambda s, t, w=when: s.epoch_break() if t == w else None)
+        out.append(("input: a break at %.1f s, %s" % (when / SEC, want[0]), reasons_of(d) == want))
+    s, d = steady_at(lambda s, t: s.clear(t) if t == end + 5 * SEC else None)
+    ev = d.of("underrun")
+    out.append(("input: a clear 5 s after the end counts it then, `input` (%s)" % (ev,),
+                [e[4] for e in ev] == ["input"] and ev[0][2] == end + 5 * SEC and s.raises == 0
+                and sum(s.reasons.values()) == s.underruns == 1))
+    s, d = drained_then(45 * SEC)
+    d.until(45 * SEC + 200 * MS + 5 * SEC, lambda t: s.clear(t) if t == 45 * SEC + 200 * MS + 3 * SEC else None)
+    out.append(("input: a clear meeting a drain's episode counts `drain` (%s)" % reasons_of(d),
+                reasons_of(d) == ["drain"] and sum(s.reasons.values()) == s.underruns == 1))
+    # The hold keeps delta at 0 to t_c, so a drain after the end is forced here: S2 as written.
+    s, d = steady_at(lambda s, t: setattr(s, "ppb", 1000) if t == end + 3 * SEC else None)
+    out.append(("input: delta != 0 between the end and t_c, `drain` (S2's tail)", reasons_of(d) == ["drain"]))
+    return out
+
+
+def case_fall():
+    """20. S6 reads the trough 1-2 s before the start: with the margin at 40 ms, the fill falling from
+    it to empty over the 0.5 s before a steady starvation still raises (that fall is the starvation's own)."""
+    at = 60 * SEC
+    s, d = steady_at(slack=lambda t: 40 * MS if t <= at - 500 * MS else 40 * MS - (t - at + 500 * MS) * 80 // 1000,
+                     margin=40 * MS)
+    return [("fall: a fill falling into the starvation, it raises (%s)" % reasons_of(d),
+             reasons_of(d) == ["raised"] and s.raises == 1)]
+
+
 CASES = {
     "backlog": case_backlog, "steady": case_steady, "steady_raise": case_steady_raise,
     "step": case_step, "starve": case_starve, "dip": case_dip, "creep": case_creep,
@@ -725,7 +769,7 @@ CASES = {
     "live": case_live, "hole": case_hole, "group_early": case_group_early,
     "dip_drain": case_dip_drain, "f1_pin": case_f1_pin, "cpu": case_cpu, "stall_arm": case_stall_arm,
     "drain_timing": case_drain_timing, "keep_up": case_keep_up, "spacing": case_spacing, "band": case_band,
-    "hold_state": case_hold_state,
+    "hold_state": case_hold_state, "input": case_input, "fall": case_fall,
 }
 
 
@@ -908,6 +952,64 @@ def m_s6_exclusive():
     return _patch(ds, "LIMIT_BAND_NS", ds.ENGAGE_NS - 1)
 
 
+def m_s3_off():
+    orig = DrainServo._judge
+
+    def judge(self, now, ep, r):
+        b, self.broken_at = self.broken_at, None
+        try:
+            orig(self, now, ep, r)
+        finally:
+            self.broken_at = b if self.broken_at is None else self.broken_at
+    return _patch(DrainServo, "_judge", judge)
+
+
+def m_clear_drops_pending():
+    orig = DrainServo.clear
+
+    def clear(self, now):
+        self.pending = []
+        orig(self, now)
+    return _patch(DrainServo, "clear", clear)
+
+
+def m_clear_all_input():
+    orig = DrainServo.clear
+
+    def clear(self, now):
+        for ep in self.pending:
+            self._count(now, "input", ep["length"])
+        self.pending = []
+        orig(self, now)
+    return _patch(DrainServo, "clear", clear)
+
+
+class _Copies(list):
+    """A pending list whose iteration hands out copies: update's drain flag never reaches the episodes."""
+    def __iter__(self):
+        return (dict(e) for e in list.__iter__(self))
+
+
+def m_tail_drain_ignored():
+    orig = DrainServo.starve
+
+    def starve(self, now, on):
+        orig(self, now, on)
+        if not isinstance(self.pending, _Copies):
+            self.pending = _Copies(self.pending)
+    return _patch(DrainServo, "starve", starve)
+
+
+def m_s6_now():
+    orig = DrainServo.starve
+
+    def starve(self, now, on):
+        orig(self, now, on)
+        if self.episode is not None and self.episode["start"] == now:
+            self.episode["trough"] = self._trough(now)
+    return _patch(DrainServo, "starve", starve)
+
+
 MUTANTS = [
     ("the trough as a mean", m_mean, "steady"),
     ("no slew", lambda: _patch(ds, "SLEW_DEN", 1), "backlog"),
@@ -938,6 +1040,11 @@ MUTANTS = [
     ("S6's edges exclusive", m_s6_exclusive, "band"),
     ("Q as 0", lambda: _patch(ds, "QUIET_NS", 0), "drain_timing"),
     ("C as 0", lambda: _patch(ds, "CONFIRM_NS", 0), "keep_up"),
+    ("S3 off", m_s3_off, "input"),
+    ("a clear dropping the pending episodes uncounted", m_clear_drops_pending, "input"),
+    ("a clear counting every pending episode `input`", m_clear_all_input, "input"),
+    ("a drain between the end and t_c ignored", m_tail_drain_ignored, "input"),
+    ("S6 on the trough at the start", m_s6_now, "fall"),
 ]
 
 

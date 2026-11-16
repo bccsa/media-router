@@ -171,13 +171,23 @@ void DrainServo::count(int64_t now, UnderrunReason r, int64_t length) {
     events_.push_back(e);
 }
 
+// The first of drain, after-drain and warm-up (S2, Q, S1) that applies to `ep`; false if none.
+bool DrainServo::first_reason(const Episode& ep, UnderrunReason* r) {
+    if (ep.drain) *r = UnderrunReason::drain;
+    else if (ep.have_quiet && ep.quiet >= ep.start - QUIET_NS) *r = UnderrunReason::after_drain;
+    else if (!ep.warm) *r = UnderrunReason::warm_up;
+    else return false;
+    return true;
+}
+
 // S1-S4, S6 at t_c (B-240): raise, or count under the first test that fails.
 void DrainServo::judge(int64_t now, const Episode& ep, int64_t render_ns) {
     UnderrunReason r;
-    if (ep.drain) r = UnderrunReason::drain;
-    else if (ep.have_quiet && ep.quiet >= ep.start - QUIET_NS) r = UnderrunReason::after_drain;
-    else if (!ep.warm) r = UnderrunReason::warm_up;
-    else if (have_broken_ && broken_at_ >= ep.start - WINDOW_NS) r = UnderrunReason::input;
+    if (first_reason(ep, &r)) {
+        count(now, r, ep.length);
+        return;
+    }
+    if (have_broken_ && broken_at_ >= ep.start - WINDOW_NS) r = UnderrunReason::input;
     else if (render_ns > ep.render + ep.length + KEEP_UP_NS) r = UnderrunReason::load;
     else if (!ep.have_trough || iabs(ep.trough - ep.margin) > LIMIT_BAND_NS) r = UnderrunReason::not_margin;
     else {
@@ -280,8 +290,12 @@ void DrainServo::clear(int64_t now) {
     have_broken_ = true;
     broken_at_ = now;
     have_settled_ = have_next_ = have_next_at_ = false;
-    // Judged at once: a clear inside [start - W, t_c] is S3's.
-    for (const Episode& ep : pending_) count(now, UnderrunReason::input, ep.length);
+    // Judged at once: S3's, unless an earlier test fails first.
+    for (const Episode& ep : pending_) {
+        UnderrunReason r = UnderrunReason::input;
+        first_reason(ep, &r);
+        count(now, r, ep.length);
+    }
     pending_.clear();
 }
 

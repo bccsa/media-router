@@ -504,7 +504,7 @@ void case_window() {
     CHECK("window: empty 30 s after the last", !w.min(60 * SEC, &m));
 }
 
-// --- B-240: the raise rule (owner decision 2026-11-13) and the video trough --------------------------------
+// --- B-240: the raise rule (owner decision 2026-11-13) -------------------------------------------------------
 
 // The reference's Drive: the servo alone on 100 ms ticks; a starvation of a tick or more feeds slack 0 while it
 // runs, a shorter one is the sink's own skip; `hold`: a group target at its render lateness.
@@ -716,6 +716,74 @@ void case_dip_drain() {
           d.reasons() == (std::vector<R>{R::drain, R::raised}) && s.raises() == 1);
 }
 
+// A steady stream at its margin, one 200 ms starvation at 60 s, to 80 s; `each` after every tick.
+Drive steady_at(DrainServo& s, const std::function<void(int64_t)>& each = nullptr,
+                std::function<int64_t(int64_t)> slack = [](int64_t) { return 20 * MS; }) {
+    Drive d(s, slack, [](int64_t) { return 100 * MS; }, {{60 * SEC, 200 * MS}});
+    d.until(80 * SEC, each);
+    return d;
+}
+
+uint64_t counted(const DrainServo& s) {
+    uint64_t n = 0;
+    for (int r = 0; r < mrts::UNDERRUN_REASONS; r++) n += s.reason_count((R)r);
+    return n;
+}
+
+// 19. S3, and a clear with episodes pending (a drain after the end, unreachable through the API while the hold
+// keeps delta at 0, is the reference's forced case).
+void case_input() {
+    const int64_t end = 60 * SEC + 200 * MS;
+    struct Arm {
+        int64_t when;
+        R want;
+        const char* name;
+    };
+    const Arm arms[] = {{50 * SEC, R::input, "input: a break 10 s before, input"},
+                        {25 * SEC, R::raised, "input: a break 35 s before, raised"},
+                        {end + 5 * SEC, R::input, "input: a break 5 s after the end, input"}};
+    for (const Arm& a : arms) {
+        DrainServo s;
+        const int64_t w = a.when;
+        Drive d = steady_at(s, [&](int64_t t) {
+            if (t == w) s.epoch_break();
+        });
+        CHECK(a.name, d.reasons() == std::vector<R>{a.want});
+    }
+    {
+        DrainServo s;
+        Drive d = steady_at(s, [&](int64_t t) {
+            if (t == end + 5 * SEC) s.clear(t);
+        });
+        const auto ev = d.of(DrainEvent::Kind::underrun);
+        CHECK("input: a clear 5 s after the end counts it then, `input`",
+              ev.size() == 1 && ev[0].reason == R::input && ev[0].at == end + 5 * SEC && s.raises() == 0 &&
+                  counted(s) == 1 && s.underruns() == 1);
+    }
+    {
+        DrainServo s;
+        const int64_t e45 = 45 * SEC + 200 * MS;
+        Drive d(s, drain_slack, [](int64_t) { return 100 * MS; }, {{45 * SEC, 200 * MS}});
+        d.until(e45 + 5 * SEC, [&](int64_t t) {
+            if (t == e45 + 3 * SEC) s.clear(t);
+        });
+        CHECK("input: a clear meeting a drain's episode counts `drain`",
+              d.reasons() == std::vector<R>{R::drain} && counted(s) == 1 && s.underruns() == 1);
+    }
+}
+
+// 20. S6 reads the trough 1-2 s before the start: margin 40 ms, the fill falling from it to empty over the 0.5 s
+// before a steady starvation still raises.
+void case_fall() {
+    DrainServo s(false, 40 * MS, 20 * MS);
+    const int64_t at = 60 * SEC;
+    Drive d = steady_at(s, nullptr, [at](int64_t t) {
+        return t <= at - 500 * MS ? 40 * MS : 40 * MS - (t - at + 500 * MS) * 80 / 1000;
+    });
+    CHECK("fall: a fill falling into the starvation, it raises",
+          d.reasons() == std::vector<R>{R::raised} && s.raises() == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -746,5 +814,7 @@ int main() {
     case_spacing();
     case_band();
     case_hold_state();
+    case_input();
+    case_fall();
     return test_summary("drain_servo");
 }

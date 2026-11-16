@@ -159,7 +159,9 @@ def run_ref(text):
     return out.getvalue()
 
 
-SERVO_MUTANTS = [m for m in dt.MUTANTS if m[0] not in ("P as the min",)]
+# A drain after an episode's end cannot happen through the servo's inputs (the hold keeps delta at 0 to t_c):
+# only the reference's forced case tells that mutant.
+SERVO_MUTANTS = [m for m in dt.MUTANTS if m[0] not in ("P as the min", "a drain between the end and t_c ignored")]
 
 
 def main():

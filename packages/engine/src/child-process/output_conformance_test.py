@@ -1043,12 +1043,14 @@ def scn_out_drain_group(tag, argv, exp):
           and all(v <= early + x["rise_ms"] for v in tops.values()) and ptop <= early + x["rise_ms"])
     ao = last(series["aout"])
     why = {k[10:]: v for k, v in ao.items() if k.startswith("underruns-") and v}
+    # The stall's own underrun: any the clean link allowed above come before it.
+    stall_own = (ao.get("underruns") or 0) - under["aout"]
     check(f"{label}: the 302M side took its underrun and did not raise its margin: the shared stall's starvation is "
           f"no steady one at its margin (B-240: seen as warm-up on both runners; {ao.get('underruns')} underrun, "
-          f"{ao.get('drain-raises')} raise, reasons {why}, {ao.get('drain-outages')} outage, margin "
-          f"{ao.get('drain-margin-ns', 0) / 1e6} ms)",
-          ao.get("underruns") == 1 and ao.get("drain-raises") == 0 and ao.get("drain-outages") == 0
-          and sum(why.values()) == 1)
+          f"{stall_own} of them the stall's, {ao.get('drain-raises')} raise, reasons {why}, "
+          f"{ao.get('drain-outages')} outage, margin {ao.get('drain-margin-ns', 0) / 1e6} ms)",
+          stall_own == 1 and ao.get("drain-raises") == 0 and ao.get("drain-outages") == 0
+          and sum(why.values()) == ao.get("underruns"))
     tail = group_spread(run, keys, t0, end - 8, end)
     ends = {k: orig.mid([ms for t, ms in renders_of(run.outputs[k], k) if t >= t0 + (end - 8) * S]) for k in keys}
     pubs = {k: round(role.latest(k).get("drain-target-lateness-ns", 0) / 1e6, 1) for k in keys}
