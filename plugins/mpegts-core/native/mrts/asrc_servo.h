@@ -1,8 +1,6 @@
-// The ASRC (plan ch. 5 part 4.5, WI-P1-8; ch. 7 part 4.4, WI-P3-5, B-148), py/asrc_bypass_ref.py ported rule
-// for rule (OQ-1, S30): a ClockLock gives the source rate and a phase servo commands the resampler; its device
-// term follows the sink's clock on a timer (ch. 8 WI-P4-4, B-166: py/asrc_device_ref.py), its sink margin rebuilt
-// after a hole and what is held past it played out slightly fast (B-249: py/sink_margin_ref.py,
-// py/catch_up_ref.py). Integer-only.
+// The ASRC (ch. 5 part 4.5, WI-P1-8; ch. 7 part 4.4, WI-P3-5, B-148; py/asrc_bypass_ref.py rule for rule, OQ-1, S30):
+// a ClockLock and a phase servo command the resampler; a device term follows the sink's clock (WI-P4-4, B-166), a sink
+// margin is rebuilt after a hole, what is held past it played out slightly fast (B-249). Integer-only.
 #pragma once
 #include <cstdint>
 #include <deque>
@@ -344,10 +342,9 @@ class AsrcRenderLateness {
     std::deque<Seg> map_;
 };
 
-// The sink margin (B-249): py/sink_margin_ref.py. Before a sync=false sink renders, the silence to put first when its
-// next write is behind the first frame the device can still play (past the segment in flight, or the clock plus the
-// guard), or there is none (a start, a flush): the buffer lands `margin` past it (then plus margin or guard).
-// At most `cap` (> 0) frames: a longer gap is crossed by the writes after it.
+// The sink margin (B-249, py/sink_margin_ref.py): silence before a sync=false sink's write that is behind the first
+// frame the device can still play, or the first (a start, a flush), so it lands `margin` past it (a first: plus margin
+// or guard). At most `cap` (> 0) frames; a longer gap is crossed by the writes after it.
 int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos, int64_t guard);
 int64_t asrc_sink_write_pos(int64_t next_sample, int64_t segdone, int64_t sps);
 int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int64_t margin, bool have_play,

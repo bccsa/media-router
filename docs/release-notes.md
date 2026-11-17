@@ -685,20 +685,28 @@ elements" below do not start.
   taken (40 ms on a PipeWire device): 60 to 100 ms ahead of what you hear
   after a gap, and 130 ms or more when it starts. Its feed may come up to
   60 ms later than before without a gap. If the feed falls further behind, or
-  stops, you hear one gap; the output then plays on as late as the feed now
-  comes, with that much in hand again. When it holds more than it needs (after
-  a spike in the feed's lateness, or a start that came up late), it plays it
-  out slightly fast until it is back to 60 ms in hand: at most 0.5 % fast, a
-  pitch change of under 9 cents, nothing skipped. It waits a minute first, so
-  a feed whose lateness keeps going up and down keeps the room its worst
-  moment in that minute needed, then gives back 5 ms a second: 0.8 s too much
-  takes under 4 minutes (60 s, then 160 s). Its Timing shows "Catch-up: catching
-  up" with what is left meanwhile. The Audio Decoder's output does the same.
-  The output now plays behind a video player
-  on the same route by that much less the route's playout offset (60 ms by
-  default); raise the route's playout offset to bring the picture back in
-  line. The Audio Output (302M)'s Lip-Sync Trim is gone from its settings: it
-  no longer moved anything.
+  stops, or the box holds the output itself up for a moment (a hiccup under
+  heavy load), you hear one gap; the output then plays on later by about that
+  gap (a hiccup: its length, up to 0.06 s more), with 60 ms in hand again, and
+  such gaps add up. When it holds more than it needs (after a spike in the
+  feed's lateness, a start that came up late, or such gaps), it plays it out
+  slightly fast until it is back to 60 ms in hand: at most 0.5 % fast, a pitch
+  change of under 9 cents, nothing skipped. It waits a minute after the last
+  gap first, so a feed whose lateness keeps going up and down keeps the room
+  its worst moment in that minute needed, then gives back 5 ms a second: 0.8 s
+  too much takes under 4 minutes (60 s, then 160 s). Six hiccups of about
+  0.1 s in two and a half minutes left it about 0.75 s late at most, back 1.2
+  to 2.5 minutes after the last (an Audio Decoder about 0.9 s, back 3 to
+  5.5 minutes after the last). Hiccups that add more than 5 ms a second for
+  minutes on end (a 0.1 s one more often than every 20 to 30 seconds) make it
+  later and later until they stop: an Audio Output (302M) then holds up its
+  mix once it is 1 s behind, and an Audio Decoder loses what its Buffer and
+  its input cannot hold. Its Timing shows "Catch-up: catching up" with what is
+  left meanwhile. The Audio Decoder's output does the same. The output now
+  plays behind a video player on the same route by that much less the route's
+  playout offset (60 ms by default); raise the route's playout offset to bring
+  the picture back in line. The Audio Output (302M)'s Lip-Sync Trim is gone
+  from its settings: it no longer moved anything.
 - **Audio inputs capture again by themselves after PipeWire restarts.** Up to
   v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
   buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and

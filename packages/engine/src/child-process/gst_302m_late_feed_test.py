@@ -23,6 +23,12 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     walk it plays holes to the end and loses audio, in the field walk it loses audio at the start and, on some
     runs, plays holes for good; v2.0.0.101's (sync=true, ts-offset 0: a budget of the ~110 ms its sink
     declares, most of it the ring's own) cuts the field walk into holes, as on TECH01, and the rising walk.
+  - writer stalls (B-249 fix round 3; seeds 7, 8, 9, 420 s): the thread that writes into the sink (302M: `outq`'s;
+    the Audio Decoder's sink end: the one into `asrc`) sleeps 80-120 ms at content 10, 15, 20, 25, 55 and 150 s, the
+    feed 30 ms late: each stall a hole at most (each with its refill), nothing lost, each adding at most its length
+    plus the margin, 40 ms and two segments to the delay, which is back at the target at the end, within a window and
+    what was in hand at 0.5 % (+20 %) of the last stall, and a window more for each of decq's 300 ms of it on the
+    Audio Decoder (what waits past decq, here in appsrc, comes into view only as decq drains; 900 s on a server).
   - drift: an hour of a device 100 ppm fast, and an hour 100 ppm slow, a tone stamped at house rate: no hole, no
     underrun, no refill after the start, the render lateness's level the same at the end as after 2 min and its
     p1-p99 within 2 ms and max-min within 20 (B-166). `MR_302M_DRIFT_SECS`, `_SPEED` and `_PPM` set the run.
@@ -38,9 +44,13 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     hole after the start has a refill within 3 s of it, the rising walk none once at its max, every frame fed taken
     and the frames heard within 1 ms of what mrasrc made; the late start and the spike back to the server's target
     (190 ms), the late start in a window plus 0.5 % (+-20 %); a flush one hole, its refills each at most
-    the 3 s cap (REFILL_MAX_MS: c1a929b9 put 5 and 10 s of silence in one), at most 200 ms lost, sound to the
-    end. MR_302M_PULSE_MON_US sets the monitor's latency (so the graph quantum). Not in the chain (it needs a
-    server). MR_302M_PARTS picks parts (sink, mutants, catch, pulse, drift).
+    the 3 s cap as they reach the sink (REFILL_MAX_MS: c1a929b9 put 5 and 10 s of silence in one), at most
+    200 ms lost, sound to the end; the writer stalls on both tails (600 s, the decoder 900; every hole with its
+    refill); an outage of 2.5, 6.5 and 10 s on both tails: one hole, each refill at most the cap, lost at most a
+    10 ms buffer a cap crossed where pulsesink's segment count does not move (1.22: the write after each capped
+    refill is behind the server's read index), nothing where it does (1.28). MR_302M_PULSE_MON_US sets the
+    monitor's latency (so the graph quantum). Not in the chain (it needs a server). MR_302M_PARTS picks parts
+    (sink, mutants, catch, stalls, pulse, drift).
 
 A run that fails while the load was 3 or more is run again once, after the load fell. Skips (exit 0) without
 GStreamer or the built plugins."""
@@ -85,9 +95,9 @@ DRAIN_S = 2
 SECS = int(os.environ.get("MR_302M_SECS", "40"))
 RUNS = int(os.environ.get("MR_302M_RUNS", "5"))
 LOAD_MAX = 3.0
-# Which parts run (all by default): sink (the profiles), mutants, catch (the catch-up's), pulse
-# (MR_302M_PULSE_SINK), drift.
-PARTS = set(os.environ.get("MR_302M_PARTS", "sink,mutants,catch,pulse,drift").split(","))
+# Which parts run (all by default): sink (the profiles), mutants, catch (the catch-up's), stalls (writer stalls),
+# pulse (MR_302M_PULSE_SINK), drift.
+PARTS = set(os.environ.get("MR_302M_PARTS", "sink,mutants,catch,stalls,pulse,drift").split(","))
 SINK_KEYS = ("holes", "hole-frames", "hole-max", "underruns", "renders", "sounded-frames")
 
 with open(os.path.join(_PLUGINS, "audio-output-302m", "tests", "fixtures", "sink-end.json"), encoding="utf-8") as _fh:
@@ -95,6 +105,7 @@ with open(os.path.join(_PLUGINS, "audio-output-302m", "tests", "fixtures", "sink
 # The Audio Decoder's, fed PCM (no decoder); the ts-offset times nothing on its sync=false sink.
 with open(os.path.join(_PLUGINS, "audio-decoder", "tests", "fixtures", "sink-end.json"), encoding="utf-8") as _fh:
     DEC_TAIL = json.load(_fh)["tail"].replace("%DECODER% ! ", "").replace("%TS_OFFSET%", "0")
+DECQ_MS = int(DEC_TAIL.split("max-size-time=")[1].split()[0]) // MS if "max-size-time=" in DEC_TAIL else 0
 # The test device: pulsesink's 10 ms segments (its latency-time default), 100 ppm fast, 40 ms of its own.
 TEST_SINK = "mrtestaudiosink name=sink"
 TEST_DEVICE = " latency-time=10000 ppm=100 device-ns=40000000"
@@ -190,9 +201,10 @@ LAST_LATENCY_NS = None   # the pipeline's min latency, read 3 s into the last ru
 LAST_ASRC = {}           # the last run's mrasrc stats at its end (its EOS post where the feed ended)
 
 
-def run(desc, secs, speed=1, feed=None):
+def run(desc, secs, speed=1, feed=None, setup=None):
     """`desc` on MrTestClock at `speed` for `secs` of clock time: the sink's counters, the mrasrc-stats posts,
-    the sink's counters per second, errors."""
+    the sink's counters per second, errors. `setup(p, clk, t0)` adds probes before it plays (t0[0]: the clock's
+    start, once it plays)."""
     import gc
     gc.disable()   # a collection pause in the feed thread would be a hole of the harness's own
     clk = GObject.new(GObject.type_from_name("MrTestClock"))
@@ -200,11 +212,15 @@ def run(desc, secs, speed=1, feed=None):
     p = Gst.parse_launch(desc)
     p.use_clock(clk)
     stop = threading.Event()
+    t0 = [None]
+    if setup:
+        setup(p, clk, t0)
     p.set_state(Gst.State.PLAYING)
     th = threading.Thread(target=feed, args=(p, clk, stop), daemon=True) if feed else None
     if th:
         th.start()
     bus, start = p.get_bus(), clk.get_time()
+    t0[0] = start
     stats, levels, errors, next_level = [], [], [], 1.0
     snk = p.get_by_name("sink")
     global LAST_LATENCY_NS
@@ -229,7 +245,7 @@ def run(desc, secs, speed=1, feed=None):
     stop.set()
     if th:
         th.join(2)
-    a = p.get_by_name("outasrc")
+    a = p.get_by_name("outasrc") or p.get_by_name("asrc")
     global LAST_ASRC
     LAST_ASRC = sdict(a.get_property("stats")) if a else {}
     p.set_state(Gst.State.NULL)
@@ -382,10 +398,9 @@ for _name in (("rising", "field") if "mutants" in PARTS else ()):
         check(f"v101 field: the field's feed is cut, as on TECH01 ({[r['holes'] for r in _rs]} holes, "
               f"{[round(r['lost'] / 48) for r in _rs]} ms lost)", all(r["lost"] > 4800 and r["holes"] > 0 for r in _rs))
 
-# --- the catch-up (B-249): back to the margin at 0.5 % ------------------------------------------------------------
-# The target: the feed's 30 ms, the device's 40 ms and up to two 10 ms segments in flight, the 60 ms margin and a
-# buffer (the trough is read just before a buffer comes). A run's render lateness 5-10 s in, at its end, and the time
-# from the start to within 5 ms of the end against a window plus (start - end) at 0.5 %.
+# --- the catch-up (B-249): back to the margin at 0.5 %; the target: the feed's 30 ms, the device's 40 ms, two -----
+# segments in flight, the 60 ms margin and a buffer (the trough is read just before a buffer comes); the time to
+# within 5 ms of the end against a window plus (start - end) at 0.5 %.
 TARGET_MAX = 30 + 40 + 20 + MARGIN_MS + 10
 _c39_off = tail_for(MODULE_TAIL.replace(" catch-up-ppm=5000", ""))
 
@@ -445,6 +460,121 @@ if "catch" in PARTS:
                 extra = f"; holes only on the rise (last by {_r['last_hole']:.0f} s), caught up from a window after the fall"
             check(f"{_name} seed {_seed}: {describe_cu(_r, rec)}{extra}; target at most {TARGET_MAX} ms", ok)
 
+# --- writer stalls (B-249 fix round 3): the thread into the sink sleeps 80-120 ms at each STALL_AT_S ---------------
+# (302M: outq's; the Audio Decoder: the one into `asrc`), a 30 ms feed: 5 s apart, then 30 s (inside the catch-up's
+# window), then 95 s (while it runs). Each hole stays as delay until the catch-up plays it out.
+STALL_AT_S = (10, 15, 20, 25, 55, 150)
+STALL_SECS = int(os.environ.get("MR_302M_STALL_SECS", "420"))
+_STALL_SEEDS = [int(v) for v in os.environ.get("MR_302M_STALL_SEEDS", "7,8,9").split(",") if v]
+
+
+def stall_plan(seed):
+    rng = random.Random(seed * 17)
+    return [(t, round(rng.uniform(80, 120), 1)) for t in STALL_AT_S]
+
+
+def stall_probe(p, dec, plan, fired, now):
+    """Sleep the writer thread at each (content s, ms) of plan, timed on its buffers' PTS; now() at each into fired."""
+    pad = p.get_by_name("asrc").get_static_pad("sink") if dec else p.get_by_name("outq").get_static_pad("src")
+    st = {"k": 0, "t0": None}
+
+    def probe(_pad, info):
+        b = info.get_buffer()
+        if b is None or b.pts == Gst.CLOCK_TIME_NONE:
+            return Gst.PadProbeReturn.OK
+        if st["t0"] is None:
+            st["t0"] = b.pts
+        k = st["k"]
+        if k < len(plan) and b.pts - st["t0"] >= plan[k][0] * S:
+            fired.append(now())
+            time.sleep(plan[k][1] / 1000.0)
+            st["k"] += 1
+        # No Python on the writer thread once the plan is done (the GIL would be a stall of the harness's own).
+        return Gst.PadProbeReturn.REMOVE if st["k"] >= len(plan) else Gst.PadProbeReturn.OK
+
+    pad.add_probe(Gst.PadProbeType.BUFFER, probe)
+
+
+def stall_metrics(raw, fired, plan, secs):
+    """From the render lateness posts (t s, ms): before the first stall, each stall's growth (the median 1.5-4 s after
+    it less 0.2-3 s before), the peak, the end (the last 10 s), when it came within 5 ms of the end for good."""
+    def med(lo, hi):
+        v = sorted(x for t, x in raw if lo <= t <= hi)
+        return v[len(v) // 2] if v else None
+    growth = []
+    for k, f in enumerate(fired):
+        nxt = fired[k + 1] if k + 1 < len(fired) else secs
+        b, a = med(f - 3.0, f - 0.2), med(f + 1.5, min(f + 4.0, nxt - 0.2))
+        growth.append(round(a - b, 1) if a is not None and b is not None else None)
+    tail = [x for t, x in raw if secs - 10 <= t <= secs]
+    end = sum(tail) / len(tail) if tail else None
+    reach = 0.0
+    for t, x in raw:
+        if t <= secs and end is not None and abs(x - end) > 5:
+            reach = t
+    peak = max((x for t, x in raw if t <= secs), default=None)
+    return {"base": med(fired[0] - 4.0, fired[0] - 0.2) if fired else None, "growth": growth, "peak": peak,
+            "end": end, "reach": reach, "recovery": reach - fired[-1] if fired else None}
+
+
+def stall_predicted(m, plan, queue_ms=0):
+    """The catch-up's own bound on the recovery: a window after the last stall, then what was in hand past the end at
+    0.5 %; with an upstream-queue of queue_ms, a window more for each queue's worth (what waits before it is seen only
+    as it drains)."""
+    x = max(m["growth"][-1] or 0, (m["peak"] or 0) - (m["end"] or 0), 0.0)
+    return WINDOW_S * (max(1, math.ceil(x / queue_ms)) if queue_ms else 1) + x / 1000 / RATE
+
+
+def stall_ok(m, plan, holes, lost_frames, target, err, secs, cu_end, queue_ms=0):
+    # A stall that fits in what the sink holds (the last stall's growth among it) adds nothing.
+    grown = all(g is not None and -5 < g <= ms + MARGIN_MS + 40 + 20 for g, (_, ms) in zip(m["growth"], plan))
+    return (not err and len(m["growth"]) == len(plan) and grown and holes <= len(plan) and 0 <= lost_frames <= 48
+            and m["end"] is not None and m["end"] <= target and m["reach"] <= secs - 20
+            and m["recovery"] <= 1.2 * stall_predicted(m, plan, queue_ms) and cu_end != "catching-up")
+
+
+def describe_stall(m, plan, holes, hole_ms, lost_frames, removed, refills, queue_ms=0):
+    return (f"stalls {[ms for _, ms in plan]} ms at {[round(f, 1) for f in m['fired']]} s: {holes} holes "
+            f"({hole_ms:.0f} ms), lost {lost_frames / 48:.2f} ms, {refills} refills; render lateness "
+            f"{m['base']:.0f} ms before, grew {m['growth']} ms a stall, peak {m['peak']:.0f}, end {m['end']:.0f} ms, "
+            f"back {m['recovery']:.0f} s after the last stall (the window and 0.5 % bound it at "
+            f"{stall_predicted(m, plan, queue_ms):.0f} s); removed {removed:.0f} ms")
+
+
+STALL_TABLE = []
+if "stalls" in PARTS:
+    print(f"\n--- writer stalls: {STALL_AT_S} s, 80-120 ms each, a 30 ms feed, {STALL_SECS} s, the test sink ---")
+    for _dec in (False, True):
+        for _seed in _STALL_SEEDS:
+            _plan = stall_plan(_seed)
+            _tail = tail_for(DEC_TAIL) if _dec else _c39
+            _n = STALL_SECS * 100
+            _fired = []
+
+            def _setup(p, clk, t0, _plan=_plan, _fired=_fired, _dec=_dec):
+                stall_probe(p, _dec, _plan, _fired, lambda: (clk.get_time() - (t0[0] or 0)) / S)
+
+            wait_quiet()
+            _l0 = os.getloadavg()[0]
+            _sk, _st, _lv, _err = run(SRC + _tail, STALL_SECS + DRAIN_S, feed=late_feeder([30.0] * _n, eos=True),
+                                      setup=_setup)
+            _took, _made = LAST_ASRC.get("in-frames", 0), LAST_ASRC.get("out-frames", 0)
+            _lost = (_n * BUF - _took) + max(0, _made - _sk["sounded-frames"])
+            _h, _hf = holes_from(_lv, _sk, START_S)
+            _raw = [(t, s.get("render-lateness-ns", 0) / MS) for t, s in _st if s.get("render-lateness-ns", 0)]
+            _m = stall_metrics(_raw, _fired, _plan, STALL_SECS)
+            _m["fired"] = _fired
+            _cu = _st[-1][1].get("catch-up-state", "none") if _st else "none"
+            _rm = (_st[-1][1].get("catch-up-removed-ns", 0) / MS) if _st else 0
+            _rf = _st[-1][1].get("margin-refills", 0) if _st else 0
+            _what = "decoder" if _dec else "302M"
+            STALL_TABLE.append(("test", _what, _seed, _m, _h, _hf / 48, _lost / 48, _rm))
+            _q = DECQ_MS if _dec else 0
+            _ok = _m["base"] is not None and stall_ok(_m, _plan, _h, _lost, TARGET_MAX, _err, STALL_SECS, _cu, _q)
+            check(f"{_what} writer stalls seed {_seed} (test sink, load {_l0:.1f}/{os.getloadavg()[0]:.1f}): "
+                  f"{describe_stall(_m, _plan, _h, _hf / 48, _lost, _rm, _rf, _q) if _m['base'] is not None else _m}; "
+                  f"target at most {TARGET_MAX} ms{', errors ' + str(_err) if _err else ''}", _ok)
+
 print("\n--- the table: profile x runs x holes after the start x lost ---")
 print(f"{'tail':5} {'profile':7} {'runs':>4} {'holes':>18} {'lost ms':>30}")
 for _tail in ("c39", "c38", "v101"):
@@ -463,6 +593,20 @@ if CU_TABLE:
             _lv = f"{_x[0]:.0f} -> {_x[1]:.0f} ms (by {_x[2]:.0f} s)" if _x else "none"
             print(f"  {_name:10} seed {_seed}: holes {_r['holes']}, lost {_r['lost'] / 48:.2f} ms, {_lv}, removed "
                   f"{_r['removed']:.0f} ms")
+
+
+
+def print_stall_table(rows):
+    print("\n--- the stall table: sink x tail x seed x holes x lost x lateness before -> peak -> end x growth a "
+          "stall x back after the last stall ---")
+    for sink, what, seed, m, h, hms, lost, rm in rows:
+        print(f"  {sink:5} {what:7} seed {seed}: holes {h} ({hms:.0f} ms), lost {lost:.2f} ms, "
+              f"{m['base'] or 0:.0f} -> {m['peak'] or 0:.0f} -> {m['end'] or 0:.0f} ms, growth {m['growth']} ms, "
+              f"back {m['recovery'] or 0:.0f} s, removed {rm:.0f} ms")
+
+
+if STALL_TABLE:
+    print_stall_table(STALL_TABLE)
 
 # --- a real pulsesink (MR_302M_PULSE_SINK) ----------------------------------------------------------------------
 _PULSE = os.environ.get("MR_302M_PULSE_SINK", "")
@@ -517,12 +661,40 @@ EDGE_STEPS = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
 _EDGE_HOLD = int(os.environ.get("MR_302M_PULSE_EDGE_HOLD", "30"))
 _EDGE_SEEDS = [int(v) for v in os.environ.get("MR_302M_PULSE_EDGE_SEEDS", "7,8,9").split(",") if v]
 _PULSE_PROFILES = [v for v in os.environ.get("MR_302M_PULSE_PROFILES",
-                                             "edge,dec-edge,flush,field,rising,late,spike").split(",") if v]
+                                             "edge,dec-edge,flush,field,rising,late,spike,stalls,dec-stalls,"
+                                             "outage,dec-outage").split(",") if v]
 FLUSH_AT_S = (10, 20)                      # the flush profile: two flushes into the sink, 30 s at 30 ms
 REFILL_MAX_MS = 3000                       # mrts::ASRC_SINK_REFILL_MAX_MS
 # dec-edge: the Audio Decoder's sink end, 20 steps of 3 s each 2 ms ahead of the clock, a 10-buffer burst before each.
 _DEC_SEEDS = [int(v) for v in os.environ.get("MR_302M_PULSE_DEC_SEEDS", "7,8").split(",") if v]
 DEC_STEPS, DEC_HOLD, DEC_BURST = [2] * 20, 3, 10
+# The writer stalls on a server: as on the test sink, longer (its start may come up 0.3-2 s late on top).
+_PULSE_STALL_SECS = int(os.environ.get("MR_302M_PULSE_STALL_SECS", "600"))
+# The Audio Decoder's longer: what waits past decq comes back a window a queue's worth (B-249 fix round 3).
+_PULSE_DEC_STALL_SECS = int(os.environ.get("MR_302M_PULSE_DEC_STALL_SECS", "900"))
+# An outage: the feed stops for each gap at OUTAGE_AT_S, then comes that much later; OUTAGE_FEED_S of content.
+OUTAGE_AT_S, OUTAGE_FEED_S = 10, 22
+_OUTAGE_GAPS = [float(v) for v in os.environ.get("MR_302M_PULSE_OUTAGES", "2.5,6.5,10").split(",") if v]
+_PULSESINK = Gst.ElementFactory.find("pulsesink")
+PULSESINK_VERSION = _PULSESINK.get_plugin().get_version() if _PULSESINK else ""
+
+
+def pulsesink_moves_segdone():
+    """1.28 and later set the ring's segment count from the server's read index (pulsesink.c); 1.22 does not."""
+    try:
+        major, minor = (int(v) for v in PULSESINK_VERSION.split(".")[:2])
+    except ValueError:
+        return False
+    return (major, minor) >= (1, 28)
+
+
+def outage_allowed_ms(gap_s):
+    """What an outage may lose: on a pulsesink whose segment count is still, the refill's silence must cross the whole
+    gap (plus the guard and margin) in writes of at most the cap, and the buffer after each capped one is behind the
+    server's read index: one 10 ms buffer a cap crossed. Where the count follows the read index, nothing."""
+    if pulsesink_moves_segdone():
+        return 1.0
+    return 10.0 * max(0, -(-(gap_s * 1000 + 100) // REFILL_MAX_MS) - 1) + 1.0
 
 
 def edge_steps(seed):
@@ -532,13 +704,14 @@ def edge_steps(seed):
     return steps
 
 
-def pulse_run(name, secs, seed=7):
+def pulse_run(name, secs, seed=7, gap=0.0):
     """The module's sink end into a real pulsesink, its monitor counting. `edge`: 10 s at 30 ms, then each step
     x of edge_steps(seed): the feed's lateness becomes the render lateness less x (never earlier than it was), so
     each write lands x ms ahead of the device clock, inside the server's read-ahead for small x (blocking 1).
     `dec-edge`: the Audio Decoder's sink end on DEC_STEPS, the DEC_BURST buffers before each step pushed at once."""
-    dec = name == "dec-edge"
+    dec = name in ("dec-edge", "dec-stalls", "dec-outage")
     edge, flush = name in ("edge", "dec-edge"), name == "flush"
+    stalls, outage = name in ("stalls", "dec-stalls"), name in ("outage", "dec-outage")
     steps = DEC_STEPS[:] if dec else (edge_steps(seed) if edge else [])
     hold = DEC_HOLD if dec else _EDGE_HOLD
     if edge:
@@ -547,9 +720,16 @@ def pulse_run(name, secs, seed=7):
         secs = 30
     if name in CATCH:
         secs = PULSE_CATCH_SECS[name]
+    if stalls:
+        secs = _PULSE_DEC_STALL_SECS if dec else _PULSE_STALL_SECS
+    if outage:
+        secs = OUTAGE_FEED_S
     n = secs * 100
     gen = CATCH[name][0] if name in CATCH else PROFILES.get(name)
-    late = [30.0] * n if flush else (gen(n, seed) if not edge else None)
+    if outage:   # the feed stops `gap` s at OUTAGE_AT_S, then comes that much later
+        late = [30.0 + (gap * 1000 if i >= OUTAGE_AT_S * 100 else 0) for i in range(n)]
+    else:
+        late = [30.0] * n if (flush or stalls) else (gen(n, seed) if not edge else None)
     state = {"late": 30.0, "rl": None, "step": -1, "set": []}
 
     def edge_late(i):
@@ -564,13 +744,18 @@ def pulse_run(name, secs, seed=7):
             return state["late"] - (i - (nb - DEC_BURST)) * 10   # the burst: pushed with its first buffer
         return state["late"]
 
+    import gc
+    gc.disable()   # as run(): a collection pause would stall the probes' threads
     mon = MonitorCount(_PULSE)
     mon.start()
     time.sleep(1.0)
     p = Gst.parse_launch(SRC + tail_for(DEC_TAIL if dec else MODULE_TAIL, sink=f"pulsesink name=sink device={_PULSE}",
                                         device=""))
     stop = threading.Event()
-    flushed = []
+    flushed, fired = [], []
+    plan = stall_plan(seed) if stalls else []
+    if stalls:
+        stall_probe(p, dec, plan, fired, lambda: time.monotonic() - mon.t0 - 1.0)
     if flush:
         # As mrasrc's device flush does, from the queue's thread: FLUSH_START, FLUSH_STOP and the segment into the
         # sink, then the buffer that was due (minor 3: pulsesink's next write after a flush).
@@ -590,15 +775,28 @@ def pulse_run(name, secs, seed=7):
 
         p.get_by_name("outq").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, flusher)
     p.set_state(Gst.State.PLAYING)
+    # Each refill's silence as it reaches the sink (minor 3: each, not a mean): a PTS-less write less its buffer.
+    sil_max = [0.0]
+
+    def sizes(_pad, info):
+        b = info.get_buffer()
+        if b is not None and b.pts == Gst.CLOCK_TIME_NONE:
+            sil_max[0] = max(sil_max[0], (b.get_size() // 8 - BUF * 1.006) / 48)
+        return Gst.PadProbeReturn.OK
+
+    if flush or outage:
+        p.get_by_name("sink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, sizes)
     feed = late_feeder([edge_late] * n if edge else late, eos=True)
     th = threading.Thread(target=feed, args=(p, p.get_pipeline_clock(), stop), daemon=True)
     th.start()
     bus, t0, stats, errors = p.get_bus(), mon.t0, [], []
     # Until the feed's last push has played out: its render lateness and 1.5 s more after it (the drain at least).
-    ended = None
+    ended, played, trace = None, None, []
     while ended is None or time.monotonic() - ended < max(DRAIN_S, (state["rl"] or 0) / 1000 + 1.5):
         if ended is None and not th.is_alive():
             ended = time.monotonic()
+        if played is None and p.get_base_time():   # the feed runs from here (a start can take minutes, rarely)
+            played = time.monotonic() - t0 - 1.0
         m = bus.timed_pop(100 * Gst.MSECOND)
         if m is None:
             continue
@@ -608,6 +806,12 @@ def pulse_run(name, secs, seed=7):
         if m.type == Gst.MessageType.ELEMENT and m.get_structure().get_name() == "mrasrc-stats":
             st = sdict(m.get_structure())
             stats.append((time.monotonic() - t0, st))
+            if stalls and (not trace or stats[-1][0] - 1.0 - trace[-1][0] >= 10):
+                q = p.get_by_name("decq") if dec else p.get_by_name("outq")
+                trace.append((round(stats[-1][0] - 1.0), round(st.get("render-lateness-ns", 0) / MS),
+                              st.get("catch-up-state", "-"), round(st.get("catch-up-excess-ns", 0) / MS),
+                              round(st.get("catch-up-removed-ns", 0) / MS),
+                              round(q.get_property("current-level-time") / MS) if q else -1))
             if st.get("render-lateness-ns", 0):
                 state["rl"] = st["render-lateness-ns"] / MS
     stop.set()
@@ -617,6 +821,7 @@ def pulse_run(name, secs, seed=7):
     p.set_state(Gst.State.NULL)
     time.sleep(0.5)
     mon.stop()
+    gc.enable()
     start_s = 1.0 + START_S + 1.0              # the monitor's second before the pipeline, then the start window
     if edge:
         t_max = 0.0
@@ -657,7 +862,9 @@ def pulse_run(name, secs, seed=7):
             "begins": [round(t - 1.0, 1) for (_, a), (t, b) in zip(stats, stats[1:])
                        if b.get("catch-up-state") == "catching-up" and a.get("catch-up-state") != "catching-up"],
             "removed": final.get("catch-up-removed-ns", 0) / MS, "cu_end": final.get("catch-up-state", "none"),
-            "last_sound": mon.last_sound - mon.t0 if mon.last_sound else 0, "end": time.monotonic() - t0}
+            "last_sound": mon.last_sound - mon.t0 if mon.last_sound else 0, "end": time.monotonic() - t0,
+            "plan": plan, "fired": fired, "sil_max": sil_max[0], "played": played or 0.0, "trace": trace,
+            "hole_times": [round(t - 1.0, 1) for t in holes]}
 
 
 # The pulse pass: every frame fed taken, and the frames heard within the 1 ms allowance (the resampler's 32 frames) of
@@ -669,15 +876,23 @@ def pulse_lost_ok(r):
 PULSE_TABLE = []
 PULSE_TARGET_MAX = 30 + 40 + MARGIN_MS + 10 + 30
 if _PULSE and "pulse" in PARTS:
+    print(f"\n(pulsesink {PULSESINK_VERSION}: its segment count "
+          f"{'follows the read index' if pulsesink_moves_segdone() else 'does not move'})")
     for _name in _PULSE_PROFILES:
-        for _seed in (_EDGE_SEEDS if _name == "edge" else _DEC_SEEDS if _name == "dec-edge" else [7]):
+        _outage = _name in ("outage", "dec-outage")
+        for _seed in (_EDGE_SEEDS if _name == "edge" else _DEC_SEEDS if _name == "dec-edge" else _STALL_SEEDS
+                      if _name in ("stalls", "dec-stalls") else _OUTAGE_GAPS if _outage else [7]):
             _secs = (10 + _EDGE_HOLD * len(EDGE_STEPS) if _name == "edge" else 10 + DEC_HOLD * len(DEC_STEPS)
                      if _name == "dec-edge" else 30 if _name == "flush" else PULSE_CATCH_SECS[_name] if _name in CATCH
+                     else _PULSE_STALL_SECS if _name == "stalls" else _PULSE_DEC_STALL_SECS if _name == "dec-stalls"
+                     else OUTAGE_FEED_S if _outage
                      else _PULSE_SECS)
-            print(f"\n--- a real pulsesink on {_PULSE}: the {_name} profile"
-                  f"{f' seed {_seed}' if _name in ('edge', 'dec-edge') else ''}, {_secs} s, holes on its monitor ---")
+            _label = (f" seed {_seed}" if _name in ("edge", "dec-edge", "stalls", "dec-stalls") else
+                      f" gap {_seed} s" if _outage else "")
+            print(f"\n--- a real pulsesink on {_PULSE}: the {_name} profile{_label}, {_secs} s, holes on its "
+                  f"monitor ---")
             wait_quiet()
-            _r = pulse_run(_name, _PULSE_SECS, _seed)
+            _r = pulse_run(_name, _PULSE_SECS, 7 if _outage else _seed, gap=_seed if _outage else 0.0)
             PULSE_TABLE.append((_name, _seed, _r))
             _lat = f"{min(_r['lat']):.0f}..{max(_r['lat']):.0f}" if _r["lat"] else "none"
             _what = (f"{_r['holes']} holes ({_r['hole_ms']:.0f} ms) on the monitor, {_r['holes_after_start']} after the "
@@ -685,7 +900,33 @@ if _PULSE and "pulse" in PARTS:
                      f"{_r['sounded']}, mrasrc's ratio {_r['ppb'] / 1000:+.2f} ppm made {_r['want']:.0f}: lost "
                      f"{_r['lost'] / 48:.2f} ms; render lateness {_lat} ms; {_r['refills']} refills; guard "
                      f"{_r['guard']:.1f} ms; errors {_r['err']}")
-            if _name in ("edge", "dec-edge"):
+            if _name in ("stalls", "dec-stalls"):
+                _end = _r["played"] + _r["secs"]
+                _m = stall_metrics(_r["raw"], _r["fired"], _r["plan"], _end)
+                _m["fired"] = _r["fired"]
+                _what_t = "decoder" if _name == "dec-stalls" else "302M"
+                STALL_TABLE.append(("pulse", _what_t, _seed, _m, _r["holes_after_start"], _r["hole_ms"],
+                                    _r["lost"] / 48, _r["removed"]))
+                # The decoder's backlog past decq (here in appsrc) is seen as decq drains: a window a queue's worth.
+                _q = DECQ_MS if _name == "dec-stalls" else 0
+                _ok = (_m["base"] is not None and not _r["orphans"] and
+                       stall_ok(_m, _r["plan"], _r["holes_after_start"], abs(_r["lost"]), PULSE_TARGET_MAX, _r["err"],
+                                _end, _r["cu_end"], _q))
+                _d = (describe_stall(_m, _r["plan"], _r["holes_after_start"], _r["hole_ms"], _r["lost"], _r["removed"],
+                                     _r["refills"], _q) if _m["base"] is not None else str(_m))
+                check(f"pulse {_what_t} writer stalls seed {_seed} (playing from {_r['played']:.1f} s): {_d}; holes at "
+                      f"{_r['hole_times']} s, {len(_r['orphans'])} with no refill; target at most {PULSE_TARGET_MAX} ms; "
+                      f"errors {_r['err']}", _ok)
+                print(f"   each 10 s (s, render lateness ms, catch-up state, excess ms, removed ms, queue ms): "
+                      f"{_r['trace']}")
+            elif _outage:
+                _allow = outage_allowed_ms(_seed)
+                check(f"pulse {_name} gap {_seed} s: {_what}; refills of at most {_r['sil_max']:.0f} ms each (cap "
+                      f"{REFILL_MAX_MS}); lost at most {_allow:.0f} ms on pulsesink {PULSESINK_VERSION}; sound until "
+                      f"{_r['last_sound']:.1f} s (the feed's end plays from {OUTAGE_FEED_S + _seed:.1f})",
+                      not _r["err"] and _r["holes_after_start"] <= 1 and _r["sil_max"] <= REFILL_MAX_MS + 1
+                      and -48 <= _r["lost"] <= _allow * 48 and _r["last_sound"] >= OUTAGE_FEED_S + _seed)
+            elif _name in ("edge", "dec-edge"):
                 check(f"pulse {_name} seed {_seed} (steps {_r['steps']} ms ahead, lateness set {_r['set']}): {_what}",
                       not _r["err"] and not _r["orphans"] and pulse_lost_ok(_r))
             elif _name == "flush":
@@ -693,12 +934,12 @@ if _PULSE and "pulse" in PARTS:
                 # to the end. The silence runs from where the sink writes: frame 0 on a pulsesink whose segdone is
                 # still (1.22), so the stream's run, crossed by refills of at most the cap (one a 3 s, plus one).
                 _most = 1 + sum(-(-t * 1000 // REFILL_MAX_MS) + 1 for t in FLUSH_AT_S)
-                check(f"pulse flush (flushed at {_r['flushed']} s): {_what}; refills of {_r['refill_ms']} ms (each at "
-                      f"most {REFILL_MAX_MS}; {_r['refills']} of at most {_most}); sound until {_r['last_sound']:.1f} s "
-                      f"of {_r['end']:.1f}",
+                check(f"pulse flush (flushed at {_r['flushed']} s): {_what}; refills of at most {_r['sil_max']:.0f} ms "
+                      f"each as they reached the sink (cap {REFILL_MAX_MS}; {_r['refills']} of at most {_most}); sound "
+                      f"until {_r['last_sound']:.1f} s of {_r['end']:.1f}",
                       not _r["err"] and len(_r["flushed"]) == len(FLUSH_AT_S) and not _r["orphans"]
                       and 1 + len(FLUSH_AT_S) <= _r["refills"] <= _most
-                      and max(_r["refill_ms"] or [0]) <= REFILL_MAX_MS + 1
+                      and 0 < _r["sil_max"] <= REFILL_MAX_MS + 1
                       and _r["holes_after_start"] <= len(FLUSH_AT_S) and 0 <= _r["lost"] <= 48 + 9600 * len(FLUSH_AT_S)
                       and _r["last_sound"] >= _r["end"] - 5.0)   # the drain and teardown take 3-4 s
             elif _name in CATCH:
@@ -725,8 +966,11 @@ if _PULSE and "pulse" in PARTS:
                       not _r["err"] and not _r["after"] and not _r["orphans"] and pulse_lost_ok(_r))
     print("\n--- the pulse table: profile x seed x holes after the start x refills x lost ---")
     for _name, _seed, _r in PULSE_TABLE:
-        print(f"  {_name:7} seed {_seed}: holes {_r['holes_after_start']}, no refill {len(_r['orphans'])}, refills "
-              f"{_r['refills']}, lost {_r['lost'] / 48:.2f} ms")
+        print(f"  {_name:10} {'gap' if _name in ('outage', 'dec-outage') else 'seed'} {_seed}: holes "
+              f"{_r['holes_after_start']}, no refill {len(_r['orphans'])}, refills {_r['refills']}, lost "
+              f"{_r['lost'] / 48:.2f} ms")
+    if any(t[0] == "pulse" for t in STALL_TABLE):
+        print_stall_table([t for t in STALL_TABLE if t[0] == "pulse"])
 elif "pulse" in PARTS:
     print("\n(no MR_302M_PULSE_SINK: the real pulsesink runs skipped)")
 

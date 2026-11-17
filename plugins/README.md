@@ -2624,12 +2624,13 @@ is in hand (the sink's write end, what waits between it and the sink, the
 level of `upstream-queue` where named: the Audio Decoder's `decq`, before its
 decoder, where a late start's backlog sits, and the buffer) less the device's
 point of no return, no more than how late the content there is; once the least
-of that over 60 s is 20 ms or more past the margin, the ratio runs that much
-fast (times the device term, the labels counting the content) until none is
-left. Nothing is dropped; a lateness rise mid-way ends it. `mrasrc-stats` adds
-`catch-up-state` (`off`, `watching` for the first 60 s after a start or flush,
-`idle`, `catching-up`), `catch-up-excess-ns` and `catch-up-removed-ns`; the
-module's Timing shows "Catch-up: catching up" while it runs.
+of that over 60 s is 20 ms or more past the margin, the ratio runs
+`catch-up-ppm` fast (times the device term, the labels counting the content)
+until none is left. Nothing is dropped; a lateness rise mid-way ends it.
+`mrasrc-stats` adds `catch-up-state` (`off`, `watching` for the first 60 s
+after a start or flush, `idle`, `catching-up`), `catch-up-excess-ns` and
+`catch-up-removed-ns`; the module's Timing shows "Catch-up: catching up" while
+it runs.
 `mrasrc-stats` gains `mode` (`capture`, `bypass`, `decode`, `device`,
 `decode+device`), `source-ppb` and `device-ppb` (each clock against house
 time, positive when fast), `rate-known`, `device-relocks`, `device-stalls`

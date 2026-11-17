@@ -675,12 +675,13 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
         }
         const int64_t n = d->margin.silence(next, segdone, rb->samples_per_seg, have_play && dev > 0, play, guard);
         if (n <= 0) return NULL;
-        // Capped (ASRC_SINK_REFILL_MAX_MS); a refill that cannot be allocated is none.
+        // Capped (ASRC_SINK_REFILL_MAX_MS); a refill that cannot be allocated is none, and says so.
         GstBuffer* sil = gst_buffer_new_allocate(NULL, (gsize)n * (gsize)d->bpf, NULL);
         GstMapInfo m;
-        if (!sil) return NULL;
-        if (!gst_buffer_map(sil, &m, GST_MAP_WRITE)) {
-            gst_buffer_unref(sil);
+        if (!sil || !gst_buffer_map(sil, &m, GST_MAP_WRITE)) {
+            GST_WARNING_OBJECT(self, "sink margin: no refill of %" G_GINT64_FORMAT " frames: %s failed", n,
+                               sil ? "map" : "allocation");
+            if (sil) gst_buffer_unref(sil);
             return NULL;
         }
         gst_audio_format_info_fill_silence(d->info.finfo, m.data, m.size);

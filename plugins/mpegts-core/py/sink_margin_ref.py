@@ -38,12 +38,15 @@ of the clock (pa_stream_get_time: its read index less the sink's latency, interp
 updates) and drops a write behind its read index, while pulsesink's segdone stays 0 (1.22) or
 follows the read index only at timing updates (1.28; 1.5 s apart on the dev Pi). Measured on the dev
 Pi's PipeWire null sink (module tail into pulsesink, 2026-11-16): the server reads a graph quantum
-at a time (512 frames with the test's monitor, 1024 without: the smallest node latency of its
-clients, so it moves at run time), and writes 6-12 ms ahead of the clock were lost at 512 with no
+at a time (512 frames with the test's 10 ms monitor, 1024 with a 40 ms one or none: the smallest
+node latency of its clients, so it moves at run time; a forced quantum overrides it, as the Device
+Manager's 2048-frame buffer does), and writes 6-12 ms ahead of the clock were lost at 512 with no
 refill. The guard is the sum of two bounds:
   - the quantum's: the server's configured latency for the stream, tlength less two minreq (pulse's
-    ADJUST_LATENCY split, pipewire-pulse's node.latency, which the graph quantum never exceeds;
-    40 ms for the module's buffer-time 100 ms), read from the ring once acquired;
+    ADJUST_LATENCY split, pipewire-pulse's node.latency, the quantum the stream asks for: 40 ms for
+    the module's buffer-time 100 ms, 1920 frames), read from the ring once acquired. A forced
+    quantum can pass it (2048 frames: 2.7 ms past; the c39 re-review's edge runs there lost
+    nothing, its writer stalls did: B-249's Limits);
   - the sink's latency, learned where segdone moves (1.28): the largest segdone x sps less the
     clock's position, less one segment (segdone is the read index's ceiling); 0 where it does not.
 The clock's own forward steps at timing updates (up to 5 ms at quantum 512, 27 ms at 1024: how far
@@ -54,9 +57,10 @@ The guard holds a write only while the stream may have run dry (guard_applies). 
 only tlength, so a backpressured sink writes at most tlength ahead of the read index: on the dev Pi
 47 ms or more ahead of the clock, 60 at the median. A guard past that, applied to every write, calls
 each one unplayable and refills without end (measured: a guard of 85-93 ms refilled every 100 ms and
-played 12 % of the feed); a graph quantum near the configured latency would do it with 40 ms. A
-write cannot be behind the read index when the stream was full at the write before: when its buffer
-waited in the queue before the sink (the sink was blocked: residence of a segment or more), or the
+played 12 % of the feed); in the model a 40 ms guard does it at quantum 1024. A write cannot be
+behind the read index when the stream was full at the write before: when its buffer waited in the
+queue before the sink (the sink was blocked: residence of a segment or more; a stalled queue thread
+reads the same, so the write after the stall is unguarded: B-249's Limits), or the
 push before it blocked in the sink and this write follows it within a segment (no queue between:
 the Audio Decoder). The push is the sink's own time on it, measured in the thread that pushes into
 the sink; a push that blocked before an outage says nothing about the write after it (fix round 2:

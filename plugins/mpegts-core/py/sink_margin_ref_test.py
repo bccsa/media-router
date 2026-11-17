@@ -16,7 +16,9 @@ each profile of gst_302m_late_feed_test.py, five seeds each:
     write behind its read index, holds 60 ms, and its clock is interpolated from timing updates 1.5 s
     apart; the feed steps to land 0-30 ms ahead of the clock (the edge profile, five seeds): with the
     guard nothing is lost, every hole has a refill, at most one a step; with no guard frames are
-    lost; a guard past what the stream holds refills without end;
+    lost; a guard past what the stream holds refills without end. A witness at quanta 512 and 1024
+    only: at 1536-2048 it loses frames and refills without end where the dev Pi's server at a forced
+    2048 lost nothing with a refill a step (the c39 re-review), so nothing is asserted there;
   - the Audio Decoder's sink end on that server (no queue: the push into the sink blocks while the
     stream is full, then the feed pauses and its next write lands 0-30 ms ahead of the clock): the
     guard, held unless the push before blocked and ended less than a segment before, loses nothing;
