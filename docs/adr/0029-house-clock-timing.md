@@ -4167,6 +4167,10 @@ sections above give the reasons, the register rows the details.
   it stands over the module's own transient warnings and gives them back;
   the throughput rate per module read, since every `get_throughput`
   restarts the runners' rate window (B-246).
+- **p4-25** (fix batch FB3): on an automatic display kmssink is given the
+  first real screen's `connector-id` (Writeback-* skipped) and the Display
+  panel names that screen; the compositor gate stays, so V-P4-6's kmssink arm
+  runs only on hosts without waylandsink: a CI case on our images (B-247).
 
 ### What this phase supersedes
 

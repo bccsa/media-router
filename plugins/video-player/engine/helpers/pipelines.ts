@@ -93,7 +93,7 @@ const SINK_TIMING = 'sync=false qos=false';
  *   2. KMS direct, targeting a specific connector by numeric id, on its DRM
  *      driver by name when kmssink's own pick cannot reach it (`kmsDriverFor`).
  *   3. KMS direct, auto-pick connector (used when the user picked a name we
- *      can't resolve to an id, or didn't pick at all).
+ *      can't resolve to an id; on auto `resolveRenderTarget` names the first real screen, B-247).
  *   4. autovideosink (dev machines without DRM, last resort).
  *
  * Every sink shows each frame as it comes (B-169): `sync=false`, never waiting or dropping late;

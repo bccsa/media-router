@@ -30,6 +30,7 @@ import {
     resolveRenderTarget,
 } from './renderTarget.js';
 import { DEFAULT_SURFACE } from './pipelines.js';
+import { planSink } from './pipelinePlan.js';
 
 const listMock = listDrmConnectors as unknown as ReturnType<typeof vi.fn>;
 const firstMock = firstConnectedDisplay as unknown as ReturnType<typeof vi.fn>;
@@ -119,6 +120,8 @@ describe('renderTarget', () => {
             const target = resolveRenderTarget('', { wayland: false, kms: true });
             expect(target.kind).toBe('ready');
             if (target.kind !== 'ready') return;
+            // On auto kmssink is told the first real screen (B-247).
+            expect(pickMock).toHaveBeenCalledWith('HDMI-A-1');
             expect(target.waylandFullscreen).toBe(false);
             expect(target.sinkEnv).toEqual({
                 wayland: false,
@@ -160,6 +163,7 @@ describe('renderTarget', () => {
             firstMock.mockReturnValue('HDMI-A-1');
             const target = resolveRenderTarget('', { wayland: true, kms: true });
             if (target.kind !== 'ready') throw new Error('expected a ready target');
+            expect(pickMock).toHaveBeenCalledWith('');
             expect(target.renderConnector).toBe('HDMI-A-1');
             expect(target.env).toEqual({ MR_GLIB_PRGNAME: 'local.mr.HDMI-A-1' });
         });
@@ -260,6 +264,7 @@ describe('renderTarget', () => {
 
         it('reports the auto-picked connector when the user chose none', () => {
             listMock.mockReturnValue([disconnected('HDMI-A-1'), connected('HDMI-A-2')]);
+            firstMock.mockReturnValue('HDMI-A-2');
             expect(describeRenderPath('', { wayland: false, kms: true })).toEqual({
                 renderer: 'kmssink',
                 target: 'HDMI-A-2',
@@ -292,6 +297,76 @@ describe('renderTarget', () => {
                 status: 'connected',
                 requested: 'DSI-2',
             });
+        });
+    });
+
+    describe('automatic display on a fake sysfs (F-7, B-247)', () => {
+        // The Pi 5 box with Weston stopped: the writeback connector reads connected and sorts
+        // first. The engine's real DRM helpers read a fake /sys/class/drm.
+        let drm: string;
+
+        beforeEach(async () => {
+            const actual =
+                await vi.importActual<typeof import('@media-router/engine')>(
+                    '@media-router/engine',
+                );
+            drm = path.join(tmp, 'sys-class-drm');
+            const conn = (entry: string, status: string, id: number) => {
+                fs.mkdirSync(path.join(drm, entry), { recursive: true });
+                fs.writeFileSync(path.join(drm, entry, 'status'), `${status}\n`);
+                fs.writeFileSync(path.join(drm, entry, 'connector_id'), `${id}\n`);
+            };
+            conn('card0-Writeback-1', 'connected', 33);
+            conn('card1-DSI-2', 'connected', 41);
+            conn('card1-HDMI-A-1', 'disconnected', 42);
+            listMock.mockImplementation((dir?: string) => actual.listDrmConnectors(dir ?? drm));
+            firstMock.mockImplementation((dir?: string) =>
+                actual.firstConnectedDisplay(dir ?? drm),
+            );
+            pickMock.mockImplementation((name: string, dir?: string) =>
+                actual.pickActiveDisplay(name, dir ?? drm),
+            );
+        });
+
+        it('names DSI-2, not Writeback-1, to kmssink on a host without waylandsink', () => {
+            const sinks = { wayland: false, kms: true };
+            const target = resolveRenderTarget('', sinks);
+            if (target.kind !== 'ready') throw new Error('expected a ready target');
+            expect(target.active).toEqual({ name: 'DSI-2', connectorId: 41, substituted: false });
+            expect(target.renderConnector).toBe('DSI-2');
+            expect(planSink(target).sinkElement).toBe(
+                'kmssink name=sink connector-id=41 sync=false qos=false',
+            );
+            expect(describeRenderPath('', sinks)).toEqual({
+                renderer: 'kmssink',
+                target: 'DSI-2',
+                status: 'connected',
+            });
+        });
+
+        it('still waits for the compositor with waylandsink installed, the panel naming DSI-2', () => {
+            const sinks = { wayland: true, kms: true };
+            expect(resolveRenderTarget('', sinks)).toEqual({
+                kind: 'blocked',
+                health: 'warning',
+                message: 'Display connected — waiting for compositor',
+            });
+            expect(describeRenderPath('', sinks).target).toBe('DSI-2');
+        });
+
+        it('leaves the output to the compositor when its session is up', () => {
+            withCompositor();
+            const target = resolveRenderTarget('', { wayland: true, kms: true });
+            if (target.kind !== 'ready') throw new Error('expected a ready target');
+            expect(target.active.name).toBe('');
+            expect(target.renderConnector).toBe('DSI-2');
+            expect(planSink(target).sinkElement).toMatch(/^waylandsink /);
+        });
+
+        it('honours an explicit Writeback-1 pick on the KMS path', () => {
+            const target = resolveRenderTarget('Writeback-1', { wayland: false, kms: true });
+            if (target.kind !== 'ready') throw new Error('expected a ready target');
+            expect(planSink(target).sinkElement).toContain('connector-id=33');
         });
     });
 });

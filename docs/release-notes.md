@@ -111,6 +111,11 @@ there is no in-app switch, and the stored values of the removed settings
   backing off to every 30 s, where it was every 5 s. Each restart opens the
   video decoder again, and in testing rapid reopening stopped a Pi 4's
   hardware H.264 decoder until a reboot.
+- **Display "automatic" names a real screen.** With the compositor (Weston)
+  stopped, the Display panel showed "Writeback-1", a virtual output nobody
+  can see; it now names the screen the player would use, for example DSI-2.
+  The player still waits for the compositor, as before, and plays as soon as
+  it is back.
 
 **Video Transcoder keeps every frame it decodes**
 

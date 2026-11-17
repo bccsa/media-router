@@ -51,7 +51,7 @@ export interface RenderTargetReady {
     /** Sink-selection inputs — see `buildSink`. */
     sinkEnv: SinkSelectionEnv;
     /**
-     * `active.name` is empty when the user hasn't picked a display
+     * On the compositor path `active.name` is empty when the user hasn't picked a display
      * (`pickActiveDisplay('')` returns an empty name by design), which left
      * the surface with NO `MR_GLIB_PRGNAME` app_id. kiosk-shell only maps
      * surfaces whose app_id is listed in that output's `app-ids=`, so an
@@ -151,16 +151,19 @@ export function resolveRenderTarget(
     // to per-output `app-ids=` in weston.ini) need the *active* display
     // name, otherwise the surface lands on an output that isn't lit and
     // looks the same to the user as "video player won't start".
-    const active = pickActiveDisplay(requestedDisplay);
     const waylandSession = hasWaylandSession();
+    const kmsRenders = sinks.kms && !(sinks.wayland && waylandSession);
+    // On auto, kmssink left to itself takes the first connected connector, Writeback-1 included
+    // (F-7): name the first real screen instead (B-247). The compositor keeps its own pick.
+    const active = pickActiveDisplay(
+        requestedDisplay || (kmsRenders ? (firstConnectedDisplay() ?? '') : ''),
+    );
     const sinkEnv: SinkSelectionEnv = {
         ...sinks,
         waylandSession,
         connectorId: active.connectorId,
         // Read only where kmssink renders (`buildSink`'s KMS forms).
-        ...(sinks.kms && !(sinks.wayland && waylandSession)
-            ? { kmsDriver: kmsDriverFor(active.name) }
-            : {}),
+        ...(kmsRenders ? { kmsDriver: kmsDriverFor(active.name) } : {}),
     };
     const renderConnector = active.name || firstConnectedDisplay() || '';
     return {
@@ -231,11 +234,10 @@ export function describeRenderPath(
         target = active.name;
         status = 'connected';
     } else if (env.kms) {
-        const firstConnected = listDrmConnectors().find(
-            (c) => (c.meta?.status as string) === 'connected',
-        );
+        // The screen `resolveRenderTarget` names on auto: Writeback-* is not one (B-247).
+        const firstConnected = firstConnectedDisplay();
         renderPath = 'kmssink';
-        target = firstConnected?.name ?? '(auto)';
+        target = firstConnected ?? '(auto)';
         status = firstConnected ? 'connected' : 'no display';
     }
     const displayStatus: Record<string, string> = { renderer: renderPath, target, status };
