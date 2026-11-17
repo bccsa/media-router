@@ -31,7 +31,7 @@ whatever the tick, an input held behind the pace too, and (16) an absent input's
 mixer's block at least (B-79); (17) the pace falls by itself once every input is steady under it
 for fall-after, in one skip, content continuous (B-82), (17b) into mpegtsmux; (18) a fall wakes
 an input held behind the pace at its next arrival, not at its old release (the armed check reads
-the pace as of the arrival); (19) its own process frozen 2 s (a test clock jumped), the chain or
+the pace as of the arrival); (19) its own process frozen 2 s or 5 s (a test clock jumped), the chain or
 the task first after it: no absence, nothing stale, the pace unchanged; 800 ms under a long W; a
 300 ms stop a freeze, 200 ms not (B-243). And the PCM edges toward audiomixer (B-83), to the
 sample: (F1) an absence fades out, (F2) a rejoin fades in from the horizon, (F3) a forwarded GAP's two edges,
@@ -2749,10 +2749,12 @@ except (ImportError, ValueError):
 if GstCheck is None:
     print("SKIP freeze — GstCheck (the test clock) unavailable")
 else:
-    for first in ("chain", "task"):
-        f = _freeze(2000, first)
-        check(f"freeze 2 s, the {first} first after it: no absence ({f['absences']}), 0 stale ({f['stale']}), "
-              f"no gap ({f['gaps']}), the pace unchanged ({in_ms(f['pre'])} -> {in_ms(f['post'])} ms)",
+    # 5 s, past the 4 s ceiling: a freeze is carried whole however long (B-243, for the owner).
+    for jump, first in ((2000, "chain"), (2000, "task"), (5000, "chain"), (5000, "task")):
+        f = _freeze(jump, first)
+        check(f"freeze {jump // 1000} s, the {first} first after it: no absence ({f['absences']}), "
+              f"0 stale ({f['stale']}), no gap ({f['gaps']}), the pace unchanged "
+              f"({in_ms(f['pre'])} -> {in_ms(f['post'])} ms)",
               f["absences"] == 0 and f["stale"] == 0 and f["gaps"] == 0 and f["post"] <= f["pre"] + 2 * MS)
     # Under W (1.5 s) a common silence holds nothing by itself: only the overdue task tells.
     short = _freeze(800, "chain", floor_ms=1500)

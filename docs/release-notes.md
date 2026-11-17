@@ -192,7 +192,11 @@ there is no in-app switch, and the stored values of the removed settings
   of skipping it, and does not hold its outputs back for minutes after: the
   outputs play about 2 s late after a 2 s stall, then catch up as above. One
   input that stops while the others carry on is still skipped, so it never
-  stops the programme; everything stopped for longer than 4 s is skipped too.
+  stops the programme; a source stopped for longer than 4 s is skipped too.
+  If the muxer itself stands still (the box frozen), what it held up is
+  passed late however long the stop. A muxer with one input, or an audio
+  mixer whose inputs all stop, now waits up to 4 s before it fills the gap
+  with silence, where it waited a fraction of a second to 2 s.
 - **After a source restarts, a muxer no longer keeps dropping its audio
   until it is restarted.** A source that sends its audio a third of a second
   or more at a time (a file or encoder sender's AAC) could make the muxer mark

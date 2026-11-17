@@ -4125,7 +4125,8 @@ the member's 1 s median to about +0.9 s, which B-82 kept for `fall-after`;
 stale. The owner answered Q-A on 2026-11-15, "carry it", and as built:
 
 - **A freeze is held.** A task whose wake is overdue by more than
-  `FREEZE_NS` (250 ms) adds the overdue time to the input's held time; each
+  `FREEZE_NS` (250 ms) adds the overdue time to the input's held time, with
+  no 4 s bound (a freeze is carried however long, for the owner's veto); each
   member's task publishes its wake time lock-free to its pace group, so an
   arrival of any member that finds a task overdue, or a thaw since its last
   arrival, knows the process stood still.
@@ -4258,8 +4259,10 @@ sections above give the reasons, the register rows the details.
   all, dropped after three missed reads (B-242).
 - **p4-20** (V-P4-2, Q-A): the freeze told through the pace group as well
   as by the input's own task; the burst ended at twice the pace or past its
-  silence; a never-heard input absent at W; the boxes' shortfall at the
-  outputs beyond the rig's test sinks left to DEV-P4fx (B-243).
+  silence; a never-heard input absent at W; a freeze held with no 4 s
+  bound; a one-input muxer or an all-quiet mixer silent up to 4 s; the
+  boxes' shortfall at the outputs beyond the rig's test sinks left to
+  DEV-P4fx (B-243).
 - **p4-21** (F-3): the cause in the rhythm, not the rejoin or the demux;
   "W back within 20 %" read against the restarted source's own deliveries;
   no TS Splitter in the rig's restart; the decoder's underruns left to

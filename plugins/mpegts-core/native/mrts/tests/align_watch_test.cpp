@@ -1770,6 +1770,19 @@ void test_common_stall() {
         CHECK("hear: member 1 back while member 2 flowed: no burst (a rejoin, B-80)",
               !b.hear(1, 3 * S + 5 * MS, W));
     }
+    {
+        // Half a W: the other member's last arrival a few ms after this one's stopped with it.
+        PaceGroup g;
+        for (uint64_t m : {1, 2}) g.join(m, -1);
+        heard_until(g, {{1, last}, {2, last + 10 * MS}}, last + 10 * MS);
+        CHECK("half W: member 2 last heard 10 ms after member 1: 1 held",
+              g.quiet(1, last, W, last + 2 * S) == Q::held);
+        PaceGroup h;
+        for (uint64_t m : {1, 2}) h.join(m, -1);
+        heard_until(h, {{1, last}, {2, last + 60 * MS}}, last + 60 * MS);
+        CHECK("half W: member 2 last heard 60 ms (over W/2) after member 1: 1 absent",
+              h.quiet(1, last, W, last + 2 * S) == Q::absent);
+    }
 }
 
 // --- gaps ----------------------------------------------------------------------------------
