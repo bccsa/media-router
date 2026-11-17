@@ -31,10 +31,11 @@ listener. The players are judged as demuxers and decoders; the network leg is th
 
 The players run from the start (each restarted if it exits, which counts against it); the front
 end opens a new capture segment each time it restarts. At `--raise-at` and `--reepoch-at` seconds
-from the run's start the tool runs `--raise-cmd` and `--reepoch-cmd` (any shell command: `mrssh` to the box, see below)
-and logs when each starts and returns. Without a command it prints "inject the raise now" and the
-operator marks the event by hand: `egress-compat.sh mark --out DIR raise`; the event's window then
-starts at the mark, and an event never marked fails the run.
+from the run's start the tool runs `--raise-cmd` and `--reepoch-cmd` (any shell command: `mrssh`
+to the box, see below) and logs when each starts and returns, with its exit code. Without a
+command it prints "inject the raise now" and the operator marks the event by hand once injected:
+`egress-compat.sh mark --out DIR raise`; the event's window then runs from the prompt to the mark,
+and an event never marked fails the run.
 
 ## The verdict
 
@@ -57,12 +58,15 @@ Every player line is stamped with the dev Pi's uptime. The report (`DIR/report.t
   VLC reports none, so only its errors are read.
 - **pcrcheck** on each segment, as V-P5-1: no unflagged PCR jump, no PES at or behind its PCR, no CC
   or CRC error; PCR intervals over 40 ms pass while they are at most 0.1 % (the 99.9th percentile).
-  `--restarts N` allows, per program, N unflagged jumps and N CC errors per ES PID, and N CC errors
-  per PSI PID (the PAT and each PMT, which `pcrcheck` counts only in its summary) for a re-epoch
-  done by restarting the engine, which cannot flag either. `hcdesc` lists each PMT's `MRHT` epoch and D_e,
-  so the raise and the re-epoch are seen on the wire.
+  `--restarts N` allows, per program, N unflagged jumps and N times its ES PIDs in CC errors, and
+  N times the PSI PIDs (the PAT and each PMT, which `pcrcheck` counts only in its summary) in CC
+  errors, for a re-epoch done by restarting the engine, which cannot flag either. Each is a total
+  (`pcrcheck` gives no per-PID count), so one PID may take all of it. `hcdesc` lists each PMT's
+  `MRHT` epoch and D_e, so the raise and the re-epoch are seen on the wire.
 
-`RESULT PASS` needs every player, the front end and every segment to pass and no event left due.
+`RESULT PASS` needs every player, the front end and every segment to pass, no event left due,
+and every hook command to exit 0: a hook that fails (a `stall` on a pid gone after a restart,
+an `mrssh` that could not connect) injected nothing, and its event fails the run.
 
 Outputs in `DIR`: `report.txt`, `run.conf`, `run.log` (start, segments, first data, end),
 `events.log`, `hooks.log`, `<player>.log` (stamped), `ffmpeg.progress`, `frontend.log`,
@@ -72,7 +76,8 @@ Outputs in `DIR`: `report.txt`, `run.conf`, `run.log` (start, segments, first da
 
 Needs ffmpeg, cvlc, the 1.28 `gst-launch-1.0` with Debian's plugins on the path (srt, rtp, libav),
 `mrts_cli` (`make -C plugins/mpegts-core/native/mrts mrts_cli`) and, for rist, `mrristsrc`
-(`plugins/rist-core/native/mrrist`). A private registry keeps the user's untouched:
+(`plugins/rist-core/native/mrrist`). A private registry keeps the user's untouched (`run` and
+`dry-run` use `DIR/registry.bin` when `GST_REGISTRY` is unset):
 
     cd <repo>
     export GST_PLUGIN_PATH=$PWD/plugins/rist-core/native/mrrist:/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0:/usr/lib/aarch64-linux-gnu/gstreamer-1.0
@@ -94,8 +99,9 @@ average under 3.
         tools/egress-compat.sh dry-run --kind $k --out /tmp/egress-compat/$k || echo "$k FAILED"
     done
 
-Each report shows a raise of about +1.5 s (`PMT vN: … D_e`), the epoch moving from 1 to 2, two
-flagged PCR jumps, ffmpeg and `decodebin3` clean, and VLC's error lines at the raise (F1).
+Each report shows a raise of about +1.5 s (`PMT vN: … D_e`), the epoch moving from 1 to 2, at
+least two flagged PCR jumps (a lateness raise under load adds one), ffmpeg and `decodebin3` clean,
+and VLC's error lines at the raise (F1).
 Under a heavier load the writer's PCR intervals pass 40 ms more often than 0.1 % and `pcrcheck`
 fails while every player passes (B-252's finding): read the report's lines, not only its result.
 

@@ -147,13 +147,16 @@ hook() {
     fi
     ev "$name" start
     sh -c "$cmd" >> "$OUT/hooks.log" 2>&1
-    echo "$(up) $name hook rc=$?" >> "$OUT/hooks.log"
-    ev "$name" end
+    rc=$?
+    echo "$(up) $name hook rc=$rc" >> "$OUT/hooks.log"
+    # A failed command injected nothing: the report fails the event.
+    if [ $rc -eq 0 ]; then ev "$name" end; else ev "$name" "failed rc=$rc"; fi
 }
 
 stop_all() {
     touch "$OUT/.stop"
     [ -e "$OUT/frontend.pid" ] && kill -INT "$(cat "$OUT/frontend.pid")" 2>/dev/null
+    for f in "$OUT"/hook-*.pid; do [ -e "$f" ] && pkill -P "$(cat "$f")" 2>/dev/null; done
     for f in "$OUT"/*.pid; do [ -e "$f" ] && kill "$(cat "$f")" 2>/dev/null; done
     sleep 3
     for f in "$OUT"/*.pid; do [ -e "$f" ] && kill -9 "$(cat "$f")" 2>/dev/null; done
@@ -163,6 +166,8 @@ stop_all() {
 run_body() {
     case "$KIND" in *-listener) [ -n "$HOST" ] || die "--host: the box, for $KIND" ;; esac
     mkdir -p "$OUT" || die "cannot create $OUT"
+    # Never the user's registry: a private one beside the run unless one is given.
+    export GST_REGISTRY=${GST_REGISTRY:-$OUT/registry.bin}
     rm -f "$OUT/.stop"
     for t in gst-launch-1.0 ffmpeg cvlc; do command -v "$t" >/dev/null || die "$t not found"; done
     [ -x "$MRTS_CLI" ] || die "mrts_cli not found (make -C plugins/mpegts-core/native/mrts, or --mrts-cli)"
@@ -228,17 +233,18 @@ error_lines() {
 }
 
 # Stdin: stamped lines. Prints `outside N startup N` and `event NAME AT LINES GLITCHES` per event.
-# Startup ends GRACE s after the first data; an event's window is AT-1 .. END+W, END moved to the
-# first data of a capture segment that starts inside it; a glitch is a run with gaps under 2 s.
+# Startup ends GRACE s after the first data; an event's window is AT-1 .. END+W (by hand: the prompt
+# to the mark), END moved to the first data of a segment starting in it; a glitch: gaps under 2 s.
 judge_lines() {
     awk -v t0="$1" -v grace="$2" -v w="$3" -v evf="$4" -v runf="$5" '
         BEGIN {
             while ((getline l < evf) > 0) {
                 split(l, f, " ")
-                if (f[3] == "start" || f[3] == "due") {
+                if (f[3] == "due" || (f[3] == "start" && !(f[2] in hand))) {
                     if (!(f[2] in at)) order[++n] = f[2]
                     at[f[2]] = f[1]; endt[f[2]] = f[1]
-                } else if (f[3] == "end" && (f[2] in at)) endt[f[2]] = f[1]
+                    if (f[3] == "due") hand[f[2]] = 1
+                } else if ((f[3] == "end" || f[3] == "start") && (f[2] in at)) endt[f[2]] = f[1]
             }
             first = ""
             while ((getline l < runf) > 0) {
@@ -274,7 +280,8 @@ judge_lines() {
 
 # Stdin: pcrcheck's lines. Prints `seen violations allowed flagged over40 intervals`. Allowed:
 # PCR intervals over 40 ms while at most 0.1 % (V-P5-1's 99.9th percentile); per restart R, per
-# program R unflagged jumps and R CC errors per ES PID, and R per PSI PID (PAT, each PMT).
+# program R unflagged jumps and R CC errors times its ES PIDs (a total: pcrcheck has no per-PID
+# count), and R times the PSI PIDs (PAT, each PMT).
 judge_pcr() {
     awk -v r="$1" '
         /"pcrcheck":"program"/ {
@@ -307,6 +314,18 @@ frontend_losses() {
         | judge_lines "$1" 0 "$2" "$OUT/events.log" /dev/null | awk '/^outside/ { print $2 }'
 }
 
+# Each hook's rc; a hook whose command failed injected nothing and fails the run.
+hook_results() {
+    rc=0
+    [ -e "$OUT/hooks.log" ] && sed -n 's/^[0-9.]* \([^ ]*\) hook rc=\([0-9]*\)$/    hook \1: rc \2/p' "$OUT/hooks.log"
+    while read -r t k p n; do
+        [ "$p" = failed ] || continue
+        echo "FAIL $k: hook command exited ${n#rc=}, nothing injected"
+        rc=1
+    done < "$OUT/events.log"
+    return $rc
+}
+
 # An event fallen due with no command fails unless `mark` followed it with a start.
 due_events() {
     rc=0
@@ -331,19 +350,19 @@ report_body() {
     for pl in $(echo "$CONF_players" | tr ',' ' '); do
         [ -e "$OUT/$pl.log" ] || { echo "FAIL $pl: no log"; fail=1; continue; }
         res=$(error_lines "$pl" "$OUT/$pl.log" | judge_lines "$t0" "$CONF_grace" "$CONF_window" "$OUT/events.log" "$OUT/run.log")
+        v=PASS
         case "$pl" in
             ffmpeg) n=$(sed -n 's/^frame=//p' "$OUT/ffmpeg.progress" 2>/dev/null | tail -n 1)
                 proof="frames decoded ${n:-0}"
-                [ "${n:-0}" -gt 0 ] || fail=1 ;;
+                [ "${n:-0}" -gt 0 ] || v=FAIL ;;
             gst) n=$(grep -o 'from element "[^"]*" (state-changed)[^;]*new-state=(GstState)playing' "$OUT/gst.log" \
                     | sed 's/from element "\([^"]*\)".*/\1/' | grep dec | grep -v decodebin | sort -u | tr '\n' ' ')
                 proof="decoders playing: ${n:-none}"
-                [ -n "$n" ] || fail=1 ;;
+                [ -n "$n" ] || v=FAIL ;;
             *) proof="error lines only (no frame count)" ;;
         esac
         o=$(echo "$res" | awk '/^outside/ { print $2 }')
         s=$(echo "$res" | awk '/^outside/ { print $4 }')
-        v=PASS
         [ "$o" -eq 0 ] || v=FAIL
         echo "$res" | awk '/^event/ && $5 > 1 { bad = 1 } END { exit !bad }' && v=FAIL
         [ $v = PASS ] || fail=1
@@ -365,6 +384,7 @@ report_body() {
         sed -n 's/.*"version":\([0-9]*\),"mrht":.*"epochSeq":\([0-9]*\),.*"dENs":\([0-9]*\),.*/    PMT v\1: MRHT epoch \2, D_e \3 ns/p; s/.*"version":\([0-9]*\),"mrht":null.*/    PMT v\1: no MRHT/p' "${c%.ts}.hcdesc.jsonl"
     done
     [ $segs -gt 0 ] || { echo "FAIL pcrcheck: nothing captured"; fail=1; }
+    hook_results || fail=1
     due_events "$t0" || fail=1
     [ $fail -eq 0 ] && echo "RESULT PASS" || echo "RESULT FAIL"
 }
@@ -452,8 +472,8 @@ dry_main() {
     ( sleep 4
       runner sender "udpsrc port=$up_port buffer-size=4194304 caps=\"video/mpegts,systemstream=(boolean)true,packetsize=(int)188\" ! queue max-size-time=0 max-size-buffers=0 max-size-bytes=8388608 ! mrtsegress name=egress house-clock=\"$(house_clock 1 "$e")\" ! tsparse alignment=7 set-timestamps=false ! $sink"
       wait ) 2>/dev/null &
-    RAISE_CMD="$SELF stall -p $(cat "$D/upstream.rpid") -s 1.5"
-    REEPOCH_CMD="$SELF _reepoch $D"
+    RAISE_CMD="'$SELF' stall -p $(cat "$D/upstream.rpid") -s 1.5"
+    REEPOCH_CMD="'$SELF' _reepoch '$D'"
     ON_EXIT=dry_cleanup
     rc=0
     run_body || rc=$?
@@ -518,6 +538,19 @@ selftest() {
     printf '100.0 raise due\n104.0 raise start\n' > "$OUT/events.log"
     t "an event marked by hand passes" "$(due_events 100; echo $?)" "note: raise marked by hand
 0"
+    printf '100.0 start\n103.0 data segment 1\n' > "$OUT/run.log"
+    printf '160.0 raise due\n170.0 raise start\n' > "$OUT/events.log"
+    printf '%s\n' '161.0 [h264 @ 0x1] [error] h' '178.0 [h264 @ 0x1] [error] i' > "$OUT/ffmpeg.log"
+    t "a hand-marked window runs from the prompt to the mark" "$(j ffmpeg)" "outside 0 startup 0;event raise 60.0 2 2;"
+    printf '160.0 raise start\n160.2 raise failed rc=2\n220.0 reepoch start\n221.0 reepoch end\n' > "$OUT/events.log"
+    printf '160.2 raise hook rc=2\n221.0 reepoch hook rc=0\n' > "$OUT/hooks.log"
+    t "a hook that failed fails the run" "$(hook_results; echo $?)" "    hook raise: rc 2
+    hook reepoch: rc 0
+FAIL raise: hook command exited 2, nothing injected
+1"
+    printf '220.0 reepoch start\n221.0 reepoch end\n' > "$OUT/events.log"
+    printf '221.0 reepoch hook rc=0\n' > "$OUT/hooks.log"
+    t "hooks that returned 0 pass" "$(hook_results >/dev/null; echo $?)" "0"
     [ $fails -eq 0 ] && echo "selftest: all passed" || echo "selftest: $fails failed"
     [ $fails -eq 0 ]
 }
