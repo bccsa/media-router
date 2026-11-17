@@ -4,9 +4,12 @@ sink_margin_ref.py's line format, and its silence must equal the reference's, li
 
   - the rule's edges: every next_sample from none to three segments past segdone + 2, every segdone
     0-5, with and without a device clock before, at and past the segment in flight, margins 0, 1 frame,
-    60 ms and 300 ms, at 10 ms and 20 ms segments (48 kHz) and 7 ms at 44.1 kHz;
+    60 ms and 300 ms, guards 0, a segment and 2.5 margins (60 ms), at 10 ms and 20 ms segments (48 kHz)
+    and 7 ms at 44.1 kHz;
   - 5,000 random cases (seeded): writes behind, into and past the segment in flight, long-running rings
-    (segdone up to 2^40), clocks behind and ahead.
+    (segdone up to 2^40), clocks behind and ahead, guards 0 to 500 ms;
+  - the guard (mrts::AsrcSinkGuard against SinkGuard): 300 seeded runs of 60 events (a new guard, then
+    segdone seen against the clock), the guard after each.
 
 Then each of the reference suite's mutants (sink_margin_ref_test.MUTANTS) must differ from mrts_cli on
 these cases. Skips (exit 0) without mrts_cli (make native).
@@ -43,10 +46,11 @@ def edge_cases():
             for segdone in range(6):
                 for nxt in [-1] + list(range(0, (segdone + 5) * sps, max(1, sps // 4))):
                     for play in (None, segdone * sps, (segdone + 1) * sps, (segdone + 3) * sps + 17):
-                        c = {"next": nxt, "segdone": segdone, "sps": sps, "margin": margin}
-                        if play is not None:
-                            c["play"] = play
-                        out.append(c)
+                        for guard in (0, sps, 5 * margin // 2):
+                            c = {"next": nxt, "segdone": segdone, "sps": sps, "margin": margin, "guard": guard}
+                            if play is not None:
+                                c["play"] = play
+                            out.append(c)
     return out
 
 
@@ -58,6 +62,9 @@ def random_cases(seed=11):
         base = segdone * sps
         nxt = r.choice((-1, max(0, base + r.randrange(-50 * sps, 5 * sps)), base + r.randrange(sps)))
         c = {"next": nxt, "segdone": segdone, "sps": sps, "margin": r.choice((0, 2880, r.randrange(20000)))}
+        if r.random() < 0.7:
+            c["guard"] = r.choice((0, 1920, 3840, r.randrange(24000)))
+
         if r.random() < 0.6:
             c["play"] = max(0, base + r.randrange(-10 * sps, 10 * sps))
         out.append(c)
@@ -66,16 +73,39 @@ def random_cases(seed=11):
 
 def ref(cases, rule=None):
     rule = rule or sm.silence_frames
-    return [rule(c["next"], c["segdone"], c["sps"], c["margin"], c.get("play")) for c in cases]
+    return [rule(c["next"], c["segdone"], c["sps"], c["margin"], c.get("play"), c.get("guard", 0)) for c in cases]
 
 
-def cli(cases):
+def guard_events(seed=13, runs=300, n=60):
+    r, out = random.Random(seed), []
+    for _ in range(runs):
+        sps = r.choice((480, 441, 960))
+        out.append({"base": r.choice((0, 4 * sps, r.randrange(10000))), "cap": r.choice((24000, 22050, r.randrange(30000)))})
+        seg = 0
+        for _ in range(n):
+            seg += r.choice((0, 0, 1, r.randrange(200)))
+            out.append({"seg": seg, "sps": sps, "play": max(0, seg * sps + r.randrange(-4000, 4000))})
+    return out
+
+
+def ref_guard(events):
+    g, res = sm.SinkGuard(), []
+    for e in events:
+        if "base" in e:
+            g = sm.SinkGuard(e["base"], e["cap"])
+        else:
+            g.segdone_seen(e["seg"], e["sps"], e["play"])
+        res.append(g.frames())
+    return res
+
+
+def cli(cases, key="silence"):
     text = "".join(json.dumps(c, separators=(",", ":")) + "\n" for c in cases)
     r = subprocess.run([CLI, "sink-margin", "-"], input=text, capture_output=True, text=True, check=False)
     if r.returncode != 0:
         print(r.stderr)
         return None
-    return [json.loads(l)["silence"] for l in r.stdout.splitlines() if l.strip()]
+    return [json.loads(l)[key] for l in r.stdout.splitlines() if l.strip()]
 
 
 def main():
@@ -97,6 +127,17 @@ def main():
             m = ref(cases, fn)
             n = sum(1 for a, b in zip(got, m) if a != b)
             check(f"mutant {name}: told from mrts_cli ({n} cases differ)", n > 0)
+    ev = guard_events()
+    gg, gw = cli(ev, "guard"), ref_guard(ev)
+    check(f"mrts_cli sink-margin ran {len(ev)} guard events", gg is not None and len(gg) == len(ev))
+    if gg is not None:
+        diff = [i for i, (a, b) in enumerate(zip(gg, gw)) if a != b]
+        check(f"... every guard equals the reference's ({len(diff)} differ"
+              f"{'' if not diff else ', first at ' + str(diff[0]) + f' cli {gg[diff[0]]} ref {gw[diff[0]]}'})", not diff)
+        check(f"... the events move it: {len(set(gw))} distinct guards, {sum(1 for v in gw if v == 0)} at 0",
+              len(set(gw)) > 50)
+    r = subprocess.run([CLI, "sink-margin", "-"], input='{"seg":3}\n', capture_output=True, text=True, check=False)
+    check(f"a malformed event is refused (exit {r.returncode}: {r.stderr.strip()})", r.returncode == 1 and "sps" in r.stderr)
     print(f"\n{'ALL PASS' if not _failures else f'{_failures} FAILED'}")
     return 1 if _failures else 0
 

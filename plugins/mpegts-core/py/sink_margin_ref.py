@@ -9,43 +9,81 @@ Evidence (GStreamer 1.28 source, the c38 review's harness). A sync=false GstAudi
 buffer at next_sample, the end of the last; only when that lies in a segment the ring has already
 read (writeseg < segdone) does it realign, to segdone + 1. So once the ring runs dry it rebuilds at
 most one segment (10 ms) of margin, and a write into segment segdone itself goes into the segment
-GstAudioSink's thread is handing to the device, which it then clears: lost (pulsesink: its segdone
-follows the server's read index every 100 ms, and the server drops writes behind that index). A
-queue's min-threshold before the sink holds delay, not margin: it releases as it is fed.
+GstAudioSink's thread is handing to the device, which it then clears: lost (pulsesink: the server
+drops writes behind its read index; see the guard). A queue's min-threshold before the sink holds delay, not margin: it releases as it is fed.
 
 Rule. Before each buffer reaches the sink's render, `consumed` is the first sample the device can
 still play: the end of the segment in flight, (segdone + 1) x samples_per_seg, or the device clock's
-position if that is further (pulsesink's segdone can be 100 ms stale). If the next write is at or
-past it, nothing: the buffer plays contiguously, however small the margin left. Otherwise (the ring
-ran dry: a hole is already playing; or the first write after a start or a flush) the buffer is
-prefixed with silence so its first sample lands `margin` frames past `consumed`: the hole grows by
-at most the margin, no sample is written where it cannot play, and from there a feed may get up to
-`margin` later again without a hole. The silence starts where the base sink will write, which is
-segdone + 1 when it realigns. Delay never shrinks (nothing is dropped); it grows only at a hole.
-The first write after a start or a flush gets twice the margin: a device that starts takes its own
-buffer out of the ring at once (the test sink's 40 ms, pulsesink about a quantum), so one margin
-there would leave the feed less than a margin before its first hole.
+position plus the guard if that is further. If the next write is at or past it, nothing: the buffer
+plays contiguously, however small the margin left. Otherwise (the ring ran dry: a hole is already
+playing; or the first write after a start or a flush) the buffer is prefixed with silence so its
+first sample lands `margin` frames past `consumed`: the hole grows by at most the margin, no sample
+is written where it cannot play, and from there a feed may get up to `margin` later again without a
+hole. The silence starts where the base sink will write, which is segdone + 1 when it realigns.
+Delay never shrinks (nothing is dropped); it grows only at a hole. The first write after a start or
+a flush lands the margin plus the larger of the margin and the guard past `consumed`: a device that
+starts takes its own buffer out of it at once (the test sink's 40 ms, pulsesink's server its
+read-ahead). After a flush the clock is read once the sink has rendered (fix round 1). The silence
+starts where the base sink writes, which after a flush on a pulsesink whose segdone is still (1.22)
+is frame 0, so it spans the stream's run (5 and 10 s at flushes 10 and 20 s in, measured); moving
+next_sample past it instead (tried) left the stream silent after a flush in 4 of 16 runs on the dev
+Pi. On the image's pulsesink (1.28) segdone follows the read index: at most its staleness.
+
+The guard (c39 review, blocking 1). A GstAudioSink hands each segment to the device itself, so its
+segdone is the device's read: guard 0. pulsesink's ring is a server's stream: the server reads ahead
+of the clock (pa_stream_get_time: its read index less the sink's latency, interpolated between timing
+updates) and drops a write behind its read index, while pulsesink's segdone stays 0 (1.22) or
+follows the read index only at timing updates (1.28; 1.5 s apart on the dev Pi). Measured on the dev
+Pi's PipeWire null sink (module tail into pulsesink, 2026-11-16): the server reads a graph quantum
+at a time (512 frames with the test's monitor, 1024 without: the smallest node latency of its
+clients, so it moves at run time), and writes 6-12 ms ahead of the clock were lost at 512 with no
+refill. The guard is the sum of two bounds:
+  - the quantum's: the server's configured latency for the stream, tlength less two minreq (pulse's
+    ADJUST_LATENCY split, pipewire-pulse's node.latency, which the graph quantum never exceeds;
+    40 ms for the module's buffer-time 100 ms), read from the ring once acquired;
+  - the sink's latency, learned where segdone moves (1.28): the largest segdone x sps less the
+    clock's position, less one segment (segdone is the read index's ceiling); 0 where it does not.
+The clock's own forward steps at timing updates (up to 5 ms at quantum 512, 27 ms at 1024: how far
+it had fallen behind the read index) fit inside the quantum's bound and are not added. The learned
+term only grows; the sum is capped at GUARD_MAX_MS.
+
+The guard holds a write only while the stream may have run dry (guard_applies). The server holds
+only tlength, so a backpressured sink writes at most tlength ahead of the read index: on the dev Pi
+47 ms or more ahead of the clock, 60 at the median. A guard past that, applied to every write, calls
+each one unplayable and refills without end (measured: a guard of 85-93 ms refilled every 100 ms and
+played 12 % of the feed); a graph quantum near the configured latency would do it with 40 ms. A
+write cannot be behind the read index when the stream was full at the write before: when its buffer
+waited in the queue before the sink (the sink was blocked: residence of a segment or more), or the
+push before it blocked in the sink (no queue between: the Audio Decoder).
 
 API:
     m = SinkMargin(margin_frames)
-    m.silence(next_sample, segdone, sps, play_pos=None) -> frames of silence to put first
+    m.silence(next_sample, segdone, sps, play_pos=None, guard=0) -> frames of silence to put first
         next_sample: the base sink's next write (-1: none yet), segdone: segments read since
         segbase, sps: samples per segment, play_pos: the device clock's position in the same
-        frames, or None when it must not be read (before the first render: pulsesink dies of it)
+        frames, or None when it must not be read (before the first render: pulsesink dies of it),
+        guard: SinkGuard.frames() for a sink that is not a GstAudioSink, else 0
     m.stats() -> {"refills", "silence"}
-Run as a script it reads one JSON object per line ({"next", "segdone", "sps", "play"?, "margin"})
-and prints {"silence": n} per line, the format `mrts_cli sink-margin` reads:
+    g = SinkGuard(base_frames, cap_frames)    base: server_latency_frames(buffer, sps)
+    g.segdone_seen(segdone, sps, play_pos); g.frames() -> the guard
+    guard_applies(residence_ns, push_ns, seg_ns) -> whether the guard holds this write
+Run as a script it reads one JSON object per line and prints one per line, the format `mrts_cli
+sink-margin` reads: {"next", "segdone", "sps", "play"?, "margin", "guard"?} -> {"silence": n}, and
+the guard's events {"base", "cap"} (a new guard), {"seg", "sps", "play"} -> {"guard": n}:
     sink_margin_ref.py cases.jsonl|-
 """
 import json
 import sys
 
 
-def consumed_frames(segdone, sps, play_pos=None):
-    """The first frame the device can still play: past the segment in flight, or the clock's position."""
+GUARD_MAX_MS = 500
+
+
+def consumed_frames(segdone, sps, play_pos=None, guard=0):
+    """The first frame the device can still play: past the segment in flight, or the clock's position plus the guard."""
     c = (segdone + 1) * sps
-    if play_pos is not None and play_pos > c:
-        c = play_pos
+    if play_pos is not None and play_pos + guard > c:
+        c = play_pos + guard
     return c
 
 
@@ -57,15 +95,48 @@ def base_write_pos(next_sample, segdone, sps):
     return p
 
 
-def silence_frames(next_sample, segdone, sps, margin, play_pos=None):
+def silence_frames(next_sample, segdone, sps, margin, play_pos=None, guard=0):
     """Frames of silence before the next buffer: 0 while the write is contiguous and playable."""
     if sps <= 0 or margin < 0:
         return 0
-    c = consumed_frames(segdone, sps, play_pos)
+    guard = max(0, guard)
+    c = consumed_frames(segdone, sps, play_pos, guard)
     if next_sample >= 0 and next_sample >= c:
         return 0
-    want = margin if next_sample >= 0 else 2 * margin   # a start: the device takes its own buffer out of it
+    # A start or a flush: the device (a server: its read-ahead) takes its own buffer out of it.
+    want = margin if next_sample >= 0 else margin + max(margin, guard)
     return max(0, c + want - base_write_pos(next_sample, segdone, sps))
+
+
+def server_latency_frames(buffer_frames, sps):
+    """A pulse server's configured latency for a stream of tlength `buffer_frames`, minreq `sps`."""
+    return max(0, buffer_frames - 2 * sps)
+
+
+BLOCKED_NS = 2_000_000        # a push that took this long waited in the sink: the stream was full
+
+
+def guard_applies(residence_ns, push_ns, seg_ns):
+    """The guard holds a write unless the stream was full at the write before: its buffer waited a
+    segment or more in the queue before the sink, or the push before it blocked in the sink."""
+    return residence_ns < seg_ns and push_ns < BLOCKED_NS
+
+
+class SinkGuard:
+    """How far ahead of the device clock a server may already have read (none for a GstAudioSink)."""
+
+    def __init__(self, base_frames=0, cap_frames=0):
+        self.base = max(0, int(base_frames))
+        self.cap = max(0, int(cap_frames))
+        self.sink_lat = 0
+
+    def segdone_seen(self, segdone, sps, play_pos):
+        """segdone (the read index's ceiling at the last timing update) against the clock now."""
+        if segdone > 0 and sps > 0 and play_pos is not None and play_pos >= 0:
+            self.sink_lat = max(self.sink_lat, (segdone - 1) * sps - play_pos)
+
+    def frames(self):
+        return min(self.cap, self.base + self.sink_lat)
 
 
 class SinkMargin:
@@ -74,8 +145,8 @@ class SinkMargin:
         self.refills = 0
         self.silence_total = 0
 
-    def silence(self, next_sample, segdone, sps, play_pos=None):
-        n = silence_frames(next_sample, segdone, sps, self.margin, play_pos) if self.margin else 0
+    def silence(self, next_sample, segdone, sps, play_pos=None, guard=0):
+        n = silence_frames(next_sample, segdone, sps, self.margin, play_pos, guard) if self.margin else 0
         if n:
             self.refills += 1
             self.silence_total += n
@@ -90,13 +161,21 @@ def main(argv):
         print("usage: sink_margin_ref.py cases.jsonl|-", file=sys.stderr)
         return 2
     f = sys.stdin if argv[1] == "-" else open(argv[1])
+    g = SinkGuard()
     for raw in f:
         raw = raw.strip()
         if not raw:
             continue
         c = json.loads(raw)
-        n = silence_frames(c["next"], c["segdone"], c["sps"], c["margin"], c.get("play"))
-        print(json.dumps({"silence": n}, separators=(",", ":")))
+        if "next" in c:
+            n = silence_frames(c["next"], c["segdone"], c["sps"], c["margin"], c.get("play"), c.get("guard", 0))
+            print(json.dumps({"silence": n}, separators=(",", ":")))
+            continue
+        if "base" in c:
+            g = SinkGuard(c["base"], c["cap"])
+        else:
+            g.segdone_seen(c["seg"], c["sps"], c["play"])
+        print(json.dumps({"guard": g.frames()}, separators=(",", ":")))
     return 0
 
 

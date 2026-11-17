@@ -115,8 +115,8 @@ run of theirs posts (no-stream, the mrasrc events but relock-device) are as the 
 B-148 added `mrasrc-stats`' `rate-known`, the engage's `rate-known` and the lost-time `gap` event.
 B-166 (B-217) replaced the custom slaving's `device-resyncs` and its `device-relock` and
 `device-resync` events with `device-relocks`, `device-stalls` and `render-lateness-ns` and the
-`relock-device`, `device-stalled` and `device-resumed` events; B-249 added `margin-refills` and
-`margin-silence-ns`.
+`relock-device`, `device-stalled` and `device-resumed` events; B-249 added `margin-refills`,
+`margin-silence-ns` and `margin-guard-ns`.
 
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|

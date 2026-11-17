@@ -69,6 +69,7 @@
     "in-frames": 97280,
     "lost-frames": 0,
     "margin-refills": 0,
+    "margin-guard-ns": 0,
     "margin-silence-ns": 0,
     "mode": "device",
     "out-frames": 97248,

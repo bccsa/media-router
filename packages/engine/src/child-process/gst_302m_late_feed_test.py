@@ -19,9 +19,16 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     declares, most of it the ring's own) cuts the field walk into holes, as on TECH01, and the rising walk.
   - drift: an hour of a device 100 ppm fast, and an hour 100 ppm slow, a tone stamped at house rate: no hole, no
     underrun, no refill after the start, the render lateness's level the same at the end as after 2 min and its
-    p1-p99 within 2 ms (B-166). `MR_302M_DRIFT_SECS`, `_SPEED` and `_PPM` set the run.
-  - MR_302M_PULSE_SINK=<a null sink>: the field and the rising profile into a real pulsesink on that sink for
-    MR_302M_PULSE_SECS (600) each, holes counted on its monitor. Not in the chain (it needs a server).
+    p1-p99 within 2 ms and max-min within 20 (B-166). `MR_302M_DRIFT_SECS`, `_SPEED` and `_PPM` set the run.
+  - MR_302M_PULSE_SINK=<a null sink>: a real pulsesink on that sink, holes counted on its monitor: the edge
+    profile (10 s at 30 ms, then the feed set to land its writes 0-30 ms ahead of the device clock in 3 ms steps,
+    shuffled, 30 s each; seeds 7, 8, 9: inside the server's read-ahead, where c1a929b9 lost audio with no refill),
+    the flush profile (two flushes into the sink, as mrasrc's device flush makes them), then the field and the
+    rising profile for MR_302M_PULSE_SECS (600). Pass: every hole after the start has a refill within 3 s of it,
+    the rising walk none once at its max, and the frames heard within 1 ms of what the device term's measured
+    ratio (mrasrc's out/in frames) makes of the feed; a flush one hole and one or two refills, at most 200 ms
+    lost, sound to the end. MR_302M_PULSE_MON_US sets the monitor's latency (so the graph quantum). Not in the chain
+    (it needs a server). MR_302M_PARTS picks parts (sink, mutants, pulse, drift).
 
 A run that fails while the load was 3 or more is run again once, after the load fell. Skips (exit 0) without
 GStreamer or the built plugins."""
@@ -66,6 +73,8 @@ DRAIN_S = 2
 SECS = int(os.environ.get("MR_302M_SECS", "40"))
 RUNS = int(os.environ.get("MR_302M_RUNS", "5"))
 LOAD_MAX = 3.0
+# Which parts run (all by default): sink (the profiles), mutants, pulse (MR_302M_PULSE_SINK), drift.
+PARTS = set(os.environ.get("MR_302M_PARTS", "sink,mutants,pulse,drift").split(","))
 SINK_KEYS = ("holes", "hole-frames", "hole-max", "underruns", "renders", "sounded-frames")
 
 with open(os.path.join(_PLUGINS, "audio-output-302m", "tests", "fixtures", "sink-end.json"), encoding="utf-8") as _fh:
@@ -193,13 +202,16 @@ def run(desc, secs, speed=1, feed=None):
 
 
 def late_feeder(late):
-    """appsrc: buffer i stamped i x 10 ms (running time), pushed when the clock reads it + late[i]; then nothing."""
+    """appsrc: buffer i stamped i x 10 ms (running time), pushed when the clock reads it + late[i] (a callable: its
+    value for i); then nothing."""
     def feed(p, clk, stop):
         src = p.get_by_name("src")
         while p.get_base_time() == 0 and not stop.is_set():
             time.sleep(0.001)
         base = p.get_base_time()
         for i, l in enumerate(late):
+            if callable(l):
+                l = l(i)
             # A clock wait, not a sleep loop: the feed's own jitter stays well under the margin.
             Gst.Clock.id_wait(clk.new_single_shot_id(base + i * 10 * MS + int(l * MS)))
             if stop.is_set():
@@ -280,7 +292,7 @@ TABLE = []
 # --- the module's sink end: every profile, RUNS times ----------------------------------------------------------
 _c39 = tail_for(MODULE_TAIL)
 print(f"--- the module's sink end ({SECS} s + {DRAIN_S} s drain, {RUNS} runs a profile): {_c39}")
-for _name in PROFILES:
+for _name in (PROFILES if "sink" in PARTS else ()):
     for _k in range(RUNS):
         _r = run_checked(_c39, _name, 7 + _k, "c39")
         TABLE.append(("c39", _r))
@@ -289,7 +301,7 @@ for _name in PROFILES:
 # --- mutants ----------------------------------------------------------------------------------------------------
 _c38 = tail_for(C38_TAIL)
 print("\n--- mutant: c38's sink end (the 40 ms min-threshold prefill, no margin) ---")
-for _name in ("rising", "field"):
+for _name in (("rising", "field") if "mutants" in PARTS else ()):
     _rs = []
     for _k in range(RUNS):
         _r = one_run(_c38, _name, 7 + _k)
@@ -305,7 +317,7 @@ for _name in ("rising", "field"):
 
 _v101 = tail_for(V101_TAIL)
 print("\n--- mutant: v2.0.0.101's sink end (sync=true, ts-offset 0: its budget the latency the sink declares) ---")
-for _name in ("rising", "field"):
+for _name in (("rising", "field") if "mutants" in PARTS else ()):
     _rs = []
     for _k in range(2):
         _r = one_run(_v101, _name, 7 + _k)
@@ -332,16 +344,20 @@ for _tail in ("c39", "c38", "v101"):
 # --- a real pulsesink (MR_302M_PULSE_SINK) ----------------------------------------------------------------------
 _PULSE = os.environ.get("MR_302M_PULSE_SINK", "")
 _PULSE_SECS = int(os.environ.get("MR_302M_PULSE_SECS", "600"))
+# The monitor's latency-time: PipeWire runs the graph at its clients' smallest latency (10 ms: a 512-frame
+# quantum on the dev Pi; 40 ms: 1024, as with no monitor).
+_PULSE_MON_US = int(os.environ.get("MR_302M_PULSE_MON_US", "10000"))
 
 
 class MonitorCount:
     """pulsesrc on `<sink>.monitor` into an appsink: frames that sound and all-zero runs of 1 ms or more between."""
 
     def __init__(self, sink):
-        self.p = Gst.parse_launch(f"pulsesrc device={sink}.monitor buffer-time=200000 ! "
+        self.p = Gst.parse_launch(f"pulsesrc device={sink}.monitor buffer-time=200000 latency-time={_PULSE_MON_US} ! "
                                   f"audio/x-raw,format=F32LE,rate=48000,channels=2 ! appsink name=a emit-signals=true sync=false")
         self.sounded = self.holes = self.hole_frames = self.run = 0
         self.seen = False
+        self.last_sound = None
         self.hole_at = []
         self.t0 = time.monotonic()
         self.p.get_by_name("a").connect("new-sample", self._sample)
@@ -363,6 +379,7 @@ class MonitorCount:
                 self.seen = True
                 self.sounded += 1
                 self.run = 0
+                self.last_sound = time.monotonic()
             b.unmap(m)
         return Gst.FlowReturn.OK
 
@@ -373,19 +390,77 @@ class MonitorCount:
         self.p.set_state(Gst.State.NULL)
 
 
+EDGE_STEPS = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
+_EDGE_HOLD = int(os.environ.get("MR_302M_PULSE_EDGE_HOLD", "30"))
+_EDGE_SEEDS = [int(v) for v in os.environ.get("MR_302M_PULSE_EDGE_SEEDS", "7,8,9").split(",") if v]
+_PULSE_PROFILES = [v for v in os.environ.get("MR_302M_PULSE_PROFILES", "edge,flush,field,rising").split(",") if v]
+FLUSH_AT_S = (10, 20)                      # the flush profile: two flushes into the sink, 30 s at 30 ms
+
+
+def edge_steps(seed):
+    """The edge profile's steps (ms ahead of the device clock), each `_EDGE_HOLD` s: 0-30 in 3 ms steps, shuffled."""
+    steps = EDGE_STEPS[:]
+    random.Random(seed).shuffle(steps)
+    return steps
+
+
 def pulse_run(name, secs, seed=7):
+    """The module's sink end into a real pulsesink, its monitor counting. `edge`: 10 s at 30 ms, then each step
+    x of edge_steps(seed): the feed's lateness becomes the render lateness less x (never earlier than it was), so
+    each write lands x ms ahead of the device clock, inside the server's read-ahead for small x (blocking 1)."""
+    edge, flush = name == "edge", name == "flush"
+    steps = edge_steps(seed) if edge else []
+    if edge:
+        secs = 10 + _EDGE_HOLD * len(steps)
+    if flush:
+        secs = 30
     n = secs * 100
-    late = PROFILES[name](n, seed)
+    late = [30.0] * n if flush else (PROFILES[name](n, seed) if not edge else None)
+    state = {"late": 30.0, "rl": None, "step": -1, "set": []}
+
+    def edge_late(i):
+        k = (i - 1000) // (_EDGE_HOLD * 100) if i >= 1000 else -1
+        if k != state["step"]:
+            state["step"] = k
+            if k >= 0 and state["rl"] is not None:
+                state["late"] = max(state["late"], state["rl"] - steps[k] - random.Random(seed * 31 + k).uniform(0, 1))
+            state["set"].append(round(state["late"], 1))
+        return state["late"]
+
     mon = MonitorCount(_PULSE)
     mon.start()
     time.sleep(1.0)
     p = Gst.parse_launch(SRC + tail_for(MODULE_TAIL, sink=f"pulsesink name=sink device={_PULSE}", device=""))
     stop = threading.Event()
+    flushed = []
+    if flush:
+        # As mrasrc's device flush does, from the queue's thread: FLUSH_START, FLUSH_STOP and the segment into the
+        # sink, then the buffer that was due (minor 3: pulsesink's next write after a flush).
+        due = [k * S for k in FLUSH_AT_S]
+
+        def flusher(pad, info):
+            b = info.get_buffer()
+            if due and b.pts != Gst.CLOCK_TIME_NONE and b.pts >= due[0]:
+                due.pop(0)
+                seg = pad.get_sticky_event(Gst.EventType.SEGMENT, 0)
+                pad.push_event(Gst.Event.new_flush_start())
+                pad.push_event(Gst.Event.new_flush_stop(False))
+                if seg:
+                    pad.push_event(seg)
+                flushed.append(time.monotonic() - mon.t0)
+            return Gst.PadProbeReturn.OK
+
+        p.get_by_name("outq").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, flusher)
     p.set_state(Gst.State.PLAYING)
-    th = threading.Thread(target=late_feeder(late), args=(p, p.get_pipeline_clock(), stop), daemon=True)
+    feed = late_feeder([edge_late] * n if edge else late)
+    th = threading.Thread(target=feed, args=(p, p.get_pipeline_clock(), stop), daemon=True)
     th.start()
-    bus, t0, stats, errors = p.get_bus(), time.monotonic(), [], []
-    while time.monotonic() - t0 < secs + DRAIN_S:
+    bus, t0, stats, errors = p.get_bus(), mon.t0, [], []
+    # Until the feed's last push has played out: its render lateness and 1.5 s more after it (the drain at least).
+    ended = None
+    while ended is None or time.monotonic() - ended < max(DRAIN_S, (state["rl"] or 0) / 1000 + 1.5):
+        if ended is None and not th.is_alive():
+            ended = time.monotonic()
         m = bus.timed_pop(100 * Gst.MSECOND)
         if m is None:
             continue
@@ -393,35 +468,100 @@ def pulse_run(name, secs, seed=7):
             errors.append(m.parse_error()[0].message)
             break
         if m.type == Gst.MessageType.ELEMENT and m.get_structure().get_name() == "mrasrc-stats":
-            stats.append((time.monotonic() - t0, sdict(m.get_structure())))
+            st = sdict(m.get_structure())
+            stats.append((time.monotonic() - t0, st))
+            if st.get("render-lateness-ns", 0):
+                state["rl"] = st["render-lateness-ns"] / MS
     stop.set()
     th.join(2)
     time.sleep(1.0)
+    final = sdict(p.get_by_name("outasrc").get_property("stats"))
     p.set_state(Gst.State.NULL)
     time.sleep(0.5)
     mon.stop()
-    imax = next(i for i, l in enumerate(late) if l >= max(late))
-    t_max = imax / 100 + late[imax] / 1000 + 1.0
-    after = [t for t in mon.hole_at if t > (t_max if name == "rising" else START_S + 1.0) + 1.5]
+    start_s = 1.0 + START_S + 1.0              # the monitor's second before the pipeline, then the start window
+    if edge:
+        t_max = 0.0
+    else:
+        imax = next(i for i, l in enumerate(late) if l >= max(late))
+        t_max = 1.0 + imax / 100 + late[imax] / 1000 + 1.0
+    # Each hole after the start against a refill seen within 3 s of it (stats post every 2 s): one refill each.
+    refill_at, prev, refill_ms = [], None, []
+    for t, st in stats:
+        r, sil = st.get("margin-refills", 0), st.get("margin-silence-ns", 0) / MS
+        if prev is not None and r > prev[0]:
+            refill_at += [t] * (r - prev[0])
+            refill_ms.append(round((sil - prev[1]) / (r - prev[0]), 1))
+        prev = (r, sil)
+    holes = [t for t in mon.hole_at if t > start_s]
+    free = [t for t in refill_at if t > start_s - 3]
+    orphans = []
+    for h in holes:
+        m = next((r for r in free if abs(r - h) <= 3.0), None)
+        if m is None:
+            orphans.append(round(h, 1))
+        else:
+            free.remove(m)
+    after = [t for t in holes if t > (t_max if name == "rising" else start_s) + 1.5]
     lat = [s.get("render-lateness-ns", 0) / MS for t, s in stats if t > 20 and s.get("render-lateness-ns", 0)]
     last = stats[-1][1] if stats else {}
-    return {"holes": mon.holes, "hole_ms": mon.hole_frames / 48, "after": after, "fed": n * BUF,
-            "sounded": mon.sounded, "lat": lat, "refills": last.get("margin-refills", 0), "err": errors,
-            "t_max": t_max}
+    fed = n * BUF
+    # The device term's measured ratio: what mrasrc made of what it took (out/in frames, read at the end).
+    ratio = final.get("out-frames", 0) / max(1, final.get("in-frames", 0))
+    ppb = (ratio - 1) * 1e9
+    want = fed * ratio
+    return {"holes": mon.holes, "hole_ms": mon.hole_frames / 48, "after": after, "orphans": orphans, "fed": fed,
+            "sounded": mon.sounded, "want": want, "lost": want - mon.sounded, "ppb": ppb, "lat": lat,
+            "refills": last.get("margin-refills", 0), "guard": last.get("margin-guard-ns", 0) / MS, "err": errors,
+            "t_max": t_max, "steps": steps, "set": state["set"][1:], "holes_after_start": len(holes),
+            "flushed": [round(t, 1) for t in flushed], "refill_ms": refill_ms,
+            "last_sound": mon.last_sound - mon.t0 if mon.last_sound else 0, "end": time.monotonic() - t0}
 
 
-if _PULSE:
-    for _name in ("field", "rising"):
-        print(f"\n--- a real pulsesink on {_PULSE}: the {_name} profile, {_PULSE_SECS} s, holes on its monitor ---")
-        wait_quiet()
-        _r = pulse_run(_name, _PULSE_SECS)
-        _lat = f"{min(_r['lat']):.0f}..{max(_r['lat']):.0f}" if _r["lat"] else "none"
-        check(f"pulse {_name}: {_r['holes']} holes ({_r['hole_ms']:.0f} ms) on the monitor, {len(_r['after'])} after "
-              f"{'the walk reached its max' if _name == 'rising' else 'the start'} {[round(t, 1) for t in _r['after']]}; "
-              f"fed {_r['fed']}, sounded {_r['sounded']} ({(_r['fed'] - _r['sounded']) / 48:.1f} ms short); render "
-              f"lateness {_lat} ms; {_r['refills']} refills; errors {_r['err']}",
-              not _r["err"] and not _r["after"] and abs(_r["fed"] - _r["sounded"]) <= 4800)
-else:
+# The pulse pass: the frames heard within the 1 ms allowance (the resampler's 32 frames) of what the device term's
+# measured ratio (mrasrc's out/in frames) makes of the feed.
+def pulse_lost_ok(r):
+    return abs(r["lost"]) <= 48
+
+
+PULSE_TABLE = []
+if _PULSE and "pulse" in PARTS:
+    for _name in _PULSE_PROFILES:
+        for _seed in (_EDGE_SEEDS if _name == "edge" else [7]):
+            _secs = 10 + _EDGE_HOLD * len(EDGE_STEPS) if _name == "edge" else (30 if _name == "flush" else _PULSE_SECS)
+            print(f"\n--- a real pulsesink on {_PULSE}: the {_name} profile{f' seed {_seed}' if _name == 'edge' else ''}, "
+                  f"{_secs} s, holes on its monitor ---")
+            wait_quiet()
+            _r = pulse_run(_name, _PULSE_SECS, _seed)
+            PULSE_TABLE.append((_name, _seed, _r))
+            _lat = f"{min(_r['lat']):.0f}..{max(_r['lat']):.0f}" if _r["lat"] else "none"
+            _what = (f"{_r['holes']} holes ({_r['hole_ms']:.0f} ms) on the monitor, {_r['holes_after_start']} after the "
+                     f"start, {len(_r['orphans'])} with no refill {_r['orphans']}; fed {_r['fed']}, sounded "
+                     f"{_r['sounded']}, the device term's ratio {_r['ppb'] / 1000:+.2f} ppm makes {_r['want']:.0f}: lost "
+                     f"{_r['lost'] / 48:.2f} ms; render lateness {_lat} ms; {_r['refills']} refills; guard "
+                     f"{_r['guard']:.1f} ms; errors {_r['err']}")
+            if _name == "edge":
+                check(f"pulse edge seed {_seed} (steps {_r['steps']} ms ahead, lateness set {_r['set']}): {_what}",
+                      not _r["err"] and not _r["orphans"] and pulse_lost_ok(_r))
+            elif _name == "flush":
+                # A flush discards what the server held (pa_stream_flush): at most 200 ms each; one hole and one
+                # or two refills each, sound to the end. The silence runs from where the sink writes: frame 0 on a
+                # pulsesink whose segdone is still (1.22), so about the stream's run, reported.
+                check(f"pulse flush (flushed at {_r['flushed']} s): {_what}; refills of {_r['refill_ms']} ms; sound "
+                      f"until {_r['last_sound']:.1f} s of {_r['end']:.1f}",
+                      not _r["err"] and len(_r["flushed"]) == len(FLUSH_AT_S) and not _r["orphans"]
+                      and 1 + len(FLUSH_AT_S) <= _r["refills"] <= 1 + 2 * len(FLUSH_AT_S)
+                      and _r["holes_after_start"] <= len(FLUSH_AT_S) and 0 <= _r["lost"] <= 48 + 9600 * len(FLUSH_AT_S)
+                      and _r["last_sound"] >= _r["end"] - 5.0)   # the drain and teardown take 3-4 s
+            else:
+                check(f"pulse {_name}: {_what}; {len(_r['after'])} holes after "
+                      f"{'the walk reached its max' if _name == 'rising' else 'the start'}",
+                      not _r["err"] and not _r["after"] and not _r["orphans"] and pulse_lost_ok(_r))
+    print("\n--- the pulse table: profile x seed x holes after the start x refills x lost ---")
+    for _name, _seed, _r in PULSE_TABLE:
+        print(f"  {_name:7} seed {_seed}: holes {_r['holes_after_start']}, no refill {len(_r['orphans'])}, refills "
+              f"{_r['refills']}, lost {_r['lost'] / 48:.2f} ms")
+elif "pulse" in PARTS:
     print("\n(no MR_302M_PULSE_SINK: the real pulsesink runs skipped)")
 
 # --- drift: an hour each way, a house-rate tone -----------------------------------------------------------------
@@ -446,7 +586,7 @@ def paced_feeder(p, clk, stop):
 
 _DRIFT = int(os.environ.get("MR_302M_DRIFT_SECS", "3660"))
 _SPEED = int(os.environ.get("MR_302M_DRIFT_SPEED", "6"))
-_PPMS = [int(v) for v in os.environ.get("MR_302M_DRIFT_PPM", "100,-100").split(",") if v]
+_PPMS = [int(v) for v in os.environ.get("MR_302M_DRIFT_PPM", "100,-100").split(",") if v] if "drift" in PARTS else []
 for _ppm in _PPMS:
     print(f"\n--- drift: a house-rate tone into a device {_ppm:+d} ppm, {_DRIFT} s on a {_SPEED}x clock ---")
     wait_quiet()
@@ -467,15 +607,15 @@ for _ppm in _PPMS:
         return xs[len(xs) // 2] if xs else 0
 
     # Creep is the level moving: the median of the first and of the last 5 min apart. A lone timer read
-    # preempted between the device clock and house time reads high once (max-min shows it; p1-p99 does not).
+    # preempted between the device clock and house time reads high once (max-min shows it, 4-11 ms seen under load: held to a loose 20 ms).
     _creep = abs(_median([v for (t, _), v in zip(_post, _late) if t < 420]) -
                  _median([v for (t, _), v in zip(_post, _late) if t > _DRIFT - 300]))
     _ref = [s.get("margin-refills", 0) for t, s in _post]
     check(f"{_ppm:+d} ppm: from 2 s no hole ({_h}), no underrun ({_sk['underruns'] - _base['underruns']}), "
           f"no error {_err}", not _err and _h == 0 and _sk["underruns"] == _base["underruns"])
     check(f"... no creep: the render lateness's median over its first and its last 5 min from 120 s {_creep:.2f} ms "
-          f"apart, p1-p99 {_spread:.2f} ms (max-min {_span:.2f}) over {len(_late)} posts; uncorrected "
-          f"{abs(_ppm) * _DRIFT / 1000:.0f} ms", len(_late) > 50 and _creep < 1 and 0 <= _spread < 2)
+          f"apart, p1-p99 {_spread:.2f} ms (max-min {_span:.2f}, within 20) over {len(_late)} posts; uncorrected "
+          f"{abs(_ppm) * _DRIFT / 1000:.0f} ms", len(_late) > 50 and _creep < 1 and 0 <= _spread < 2 and 0 <= _span < 20)
     check(f"... no refill after the start: margin-refills {_ref[0] if _ref else None} -> {_ref[-1] if _ref else None}",
           bool(_ref) and _ref[0] == _ref[-1])
     check(f"... the device term locked at {_last.get('device-ppb', 0) / 1000:+.2f} ppm ({_ppm:+d})",

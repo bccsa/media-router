@@ -681,17 +681,19 @@ elements" below do not start.
   cut every sample that reached its device after its slot into silence:
   hundreds of short holes a minute behind a clean mix, or nothing at all while
   it showed ok. It now plays what it gets, late if it came late, and keeps
-  60 ms in hand at its device (120 ms when it starts): its feed may come up to
-  that much later than before without a hole. If the feed falls further
-  behind, or stops, you hear one gap; the output then plays on as late as the
-  feed now comes, with 60 ms in hand again. It does not get earlier again by
-  itself: after its feed has run late it stays that late until the output
-  restarts. The Audio Decoder's output does the same. The output now plays
-  behind a video player on the same route by about its feed's lateness, the
-  60-120 ms it keeps in hand and its device's own delay, less the route's
-  playout offset (60 ms by default); raise the route's playout offset to bring
-  the picture back in line. The Audio Output (302M)'s Lip-Sync Trim is gone
-  from its settings: it no longer moved anything.
+  60 ms in hand at its device beyond what the sound server may already have
+  taken (40 ms on a PipeWire device): 60 to 100 ms ahead of what you hear
+  after a gap, and 130 ms or more when it starts. Its feed may come up to
+  60 ms later than before without a gap. If the feed falls further behind, or
+  stops, you hear one gap; the output then plays on as late as the feed now
+  comes, with that much in hand again. It does not get earlier again by
+  itself: its delay is the latest its feed has come, plus what it keeps in
+  hand and its device's own delay, until the output restarts. The Audio
+  Decoder's output does the same. The output now plays behind a video player
+  on the same route by that much less the route's playout offset (60 ms by
+  default); raise the route's playout offset to bring the picture back in
+  line. The Audio Output (302M)'s Lip-Sync Trim is gone from its settings: it
+  no longer moved anything.
 - **Audio inputs capture again by themselves after PipeWire restarts.** Up to
   v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
   buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and

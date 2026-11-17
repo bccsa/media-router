@@ -1973,6 +1973,7 @@ int sink_margin_main(int argc, char** argv) {
         return 1;
     }
     size_t at = 0, lineno = 0;
+    AsrcSinkGuard guard;
     while (at < text.size()) {
         size_t nl = text.find('\n', at);
         if (nl == std::string::npos) nl = text.size();
@@ -1981,18 +1982,39 @@ int sink_margin_main(int argc, char** argv) {
         lineno++;
         if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
         Json o;
-        int64_t next = 0, segdone = 0, sps = 0, margin = 0, play = 0;
-        bool ok = parse_json(line, &o, &err) && op_i64(o, "next", &next, &err) && op_i64(o, "segdone", &segdone, &err) &&
-                  op_i64(o, "sps", &sps, &err) && op_i64(o, "margin", &margin, &err);
-        const bool play_given = ok && o.get("play") && o.get("play")->type != Json::Type::null;
-        if (ok && play_given) ok = op_i64(o, "play", &play, &err);
-        if (!ok) {
-            std::fflush(stdout);
-            std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", argv[1], lineno, err.c_str());
-            return 1;
+        bool ok = parse_json(line, &o, &err);
+        if (ok && o.get("next")) {   // a silence case
+            int64_t next = 0, segdone = 0, sps = 0, margin = 0, play = 0, g = 0;
+            ok = op_i64(o, "next", &next, &err) && op_i64(o, "segdone", &segdone, &err) && op_i64(o, "sps", &sps, &err) &&
+                 op_i64(o, "margin", &margin, &err);
+            const bool play_given = ok && o.get("play") && o.get("play")->type != Json::Type::null;
+            if (ok && play_given) ok = op_i64(o, "play", &play, &err);
+            if (ok && o.get("guard")) ok = op_i64(o, "guard", &g, &err);
+            if (ok) {
+                std::printf("{\"silence\":%lld}\n",
+                            (long long)asrc_sink_silence(next, segdone, sps, margin, play_given, play, g));
+                continue;
+            }
+        } else if (ok) {   // a guard event
+            int64_t a = 0, b = 0, c = 0;
+            if (o.get("base")) {
+                ok = op_i64(o, "base", &a, &err) && op_i64(o, "cap", &b, &err);
+                if (ok) guard = AsrcSinkGuard(a, b);
+            } else if (o.get("seg")) {
+                ok = op_i64(o, "seg", &a, &err) && op_i64(o, "sps", &b, &err) && op_i64(o, "play", &c, &err);
+                if (ok) guard.segdone_seen(a, b, c);
+            } else {
+                ok = false;
+                err = "neither a silence case nor a guard event";
+            }
+            if (ok) {
+                std::printf("{\"guard\":%lld}\n", (long long)guard.frames());
+                continue;
+            }
         }
-        std::printf("{\"silence\":%lld}\n",
-                    (long long)asrc_sink_silence(next, segdone, sps, margin, play_given, play));
+        std::fflush(stdout);
+        std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", argv[1], lineno, err.c_str());
+        return 1;
     }
     return 0;
 }

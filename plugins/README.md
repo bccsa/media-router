@@ -2605,6 +2605,16 @@ Q2). The output counter runs on from the first PTS on the device timeline: a
 break's new epoch starts at the last label end plus the gap at the device
 ratio, the offset restarting at each `relock-device` (B-148, B-166).
 `bypass-below-ppm=0` with `device-sink` is the device term alone.
+`margin-ms` (B-249; the outputs' `OUTPUT_MARGIN_MS` 60) keeps that much in
+the sink's ring: a write the device can no longer play (a hole), or the first,
+gets silence first so it lands the margin past the first frame the device can
+still play. On a sink that is not a `GstAudioSink` (pulsesink: a sound
+server's stream, which reads ahead of the clock and drops a write behind its
+read index) that frame is the clock plus a guard: the server's configured
+latency (tlength less two minreq, 40 ms at buffer-time 100 ms), plus the
+sink's latency learned from the segment count where it moves; held only while
+the stream may have run dry. `mrasrc-stats` adds `margin-refills`,
+`margin-silence-ns` and `margin-guard-ns`.
 `mrasrc-stats` gains `mode` (`capture`, `bypass`, `decode`, `device`,
 `decode+device`), `source-ppb` and `device-ppb` (each clock against house
 time, positive when fast), `rate-known`, `device-relocks`, `device-stalls`

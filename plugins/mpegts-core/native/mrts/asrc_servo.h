@@ -338,20 +338,41 @@ class AsrcRenderLateness {
     std::deque<Seg> map_;
 };
 
-// The sink margin (B-249): py/sink_margin_ref.py. Before a sync=false sink renders a buffer: if its next write is
-// behind the first frame the device can still play (past the segment in flight, or the clock's position), or there is
-// none (a start, a flush), the frames of silence to put first so the buffer lands `margin` frames past that frame
-// (twice that at a start: a device that starts takes its own buffer out of it).
-int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos);
+// The sink margin (B-249): py/sink_margin_ref.py. Before a sync=false sink renders, the silence to put first when its
+// next write is behind the first frame the device can still play (past the segment in flight, or the clock plus the
+// guard), or there is none (a start, a flush): the buffer lands `margin` past it (then plus margin or guard).
+int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos, int64_t guard);
 int64_t asrc_sink_write_pos(int64_t next_sample, int64_t segdone, int64_t sps);
 int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int64_t margin, bool have_play,
-                          int64_t play_pos);
+                          int64_t play_pos, int64_t guard);
+// A pulse server's configured latency for a stream of tlength `buffer` frames, minreq `sps`.
+int64_t asrc_server_latency(int64_t buffer, int64_t sps);
+
+// How far a server may have read ahead of the device clock (sink_margin_ref.SinkGuard): its configured latency (the
+// graph quantum's bound) plus the sink's latency, learned from segdone once it moves. Learned term only grows; capped.
+class AsrcSinkGuard {
+  public:
+    explicit AsrcSinkGuard(int64_t base = 0, int64_t cap = 0) : base_(base > 0 ? base : 0), cap_(cap > 0 ? cap : 0) {}
+    void segdone_seen(int64_t segdone, int64_t sps, int64_t play_pos);
+    int64_t frames() const { return base_ + sink_lat_ < cap_ ? base_ + sink_lat_ : cap_; }
+    void set_base(int64_t base) { base_ = base > 0 ? base : 0; }
+
+  private:
+    int64_t base_, cap_;
+    int64_t sink_lat_ = 0;
+};
+
+// Whether the guard holds a write: not when the stream was full at the write before (its buffer waited a segment
+// or more in the queue before the sink, or the push before it blocked in the sink for ASRC_SINK_BLOCKED_NS).
+constexpr int64_t ASRC_SINK_BLOCKED_NS = 2000000;
+bool asrc_sink_guard_applies(int64_t residence_ns, int64_t push_ns, int64_t seg_ns);
 
 class AsrcSinkMargin {
   public:
     explicit AsrcSinkMargin(int64_t margin_frames = 0) : margin_(margin_frames > 0 ? margin_frames : 0) {}
     // next_sample < 0: none; have_play false: the clock must not be read (before the first render).
-    int64_t silence(int64_t next_sample, int64_t segdone, int64_t sps, bool have_play, int64_t play_pos);
+    int64_t silence(int64_t next_sample, int64_t segdone, int64_t sps, bool have_play, int64_t play_pos,
+                    int64_t guard);
     int64_t margin() const { return margin_; }
     uint64_t refills() const { return refills_; }
     int64_t silence_total() const { return silence_; }

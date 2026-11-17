@@ -3349,25 +3349,54 @@ int sweep(int n) {
 static void test_sink_margin() {
     std::printf("\n--- the sink margin (B-249) ---\n");
     const int64_t SPS = 480, M = 2880;
-    CHECK("a contiguous write past the segment in flight: no silence", asrc_sink_silence(5 * SPS, 3, SPS, M, false, 0) == 0);
+    CHECK("a contiguous write past the segment in flight: no silence", asrc_sink_silence(5 * SPS, 3, SPS, M, false, 0, 0) == 0);
     CHECK("... with a frame of margin left, still none (a hole of our own otherwise)",
-          asrc_sink_silence(4 * SPS, 3, SPS, M, false, 0) == 0);
+          asrc_sink_silence(4 * SPS, 3, SPS, M, false, 0, 0) == 0);
     CHECK("a write into the segment in flight: silence to margin past it",
-          asrc_sink_silence(3 * SPS + 100, 3, SPS, M, false, 0) == 4 * SPS + M - (3 * SPS + 100));
+          asrc_sink_silence(3 * SPS + 100, 3, SPS, M, false, 0, 0) == 4 * SPS + M - (3 * SPS + 100));
     CHECK("a write behind the read (the base sink realigns to segdone + 1): silence = the margin",
-          asrc_sink_silence(1 * SPS, 7, SPS, M, false, 0) == M);
+          asrc_sink_silence(1 * SPS, 7, SPS, M, false, 0, 0) == M);
     CHECK("the first write (next -1): twice the margin past the segment in flight",
-          asrc_sink_silence(-1, 0, SPS, M, false, 0) == SPS + 2 * M && asrc_sink_silence(-1, 9, SPS, M, false, 0) == 2 * M);
+          asrc_sink_silence(-1, 0, SPS, M, false, 0, 0) == SPS + 2 * M && asrc_sink_silence(-1, 9, SPS, M, false, 0, 0) == 2 * M);
     CHECK("the device clock past a stale segdone moves `consumed`",
-          asrc_sink_silence(5 * SPS, 3, SPS, M, true, 6 * SPS) == 6 * SPS + M - 5 * SPS);
-    CHECK("... a clock behind it does not", asrc_sink_silence(5 * SPS, 3, SPS, M, true, 2 * SPS) == 0);
+          asrc_sink_silence(5 * SPS, 3, SPS, M, true, 6 * SPS, 0) == 6 * SPS + M - 5 * SPS);
+    CHECK("... a clock behind it does not", asrc_sink_silence(5 * SPS, 3, SPS, M, true, 2 * SPS, 0) == 0);
+    CHECK("the guard moves `consumed` past the clock: a write less than the guard ahead gets silence",
+          asrc_sink_silence(6 * SPS, 3, SPS, M, true, 5 * SPS, 2 * SPS) == 7 * SPS + M - 6 * SPS &&
+              asrc_sink_silence(7 * SPS, 3, SPS, M, true, 5 * SPS, 2 * SPS) == 0);
+    CHECK("... no guard without a clock (before the first render)",
+          asrc_sink_silence(5 * SPS, 3, SPS, M, false, 0, 10 * SPS) == 0);
+    CHECK("a start: the margin plus the larger of the margin and the guard",
+          asrc_sink_silence(-1, 0, SPS, M, false, 0, SPS) == SPS + 2 * M &&
+              asrc_sink_silence(-1, 0, SPS, M, false, 0, 2 * M) == SPS + 3 * M);
+    CHECK("after a flush while the device plays (next -1, a clock): the start's silence past the clock and guard, from "
+          "where the base sink writes (pulsesink 1.22: frame 0)",
+          asrc_sink_silence(-1, 0, SPS, M, true, 3000000, SPS) == 3000000 + SPS + 2 * M &&
+              asrc_sink_silence(-1, 7, SPS, M, true, 2 * SPS, 0) == 2 * M);
+    CHECK("the server's configured latency: tlength less two minreq (60 ms, 10 ms: 40 ms)",
+          asrc_server_latency(6 * SPS, SPS) == 4 * SPS && asrc_server_latency(SPS, SPS) == 0);
+    AsrcSinkGuard g(4 * SPS, 500 * 48);
+    g.segdone_seen(0, SPS, 100);
+    CHECK("while segdone has not moved (1.22): the configured latency", g.frames() == 4 * SPS);
+    g.segdone_seen(12, SPS, 11 * SPS + 100);
+    CHECK("... a read index's ceiling within a segment of the clock: still that", g.frames() == 4 * SPS);
+    g.segdone_seen(12, SPS, 12 * SPS - 900);
+    g.segdone_seen(12, SPS, 12 * SPS - 600);
+    CHECK("... ahead by more: the sink's latency learned, its largest less the ceiling's segment",
+          g.frames() == 4 * SPS + 900 - SPS);
+    g.segdone_seen((int64_t)1 << 30, SPS, 0);
+    CHECK("... capped (500 ms)", g.frames() == 500 * 48);
+    CHECK("the guard holds a write that came straight through, not one that waited a segment in the queue or followed "
+          "a push that blocked",
+          asrc_sink_guard_applies(0, 0, 10000000) && asrc_sink_guard_applies(9999999, 1999999, 10000000) &&
+              !asrc_sink_guard_applies(10000000, 0, 10000000) && !asrc_sink_guard_applies(0, 2000000, 10000000));
     AsrcSinkMargin z(0);
     CHECK("margin 0 (mrasrc margin-ms 0): never, not even into the segment in flight",
-          z.silence(3 * SPS + 100, 3, SPS, false, 0) == 0 && z.silence(-1, 0, SPS, false, 0) == 0);
+          z.silence(3 * SPS + 100, 3, SPS, false, 0, 0) == 0 && z.silence(-1, 0, SPS, false, 0, 0) == 0);
     AsrcSinkMargin m(M);
-    m.silence(-1, 0, SPS, false, 0);
-    m.silence(5 * SPS, 3, SPS, false, 0);
-    m.silence(1 * SPS, 7, SPS, false, 0);
+    m.silence(-1, 0, SPS, false, 0, 0);
+    m.silence(5 * SPS, 3, SPS, false, 0, 0);
+    m.silence(1 * SPS, 7, SPS, false, 0, 0);
     CHECK("stats count the refills and their silence", m.refills() == 2 && m.silence_total() == SPS + 2 * M + M);
 }
 

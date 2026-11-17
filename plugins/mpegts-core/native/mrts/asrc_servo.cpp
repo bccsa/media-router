@@ -754,9 +754,9 @@ bool AsrcRenderLateness::at(int64_t now_ns, int64_t dev_ns, int64_t* lateness_ns
     return true;
 }
 
-int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos) {
+int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos, int64_t guard) {
     const int64_t c = (segdone + 1) * sps;
-    return have_play && play_pos > c ? play_pos : c;
+    return have_play && play_pos + guard > c ? play_pos + guard : c;
 }
 
 int64_t asrc_sink_write_pos(int64_t next_sample, int64_t segdone, int64_t sps) {
@@ -766,18 +766,32 @@ int64_t asrc_sink_write_pos(int64_t next_sample, int64_t segdone, int64_t sps) {
 }
 
 int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int64_t margin, bool have_play,
-                          int64_t play_pos) {
+                          int64_t play_pos, int64_t guard) {
     if (sps <= 0 || margin < 0) return 0;
-    const int64_t c = asrc_sink_consumed(segdone, sps, have_play, play_pos);
+    if (guard < 0) guard = 0;
+    const int64_t c = asrc_sink_consumed(segdone, sps, have_play, play_pos, guard);
     if (next_sample >= 0 && next_sample >= c) return 0;
-    const int64_t want = next_sample >= 0 ? margin : 2 * margin;   // a start: the device takes its buffer from it
+    // A start or a flush: the device (a server: its read-ahead) takes its own buffer out of it.
+    const int64_t want = next_sample >= 0 ? margin : margin + std::max(margin, guard);
     const int64_t n = c + want - asrc_sink_write_pos(next_sample, segdone, sps);
     return n > 0 ? n : 0;
 }
 
+int64_t asrc_server_latency(int64_t buffer, int64_t sps) {
+    return buffer - 2 * sps > 0 ? buffer - 2 * sps : 0;
+}
+
+void AsrcSinkGuard::segdone_seen(int64_t segdone, int64_t sps, int64_t play_pos) {
+    if (segdone > 0 && sps > 0 && play_pos >= 0) sink_lat_ = std::max(sink_lat_, (segdone - 1) * sps - play_pos);
+}
+
+bool asrc_sink_guard_applies(int64_t residence_ns, int64_t push_ns, int64_t seg_ns) {
+    return residence_ns < seg_ns && push_ns < ASRC_SINK_BLOCKED_NS;
+}
+
 int64_t AsrcSinkMargin::silence(int64_t next_sample, int64_t segdone, int64_t sps, bool have_play,
-                                int64_t play_pos) {
-    const int64_t n = margin_ ? asrc_sink_silence(next_sample, segdone, sps, margin_, have_play, play_pos) : 0;
+                                int64_t play_pos, int64_t guard) {
+    const int64_t n = margin_ ? asrc_sink_silence(next_sample, segdone, sps, margin_, have_play, play_pos, guard) : 0;
     if (n) {
         refills_++;
         silence_ += n;

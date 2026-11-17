@@ -367,7 +367,7 @@ _s0 = _el.get_property("stats")
 STATS_FIELDS = ["state", "ratio-ppb", "phase-err-ns", "relocks", "in-frames", "out-frames",
                 "discont-in", "dropped-frames", "gaps", "lost-frames", "mode", "source-ppb", "device-ppb",
                 "rate-known", "device-relocks", "device-stalls", "render-lateness-ns", "margin-refills",
-                "margin-silence-ns"]
+                "margin-silence-ns", "margin-guard-ns"]
 COUNT_FIELDS = [k for k in STATS_FIELDS[1:] if k not in ("mode", "rate-known")]
 check("stats is read-only; a fresh element's: mrasrc-stats, acquiring, mode capture, no rate, every count 0",
       not _st.flags & GObject.ParamFlags.WRITABLE and _s0.get_name() == "mrasrc-stats"
@@ -697,13 +697,13 @@ _gaps = [b["out-frames"] - a["out-frames"] for a, b in zip(posts, posts[1:-1])]
 check(f"mrasrc-stats every 2 s of output ({len(posts)} posts, {sorted(set(_gaps))} frames "
       "apart) and once more at EOS", len(posts) == 6 and all(abs(g - 2 * FS) <= BUF for g in _gaps))
 check("each carries part 10's fields, WI-P3-5's mode and clocks, B-148's rate-known, B-166's device "
-      "relocks, stalls and render lateness and B-249's margin refills, in order and typed (capture: mode capture, "
-      "no device)",
+      "relocks, stalls and render lateness and B-249's margin refills and guard, in order and typed (capture: mode "
+      "capture, no device)",
       all(list(p) == STATS_FIELDS and isinstance(p["state"], str) and p["mode"] == "capture"
           and all(isinstance(p[k], int) for k in COUNT_FIELDS) and isinstance(p["rate-known"], bool)
           and p["device-ppb"] == 0 and p["device-relocks"] == 0 and p["device-stalls"] == 0
           and p["render-lateness-ns"] == 0 and p["margin-refills"] == 0 and p["margin-silence-ns"] == 0
-          for p in posts))
+          and p["margin-guard-ns"] == 0 for p in posts))
 _ev = h.messages("mrasrc-event")
 check(f"mrasrc-event relock: kind, reason, house-ns, jump-ns, dropped-ns "
       f"({sorted(_ev[0]) if _ev else []})",
@@ -1385,14 +1385,15 @@ else:
     _p.set_state(Gst.State.NULL)
     _late = [(t, s["render-lateness-ns"]) for t, s in _stats if t >= 120]
     _lo, _hi = min(v for _, v in _late), max(v for _, v in _late)
-    # p1-p99: a lone timer read preempted between the device clock and house time reads high once (B-249).
+    # p1-p99: a lone timer read preempted between the device clock and house time reads high once (B-249: 4-11 ms
+    # seen under load); max-min within a loose 20 ms still catches a level that moves.
     _sv = sorted(v for _, v in _late)
     _p01, _p99 = _sv[len(_sv) // 100], _sv[-1 - len(_sv) // 100]
     check(f"render lateness from 120 s to {_late[-1][0] / 60:.0f} min within 2 ms (p1-p99 {_p01 / MS:.3f} .. "
-          f"{_p99 / MS:.3f} ms, max-min {_lo / MS:.3f} .. {_hi / MS:.3f}; "
+          f"{_p99 / MS:.3f} ms, max-min {_lo / MS:.3f} .. {_hi / MS:.3f} within 20; "
           f"100 ppm uncorrected drifts 180 ms in 30 min), {len(_late)} posts, no underrun ({_sk['underruns']}), no "
           f"realign after the start ({_sk['resyncs'] - _rs.get('start', -1)}; {_rs.get('start')} with the first renders)",
-          not _errors and len(_late) > 500 and _p99 - _p01 < 2 * MS and _sk["underruns"] == 0
+          not _errors and len(_late) > 500 and _p99 - _p01 < 2 * MS and _hi - _lo < 20 * MS and _sk["underruns"] == 0
           and 0 <= _rs.get("start", -1) <= 2 and _sk["resyncs"] == _rs["start"])
     check(f"... the device term locked at {_st.get('device-ppb', 0) / 1000:+.3f} ppm (+100), the ratio its term "
           f"({_st.get('ratio-ppb', 0) / 1000:+.3f} ppm), no relock-device, no stall, the sink never skewed "
