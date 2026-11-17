@@ -2300,7 +2300,7 @@ static void gst_mralignwatch_class_init(GstMrAlignWatchClass* klass) {
     g_object_class_install_property(
         gobject_class, PROP_SILENCE_FACTOR,
         g_param_spec_double("silence-factor", "Silence factor",
-                            "W = factor x p95 of the gaps between the last 200 arrivals.", 1.0,
+                            "W = factor x p95 of the gaps between the last 200 deliveries.", 1.0,
                             100.0, DEFAULT_SILENCE_FACTOR, live));
     g_object_class_install_property(
         gobject_class, PROP_SILENCE_FLOOR,

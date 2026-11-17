@@ -1050,10 +1050,9 @@ def p95(values):
 
 
 def scn_align_source_restart(tag, argv, exp):
-    """F-3: the source stops and comes back as a new connection whose AAC deliveries carry one or two
-    17-frame PES (DEV-P4cd's sender after its restart): audio present again, never absent after, W the
-    input's own rhythm and never at the floor (B-244). Arms: 3 s (held, p4-20), 8 s (absent, a rejoin) and
-    8 s with one double in 40, whose W after stays under the ceiling, so the check reads a learned W."""
+    """F-3: the source comes back as a new connection whose AAC deliveries carry one or two 17-frame PES:
+    audio present again, never absent after, W the input's own rhythm, never the floor (B-244). Arms: 3 s
+    (held, p4-20), 8 s (absent, a rejoin), 8 s with one double in 41 (a learned W under the ceiling)."""
     for arm in exp["arms"]:
         source_restart_arm(tag, argv, exp, arm)
 

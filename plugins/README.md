@@ -2704,7 +2704,7 @@ input behind the gaps (a joiner, a rejoin) eases up at half a millisecond a
 millisecond, so the output slows and never stops (B-80); once every input has
 stayed 10 ms or more under it for `fall-after` it falls, at most 1 s at a time
 (B-82), and it falls when an input leaves (its pad released). An input silent
-for W (3 × the p95 of its gaps between arrivals, 100 ms to 2 s) is absent: it
+for W (3 × the p95 of its gaps between deliveries, 100 ms to 2 s) is absent: it
 is gapped at the pace and the aggregator goes on without it; when it comes
 back, what it sends that ends before the gaps' horizon is discarded as stale
 and counted, and it rejoins at the current position. An input added to a

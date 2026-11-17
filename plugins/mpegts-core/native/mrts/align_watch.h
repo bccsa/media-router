@@ -13,9 +13,8 @@
 
 namespace mrts {
 
-// W, the silence limit (part 4.3 job 2): clamp(factor x p95 of the gaps before the last
-// WINDOW arrivals, floor, ceiling); the ceiling until MIN_ARRIVALS arrivals, so a fresh input
-// is never declared absent on its first buffers. An arrival is a delivery: buffers within
+// W, the silence limit (part 4.3 job 2): clamp(factor x p95 of the last WINDOW gaps, floor,
+// ceiling), the ceiling until MIN_ARRIVALS arrivals. An arrival is a delivery: buffers within
 // TOGETHER_NS of its first (a PES its parser split into frames, a burst) are one (B-244).
 class ArrivalRhythm {
   public:
