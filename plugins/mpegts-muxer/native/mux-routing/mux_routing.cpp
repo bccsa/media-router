@@ -604,9 +604,9 @@ std::string plan_route(Input& in, GstPad* pad, GstCaps* caps, const std::string&
     return "";
 }
 
-/** An old program's EOS (its pads end once the demux planned the next) never reaches the mux:
- *  a mux whose pads all end stops for good. The route goes silent instead, absent and gapped
- *  (B-245); the stream's own end, on the current program's pads, passes. */
+/** An old program's EOS (its pads end once the demux planned the next) never reaches the route:
+ *  a class that has left goes silent, absent and gapped, not ended (B-245); the stream's own
+ *  end, on the current program's pads, passes. */
 GstPadProbeReturn drop_program_eos(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
     GstEvent* ev = GST_PAD_PROBE_INFO_EVENT(info);
     if (!ev || GST_EVENT_TYPE(ev) != GST_EVENT_EOS || !g_state) return GST_PAD_PROBE_OK;

@@ -185,6 +185,10 @@ def no_restart(tag, label, runner, rc):
     started = runner.count("started")
     playing = runner.count("state_change", state="playing")
     eos = runner.count("eos")
+    for e in runner.errors()[:2]:
+        # Where it came from: the element and its debug text place a one-off error.
+        print(f"    ledger {label} {tag}: error from {e.get('element')}: {e.get('message')} "
+              f"({(e.get('debug') or '')[:400]})", flush=True)
     check(f"{label} {tag}: one start, no error, no EOS, no restart, exit 0 (started {started}, PLAYING "
           f"{playing}, EOS {eos}, errors {[e.get('message') for e in runner.errors()][:2]}, rc {rc})",
           started == 1 and playing == 1 and eos == 0 and not runner.errors() and rc == 0)
@@ -1216,6 +1220,13 @@ def input_never_arm(tag, argv, exp, arm, run=""):
                        if p["pts"] in set(want) and p["pts"] not in have]
             check(f"{label} {tag}: segment {i} {media} continuous after that ({len(want) - len(missing)} of "
                   f"{len(want)} PES out, missing at {missing[:4]})", want and not missing)
+        # A class the segment lacks shows absent by its end (the old program's EOS held back).
+        for r in arm.get("absent", [[]] * len(segs))[i]:
+            prev = t0 + int(segs[i - 1][2] * S) if i else t0
+            st = [(t, v) for t, v in states(reps[r]) if t < hi]
+            check(f"{label} {tag}: segment {i} ({kind}) {r} absent, its class gone (states "
+                  f"{[(round(sec(t, t0), 2), v) for t, v in st][-3:]})",
+                  st and st[-1][1] == "absent" and st[-1][0] >= prev)
         # A programme a receiver can lock: PCR in the output again within the bound.
         pcrs = [a_ for a_, _st, _f, d in cons.records if lo <= a_ < hi
                 and any(rig.ts_psi.read_pcr(pkt) is not None for pkt in rig.ts_psi.iter_packets(d))]

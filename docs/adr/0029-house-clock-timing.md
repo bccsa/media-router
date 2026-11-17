@@ -4183,10 +4183,10 @@ program count in the pad name): the old branch is stopped and removed, its
 request pad released, and the new pad links to the same request pad (same
 PID, a new stream in the PMT; the old program's last items in the old branch,
 under one pace, are dropped). An old program's EOS is held back from the mux
-by an event probe on each routed pad (a mux whose pads all end, as the
-takeover left it for a moment in the first build, stops for good): a class
-the new program lacks keeps its route, silent, absent and gapped, until it
-comes back; releasing it would change the output's PMT for every consumer
+by an event probe on each routed pad (with the hold below in place, its job
+is the route of a class that has left: shown absent, with its warning, not
+an ended route that stays "present"): a class the new program lacks keeps
+its route, silent, absent and gapped, until it comes back; releasing it would change the output's PMT for every consumer
 downstream. A mux with no sink pad at all ends too (mpegtsmux reads zero
 pads as every pad ended), so a takeover of its only route first requests a
 hold, a request pad that never gets caps on a free PID from the top down,

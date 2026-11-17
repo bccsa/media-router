@@ -403,18 +403,18 @@ def _install_input(pipe, entry):
 
     def plan_route(pad, caps, caps_name, pid, media):
         """The routing decision for one demuxed pad, and the mux's prog-map and PCR
-        edits it needs: (None, request pad, output PID, branch) to link, else (why the
-        pad is sunk, None, None, None). Caller holds `_lock`."""
+        edits it needs: (None, request pad, output PID, branch, replaced branch) to link,
+        else (why the pad is sunk, None, None, None, replaced branch). Caller holds `_lock`."""
         if pid is not None and pid in ignore:
-            return f"pid 0x{pid:x} is excluded", None, None, None
+            return f"pid 0x{pid:x} is excluded", None, None, None, None
         route = routes.get(media)
         if not route or (inp["pid"] is None and not route.get("padName")):
-            return f"no route for {media} ({caps_name or 'unknown caps'})", None, None, None
+            return f"no route for {media} ({caps_name or 'unknown caps'})", None, None, None, None
         replaced = None
         if media in linked:
             was, now = generation_from_pad_name(linked[media]), generation_from_pad_name(pad.get_name())
             if was is None or now is None or was == now:
-                return f"second {media} stream (already routed {linked[media]})", None, None, None
+                return f"second {media} stream (already routed {linked[media]})", None, None, None, None
             _log(f"{rule_id}: {pad.get_name()} of a new program takes the {media} route over from {linked[media]}")
             replaced = take_branch(media)
         pad_name, out_pid = out_pad_name(media, route)
@@ -440,8 +440,8 @@ def _install_input(pipe, entry):
 
     def drop_program_eos(pad, info):
         """An old program's EOS (its pads end once the demux planned the next) never reaches
-        the mux, whose pads all ending would stop it for good: the route goes silent, absent
-        and gapped. The stream's own end, on the current program's pads, passes."""
+        the route: a class that has left goes silent, absent and gapped, not ended. The
+        stream's own end, on the current program's pads, passes."""
         _, Gst = _gst()
         ev = info.get_event()
         if ev is None or ev.type != Gst.EventType.EOS:
@@ -464,8 +464,7 @@ def _install_input(pipe, entry):
             gen = generation_from_pad_name(pad.get_name())
             if gen is not None:
                 demux_gen["gen"] = gen
-            why, pad_name, out_pid, branch, *rest = plan_route(pad, caps, caps_name, pid, media)
-            replaced = rest[0] if rest else None
+            why, pad_name, out_pid, branch, replaced = plan_route(pad, caps, caps_name, pid, media)
             hold = _hold_mux(pipe, link_to) if replaced is not None and link_to else None
         _drop_branch(pipe, link_to, replaced)
         if why is not None:
