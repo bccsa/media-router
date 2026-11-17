@@ -161,6 +161,12 @@ there is no in-app switch, and the stored values of the removed settings
   drops, "<queue> holding <n> ms at capacity — nothing lost, the queues before
   it fill next",
   until 30 s after the queue drained.
+- **A module whose pipeline stops answering shows a warning within about
+  10 s:** "Pipeline not answering for <n> s (stalled or frozen)", where
+  <n> counts from its last answer. Until now a frozen pipeline stayed "ok"
+  with a blank Timing section, because the pipeline is what reports them.
+  The warning goes by itself within a few seconds of the pipeline answering
+  again; a start, a restart or a stop of the module never shows it.
 
 **Outputs catch up by themselves**
 

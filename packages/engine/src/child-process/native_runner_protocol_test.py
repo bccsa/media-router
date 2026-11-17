@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -4624,6 +4625,56 @@ def test_drain_rpc():
         check("DR: both runners forward the same fields", seen["native"] == seen["python"])
 
 
+# --------------------------------------------------------------------------- LV: a frozen runner (B-246)
+def _asked(r, rid, timeout):
+    """Seconds to a get_throughput answer, None for none within `timeout`."""
+    t0 = time.monotonic()
+    r.send({"cmd": "get_throughput", "id": rid})
+    ev = r.wait_event(lambda e: e.get("id") == rid, timeout=timeout)
+    return None if ev is None else time.monotonic() - t0
+
+
+def test_frozen_runner():
+    """What the engine's liveness ask relies on, both runners: get_throughput is answered at once
+    from PLAYING on, never while the process is stopped, and every ask held over a 12 s SIGSTOP
+    is answered within 5 s of SIGCONT, the pipeline still playing (GstPluginBase, B-246)."""
+    for tag, argv in (("native", None), ("python", _PY_RUNNER)):
+        r = RunnerProc(argv)
+        try:
+            r.wait_event(ev_is("ready"), timeout=10)
+            r.send({"cmd": "start", "useStdioForData": False, "linkOnPadAdded": [],
+                    "decoderThreadType": "auto",
+                    "pipeline": "audiotestsrc is-live=true wave=sine ! audioconvert"
+                                " ! fakesink name=sink sync=true"})
+            playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+            live = [_asked(r, f"lv{tag}{i}", 3.0) for i in range(6)]
+            os.kill(r.proc.pid, signal.SIGSTOP)
+            try:
+                frozen = _asked(r, f"lvf{tag}0", 3.0)
+                late = _asked(r, f"lvf{tag}1", 3.0)
+                time.sleep(max(0.0, 12.0 - 6.0))
+            finally:
+                os.kill(r.proc.pid, signal.SIGCONT)
+            t0 = time.monotonic()
+            back = [r.wait_event(lambda e, i=i: e.get("id") == f"lvf{tag}{i}", timeout=5.0) for i in (0, 1)]
+            back_s = time.monotonic() - t0
+            after = _asked(r, f"lva{tag}", 3.0)
+            errors = [e for e in r.events if e.get("event") == "error"]
+            code = r.stop_and_wait()
+        finally:
+            r.kill()
+        check(f"LV {tag}: from PLAYING every ask answered within 3 s "
+              f"({[None if x is None else round(x, 3) for x in live]})",
+              playing and all(x is not None and x < 3.0 for x in live))
+        check(f"LV {tag}: a stopped runner answers no ask ({frozen}, {late})",
+              frozen is None and late is None)
+        check(f"LV {tag}: both held asks answered {back_s:.2f} s after SIGCONT, the next at once ({after})",
+              all(b is not None and b.get("event") == "throughput" for b in back) and back_s < 5.0
+              and after is not None and after < 3.0)
+        check(f"LV {tag}: the pipeline played on, no error, exit 0 ({errors}, {code})",
+              not errors and code == 0)
+
+
 def test_display_stats_rpc():
     """DS (B-242), both runners: `get_property` of a structure-valued property, 0008's `display-stats` on
     `mrtestvideosink`, comes back as an object with integer `replaced` and `discarded` (the engine's Rate match
@@ -4697,6 +4748,7 @@ test_mrasrc_device()
 test_mrasrc_device_hole()
 test_drain_rpc()
 test_display_stats_rpc()
+test_frozen_runner()
 test_decoder_hole()
 test_subtitle_overlay_formula()
 test_ttx_formula()

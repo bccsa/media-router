@@ -3961,6 +3961,15 @@ Phase 3 ships as v2.0.0.102).
   pace's `display-presenting`, S31) and `device-stalled` ("Audio device
   stalled — nothing plays until it takes audio again, then it plays live"),
   which takes the place of the 302M output's late "Plays nothing" (T24).
+- **A runner that stops answering** (B-246, F-6): while a module's pipeline
+  plays, the engine asks its runner `get_throughput` every 5 s with a 3 s
+  budget, at once again after a miss; two misses in a row are the owned
+  warning `not-answering`, "Pipeline not answering for <n> s (stalled or
+  frozen)" (6 s after the first unanswered ask, 6–11 s after a freeze),
+  and the next answer withdraws it and puts back the module's own warning it
+  stood over. Not asked before PLAYING, during a relaunch, or after a stop.
+  The module's throughput rates are taken over its own reads in
+  `GstChildProcess`, so the ask does not shorten their window.
 
 ### The output conformance harness (WI-P4-14 with WI-P4-9's scenario, B-174)
 
@@ -4153,6 +4162,11 @@ sections above give the reasons, the register rows the details.
   `get_property` (no new element field), only where the plan names
   waylandsink, only beside the pace's Rate match row, per minute and in
   all, dropped after three missed reads (B-242).
+- **p4-24** (fix batch FB3): the second ask goes at once after a miss, so
+  the warning comes 6–11 s after a freeze, not within 10 s in every phase;
+  it stands over the module's own transient warnings and gives them back;
+  the throughput rate per module read, since every `get_throughput`
+  restarts the runners' rate window (B-246).
 
 ### What this phase supersedes
 

@@ -22,6 +22,7 @@ import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
 import type { DemuxInputRef } from './demuxWatches.js';
 import type { StreamWarning } from './latenessReporter.js';
 import { timingPluginAlarm, type TimingPluginEvent } from './timingPluginAlarm.js';
+import { RunnerLiveness } from './runnerLiveness.js';
 
 /** Runner `error` kinds that are not a fault of this module: a reconnect to upstream keeps its
  *  warning through the restart that follows; a lost PipeWire stream, the watchdog's (B-195). */
@@ -41,6 +42,7 @@ type OwnedWarning =
     | 'input-reanchored'
     | 'off-clock'
     | 'queue-full'
+    | 'not-answering'
     | StreamWarning['kind'];
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
@@ -370,6 +372,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
         this.childProcess.on('stateChange', (data: { state: string; kind?: string }) => {
             if (data.state !== 'playing') this.captureStall?.reset();
+            // Asked only while this pipeline plays (B-246); a state change withdraws its warning.
+            this.liveness.stop();
+            this.clearNotAnswering();
             if (data.state === 'playing') {
                 this.running = true;
                 this.ready = true;
@@ -390,6 +395,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                     this.services.mediaRouter?.onProducerPlaying(this.services.instanceId);
                 }
                 this.timing.onPlaying();
+                this.liveness.start();
                 // Fires on EVERY playing transition, including a runner-internal
                 // crash-restart (which rebuilds the pipeline from the original
                 // string, dropping any live element state). Subclasses re-seed
@@ -630,6 +636,51 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.ownWarning(parts[0].kind, text);
     }
 
+    /** The runner does not answer (B-246): asked while the pipeline plays, see `runnerLiveness`. */
+    private readonly liveness = new RunnerLiveness({
+        ask: async (timeoutMs) => (this.childProcess ? this.childProcess.ping(timeoutMs) : null),
+        stalled: (text, seconds) => this.onNotAnswering(text, seconds),
+        answered: (seconds) => this.onAnsweringAgain(seconds),
+    });
+    /** The module's own warning the stall warning stood over, put back when it answers. */
+    private notAnsweringOver: { kind: OwnedWarning; text: string } | null = null;
+
+    /** Over ok or this module's own transient text, never over an error, a stop or another
+     *  writer's warning (ADR-0010 rule 2). */
+    private onNotAnswering(text: string, seconds: number): void {
+        const owned = this.ownedWarning;
+        if (owned === 'not-answering') {
+            if (this.error !== text) this.ownWarning('not-answering', text);
+            return;
+        }
+        if (this.health === 'error' || this.health === 'stopped') return;
+        if (this.health === 'warning' && owned === null) return;
+        this.notAnsweringOver = owned === null ? null : { kind: owned, text: this.error ?? '' };
+        this.log.warn({ seconds }, 'Pipeline not answering (stalled or frozen)');
+        this.ownWarning('not-answering', text);
+    }
+
+    /** It answers: withdraw the warning and put back what it stood over. The aligners', streams'
+     *  and lost inputs' texts are shown again from their current state, the rule-6 alarm by `ok`. */
+    private onAnsweringAgain(seconds: number): void {
+        const over = this.notAnsweringOver;
+        this.notAnsweringOver = null;
+        if (this.ownedWarning !== 'not-answering') return;
+        this.log.info({ seconds }, 'Pipeline answering again');
+        this.clearOwnWarning('not-answering');
+        const recomputed = over && (TIMING_WARNINGS.has(over.kind) || over.kind === 'input-lost');
+        if (over && !recomputed && over.kind !== 'timing-plugin')
+            this.ownWarning(over.kind, over.text);
+        this.showLostInputs();
+        this.showTimingWarnings();
+    }
+
+    /** A state change: the stall warning goes; the state's own health write follows. */
+    private clearNotAnswering(): void {
+        this.notAnsweringOver = null;
+        this.clearOwnWarning('not-answering');
+    }
+
     /** `ok`, or the rule-6 alarm while it stands (no state change emitted). */
     private markHealthy(): void {
         this.health = 'ok';
@@ -684,6 +735,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     async onStop(): Promise<void> {
+        this.liveness.stop();
+        this.notAnsweringOver = null;
         this.vuStall.reset();
         this.captureStall?.reset();
         if (this.vuProcess) {
@@ -705,6 +758,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     async onDestroy(): Promise<void> {
+        this.liveness.stop();
         this.vuStall.reset();
         this.captureStall?.reset();
         // Ensure subclass cleanup (PipeWire null-sinks, VU loopbacks, etc.) runs

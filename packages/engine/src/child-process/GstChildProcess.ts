@@ -74,6 +74,10 @@ export class GstChildProcess extends EventEmitter {
     private running = false;
     /** When the runner launched the current Python pipeline (see `pipelineLaunchedAt`). */
     private launchedAt: number | undefined;
+    /** A relaunch is under way (`pipelineStarting` until its PLAYING): nobody answers asks. */
+    private relaunching = false;
+    /** The module's last throughput read per element (see `rateSinceLastRead`). */
+    private throughputReads = new Map<string, { bytes: number; at: number }>();
     private backoff = new ExponentialBackoff(3000, 60000, MAX_RESTARTS, 30000);
     private restartTimer: ReturnType<typeof setTimeout> | null = null;
     private destroyed = false;
@@ -100,6 +104,7 @@ export class GstChildProcess extends EventEmitter {
 
         this.pipelineDesc = desc;
         this.stickyProps.clear(); // fresh description = fresh baseline
+        this.throughputReads.clear();
         await this.spawnChild();
     }
 
@@ -171,6 +176,7 @@ export class GstChildProcess extends EventEmitter {
             const { state } = data as { state: string };
             if (state === 'playing') {
                 this.running = true;
+                this.relaunching = false;
                 this.startStabilityTimer();
                 // Replay live property changes BEFORE announcing PLAYING —
                 // Python executes commands in order, so anything a listener
@@ -194,6 +200,7 @@ export class GstChildProcess extends EventEmitter {
 
         ipc.on('pipelineStarting', () => {
             this.launchedAt = undefined; // retired launch; gated until the next pipelineLaunched
+            this.relaunching = true;
         });
         ipc.on('pipelineLaunched', (data) => {
             this.launchedAt = (data as { at?: number }).at ?? Date.now();
@@ -464,7 +471,39 @@ export class GstChildProcess extends EventEmitter {
         if (!this.ipc || !this.running) return {};
         const result = await this.ipc.sendRequest('getThroughput', {});
         throwIfRpcError(result, 'getThroughput');
-        return (result as any)?.data ?? {};
+        const data = (result as any)?.data ?? {};
+        this.rateSinceLastRead(data);
+        return data;
+    }
+
+    /** Each runner read restarts its rate window, the liveness ask's too (B-246): a rate is
+     *  taken over the module's own reads here, the runner's kept for a first read or a reset. */
+    private rateSinceLastRead(
+        data: Record<string, { total_bytes: number; bitrate_kbps: number; bitrate_mbps: number }>,
+    ): void {
+        const now = Date.now();
+        for (const [name, t] of Object.entries(data)) {
+            const last = this.throughputReads.get(name);
+            if (typeof t?.total_bytes !== 'number') continue;
+            this.throughputReads.set(name, { bytes: t.total_bytes, at: now });
+            if (!last || now <= last.at || t.total_bytes < last.bytes) continue;
+            const bps = ((t.total_bytes - last.bytes) * 8000) / (now - last.at);
+            t.bitrate_kbps = Math.round(bps / 100) / 10;
+            t.bitrate_mbps = Math.round(bps / 1000) / 1000;
+        }
+    }
+
+    /** Does the runner answer (B-246)? `getThroughput`, which both runners serve on their main
+     *  loop: true on any reply, false on none in `timeoutMs`, null when not asked (down, relaunching). */
+    async ping(timeoutMs: number): Promise<boolean | null> {
+        const ipc = this.ipc;
+        if (!ipc || !this.running || this.relaunching) return null;
+        try {
+            await ipc.sendRequest('getThroughput', {}, timeoutMs);
+            return true;
+        } catch {
+            return this.ipc === ipc && this.running && !this.relaunching ? false : null;
+        }
     }
 
     /**
@@ -543,5 +582,6 @@ export class GstChildProcess extends EventEmitter {
         this.ipc = null;
         this.running = false;
         this.launchedAt = undefined;
+        this.relaunching = false;
     }
 }
