@@ -206,9 +206,10 @@ there is no in-app switch, and the stored values of the removed settings
   source changed from video and audio to video only, or to another video
   codec, the muxer stopped sending anything (0 kbps) until it was restarted.
   It now carries the new stream within about a second, and audio that comes
-  back later is muxed again, without a restart. A missing input is shown on
-  its row and in the warning; the muxer's "Waiting for" no longer names it,
-  as the muxer does not wait for it.
+  back later is muxed again, without a restart. On every module that lines
+  up its inputs (Audio Mixer, N-1 mixer, Audio Processing, Audio Output 302M
+  and the muxer), a missing input is shown on its row and in the warning, and
+  "Waiting for" no longer names it, as the module does not wait for it.
 - **It probes for the smallest delay that plays clean.** An audio dropout of
   up to a quarter of a second on a steady stream raises that output's margin,
   10 s after it; the margin comes back down over about 2 hours, so a source

@@ -2760,7 +2760,8 @@ blocks upstream when full and never drops. Rules:
   does not start).
 
 What the operator sees: `timing` gains Pace (the aligner's added latency over
-its fastest input) and Waiting for (the absent inputs, else the slowest);
+its fastest input) and Waiting for (the slowest present input; an absent
+input is shown on its row and warning, B-245);
 each `timing-in-<n>` gains State, Silence limit, Absences and Discarded on
 rejoin; the module warns `Input <label> silent for <W> ms — continuing
 without it` and `Input <label> queue full — upstream held`. The element's

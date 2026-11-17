@@ -538,10 +538,9 @@ void release_hold(GstPad* hold, int hold_pid) {
     g_state->taken.erase(hold_pid);
 }
 
-/** The routing decision for one demuxed pad, and the mux's prog-map and PCR edits it
- *  needs: "" with the request pad, output PID and branch to link, else why the pad is
- *  sunk. A new program's pad of a routed class takes the route over: the old branch comes back
- *  in *replaced for the caller to drop (B-245). Caller holds g_state->mu. */
+/** Routing for one demuxed pad: "" with the request pad, output PID and branch, else why it
+ *  is sunk. A new program's pad of a routed class takes the route over, the old branch in
+ *  *replaced for the caller to drop (B-245). Caller holds g_state->mu. */
 std::string plan_route(Input& in, GstPad* pad, GstCaps* caps, const std::string& caps_name, int pid,
                        const std::string& media, std::string* pad_name, int* out_pid, std::string* branch,
                        Branch* replaced) {
