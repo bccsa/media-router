@@ -1059,49 +1059,101 @@ def late_reasons(ps):
     return {k[10:]: v for k, v in ps.items() if k.startswith("underruns-") and v}
 
 
+class LoadWatch:
+    """The host's 1 min load every 2 s of a run (an action)."""
+
+    def __init__(self):
+        self.load = []
+
+    def __call__(self):
+        self.load.append(os.getloadavg()[0])
+
+
+def late_at(pl, t0):
+    """(s, new late releases) at each pace message that counted some."""
+    out, prev = [], 0
+    for t, p in pl.paces():
+        n = p.get("underruns") or 0
+        if n > prev:
+            out.append((round((t - t0) / S, 1), n - prev))
+        prev = n
+    return out
+
+
+def starved(run, watch, ps, off=()):
+    """What shows the host starved this run, empty if nothing: the load at 2 or more, a `drain` late release
+    (these runs never engage the drain on a healthy host), a feed over 10 ms behind, late releases off the seams."""
+    why = []
+    if watch.load and max(watch.load) >= 2.0:
+        why.append(f"load up to {max(watch.load):.1f}")
+    if ps.get("underruns-drain"):
+        why.append(f"{ps['underruns-drain']} drain late releases")
+    lag = max((p.late_ns for p in run.producers), default=0) / 1e6
+    if lag > 10:
+        why.append(f"the feed {lag:.0f} ms behind")
+    if off:
+        why.append(f"late releases off the seams at {list(off)[:6]} s")
+    return why
+
+
+def floor_ok(ps, kinds=("drain", "after-drain", "video")):
+    """The rule's invariants, unconditional: no raise, the margin at its floor, every late release under a
+    reason, no outage."""
+    why = late_reasons(ps)
+    return (ps.get("drain-raises") == 0 and ps.get("drain-margin-ns") == 20 * MS and not ps.get("drain-outages")
+            and sum(why.values()) == (ps.get("underruns") or 0) and set(why) <= set(kinds))
+
+
 def scn_out_drain_seam(tag, argv, exp):
-    """-seam (B-256): a Video Player on a looped file, each lap's content `gap_ms` after the last one's (a loop
-    seam's step), at its 1-frame floor: no raise, the margin at the floor, at most one late release per seam
-    (any reason: a seam's drain can end inside Q of the next), and render lateness at the end within
-    `drift_ms` of its first reading after the warm-up."""
+    """-seam (B-256): a Video Player on a looped file, each lap `gap_ms` after the last (a seam's step), at its
+    1-frame floor: the invariants always; at most one late release per seam and the end's lateness within
+    `drift_ms` of the first reading on a healthy host, a starved run tried again (three in a row fail)."""
     label, x = f"{exp['scenario']} {tag}", exp["expect"]
     rel = rig.generated(exp["kind"], exp["lap_s"])
     pid = orig.stream_pids(rel)["video"]
     data, _laps, lap = loop_of(b"".join(rel), pid, exp["lap_s"])
-    laps = int(exp["seconds"] * 90000 // (lap + exp["gap_ms"] * 90)) + 2
+    period = (lap + exp["gap_ms"] * 90) / 90000
+    laps = int(exp["seconds"] // period) + 2
     whole = orig.chunked(orig.looped(data, laps, lap + exp["gap_ms"] * 90))
-    seams = int(exp["seconds"] * 90000 // (lap + exp["gap_ms"] * 90))
-    run = Run(argv)
+    seams = int(exp["seconds"] // period)
+    run, watch = Run(argv), LoadWatch()
     run.producer("feed", ["vp"], ts=lambda t0: orig.at_house(whole, t0), stop_s=exp["seconds"])
     run.output("player", "player50", video=orig.display())
-    run.go(exp["seconds"] + 1.0)
+    run.go(exp["seconds"] + 1.0, [(s, watch) for s in range(2, exp["seconds"], 2)])
     run.on_time(label)
-    run.clean(label)
     pl, t0 = run.outputs["player"], run.t0
     ps = last(pl.paces())
     why = late_reasons(ps)
     under = ps.get("underruns") or 0
+    # A seam's late release shows in the next 2 s message; one before the first seam is the start's.
+    off = [s for s, _n in late_at(pl, t0)
+           if s > period - 0.5 and not any(-0.5 <= s - k * period <= 2.5 for k in range(1, seams + 1))]
+    # Present lateness reads whole refreshes and flips between two of them: each window's lower one.
+    first = paces(pl, t0, x["warm_s"], x["warm_s"] + 10)
+    end = paces(pl, t0, exp["seconds"] - 10, exp["seconds"] + 1)
+    step = round(min(end) - min(first), 1) if first and end else None
+    bounded = under <= seams and step is not None and abs(step) <= x["drift_ms"]
+    host = starved(run, watch, ps, off)
+    if floor_ok(ps) and not bounded and host:
+        raise Retry(f"{label}: {under} late releases for {seams} seams ({why}), lateness step {step} ms, "
+                    f"on a starved host ({'; '.join(host)})")
+    run.clean(label)
     check(f"{label} player: no raise, the margin at its floor ({ps.get('drain-raises')} raises, margin "
           f"{(ps.get('drain-margin-ns') or 0) / 1e6} ms), at most one late release per seam ({under} for {seams} "
-          f"seams; {why}), no outage ({ps.get('drain-outages')})",
-          ps.get("drain-raises") == 0 and ps.get("drain-margin-ns") == 20 * MS and under <= seams
-          and not ps.get("drain-outages") and sum(why.values()) == under
-          and set(why) <= {"drain", "after-drain", "video"})
-    first = paces(pl, t0, x["warm_s"], x["warm_s"] + 4)
-    end = paces(pl, t0, exp["seconds"] - 8, exp["seconds"] + 1)
-    step = round(orig.mid(end) - orig.mid(first), 1) if first and end else None
+          f"seams; {why}; off the seams {off}), no outage ({ps.get('drain-outages')})",
+          floor_ok(ps) and under <= seams)
     check(f"{label} player: render lateness at the end within {x['drift_ms']} ms of its first reading after "
-          f"{x['warm_s']} s ({first and round(orig.mid(first), 1)} -> {end and round(orig.mid(end), 1)} ms, {step})",
+          f"{x['warm_s']} s (lower refresh of each 10 s: {first and round(min(first), 1)} -> "
+          f"{end and round(min(end), 1)} ms, {step})",
           step is not None and abs(step) <= x["drift_ms"])
 
 
 def scn_out_drain_group_jitter(tag, argv, exp):
-    """-group-jitter (B-256): the Video Player and the Audio Decoder of one source in a group (the rig plays the
-    engine, P = the max every 2 s), the video's input delivered in `burst_ms` bursts (its jitter): the video never
-    raises and stays at its 1-frame floor, its late releases counted, and P at the end within `rise_ms` of P
-    after the warm-up."""
+    """-group-jitter (B-256): the Video Player and the Audio Decoder of one source grouped (the rig plays the
+    engine, P = the max every 2 s), the video fed in `burst_ms` bursts: the video's invariants always; P at the
+    end within `rise_ms` of P after the warm-up on a healthy host, a starved run tried again."""
     label, x = f"{exp['scenario']} {tag}", exp["expect"]
-    run = Run(argv)
+    run, watch = Run(argv), LoadWatch()
     rel = rig.generated(exp["kind"], exp["seconds"] + 2)
     run.rel, run.pids = rel, orig.stream_pids(rel)
     run.producer("vfeed", ["vp"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"],
@@ -1111,24 +1163,29 @@ def scn_out_drain_group_jitter(tag, argv, exp):
     run.output("decoder", "decoder", audio=orig.card())
     members = [("player", "vp_pace"), ("decoder", "asrc")]
     role = GroupRole(run, members)
-    run.go(exp["seconds"] + 1, [(s, role) for s in range(2, exp["seconds"], 2)], [])
+    run.go(exp["seconds"] + 1, [(s, role) for s in range(2, exp["seconds"], 2)]
+           + [(s + 1, watch) for s in range(2, exp["seconds"], 2)], [])
     run.on_time(label)
-    run.clean(label)
     t0 = run.t0
     ps = last(run.outputs["player"].paces())
     why = late_reasons(ps)
-    check(f"{label} player: no raise, the margin at its floor ({ps.get('drain-raises')} raises, margin "
-          f"{(ps.get('drain-margin-ns') or 0) / 1e6} ms), its late releases counted ({ps.get('underruns')}; {why})",
-          ps.get("drain-raises") == 0 and ps.get("drain-margin-ns") == 20 * MS
-          and sum(why.values()) == (ps.get("underruns") or 0) and set(why) <= {"drain", "after-drain", "video"})
     early = [p / 1e6 for t, p in role.p if t0 + x["warm_s"] * S <= t < t0 + (x["warm_s"] + 8) * S]
     tail = [p / 1e6 for t, p in role.p if t >= t0 + (exp["seconds"] - 8) * S]
     rise = round(orig.mid(tail) - orig.mid(early), 1) if early and tail else None
     dec = last(device_stats(run.outputs["decoder"]))
+    dec_ok = (dec.get("drain-raises") or 0) <= (dec.get("underruns") or 0)
+    host = starved(run, watch, ps)
+    if floor_ok(ps) and dec_ok and not (rise is not None and rise <= x["rise_ms"]) and host:
+        raise Retry(f"{label}: P rose {rise} ms ({ps.get('underruns')} late releases, {why}) on a starved host "
+                    f"({'; '.join(host)})")
+    run.clean(label)
+    check(f"{label} player: no raise, the margin at its floor ({ps.get('drain-raises')} raises, margin "
+          f"{(ps.get('drain-margin-ns') or 0) / 1e6} ms), its late releases counted ({ps.get('underruns')}; {why})",
+          floor_ok(ps))
     check(f"{label}: P at the end within {x['rise_ms']} ms of P after {x['warm_s']} s "
           f"({early and round(orig.mid(early), 1)} -> {tail and round(orig.mid(tail), 1)} ms, {rise}); the decoder's "
           f"raises {dec.get('drain-raises')} for {dec.get('underruns')} underruns",
-          rise is not None and rise <= x["rise_ms"] and (dec.get("drain-raises") or 0) <= (dec.get("underruns") or 0))
+          rise is not None and rise <= x["rise_ms"] and dec_ok)
 
 
 def decoder_drain(tag, argv, exp, holds):

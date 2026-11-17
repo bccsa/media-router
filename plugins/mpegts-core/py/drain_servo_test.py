@@ -406,7 +406,7 @@ def case_video_late():
     r.until(5 * MIN, lambda t: (s.late(t, 80 * MS) if t % (20 * SEC) == 0 else None,
                                 targets.append(s.target) if t > 40 * SEC else None))
     idle_ok = s.raises == 0 and s.underruns >= 10 and max(targets) - min(targets) <= 40 * MS
-    # A backlog drains, lets go; a late frame 10 s later raises once.
+    # A backlog drains, lets go; a late frame 10 s later raises nothing (after-drain).
     s2 = DrainServo(True, 40 * MS, 20 * MS)
     ln2 = Link(s2, source(steady(40 * MS)), fill_ns=400 * MS, base_ns=100 * MS)
     r2 = Run([ln2])

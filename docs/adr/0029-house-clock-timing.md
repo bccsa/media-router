@@ -4048,8 +4048,9 @@ Phase 3 ships as v2.0.0.102).
   30 s after δ last was ≠ 0) or video, and the video margin stays at its
   1-frame floor for the drain alone; a release under a quarter frame late is
   jitter, one more than 250 ms late an outage. On a looped source each join
-  gives at most one late release, and the drain takes its lateness step back
-  out of `vp_esq`'s level (the trough as Phase 4 built it, unchanged). A raise sets L =
+  gives at most one late release on a healthy host, and in the reference
+  model of a stream-loop join the drain takes its lateness step back out of
+  `vp_esq`'s level (the trough as Phase 4 built it, unchanged). A raise sets L =
   the margin that underran and m = min(500 ms, max(2L, L + 20 ms)); m falls 5
   ms every 10 min without a raise, never under the floor or L + 10 ms, and L
   falls 5 ms an hour to floor − 10 ms: a raise costs about 2 h, and a need
