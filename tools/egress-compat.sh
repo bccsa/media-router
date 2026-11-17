@@ -92,6 +92,10 @@ parse() {
     case "$OUT" in *' '*) die "--out: no spaces" ;; esac
     [ -n "$MRTS_CLI" ] || MRTS_CLI=$ROOT/plugins/mpegts-core/native/mrts/mrts_cli
     [ -x "$MRTS_CLI" ] || MRTS_CLI=$(command -v mrts_cli || echo "$MRTS_CLI")
+    # An event at or past the end would never fire, and its window never be judged.
+    for a in "$RAISE_AT" "$REEPOCH_AT"; do
+        awk -v a="$a" -v d="$DUR" 'BEGIN { exit !(a + 0 < d + 0) }' || die "event at $a s: not before --duration $DUR"
+    done
 }
 
 # --- the receiving end ---------------------------------------------------------------------
@@ -183,11 +187,13 @@ run_body() {
     echo $! > "$OUT/hook-raise.pid"
     hook reepoch "$REEPOCH_AT" "$REEPOCH_CMD" &
     echo $! > "$OUT/hook-reepoch.pid"
-    i=0 tee_out=""
+    # The players get 7-packet datagrams: VLC truncates one larger than any before it (mrristsrc
+    # bursts) and logs it as an error. The capture stays as received.
+    i=0 tee_out=" t. ! queue ! tsparse alignment=7 set-timestamps=false ! tee name=p"
     set -f
     for pl in $(echo "$PLAYERS" | tr ',' ' '); do
         i=$((i + 1))
-        tee_out="$tee_out t. ! queue ! udpsink host=127.0.0.1 port=$((FAN + i)) sync=false async=false"
+        tee_out="$tee_out p. ! queue ! udpsink host=127.0.0.1 port=$((FAN + i)) sync=false async=false"
         cmd=$(player_cmd "$pl" "$i")
         [ -n "$cmd" ] || die "unknown player $pl"
         # shellcheck disable=SC2086
@@ -278,10 +284,9 @@ judge_lines() {
         }'
 }
 
-# Stdin: pcrcheck's lines. Prints `seen violations allowed flagged over40 intervals`. Allowed:
-# PCR intervals over 40 ms while at most 0.1 % (V-P5-1's 99.9th percentile); per restart R, per
-# program R unflagged jumps and R CC errors times its ES PIDs (a total: pcrcheck has no per-PID
-# count), and R times the PSI PIDs (PAT, each PMT).
+# Stdin: pcrcheck's lines. Prints `seen violations allowed flagged over40 intervals`. Allowed: PCR
+# intervals over 40 ms at <= 0.1 % (V-P5-1's 99.9th percentile); per program R unflagged jumps, R CC
+# errors per ES PID and R per PSI PID (PAT, each PMT), as totals (pcrcheck counts no CC per PID).
 judge_pcr() {
     awk -v r="$1" '
         /"pcrcheck":"program"/ {
@@ -323,6 +328,17 @@ hook_results() {
         echo "FAIL $k: hook command exited ${n#rc=}, nothing injected"
         rc=1
     done < "$OUT/events.log"
+    return $rc
+}
+
+# An event with no line at all never fell due (the run ended first): nothing was injected.
+missing_events() {
+    rc=0
+    for k in raise reepoch; do
+        grep -q "^[0-9.]* $k " "$OUT/events.log" && continue
+        echo "FAIL $k: never fell due"
+        rc=1
+    done
     return $rc
 }
 
@@ -385,6 +401,7 @@ report_body() {
     done
     [ $segs -gt 0 ] || { echo "FAIL pcrcheck: nothing captured"; fail=1; }
     hook_results || fail=1
+    missing_events || fail=1
     due_events "$t0" || fail=1
     [ $fail -eq 0 ] && echo "RESULT PASS" || echo "RESULT FAIL"
 }
@@ -413,7 +430,8 @@ mark_main() {
 
 # --- the dry run: a sender on the dev Pi as a box's ---------------------------------------
 
-# The engine's house-clock value (houseClockFieldsString): E = TAI - CLOCK_MONOTONIC.
+# The engine's house-clock value (houseClockFieldsString): E = TAI - CLOCK_MONOTONIC, read here
+# from /proc/uptime (CLOCK_BOOTTIME, the same on a Pi that never suspends).
 house_clock() {
     echo "house-clock, e-ns=(gint64)$2, seq=(uint)$1, traceable=(boolean)true, disciplined=(boolean)true, source=(string)ntp, error-us=(uint)1000, tai-offset-s=(int)37, ptp-domain=(int)-1"
 }
@@ -551,6 +569,14 @@ FAIL raise: hook command exited 2, nothing injected
     printf '220.0 reepoch start\n221.0 reepoch end\n' > "$OUT/events.log"
     printf '221.0 reepoch hook rc=0\n' > "$OUT/hooks.log"
     t "hooks that returned 0 pass" "$(hook_results >/dev/null; echo $?)" "0"
+    : > "$OUT/events.log"
+    t "events that never fell due fail" "$(missing_events; echo $?)" "FAIL raise: never fell due
+FAIL reepoch: never fell due
+1"
+    printf '160.0 raise due\n220.0 reepoch start\n221.0 reepoch end\n' > "$OUT/events.log"
+    t "events due or run are there" "$(missing_events; echo $?)" "0"
+    t "an event past the duration is refused" "$( (parse --kind udp --duration 300) 2>&1; echo $?)" "egress-compat: event at 600 s: not before --duration 300
+2"
     [ $fails -eq 0 ] && echo "selftest: all passed" || echo "selftest: $fails failed"
     [ $fails -eq 0 ]
 }
