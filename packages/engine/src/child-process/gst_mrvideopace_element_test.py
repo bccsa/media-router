@@ -38,6 +38,9 @@ runners:
               mrtestvideosink at 60 Hz with no drop, at 50 Hz skipping 1 frame in 200 (drain drops);
               into fakesink (no display rate) nothing drains; without backlog-queue the backlog is
               not seen;
+  drain-late  B-256: the same backlog at 60 Hz, and one decode stalled 60 ms while it drains (the
+              frame after a stand-in for a slow decode reaches the pace late): one late release,
+              counted `drain`, no raise, the margin at its 1-frame floor;
   clock-rule  the runners' clock rule (base time 0, start time none; B-169): a flushing seek's
               flush and the PLAYING after it hold no frame, where a default pipeline re-bases its
               running time and holds the frames after it by the time played before the seek;
@@ -1059,12 +1062,50 @@ def case_drain():
           all(x["drain-ppm"] == 0 for _, x, _ in samples) and st["fill-trough-ns"] <= 60 * MS)
 
 
+def case_drain_late():
+    if not HAVE_SINKS:
+        skip("drain-late", f"{TESTVIDEO} not built (make native-test)")
+        return
+    rig = Rig(sink=f"mrtestvideosink name=out period-ns={P60} async=false", props="backlog-queue=bq",
+              pre=BQ).start()
+    draining, stalled = threading.Event(), []
+
+    def slow(_pad, _info):
+        if draining.is_set() and not stalled:
+            stalled.append(rig.now())
+            time.sleep(0.06)
+        return Gst.PadProbeReturn.OK
+
+    rig.vp.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, slow)
+    t0 = rig.now() + 50 * MS
+    seconds = 58
+    feeder = rig.play([(max(r, t0 + 2 * S), p, d, dc, g)
+                       for r, p, d, dc, g in live(seconds * 50, 50, 1, t0 - LATENCY)])
+    samples, end = [], time.monotonic() + seconds
+    while time.monotonic() < end:
+        st = rig.stats()
+        samples.append(st)
+        if st["drain-ppm"] > 0:
+            draining.set()
+        time.sleep(0.2)
+    feeder.join(5)
+    rig.stop()
+    st = samples[-1]
+    check(f"drain-late: a decode stalled 60 ms while it drains is one late release counted `drain`, "
+          f"no raise, the margin at its 1-frame floor (stalled at {(stalled[0] - t0) / S if stalled else 0:.1f} s; "
+          f"underruns {st['underruns']}, drain {st['underruns-drain']}, raises {st['drain-raises']}, "
+          f"margin {st['drain-margin-ns'] / MS:.0f} ms)",
+          bool(stalled) and st["underruns-drain"] >= 1 and st["drain-raises"] == 0
+          and st["drain-margin-ns"] == P50 and st["drain-outages"] == 0
+          and st["underruns"] == sum(st["underruns-" + r] for r in ("drain", "after-drain", "video")))
+
+
 CASES = {"pacing": case_pacing, "base-time": case_base_time, "flush": case_flush,
          "ready": case_ready, "gap": case_gap, "dmabuf": case_dmabuf, "nominal": case_nominal,
          "measured": case_measured, "drift": case_drift, "kms": case_kms, "outage": case_outage,
          "capped": case_capped, "keeps-up": case_keeps_up, "kms-wait": case_kms_wait,
          "properties": case_properties, "clock-rule": case_clock_rule,
-         "runners": case_runners, "drain": case_drain}
+         "runners": case_runners, "drain": case_drain, "drain-late": case_drain_late}
 
 
 if __name__ == "__main__":

@@ -34,9 +34,9 @@ is at most its start's + the episode's length + 20 ms, and (S6) the trough 1-2 s
 (the fill's own fall into it left out) was within the margin +- 20 ms; a longer one is an outage,
 counted apart. Each that does not raise counts under
 its first failed test: drain (delta != 0 in it), after-drain (within 30 s after), warm-up, input,
-load, not-margin. A video late release raises it only while delta > 0 or within 30 s after delta
-last was (B4); others count as `video`. Late frames within 1 s of the last are one episode; one
-more than 250 ms late is an outage. A raise: L = m_u (the margin
+load, not-margin. A video late release never raises it (B-256): it counts as drain (delta != 0),
+after-drain (within 30 s after delta last was) or video. Late frames within 1 s of the last are one
+episode; one more than 250 ms late is an outage. A raise: L = m_u (the margin
 that underran), m = min(500 ms, max(2 m_u, m_u + 20 ms)).
 Every 10 min without a raise m falls 5 ms, never below the floor nor L + 10 ms (L once it exists);
 every hour L falls 5 ms, down to floor - 10 ms.
@@ -152,7 +152,6 @@ class DrainServo:
         self.brk = False
         self.episode_at = None      # audio: the episode's first starving tick
         self.late_at = None         # video: the last late frame of the episode
-        self.positive_at = None     # when delta last was > 0
         self.hold_until = None      # no drain before: a starvation's zeros are in the window
         self.group = GROUP_ALONE_NS
         self.group_at = 0
@@ -295,8 +294,8 @@ class DrainServo:
         self._count(now, reason, ep["length"])
 
     def late(self, now, by_ns):
-        """Video: a release `by_ns` later than its drained slot, neither collapsed nor sink-late. B4 stays
-        (B-240 withheld its video half): it raises while delta > 0 or within 30 s after; else `video`."""
+        """Video: a release `by_ns` later than its drained slot, neither collapsed nor sink-late. Never a
+        raise (B-256): counted drain, after-drain (within Q of delta != 0) or video."""
         self._touch(now)
         joins = self.late_at is not None and now - self.late_at <= JOIN_NS
         self.late_at = now
@@ -306,10 +305,10 @@ class DrainServo:
         if joins:
             return
         self.underruns += 1
-        recent = self.positive_at is not None and now - self.positive_at <= WINDOW_NS
-        if self.ppb > 0 or recent:
-            self.events.append(("underrun", now, 0, "raised"))
-            self._raise(now, 0, None, 0)
+        if self.ppb != 0:
+            self._count(now, "drain", 0)
+        elif self.nonzero_at is not None and now - self.nonzero_at <= QUIET_NS:
+            self._count(now, "after-drain", 0)
         else:
             self._count(now, "video", 0)
 
@@ -405,8 +404,6 @@ class DrainServo:
         else:
             step = dt // SLEW_DEN
             self.ppb = clamp(want, self.ppb - step, self.ppb + step)
-        if self.ppb > 0:
-            self.positive_at = now
         if self.ppb != 0:
             self.nonzero_at = now
         self.render = render_ns

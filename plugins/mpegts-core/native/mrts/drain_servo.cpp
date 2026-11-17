@@ -262,16 +262,10 @@ void DrainServo::late(int64_t now, int64_t by_ns) {
     }
     if (joins) return;
     underruns_++;
-    // B4 stays (B-240's video half withheld): a raise while delta > 0 or within 30 s after; else `video`.
-    const bool recent = have_positive_ && now - positive_at_ <= WINDOW_NS;
-    if (ppb_ > 0 || recent) {
-        DrainEvent u{DrainEvent::Kind::underrun, now, 0};
-        u.reason = UnderrunReason::raised;
-        events_.push_back(u);
-        raise(now, Episode{}, 0);
-    } else {
-        count(now, UnderrunReason::video, 0);
-    }
+    // Never a raise (B-256): counted drain, after-drain (within Q of delta != 0) or video.
+    if (ppb_ != 0) count(now, UnderrunReason::drain, 0);
+    else if (have_nonzero_ && now - nonzero_at_ <= QUIET_NS) count(now, UnderrunReason::after_drain, 0);
+    else count(now, UnderrunReason::video, 0);
 }
 
 void DrainServo::clear(int64_t now) {
@@ -375,10 +369,6 @@ int64_t DrainServo::update(int64_t now, int64_t render_ns, bool can) {
     } else {
         const int64_t step = dt / SLEW_DEN;
         ppb_ = clamp64(want, ppb_ - step, ppb_ + step);
-    }
-    if (ppb_ > 0) {
-        have_positive_ = true;
-        positive_at_ = now;
     }
     if (ppb_ != 0) {
         have_nonzero_ = true;

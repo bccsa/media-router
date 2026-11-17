@@ -413,8 +413,10 @@ void case_video_late() {
     while (l3.s.ppb() <= 0 && r3.t < 6 * MIN) r3.until(r3.t + TICK);
     l3.s.late(r3.t, 80 * MS);
     r3.until(r3.t + 2 * SEC);
-    CHECK("late: 10 s after a drain let go, one raise", done && l2.s.raises() == 1);
-    CHECK("late: while it drains, one raise", l3.s.raises() == 1);
+    CHECK("late: 10 s after a drain let go, no raise (after-drain)",
+          done && l2.s.raises() == 0 && l2.s.reason_count(UnderrunReason::after_drain) == 1);
+    CHECK("late: while it drains, no raise (drain)",
+          l3.s.ppb() > 0 && l3.s.raises() == 0 && l3.s.reason_count(UnderrunReason::drain) == 1);
 }
 
 void case_hysteresis() {
@@ -599,7 +601,7 @@ void case_cpu() {
           l.s.underruns() >= 10 && l.s.reason_count(R::load) >= 1 &&
               l.s.reason_count(R::load) + l.s.reason_count(R::warm_up) == l.s.underruns());
     CHECK("cpu: audio, back to its target in part 5's time +-10 %", std::fabs(took - pred) <= pred / 10);
-    CHECK("cpu: video, the drain idle, no raise (B4)", v.raises() == 0 && v.underruns() == v.reason_count(R::video) && v.underruns() >= 30);
+    CHECK("cpu: video, the drain idle, no raise", v.raises() == 0 && v.underruns() == v.reason_count(R::video) && v.underruns() >= 30);
 }
 
 void case_stall_arm() {
@@ -784,6 +786,90 @@ void case_fall() {
           d.reasons() == std::vector<R>{R::raised} && s.raises() == 1);
 }
 
+// B-256: a 50p Video Player's chain, pull-through as FB1's seam diagnostic found it (the reference's PullChain).
+struct PullChain {
+    static constexpr int64_t P = 20 * MS;
+    DrainServo& s;
+    int64_t n;
+    std::vector<int64_t> seams;   // frame numbers
+    std::vector<std::pair<int64_t, int64_t>> renders;
+    PullChain(DrainServo& servo, int64_t seam_ns = 40020 * MS, int64_t minutes = 60)
+        : s(servo), n(minutes * MIN / P) {
+        for (int64_t k = 1; k <= minutes * MIN / seam_ns; k++) seams.push_back(k * seam_ns / P);
+    }
+    static int64_t arrival(int64_t k) { return k * P + (k % 2 == 0 ? 20 * MS : 0) - 100 * MS; }
+    void run() {
+        bool have_prev = false, have_read = false;
+        int64_t prev = 0, last_read = 0, j = 1;
+        size_t next_seam = 0;
+        for (int64_t k = 0; k < n; k++) {
+            const int64_t start = have_prev ? std::max(prev, arrival(k)) : arrival(k);
+            const bool seam = next_seam < seams.size() && seams[next_seam] == k;
+            if (seam) next_seam++;
+            const int64_t at = start + 3 * MS + (seam ? 30 * MS : 0);
+            const int64_t slot =
+                have_prev ? prev + (2 * P * SEC + SEC + s.ppb()) / (2 * (SEC + s.ppb())) : at;
+            if (at > slot) {
+                if (4 * (at - slot) >= P) s.late(at, at - slot);
+            } else {
+                s.sample(at, slot - at);
+            }
+            if (!have_read || at - last_read >= TICK) {
+                j = std::max(j, k + 1);
+                while (arrival(j) <= at) j++;
+                s.queue_level(at, (j - k - 1) * P);
+                last_read = at;
+                have_read = true;
+            }
+            const int64_t rel = std::max(slot, at);
+            s.update(at, rel - k * P, true);
+            s.take_events();
+            prev = rel;
+            have_prev = true;
+            renders.push_back({at, rel - k * P});
+        }
+    }
+};
+
+void case_seam_floor() {
+    DrainServo s(true, 20 * MS, 20 * MS);
+    PullChain c(s);
+    c.run();
+    int64_t first = 0;
+    for (const auto& r : c.renders)
+        if (r.first > 40 * SEC) {
+            first = r.second;
+            break;
+        }
+    int64_t worst = 0;
+    for (const auto& r : c.renders)
+        if (r.first > 30 * MIN) worst = std::max(worst, iabs64(r.second - first));
+    CHECK("seam: no raise, the margin at the floor", s.raises() == 0 && s.margin() == 20 * MS);
+    CHECK("seam: at most one late release per seam",
+          s.underruns() > 0 && s.underruns() <= c.seams.size() && s.outages() == 0 &&
+              s.reason_count(R::drain) + s.reason_count(R::after_drain) + s.reason_count(R::video) == s.underruns());
+    CHECK("seam: no step accumulates",
+          worst <= 60 * MS && iabs64(c.renders.back().second - first) <= 40 * MS);
+    CHECK("seam: the drain took the steps back", s.drained() >= 500 * MS);
+}
+
+void case_video_never() {
+    DrainServo s(true, 20 * MS, 20 * MS);
+    Drive d(s, drain_slack);
+    d.until(45 * SEC);
+    s.late(d.t, 30 * MS);
+    d.until(60 * SEC);
+    while (s.ppb()) d.until(d.t + TICK);
+    d.until(d.t + 10 * SEC);
+    s.late(d.t, 30 * MS);
+    d.until(d.t + 40 * SEC);
+    s.late(d.t, 30 * MS);
+    d.until(d.t + 15 * SEC);
+    CHECK("video never: no raise", s.raises() == 0 && s.margin() == 20 * MS);
+    CHECK("video never: drain, after-drain, video",
+          s.reason_count(R::drain) == 1 && s.reason_count(R::after_drain) == 1 && s.reason_count(R::video) == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -816,5 +902,7 @@ int main() {
     case_hold_state();
     case_input();
     case_fall();
+    case_seam_floor();
+    case_video_never();
     return test_summary("drain_servo");
 }

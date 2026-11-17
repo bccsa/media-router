@@ -585,10 +585,7 @@ static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 running
         else if (e.kind == mrts::DrainEvent::Kind::drain_done)
             GST_INFO_OBJECT(self, "back at its latency target: drained %" G_GINT64_FORMAT " ms in all",
                             (gint64)e.value / GST_MSECOND);
-        else if (e.kind == mrts::DrainEvent::Kind::raise)   // video keeps B4 (B-240's video half withheld)
-            GST_INFO_OBJECT(self, "late release while draining or within 30 s after: the margin %" G_GINT64_FORMAT
-                            " -> %" G_GINT64_FORMAT " ms", (gint64)e.from / GST_MSECOND, (gint64)e.value / GST_MSECOND);
-        else if (e.kind == mrts::DrainEvent::Kind::underrun && e.reason != mrts::UnderrunReason::raised)
+        else if (e.kind == mrts::DrainEvent::Kind::underrun)   // a video late release never raises (B-256)
             GST_DEBUG_OBJECT(self, "late release, no raise: %s", mrts::underrun_reason_name(e.reason));
     }
     Snapshot& t = *self->dsnap;

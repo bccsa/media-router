@@ -907,10 +907,11 @@ def scn_out_drain_burst(tag, argv, exp):
     frames = sum(1 for t, p in vp if p.get("drain-ppm", 0) > 0) * 100   # 2 s posts at 50 fps
     check(f"{label} player: drains at 0.5 % ({slope} ms/s, want {x['slope_ms_s']}), drain drops "
           f"{ps.get('drain-drops')} (<= 1 in 200 of about {frames} frames while draining), rate drops "
-          f"{ps.get('rate-drops')}; margin raises {ps.get('drain-raises')} (a frame its software decode left late "
-          f"while draining raises, by design; Found F2 in B-179)",
+          f"{ps.get('rate-drops')}; no margin raise ({ps.get('drain-raises')}: a frame its software decode left late "
+          f"while draining is counted, never a raise, B-256; reasons {late_reasons(ps)})",
           slope is not None and x["slope_ms_s"][0] <= slope <= x["slope_ms_s"][1]
-          and (ps.get("drain-drops") or 0) <= frames / 200 + 1 and ps.get("rate-drops") == 0)
+          and (ps.get("drain-drops") or 0) <= frames / 200 + 1 and ps.get("rate-drops") == 0
+          and ps.get("drain-raises") == 0)
     ds = device_stats(dec)
     st = last(ds)
     aslope = falling(ds, "render-lateness-ns", t0, at + length, exp["seconds"])
@@ -1012,7 +1013,7 @@ def scn_out_drain_group(tag, argv, exp):
     ptop = max([p / 1e6 for t, p in role.p if t0 + (lo + 8) * S <= t < t0 + at * S] or [0])
     before = {k: [(t, p) for t, p in series[k] if t < t0 + at * S] for k in keys}
     # An underrun counted on the clean link must be the test device's own (the shared host can starve a ring that
-    # holds no margin); a video late release is the cadence's, not an underrun (B4).
+    # holds no margin); a video late release is the cadence's and never raises (B-256).
     under = {k: last(before[k]).get("underruns") or 0 for k in ("decoder", "aout")}
     own = {k: (dev.get(("at", k)) - dev.get(("lo", k))) if dev.get(("at", k)) is not None
            and dev.get(("lo", k)) is not None else 0 for k in under}
@@ -1049,9 +1050,86 @@ def scn_out_drain_group(tag, argv, exp):
         behind = st.get("display-behind", 0) or 0
         check(f"{label} {k}: drained within the cap (drain-ppm {st.get('drain-ppm')}), nothing dropped "
               f"(dropped {st.get('dropped-frames', 0)}, rate drops {st.get('rate-drops', 0)}, of them display-behind "
-              f"{behind})",
+              f"{behind}){'; no raise (' + str(st.get('drain-raises')) + ', B-256)' if k == 'player' else ''}",
               abs(st.get("drain-ppm") or 0) <= 5000 and not st.get("dropped-frames")
-              and (st.get("rate-drops") or 0) <= behind)
+              and (st.get("rate-drops") or 0) <= behind and (k != "player" or st.get("drain-raises") == 0))
+
+def late_reasons(ps):
+    """A pace's underruns by reason, the zero ones left out."""
+    return {k[10:]: v for k, v in ps.items() if k.startswith("underruns-") and v}
+
+
+def scn_out_drain_seam(tag, argv, exp):
+    """-seam (B-256): a Video Player on a looped file, each lap's content `gap_ms` after the last one's (a loop
+    seam's step), at its 1-frame floor: no raise, the margin at the floor, at most one late release per seam
+    (any reason: a seam's drain can end inside Q of the next), and render lateness at the end within
+    `drift_ms` of its first reading after the warm-up."""
+    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+    rel = rig.generated(exp["kind"], exp["lap_s"])
+    pid = orig.stream_pids(rel)["video"]
+    data, _laps, lap = loop_of(b"".join(rel), pid, exp["lap_s"])
+    laps = int(exp["seconds"] * 90000 // (lap + exp["gap_ms"] * 90)) + 2
+    whole = orig.chunked(orig.looped(data, laps, lap + exp["gap_ms"] * 90))
+    seams = int(exp["seconds"] * 90000 // (lap + exp["gap_ms"] * 90))
+    run = Run(argv)
+    run.producer("feed", ["vp"], ts=lambda t0: orig.at_house(whole, t0), stop_s=exp["seconds"])
+    run.output("player", "player50", video=orig.display())
+    run.go(exp["seconds"] + 1.0)
+    run.on_time(label)
+    run.clean(label)
+    pl, t0 = run.outputs["player"], run.t0
+    ps = last(pl.paces())
+    why = late_reasons(ps)
+    under = ps.get("underruns") or 0
+    check(f"{label} player: no raise, the margin at its floor ({ps.get('drain-raises')} raises, margin "
+          f"{(ps.get('drain-margin-ns') or 0) / 1e6} ms), at most one late release per seam ({under} for {seams} "
+          f"seams; {why}), no outage ({ps.get('drain-outages')})",
+          ps.get("drain-raises") == 0 and ps.get("drain-margin-ns") == 20 * MS and under <= seams
+          and not ps.get("drain-outages") and sum(why.values()) == under
+          and set(why) <= {"drain", "after-drain", "video"})
+    first = paces(pl, t0, x["warm_s"], x["warm_s"] + 4)
+    end = paces(pl, t0, exp["seconds"] - 8, exp["seconds"] + 1)
+    step = round(orig.mid(end) - orig.mid(first), 1) if first and end else None
+    check(f"{label} player: render lateness at the end within {x['drift_ms']} ms of its first reading after "
+          f"{x['warm_s']} s ({first and round(orig.mid(first), 1)} -> {end and round(orig.mid(end), 1)} ms, {step})",
+          step is not None and abs(step) <= x["drift_ms"])
+
+
+def scn_out_drain_group_jitter(tag, argv, exp):
+    """-group-jitter (B-256): the Video Player and the Audio Decoder of one source in a group (the rig plays the
+    engine, P = the max every 2 s), the video's input delivered in `burst_ms` bursts (its jitter): the video never
+    raises and stays at its 1-frame floor, its late releases counted, and P at the end within `rise_ms` of P
+    after the warm-up."""
+    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+    run = Run(argv)
+    rel = rig.generated(exp["kind"], exp["seconds"] + 2)
+    run.rel, run.pids = rel, orig.stream_pids(rel)
+    run.producer("vfeed", ["vp"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"],
+                 knobs=rig.Knobs(burst_ms=exp["burst_ms"]))
+    run.producer("afeed", ["ad"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"])
+    run.output("player", "player50", video=orig.display())
+    run.output("decoder", "decoder", audio=orig.card())
+    members = [("player", "vp_pace"), ("decoder", "asrc")]
+    role = GroupRole(run, members)
+    run.go(exp["seconds"] + 1, [(s, role) for s in range(2, exp["seconds"], 2)], [])
+    run.on_time(label)
+    run.clean(label)
+    t0 = run.t0
+    ps = last(run.outputs["player"].paces())
+    why = late_reasons(ps)
+    check(f"{label} player: no raise, the margin at its floor ({ps.get('drain-raises')} raises, margin "
+          f"{(ps.get('drain-margin-ns') or 0) / 1e6} ms), its late releases counted ({ps.get('underruns')}; {why})",
+          ps.get("drain-raises") == 0 and ps.get("drain-margin-ns") == 20 * MS
+          and sum(why.values()) == (ps.get("underruns") or 0) and set(why) <= {"drain", "after-drain", "video"})
+    early = [p / 1e6 for t, p in role.p if t0 + x["warm_s"] * S <= t < t0 + (x["warm_s"] + 8) * S]
+    tail = [p / 1e6 for t, p in role.p if t >= t0 + (exp["seconds"] - 8) * S]
+    rise = round(orig.mid(tail) - orig.mid(early), 1) if early and tail else None
+    dec = last(device_stats(run.outputs["decoder"]))
+    check(f"{label}: P at the end within {x['rise_ms']} ms of P after {x['warm_s']} s "
+          f"({early and round(orig.mid(early), 1)} -> {tail and round(orig.mid(tail), 1)} ms, {rise}); the decoder's "
+          f"raises {dec.get('drain-raises')} for {dec.get('underruns')} underruns",
+          rise is not None and rise <= x["rise_ms"] and (dec.get("drain-raises") or 0) <= (dec.get("underruns") or 0))
+
 
 def decoder_drain(tag, argv, exp, holds):
     """The audio decoder alone on a generated feed, its input held at `holds` [(s, length)] (the content waits,
@@ -1113,6 +1191,8 @@ SCENARIOS = {
     "scn-out-drain-group": scn_out_drain_group,
     "scn-out-drain-cpu": scn_out_drain_cpu,
     "scn-out-drain-dip": scn_out_drain_dip,
+    "scn-out-drain-seam": scn_out_drain_seam,
+    "scn-out-drain-group-jitter": scn_out_drain_group_jitter,
 }
 _NEEDS = ("unixfdsrc", "unixfdsink", "mpegtsmux", "x264enc", "avdec_h264", "h264parse", "avenc_aac", "avdec_aac",
           "aacparse", "avdec_s302m", "textoverlay")

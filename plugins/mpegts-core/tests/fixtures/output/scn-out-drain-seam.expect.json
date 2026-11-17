@@ -1,0 +1,12 @@
+{
+  "scenario": "scn-out-drain-seam",
+  "graph": "generated 720p50 H.264 + AAC, a 20 s lap looped for 4 min with each lap's content 20 ms after the last one's (a loop seam's step) -> player50 (mrtestvideosink 50 Hz) at its 1-frame floor: no raise, the margin at the floor, at most one late release per seam, render lateness at the end within 40 ms of its first reading after the warm-up (B-256)",
+  "kind": "h264-aac-720p50",
+  "lap_s": 20,
+  "gap_ms": 20,
+  "seconds": 240,
+  "expect": {
+    "warm_s": 40,
+    "drift_ms": 40
+  }
+}

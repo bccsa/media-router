@@ -2285,7 +2285,8 @@ the aligners' `input-absent` and `aligner-full` warnings
   rises only at a short starvation on a steady stream with its buffer at the
   margin, judged 10 s after it; one while catching up, under load, while
   settling or after an input break raises nothing and is counted by reason
-  (B-240). The engine groups the
+  (B-240); a Video Player's late frame never raises it, and is counted the
+  same way (B-256). The engine groups the
   running outputs of one bus origin (`plugins/drainGroups.ts`: Video Players
   anchor, audio outputs join, one touching two programmes joins neither) and
   every 2 s calls `applyLatencyGroupTarget(ns)`, which sets `group-target-ns`

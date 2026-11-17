@@ -191,13 +191,19 @@ there is no in-app switch, and the stored values of the removed settings
   up to a quarter of a second on a steady stream raises that output's margin,
   10 s after it; the margin comes back down over about 2 hours, so a source
   with a recurring short dip gives one dropout about every 2 hours, not one
-  per dip. A late video frame raises nothing unless the output was catching
-  up.
+  per dip.
 - **An audio output no longer raises its buffer while it is catching up or
   while the box is overloaded,** so its latency no longer creeps up after a
   stall or a busy minute. The Buffer underruns row says why each one did not
   raise, for example "15, 1 raised the target, 12 while catching up, 2 under
   load".
+- **A Video Player's latency no longer creeps up after late frames.** A frame
+  shown late, while catching up, just after or on a steady stream, never
+  raises its margin: the player stays at one frame of margin and catches the
+  delay back up instead. Late frames are still counted in the Buffer
+  underruns row with why, for example "12, 0 raised the target, 9 while
+  catching up, 3 on a steady stream". On a looped test file expect about one
+  late frame at each join of the loop.
 - **The Timing section shows it:** **Latency target**, for example "95 ms
   (measured), now 2.41 s · draining at 0.50 % (about 8 min) · in sync with
   Video Player"; **Drained**, the delay taken off so far; **Buffer

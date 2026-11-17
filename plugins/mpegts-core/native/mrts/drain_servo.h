@@ -77,7 +77,7 @@ class DrainServo {
     // Audio, each tick: whether the device starved since the last one.
     void starve(int64_t now, bool on);
     bool starving() const { return in_episode_; }
-    // Video: a release by_ns past its drained slot, neither collapsed nor sink-late.
+    // Video: a release by_ns past its drained slot, neither collapsed nor sink-late. Never a raise (B-256).
     void late(int64_t now, int64_t by_ns);
     // A window clear (a relock, a stall's flush, caps, a flush, PAUSED): warm-up again, delta 0.
     void clear(int64_t now);
@@ -133,8 +133,8 @@ class DrainServo {
     int64_t warm_from_ = 0, last_ = 0, m_at_ = 0, l_at_ = 0;
     int64_t ppb_ = 0;
     bool engaged_ = false, draining_ = false, brk_ = false;
-    bool in_episode_ = false, have_late_ = false, have_positive_ = false, have_hold_ = false;
-    int64_t episode_at_ = 0, late_at_ = 0, positive_at_ = 0, hold_until_ = 0;
+    bool in_episode_ = false, have_late_ = false, have_hold_ = false;
+    int64_t episode_at_ = 0, late_at_ = 0, hold_until_ = 0;
     int64_t group_ = GROUP_ALONE_NS, group_at_ = 0;
     int64_t held_ = 0, target_ = 0, excess_ = 0, trough_ = 0;
     bool capped_ = false;

@@ -4044,8 +4044,12 @@ Phase 3 ships as v2.0.0.102).
   ms, and the trough 1–2 s before it within the margin ± 20 ms. Any other is
   counted by its first failed test (drain, after-drain, warm-up, input, load,
   not-margin); longer is an outage, counted, no raise. A late video release
-  raises it only while δ > 0 or within 30 s after; a release under a quarter
-  frame late is jitter, one more than 250 ms late an outage. A raise sets L =
+  never raises it (B-256): it is counted as drain (δ ≠ 0), after-drain (within
+  30 s after δ last was ≠ 0) or video, and the video margin stays at its
+  1-frame floor for the drain alone; a release under a quarter frame late is
+  jitter, one more than 250 ms late an outage. On a looped source each join
+  gives at most one late release, and the drain takes its lateness step back
+  out of `vp_esq`'s level (the trough as Phase 4 built it, unchanged). A raise sets L =
   the margin that underran and m = min(500 ms, max(2L, L + 20 ms)); m falls 5
   ms every 10 min without a raise, never under the floor or L + 10 ms, and L
   falls 5 ms an hour to floor − 10 ms: a raise costs about 2 h, and a need
@@ -4088,9 +4092,9 @@ Phase 3 ships as v2.0.0.102).
   owner-level items): a short audio dropout on a steady stream at its margin
   raises the margin (B-240 replaced "any"), which decays 5 ms/h (a source with
   a recurring short dip gets one re-probe dropout about every 2 h; 5 ms per
-  4 h would make it 8 h); a late video frame raises the margin only while
-  draining or within 30 s after (B-240's video half, "never", withheld on its
-  part B finding); grouping by common origin,
+  4 h would make it 8 h); a late video frame never raises the margin (B-256,
+  E-F2: a player whose decoded slack is short of its jitter repeats a refresh
+  at it instead of carrying more latency); grouping by common origin,
   audio-only outputs not grouped; the 1 s rise cap; a member of two programmes
   joins neither; a restarted output rises to its group's latency on purpose
   (a member below the target plays up to 0.5 % slower: audio pitch down by up
@@ -4152,7 +4156,7 @@ sections above give the reasons, the register rows the details.
 - **p4-19** (fix batch FB1): S6 reads the trough 1–2 s before the
   starvation, not at it (the fill's own fall is in the window by then); the
   video half (a late frame never raises) withheld on part B's finding, B4
-  kept for video (B-240).
+  kept for video (B-240); landed by p4-19v (B-256).
 - **p4-23** (fix batch FB1): "behind" a member means playing later than it,
   "ahead of" earlier, and B-179's "1 s behind its group: held there" reads
   "held 1 s above its own target"; the load label before the drain-cap
@@ -4176,6 +4180,11 @@ sections above give the reasons, the register rows the details.
   `vp_probeq` and both runners' queue watch leaves it out, so B-174's F2 is
   closed; Teletext Subtitles' and MPEG-TS IP Input's probe taps are still
   watched (B-248).
+- **p4-19v** (fix batch FB3): a Video Player's late release never raises its
+  margin, on the trough as Phase 4 built it (p4-19 part B's trough change not
+  built: FB1's diagnosis showed the drain removes only real queue level); the
+  looped-source bound is at most one late release per seam, any reason, since
+  a seam's drain ends inside Q of the next at a 40 s loop (B-256).
 
 ### What this phase supersedes
 

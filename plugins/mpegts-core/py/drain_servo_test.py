@@ -396,9 +396,9 @@ def case_group_cap():
 
 
 def case_video_late():
-    """10c. B4: a jittery video input (a late frame every 20 s) with the drain idle raises neither
-    the margin nor P; the same late frame 10 s after a drain let go raises once, as does one while it
-    drains (B-240's video half withheld: part B's finding)."""
+    """10c. A jittery video input (a late frame every 20 s) with the drain idle raises neither the
+    margin nor P (B4); the same late frame 10 s after a drain let go, or while it drains, raises
+    nothing either (B-256): `after-drain`, `drain`."""
     s = DrainServo(True, 40 * MS, 20 * MS)
     ln = Link(s, source(steady(40 * MS)), fill_ns=40 * MS, base_ns=100 * MS)
     r = Run([ln])
@@ -424,8 +424,9 @@ def case_video_late():
     s3.late(r3.t, 80 * MS)
     r3.until(r3.t + 2 * SEC)
     return [("late: drain idle, no raise and P steady", idle_ok and s.reasons["video"] == s.underruns),
-            ("late: 10 s after a drain let go, one raise", bool(done) and s2.raises == 1),
-            ("late: while it drains, one raise", s3.raises == 1)]
+            ("late: 10 s after a drain let go, no raise (after-drain)",
+             bool(done) and s2.raises == 0 and s2.reasons["after-drain"] == 1),
+            ("late: while it drains, no raise (drain)", s3.ppb > 0 and s3.raises == 0 and s3.reasons["drain"] == 1)]
 
 
 def case_hysteresis():
@@ -604,8 +605,89 @@ def case_cpu():
          and s.reasons["load"] + s.reasons["warm-up"] == s.underruns),
         ("cpu: audio, back to its target in part 5's time +-10 %",
          took is not None and abs(took - pred) <= pred / 10),
-        ("cpu: video, the drain idle, no raise (B4)", v.raises == 0 and v.underruns == v.reasons["video"] >= 30),
+        ("cpu: video, the drain idle, no raise", v.raises == 0 and v.underruns == v.reasons["video"] >= 30),
     ]
+
+
+class PullChain:
+    """B-256: a 50p Video Player's chain, pull-through as FB1's seam diagnostic found it: the decoder
+    takes frame k at max(the last release, its arrival), decodes 3 ms (30 ms at a loop seam), and the
+    pace releases it at the later of its drained slot and its decode end. Input in 2-frame bursts
+    (even frames 20 ms late), arriving 100 ms early (the vp_esq level); a level read every 100 ms."""
+    P = 20 * MS
+
+    def __init__(self, s, seam_ns=40020 * MS, minutes=60):
+        self.s, self.n = s, minutes * MIN // self.P
+        self.seams = {k * seam_ns // self.P for k in range(1, minutes * MIN // seam_ns + 1)}
+        self.renders = []
+
+    def arrival(self, k):
+        return k * self.P + (20 * MS if k % 2 == 0 else 0) - 100 * MS
+
+    def run(self):
+        s, P = self.s, self.P
+        prev, last_read, j = None, None, 1
+        for k in range(self.n):
+            start = self.arrival(k) if prev is None else max(prev, self.arrival(k))
+            at = start + 3 * MS + (30 * MS if k in self.seams else 0)
+            slot = at if prev is None else prev + (2 * P * SEC + SEC + s.ppb) // (2 * (SEC + s.ppb))
+            if at > slot:
+                if 4 * (at - slot) >= P:
+                    s.late(at, at - slot)
+            else:
+                s.sample(at, slot - at)
+            if last_read is None or at - last_read >= TICK:
+                j = max(j, k + 1)
+                while self.arrival(j) <= at:
+                    j += 1
+                s.queue_level(at, (j - k - 1) * P)
+                last_read = at
+            rel = max(slot, at)
+            s.update(at, rel - k * P, True)
+            s.take_events()
+            prev = rel
+            self.renders.append((at, rel - k * P))
+
+
+def case_seam_floor():
+    """12b. B-256, the state the video rule produces (FB1's F-p4-19-B): the margin at its 1-frame floor
+    on 870a6df4's trough, a 30 ms decode burst at each 40.02 s loop seam, 60 min: no raise, the margin at
+    the floor, at most one late release per seam (any reason: a seam's drain ends 15-20 s after it,
+    inside Q of the next), and no step accumulates (the drain takes each back out of the queue)."""
+    s = DrainServo(True, 20 * MS, 20 * MS)
+    c = PullChain(s)
+    c.run()
+    first = next(r for t, r in c.renders if t > 40 * SEC)
+    late = [r - first for t, r in c.renders if t > 30 * MIN]
+    return [("seam: no raise, the margin at the floor", s.raises == 0 and s.margin == 20 * MS),
+            ("seam: at most one late release per seam (%d, %d seams; %s)"
+             % (s.underruns, len(c.seams), {r: s.reasons[r] for r in ("drain", "after-drain", "video")}),
+             0 < s.underruns <= len(c.seams) and s.outages == 0
+             and s.reasons["drain"] + s.reasons["after-drain"] + s.reasons["video"] == s.underruns),
+            ("seam: no step accumulates (the last 30 min within %d..%d ms of the first reading)"
+             % (min(late) // MS, max(late) // MS), max(map(abs, late)) <= 60 * MS
+             and abs(c.renders[-1][1] - first) <= 40 * MS),
+            ("seam: the drain took the steps back", s.drained >= 500 * MS)]
+
+
+def case_video_never():
+    """21. B-256, video never raises: late releases inside a drain, just after one and idle on a flat
+    stream: no raise, counted `drain`, `after-drain` and `video`."""
+    s = DrainServo(True, 20 * MS, 20 * MS)
+    d = Drive(s, lambda t: 200 * MS if t < 60 * SEC else 20 * MS)
+    d.until(45 * SEC)
+    s.late(d.t, 30 * MS)
+    d.until(60 * SEC)
+    while s.ppb:
+        d.until(d.t + TICK)
+    d.until(d.t + 10 * SEC)
+    s.late(d.t, 30 * MS)
+    d.until(d.t + 40 * SEC)
+    s.late(d.t, 30 * MS)
+    d.until(d.t + 15 * SEC)
+    return [("video never: no raise", s.raises == 0 and s.margin == 20 * MS),
+            ("video never: drain, after-drain, video",
+             [s.reasons[r] for r in ("drain", "after-drain", "video")] == [1, 1, 1])]
 
 
 def case_stall_arm():
@@ -770,6 +852,7 @@ CASES = {
     "dip_drain": case_dip_drain, "f1_pin": case_f1_pin, "cpu": case_cpu, "stall_arm": case_stall_arm,
     "drain_timing": case_drain_timing, "keep_up": case_keep_up, "spacing": case_spacing, "band": case_band,
     "hold_state": case_hold_state, "input": case_input, "fall": case_fall,
+    "seam_floor": case_seam_floor, "video_never": case_video_never,
 }
 
 
@@ -925,6 +1008,29 @@ def m_r2_video():
     return _patch(DrainServo, "late", late)
 
 
+def m_video_raises():
+    orig = DrainServo.late
+
+    def late(self, now, by):
+        n = self.underruns
+        orig(self, now, by)
+        if self.underruns > n:
+            self._raise(now, 0, None, 0)
+    return _patch(DrainServo, "late", late)
+
+
+def m_b4_kept():
+    """B4 as it stood before B-256: a raise while delta > 0 or within W after it last was."""
+    orig = DrainServo.late
+
+    def late(self, now, by):
+        n, d = self.underruns, self.reasons["drain"] + self.reasons["after-drain"]
+        orig(self, now, by)
+        if self.underruns > n and self.reasons["drain"] + self.reasons["after-drain"] > d:
+            self._raise(now, 0, None, 0)
+    return _patch(DrainServo, "late", late)
+
+
 def m_s1_window_only():
     orig = DrainServo.starve
 
@@ -1045,6 +1151,11 @@ MUTANTS = [
     ("a clear counting every pending episode `input`", m_clear_all_input, "input"),
     ("a drain between the end and t_c ignored", m_tail_drain_ignored, "input"),
     ("S6 on the trough at the start", m_s6_now, "fall"),
+    ("a video late release raising (B-256)", m_video_raises, "video_never"),
+    ("a video late release raising (B-256)", m_video_raises, "seam_floor"),
+    ("B4's drain-time video raise kept (B-256)", m_b4_kept, "video_late"),
+    ("B4's drain-time video raise kept (B-256)", m_b4_kept, "video_never"),
+    ("B4's drain-time video raise kept (B-256)", m_b4_kept, "seam_floor"),
 ]
 
 

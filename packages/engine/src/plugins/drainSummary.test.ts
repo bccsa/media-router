@@ -190,6 +190,16 @@ describe('the Latency target row', () => {
         ).toBe(
             '6, 0 raised the target, 1 while settling, 1 after an input break, 1 not short of margin, 3 on a steady stream',
         );
+        // B-256: a Video Player's late frames never raise; the row says why each one came.
+        expect(
+            underrunsText(
+                summary({
+                    underruns: 12,
+                    raises: 0,
+                    underrunReasons: { drain: 5, 'after-drain': 4, video: 3 },
+                }),
+            ),
+        ).toBe('12, 0 raised the target, 9 while catching up, 3 on a steady stream');
         // The element's fields carry through the summary.
         const r = drainSummary(fields({ underruns: 2, reasons: { load: 2 } }), 2410, undefined);
         expect(r.underrunReasons).toEqual({ load: 2 });

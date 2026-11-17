@@ -1,0 +1,11 @@
+{
+  "scenario": "scn-out-drain-group-jitter",
+  "graph": "generated 720p50 H.264 + AAC -> player50 and the audio decoder in one group (the rig sets group-target-ns to the max every 2 s), the video's input delivered in 60 ms bursts: the video never raises and stays at its 1-frame floor, P at the end within 20 ms of P after the warm-up (B-256)",
+  "kind": "h264-aac-720p50",
+  "burst_ms": 60,
+  "seconds": 120,
+  "expect": {
+    "warm_s": 40,
+    "rise_ms": 20
+  }
+}
