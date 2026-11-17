@@ -25,9 +25,12 @@ a flush lands the margin plus the larger of the margin and the guard past `consu
 starts takes its own buffer out of it at once (the test sink's 40 ms, pulsesink's server its
 read-ahead). After a flush the clock is read once the sink has rendered (fix round 1). The silence
 starts where the base sink writes, which after a flush on a pulsesink whose segdone is still (1.22)
-is frame 0, so it spans the stream's run (5 and 10 s at flushes 10 and 20 s in, measured); moving
-next_sample past it instead (tried) left the stream silent after a flush in 4 of 16 runs on the dev
-Pi. On the image's pulsesink (1.28) segdone follows the read index: at most its staleness.
+is frame 0, so it would span the stream's run (10 and 20 s at flushes 10 and 20 s in, measured);
+moving next_sample past it instead (tried) left the stream silent after a flush in 4 of 16 runs on
+the dev Pi. On the image's pulsesink (1.28) segdone follows the read index: at most its staleness
+(1.5 s). A refill is capped at REFILL_MAX_MS (fix round 2): a longer gap is crossed by several
+writes, each capped, the ones still behind the read index dropped by the server, so a refill never
+allocates more than the cap however long the stream ran.
 
 The guard (c39 review, blocking 1). A GstAudioSink hands each segment to the device itself, so its
 segdone is the device's read: guard 0. pulsesink's ring is a server's stream: the server reads ahead
@@ -54,10 +57,13 @@ each one unplayable and refills without end (measured: a guard of 85-93 ms refil
 played 12 % of the feed); a graph quantum near the configured latency would do it with 40 ms. A
 write cannot be behind the read index when the stream was full at the write before: when its buffer
 waited in the queue before the sink (the sink was blocked: residence of a segment or more), or the
-push before it blocked in the sink (no queue between: the Audio Decoder).
+push before it blocked in the sink and this write follows it within a segment (no queue between:
+the Audio Decoder). The push is the sink's own time on it, measured in the thread that pushes into
+the sink; a push that blocked before an outage says nothing about the write after it (fix round 2:
+counted however long ago, it dropped that write's head on the Audio Decoder).
 
 API:
-    m = SinkMargin(margin_frames)
+    m = SinkMargin(margin_frames, cap_frames)    cap: REFILL_MAX_MS in frames (0: none)
     m.silence(next_sample, segdone, sps, play_pos=None, guard=0) -> frames of silence to put first
         next_sample: the base sink's next write (-1: none yet), segdone: segments read since
         segbase, sps: samples per segment, play_pos: the device clock's position in the same
@@ -66,10 +72,11 @@ API:
     m.stats() -> {"refills", "silence"}
     g = SinkGuard(base_frames, cap_frames)    base: server_latency_frames(buffer, sps)
     g.segdone_seen(segdone, sps, play_pos); g.frames() -> the guard
-    guard_applies(residence_ns, push_ns, seg_ns) -> whether the guard holds this write
+    guard_applies(residence_ns, push_ns, since_push_ns, seg_ns) -> whether the guard holds this write
 Run as a script it reads one JSON object per line and prints one per line, the format `mrts_cli
-sink-margin` reads: {"next", "segdone", "sps", "play"?, "margin", "guard"?} -> {"silence": n}, and
-the guard's events {"base", "cap"} (a new guard), {"seg", "sps", "play"} -> {"guard": n}:
+sink-margin` reads: {"next", "segdone", "sps", "play"?, "margin", "guard"?, "cap"?} -> {"silence": n},
+the guard's events {"base", "cap"} (a new guard), {"seg", "sps", "play"} -> {"guard": n}, and
+{"res", "push", "since", "segns"} -> {"applies": 0|1}:
     sink_margin_ref.py cases.jsonl|-
 """
 import json
@@ -77,6 +84,7 @@ import sys
 
 
 GUARD_MAX_MS = 500
+REFILL_MAX_MS = 3000          # a refill's silence at most (twice the 1.5 s a 1.28 pulsesink's segdone lags)
 
 
 def consumed_frames(segdone, sps, play_pos=None, guard=0):
@@ -95,8 +103,9 @@ def base_write_pos(next_sample, segdone, sps):
     return p
 
 
-def silence_frames(next_sample, segdone, sps, margin, play_pos=None, guard=0):
-    """Frames of silence before the next buffer: 0 while the write is contiguous and playable."""
+def silence_frames(next_sample, segdone, sps, margin, play_pos=None, guard=0, cap=0):
+    """Frames of silence before the next buffer: 0 while the write is contiguous and playable; at most
+    `cap` (> 0), the rest left to the writes after it."""
     if sps <= 0 or margin < 0:
         return 0
     guard = max(0, guard)
@@ -105,7 +114,8 @@ def silence_frames(next_sample, segdone, sps, margin, play_pos=None, guard=0):
         return 0
     # A start or a flush: the device (a server: its read-ahead) takes its own buffer out of it.
     want = margin if next_sample >= 0 else margin + max(margin, guard)
-    return max(0, c + want - base_write_pos(next_sample, segdone, sps))
+    n = max(0, c + want - base_write_pos(next_sample, segdone, sps))
+    return min(n, cap) if cap > 0 else n
 
 
 def server_latency_frames(buffer_frames, sps):
@@ -116,10 +126,11 @@ def server_latency_frames(buffer_frames, sps):
 BLOCKED_NS = 2_000_000        # a push that took this long waited in the sink: the stream was full
 
 
-def guard_applies(residence_ns, push_ns, seg_ns):
+def guard_applies(residence_ns, push_ns, since_push_ns, seg_ns):
     """The guard holds a write unless the stream was full at the write before: its buffer waited a
-    segment or more in the queue before the sink, or the push before it blocked in the sink."""
-    return residence_ns < seg_ns and push_ns < BLOCKED_NS
+    segment or more in the queue before the sink, or the push before it blocked in the sink and
+    ended less than a segment before this write."""
+    return residence_ns < seg_ns and not (push_ns >= BLOCKED_NS and since_push_ns < seg_ns)
 
 
 class SinkGuard:
@@ -140,13 +151,14 @@ class SinkGuard:
 
 
 class SinkMargin:
-    def __init__(self, margin_frames):
+    def __init__(self, margin_frames, cap_frames=0):
         self.margin = max(0, int(margin_frames))
+        self.cap = max(0, int(cap_frames))
         self.refills = 0
         self.silence_total = 0
 
     def silence(self, next_sample, segdone, sps, play_pos=None, guard=0):
-        n = silence_frames(next_sample, segdone, sps, self.margin, play_pos, guard) if self.margin else 0
+        n = silence_frames(next_sample, segdone, sps, self.margin, play_pos, guard, self.cap) if self.margin else 0
         if n:
             self.refills += 1
             self.silence_total += n
@@ -168,8 +180,13 @@ def main(argv):
             continue
         c = json.loads(raw)
         if "next" in c:
-            n = silence_frames(c["next"], c["segdone"], c["sps"], c["margin"], c.get("play"), c.get("guard", 0))
+            n = silence_frames(c["next"], c["segdone"], c["sps"], c["margin"], c.get("play"), c.get("guard", 0),
+                               c.get("cap", 0))
             print(json.dumps({"silence": n}, separators=(",", ":")))
+            continue
+        if "res" in c:
+            a = guard_applies(c["res"], c["push"], c["since"], c["segns"])
+            print(json.dumps({"applies": int(a)}, separators=(",", ":")))
             continue
         if "base" in c:
             g = SinkGuard(c["base"], c["cap"])

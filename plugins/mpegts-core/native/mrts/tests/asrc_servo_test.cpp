@@ -3386,10 +3386,20 @@ static void test_sink_margin() {
           g.frames() == 4 * SPS + 900 - SPS);
     g.segdone_seen((int64_t)1 << 30, SPS, 0);
     CHECK("... capped (500 ms)", g.frames() == 500 * 48);
+    const int64_t SEG = 10000000, CAP = ASRC_SINK_REFILL_MAX_MS * 48;
     CHECK("the guard holds a write that came straight through, not one that waited a segment in the queue or followed "
-          "a push that blocked",
-          asrc_sink_guard_applies(0, 0, 10000000) && asrc_sink_guard_applies(9999999, 1999999, 10000000) &&
-              !asrc_sink_guard_applies(10000000, 0, 10000000) && !asrc_sink_guard_applies(0, 2000000, 10000000));
+          "a push that blocked less than a segment before",
+          asrc_sink_guard_applies(0, 0, 0, SEG) && asrc_sink_guard_applies(9999999, 1999999, 0, SEG) &&
+              !asrc_sink_guard_applies(SEG, 0, 0, SEG) && !asrc_sink_guard_applies(0, 2000000, 0, SEG) &&
+              !asrc_sink_guard_applies(0, 50000000, SEG - 1, SEG));
+    CHECK("... a push that blocked a segment or more before this write says nothing of it: the guard holds",
+          asrc_sink_guard_applies(0, 2000000, SEG, SEG) && asrc_sink_guard_applies(0, 80000000, 5 * SEG, SEG) &&
+              !asrc_sink_guard_applies(SEG, 80000000, 5 * SEG, SEG));
+    CHECK("a refill is capped: the silence at most the cap, none still none",
+          asrc_sink_silence(-1, 0, SPS, M, true, 20 * 48000, 4 * SPS, CAP) == CAP &&
+              asrc_sink_silence(-1, 0, SPS, M, true, 20 * 48000, 4 * SPS) > CAP &&
+              asrc_sink_silence(5 * SPS, 3, SPS, M, false, 0, 0, CAP) == 0 &&
+              asrc_sink_silence(3 * SPS + 100, 3, SPS, M, false, 0, 0, CAP) == 4 * SPS + M - (3 * SPS + 100));
     AsrcSinkMargin z(0);
     CHECK("margin 0 (mrasrc margin-ms 0): never, not even into the segment in flight",
           z.silence(3 * SPS + 100, 3, SPS, false, 0, 0) == 0 && z.silence(-1, 0, SPS, false, 0, 0) == 0);
@@ -3398,6 +3408,9 @@ static void test_sink_margin() {
     m.silence(5 * SPS, 3, SPS, false, 0, 0);
     m.silence(1 * SPS, 7, SPS, false, 0, 0);
     CHECK("stats count the refills and their silence", m.refills() == 2 && m.silence_total() == SPS + 2 * M + M);
+    AsrcSinkMargin mc(M, CAP);
+    mc.silence(-1, 0, SPS, true, 20 * 48000, 4 * SPS);
+    CHECK("... a capped refill counts its capped silence", mc.refills() == 1 && mc.silence_total() == CAP);
 }
 
 int main(int argc, char** argv) {

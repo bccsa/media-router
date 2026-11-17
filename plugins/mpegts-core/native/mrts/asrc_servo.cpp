@@ -766,7 +766,7 @@ int64_t asrc_sink_write_pos(int64_t next_sample, int64_t segdone, int64_t sps) {
 }
 
 int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int64_t margin, bool have_play,
-                          int64_t play_pos, int64_t guard) {
+                          int64_t play_pos, int64_t guard, int64_t cap) {
     if (sps <= 0 || margin < 0) return 0;
     if (guard < 0) guard = 0;
     const int64_t c = asrc_sink_consumed(segdone, sps, have_play, play_pos, guard);
@@ -774,7 +774,8 @@ int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int
     // A start or a flush: the device (a server: its read-ahead) takes its own buffer out of it.
     const int64_t want = next_sample >= 0 ? margin : margin + std::max(margin, guard);
     const int64_t n = c + want - asrc_sink_write_pos(next_sample, segdone, sps);
-    return n > 0 ? n : 0;
+    if (n <= 0) return 0;
+    return cap > 0 && n > cap ? cap : n;
 }
 
 int64_t asrc_server_latency(int64_t buffer, int64_t sps) {
@@ -785,13 +786,14 @@ void AsrcSinkGuard::segdone_seen(int64_t segdone, int64_t sps, int64_t play_pos)
     if (segdone > 0 && sps > 0 && play_pos >= 0) sink_lat_ = std::max(sink_lat_, (segdone - 1) * sps - play_pos);
 }
 
-bool asrc_sink_guard_applies(int64_t residence_ns, int64_t push_ns, int64_t seg_ns) {
-    return residence_ns < seg_ns && push_ns < ASRC_SINK_BLOCKED_NS;
+bool asrc_sink_guard_applies(int64_t residence_ns, int64_t push_ns, int64_t since_push_ns, int64_t seg_ns) {
+    return residence_ns < seg_ns && !(push_ns >= ASRC_SINK_BLOCKED_NS && since_push_ns < seg_ns);
 }
 
 int64_t AsrcSinkMargin::silence(int64_t next_sample, int64_t segdone, int64_t sps, bool have_play,
                                 int64_t play_pos, int64_t guard) {
-    const int64_t n = margin_ ? asrc_sink_silence(next_sample, segdone, sps, margin_, have_play, play_pos, guard) : 0;
+    const int64_t n =
+        margin_ ? asrc_sink_silence(next_sample, segdone, sps, margin_, have_play, play_pos, guard, cap_) : 0;
     if (n) {
         refills_++;
         silence_ += n;

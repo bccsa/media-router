@@ -23,12 +23,17 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
   - MR_302M_PULSE_SINK=<a null sink>: a real pulsesink on that sink, holes counted on its monitor: the edge
     profile (10 s at 30 ms, then the feed set to land its writes 0-30 ms ahead of the device clock in 3 ms steps,
     shuffled, 30 s each; seeds 7, 8, 9: inside the server's read-ahead, where c1a929b9 lost audio with no refill),
-    the flush profile (two flushes into the sink, as mrasrc's device flush makes them), then the field and the
-    rising profile for MR_302M_PULSE_SECS (600). Pass: every hole after the start has a refill within 3 s of it,
-    the rising walk none once at its max, and the frames heard within 1 ms of what the device term's measured
-    ratio (mrasrc's out/in frames) makes of the feed; a flush one hole and one or two refills, at most 200 ms
-    lost, sound to the end. MR_302M_PULSE_MON_US sets the monitor's latency (so the graph quantum). Not in the chain
-    (it needs a server). MR_302M_PARTS picks parts (sink, mutants, pulse, drift).
+    the Audio Decoder's sink end on the same edge (plugins/audio-decoder/tests/fixtures/sink-end.json, which
+    AudioDecoderModule.test.ts holds the module to; no queue between its `asrc` and the sink): 10 s at 30 ms,
+    then 20 steps of 3 s each landing its writes 2 ms ahead of the clock, the 10 buffers before each step
+    coming at once so the last push before the pause blocks in the sink (21eade5e dropped the write after it;
+    seeds 7, 8), the flush profile (two flushes into the sink, as mrasrc's device flush makes them), then the
+    field and the rising profile for MR_302M_PULSE_SECS (600). Pass: every hole after the start has a refill
+    within 3 s of it, the rising walk none once at its max, and the frames heard within 1 ms of what the device
+    term's measured ratio (mrasrc's out/in frames) makes of the feed; a flush one hole, its refills each at most
+    the 3 s cap (REFILL_MAX_MS: c1a929b9 put 5 and 10 s of silence in one), at most 200 ms lost, sound to the
+    end. MR_302M_PULSE_MON_US sets the monitor's latency (so the graph quantum). Not in the chain (it needs a
+    server). MR_302M_PARTS picks parts (sink, mutants, pulse, drift).
 
 A run that fails while the load was 3 or more is run again once, after the load fell. Skips (exit 0) without
 GStreamer or the built plugins."""
@@ -79,6 +84,9 @@ SINK_KEYS = ("holes", "hole-frames", "hole-max", "underruns", "renders", "sounde
 
 with open(os.path.join(_PLUGINS, "audio-output-302m", "tests", "fixtures", "sink-end.json"), encoding="utf-8") as _fh:
     MODULE_TAIL = json.load(_fh)["tail"]
+# The Audio Decoder's, fed PCM (no decoder); the ts-offset times nothing on its sync=false sink.
+with open(os.path.join(_PLUGINS, "audio-decoder", "tests", "fixtures", "sink-end.json"), encoding="utf-8") as _fh:
+    DEC_TAIL = json.load(_fh)["tail"].replace("%DECODER% ! ", "").replace("%TS_OFFSET%", "0")
 # The test device: pulsesink's 10 ms segments (its latency-time default), 100 ppm fast, 40 ms of its own.
 TEST_SINK = "mrtestaudiosink name=sink"
 TEST_DEVICE = " latency-time=10000 ppm=100 device-ns=40000000"
@@ -393,8 +401,13 @@ class MonitorCount:
 EDGE_STEPS = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
 _EDGE_HOLD = int(os.environ.get("MR_302M_PULSE_EDGE_HOLD", "30"))
 _EDGE_SEEDS = [int(v) for v in os.environ.get("MR_302M_PULSE_EDGE_SEEDS", "7,8,9").split(",") if v]
-_PULSE_PROFILES = [v for v in os.environ.get("MR_302M_PULSE_PROFILES", "edge,flush,field,rising").split(",") if v]
+_PULSE_PROFILES = [v for v in os.environ.get("MR_302M_PULSE_PROFILES", "edge,dec-edge,flush,field,rising").split(",")
+                   if v]
 FLUSH_AT_S = (10, 20)                      # the flush profile: two flushes into the sink, 30 s at 30 ms
+REFILL_MAX_MS = 3000                       # mrts::ASRC_SINK_REFILL_MAX_MS
+# dec-edge: the Audio Decoder's sink end, 20 steps of 3 s each 2 ms ahead of the clock, a 10-buffer burst before each.
+_DEC_SEEDS = [int(v) for v in os.environ.get("MR_302M_PULSE_DEC_SEEDS", "7,8").split(",") if v]
+DEC_STEPS, DEC_HOLD, DEC_BURST = [2] * 20, 3, 10
 
 
 def edge_steps(seed):
@@ -407,11 +420,14 @@ def edge_steps(seed):
 def pulse_run(name, secs, seed=7):
     """The module's sink end into a real pulsesink, its monitor counting. `edge`: 10 s at 30 ms, then each step
     x of edge_steps(seed): the feed's lateness becomes the render lateness less x (never earlier than it was), so
-    each write lands x ms ahead of the device clock, inside the server's read-ahead for small x (blocking 1)."""
-    edge, flush = name == "edge", name == "flush"
-    steps = edge_steps(seed) if edge else []
+    each write lands x ms ahead of the device clock, inside the server's read-ahead for small x (blocking 1).
+    `dec-edge`: the Audio Decoder's sink end on DEC_STEPS, the DEC_BURST buffers before each step pushed at once."""
+    dec = name == "dec-edge"
+    edge, flush = name in ("edge", "dec-edge"), name == "flush"
+    steps = DEC_STEPS[:] if dec else (edge_steps(seed) if edge else [])
+    hold = DEC_HOLD if dec else _EDGE_HOLD
     if edge:
-        secs = 10 + _EDGE_HOLD * len(steps)
+        secs = 10 + hold * len(steps)
     if flush:
         secs = 30
     n = secs * 100
@@ -419,18 +435,22 @@ def pulse_run(name, secs, seed=7):
     state = {"late": 30.0, "rl": None, "step": -1, "set": []}
 
     def edge_late(i):
-        k = (i - 1000) // (_EDGE_HOLD * 100) if i >= 1000 else -1
+        k = (i - 1000) // (hold * 100) if i >= 1000 else -1
         if k != state["step"]:
             state["step"] = k
             if k >= 0 and state["rl"] is not None:
                 state["late"] = max(state["late"], state["rl"] - steps[k] - random.Random(seed * 31 + k).uniform(0, 1))
             state["set"].append(round(state["late"], 1))
+        nb = 1000 + (k + 1) * hold * 100       # the next step's first buffer
+        if dec and k + 1 < len(steps) and nb - DEC_BURST <= i < nb:
+            return state["late"] - (i - (nb - DEC_BURST)) * 10   # the burst: pushed with its first buffer
         return state["late"]
 
     mon = MonitorCount(_PULSE)
     mon.start()
     time.sleep(1.0)
-    p = Gst.parse_launch(SRC + tail_for(MODULE_TAIL, sink=f"pulsesink name=sink device={_PULSE}", device=""))
+    p = Gst.parse_launch(SRC + tail_for(DEC_TAIL if dec else MODULE_TAIL, sink=f"pulsesink name=sink device={_PULSE}",
+                                        device=""))
     stop = threading.Event()
     flushed = []
     if flush:
@@ -475,7 +495,7 @@ def pulse_run(name, secs, seed=7):
     stop.set()
     th.join(2)
     time.sleep(1.0)
-    final = sdict(p.get_by_name("outasrc").get_property("stats"))
+    final = sdict(p.get_by_name("asrc" if dec else "outasrc").get_property("stats"))
     p.set_state(Gst.State.NULL)
     time.sleep(0.5)
     mon.stop()
@@ -527,10 +547,11 @@ def pulse_lost_ok(r):
 PULSE_TABLE = []
 if _PULSE and "pulse" in PARTS:
     for _name in _PULSE_PROFILES:
-        for _seed in (_EDGE_SEEDS if _name == "edge" else [7]):
-            _secs = 10 + _EDGE_HOLD * len(EDGE_STEPS) if _name == "edge" else (30 if _name == "flush" else _PULSE_SECS)
-            print(f"\n--- a real pulsesink on {_PULSE}: the {_name} profile{f' seed {_seed}' if _name == 'edge' else ''}, "
-                  f"{_secs} s, holes on its monitor ---")
+        for _seed in (_EDGE_SEEDS if _name == "edge" else _DEC_SEEDS if _name == "dec-edge" else [7]):
+            _secs = (10 + _EDGE_HOLD * len(EDGE_STEPS) if _name == "edge" else 10 + DEC_HOLD * len(DEC_STEPS)
+                     if _name == "dec-edge" else (30 if _name == "flush" else _PULSE_SECS))
+            print(f"\n--- a real pulsesink on {_PULSE}: the {_name} profile"
+                  f"{f' seed {_seed}' if _name in ('edge', 'dec-edge') else ''}, {_secs} s, holes on its monitor ---")
             wait_quiet()
             _r = pulse_run(_name, _PULSE_SECS, _seed)
             PULSE_TABLE.append((_name, _seed, _r))
@@ -540,22 +561,26 @@ if _PULSE and "pulse" in PARTS:
                      f"{_r['sounded']}, the device term's ratio {_r['ppb'] / 1000:+.2f} ppm makes {_r['want']:.0f}: lost "
                      f"{_r['lost'] / 48:.2f} ms; render lateness {_lat} ms; {_r['refills']} refills; guard "
                      f"{_r['guard']:.1f} ms; errors {_r['err']}")
-            if _name == "edge":
-                check(f"pulse edge seed {_seed} (steps {_r['steps']} ms ahead, lateness set {_r['set']}): {_what}",
+            if _name in ("edge", "dec-edge"):
+                check(f"pulse {_name} seed {_seed} (steps {_r['steps']} ms ahead, lateness set {_r['set']}): {_what}",
                       not _r["err"] and not _r["orphans"] and pulse_lost_ok(_r))
             elif _name == "flush":
-                # A flush discards what the server held (pa_stream_flush): at most 200 ms each; one hole and one
-                # or two refills each, sound to the end. The silence runs from where the sink writes: frame 0 on a
-                # pulsesink whose segdone is still (1.22), so about the stream's run, reported.
-                check(f"pulse flush (flushed at {_r['flushed']} s): {_what}; refills of {_r['refill_ms']} ms; sound "
-                      f"until {_r['last_sound']:.1f} s of {_r['end']:.1f}",
+                # A flush discards what the server held (pa_stream_flush): at most 200 ms each; one hole each, sound
+                # to the end. The silence runs from where the sink writes: frame 0 on a pulsesink whose segdone is
+                # still (1.22), so the stream's run, crossed by refills of at most the cap (one a 3 s, plus one).
+                _most = 1 + sum(-(-t * 1000 // REFILL_MAX_MS) + 1 for t in FLUSH_AT_S)
+                check(f"pulse flush (flushed at {_r['flushed']} s): {_what}; refills of {_r['refill_ms']} ms (each at "
+                      f"most {REFILL_MAX_MS}; {_r['refills']} of at most {_most}); sound until {_r['last_sound']:.1f} s "
+                      f"of {_r['end']:.1f}",
                       not _r["err"] and len(_r["flushed"]) == len(FLUSH_AT_S) and not _r["orphans"]
-                      and 1 + len(FLUSH_AT_S) <= _r["refills"] <= 1 + 2 * len(FLUSH_AT_S)
+                      and 1 + len(FLUSH_AT_S) <= _r["refills"] <= _most
+                      and max(_r["refill_ms"] or [0]) <= REFILL_MAX_MS + 1
                       and _r["holes_after_start"] <= len(FLUSH_AT_S) and 0 <= _r["lost"] <= 48 + 9600 * len(FLUSH_AT_S)
                       and _r["last_sound"] >= _r["end"] - 5.0)   # the drain and teardown take 3-4 s
             else:
                 check(f"pulse {_name}: {_what}; {len(_r['after'])} holes after "
-                      f"{'the walk reached its max' if _name == 'rising' else 'the start'}",
+                      f"{'the walk reached its max' if _name == 'rising' else 'the start'} "
+                      f"{[round(t, 1) for t in _r['after']]} (max at {_r['t_max']:.1f} s); load {os.getloadavg()[0]:.1f}",
                       not _r["err"] and not _r["after"] and not _r["orphans"] and pulse_lost_ok(_r))
     print("\n--- the pulse table: profile x seed x holes after the start x refills x lost ---")
     for _name, _seed, _r in PULSE_TABLE:

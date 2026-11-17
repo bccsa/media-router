@@ -16,7 +16,13 @@ each profile of gst_302m_late_feed_test.py, five seeds each:
     write behind its read index, holds 60 ms, and its clock is interpolated from timing updates 1.5 s
     apart; the feed steps to land 0-30 ms ahead of the clock (the edge profile, five seeds): with the
     guard nothing is lost, every hole has a refill, at most one a step; with no guard frames are
-    lost; a guard past what the stream holds refills without end.
+    lost; a guard past what the stream holds refills without end;
+  - the Audio Decoder's sink end on that server (no queue: the push into the sink blocks while the
+    stream is full, then the feed pauses and its next write lands 0-30 ms ahead of the clock): the
+    guard, held unless the push before blocked and ended less than a segment before, loses nothing;
+    the blocked push counted however long ago (21eade5e, fix round 2's blocking 1) loses frames;
+  - a refill is capped (REFILL_MAX_MS): a flush on a pulsesink whose segdone is still (1.22) after a
+    long run is crossed by capped writes, none past the cap, the stream back with the margin.
 
 Then each mutant below must fail a case. Run:  python3 sink_margin_ref_test.py [--mutants]
 """
@@ -32,6 +38,7 @@ MARGIN = 60 * FS // 1000
 BUF = 480
 HOLE_MIN = FS // 1000   # an all-zero run of 1 ms or more between sounding frames
 DEVICE_MS = 40          # what the device takes when it starts (gst_302m_late_feed_test.py's device-ns)
+CAP = sm.REFILL_MAX_MS * FS // 1000
 START_S = 2.0
 
 _failures = 0
@@ -90,7 +97,7 @@ def simulate(late_ms, margin=MARGIN, queue_ms=0, rule=None, device_ms=DEVICE_MS)
     for i in range(n - k):
         t = max(t, release[i])
         segdone = segdone_at(t)
-        sil = rule(nxt, segdone, SPS, margin) if margin else 0
+        sil = rule(nxt, segdone, SPS, margin, None, 0, CAP) if margin else 0
         start = sm.base_write_pos(nxt, segdone, SPS) + sil
         end = start + BUF
         if t0 is None:
@@ -173,10 +180,20 @@ def case_rule(rule=None):
           g.frames() == 4 * SPS + 900 - SPS)
     g.segdone_seen(1 << 30, SPS, 0)
     check("... capped (500 ms)", g.frames() == 500 * FS // 1000)
+    seg = 10 * 10**6
     check("the guard holds a write that came straight through, not one that waited a segment in the queue or "
-          "followed a push that blocked",
-          sm.guard_applies(0, 0, 10 * 10**6) and sm.guard_applies(9_999_999, 1_999_999, 10 * 10**6)
-          and not sm.guard_applies(10 * 10**6, 0, 10 * 10**6) and not sm.guard_applies(0, 2 * 10**6, 10 * 10**6))
+          "followed a push that blocked less than a segment before",
+          sm.guard_applies(0, 0, 0, seg) and sm.guard_applies(9_999_999, 1_999_999, 0, seg)
+          and not sm.guard_applies(seg, 0, 0, seg) and not sm.guard_applies(0, 2 * 10**6, 0, seg)
+          and not sm.guard_applies(0, 50 * 10**6, seg - 1, seg))
+    check("... a push that blocked a segment or more before this write says nothing of it: the guard holds",
+          sm.guard_applies(0, 2 * 10**6, seg, seg) and sm.guard_applies(0, 80 * 10**6, 5 * seg, seg)
+          and not sm.guard_applies(seg, 80 * 10**6, 5 * seg, seg))
+    check("a refill is capped: the silence at most the cap, none still none",
+          sm.silence_frames(-1, 0, SPS, MARGIN, play_pos=20 * FS, guard=4 * SPS, cap=CAP) == CAP
+          and sm.silence_frames(-1, 0, SPS, MARGIN, play_pos=20 * FS, guard=4 * SPS) > CAP
+          and sm.silence_frames(5 * SPS, 3, SPS, MARGIN, cap=CAP) == 0
+          and sm.silence_frames(3 * SPS + 100, 3, SPS, MARGIN, cap=CAP) == 4 * SPS + MARGIN - (3 * SPS + 100))
     z = sm.SinkMargin(0)
     check("margin 0 (mrasrc margin-ms 0): never, not even into the segment in flight",
           z.silence(3 * SPS + 100, 3, SPS) == 0 and z.silence(-1, 0, SPS) == 0)
@@ -186,6 +203,9 @@ def case_rule(rule=None):
     m.silence(1 * SPS, 7, SPS)
     check(f"stats count the refills and their silence: {m.stats()}",
           m.stats() == {"refills": 2, "silence": SPS + 2 * MARGIN + MARGIN})
+    mc = sm.SinkMargin(MARGIN, CAP)
+    mc.silence(-1, 0, SPS, 20 * FS, 4 * SPS)
+    check(f"... a capped refill counts its capped silence: {mc.stats()}", mc.stats() == {"refills": 1, "silence": CAP})
 
 
 def case_profiles(rule=None, verbose=True):
@@ -226,7 +246,7 @@ UPDATE = 72000                         # timing updates 1.5 s apart (the dev Pi'
 
 
 def simulate_pulse(steps_ms, quantum, sink_lat_ms, segdone_moves, rule=None, seed=7, hold_s=6.0, guard_extra=0,
-                   gated=True):
+                   gated=True, gate=None):
     """The module's sink end into pulsesink on a server, in frames of the device's time t. The server reads
     `quantum` frames a cycle, one cycle ahead, plus the sink's latency: read index R(t); a write behind R is
     dropped there. Its clock is libpulse's: at a timing update R less the reported sink latency less up to a
@@ -234,8 +254,10 @@ def simulate_pulse(steps_ms, quantum, sink_lat_ms, segdone_moves, rule=None, see
     house time, never backwards. segdone: the read index at the last update (1.28) or 0 (1.22). The
     feed: 30 ms late for 6 s, then for each x in steps_ms the lateness that lands its writes x ms ahead of
     the clock (the render lateness less x, read at the step), each `hold_s`. Returns frames fed, sounded,
-    holes after 2 s, refills after 2 s, holes with no refill since the last sounding frame."""
+    holes after 2 s, refills after 2 s, holes with no refill since the last sounding frame. The push into
+    the sink is the queue's thread, which the guard does not time (`gate`: guard_applies or a mutant)."""
     rule = rule or sm.silence_frames
+    gate = gate or sm.guard_applies
     rng = random.Random(seed)
     lat = sink_lat_ms * FS // 1000
     phase = rng.randrange(quantum)
@@ -273,7 +295,7 @@ def simulate_pulse(steps_ms, quantum, sink_lat_ms, segdone_moves, rule=None, see
     delta = None              # write position less content position since the last refill
     refill_at = []
     late = 30.0
-    blocked = 0               # the module's queue: the producer's push never waits on the sink
+    blocked = 0               # the module's queue: the push into the sink is another thread's, not counted
     plan = [(START_S * 3, None)] + [(hold_s, x) for x in steps_ms]
     total_s = sum(h for h, _ in plan)
     n = int(total_s * 100)
@@ -299,9 +321,9 @@ def simulate_pulse(steps_ms, quantum, sink_lat_ms, segdone_moves, rule=None, see
         if play is not None:
             guard.segdone_seen(sd, SPS, play)
         g = guard.frames() + guard_extra
-        if gated and not sm.guard_applies(max(0, waited) * 10**9 // FS, blocked * 10**9 // FS, SPS * 10**9 // FS):
+        if gated and not gate(max(0, waited) * 10**9 // FS, blocked, 1 << 62, SPS * 10**9 // FS):
             g = 0
-        sil = rule(nxt, sd, SPS, MARGIN, play, g)
+        sil = rule(nxt, sd, SPS, MARGIN, play, g, CAP)
         if sil:
             refill_at.append(t)
         start = sm.base_write_pos(nxt, sd, SPS) + sil
@@ -326,7 +348,7 @@ def simulate_pulse(steps_ms, quantum, sink_lat_ms, segdone_moves, rule=None, see
 EDGE_STEPS = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
 
 
-def case_pulse(rule=None, verbose=True):
+def case_pulse(rule=None, verbose=True, gate=None):
     print("\n--- pulsesink on a server: the edge profile (writes 0-30 ms ahead of the clock), five seeds ---")
     for quantum, lat_ms, moves in ((512, 0, False), (1024, 0, False), (512, 0, True), (1024, 0, True),
                                    (512, 20, True), (1024, 20, True)):
@@ -334,7 +356,7 @@ def case_pulse(rule=None, verbose=True):
         for seed in range(7, 12):
             steps = EDGE_STEPS[:]
             random.Random(seed).shuffle(steps)
-            rows.append(simulate_pulse(steps, quantum, lat_ms, moves, rule=rule, seed=seed))
+            rows.append(simulate_pulse(steps, quantum, lat_ms, moves, rule=rule, seed=seed, gate=gate))
             if rule is None:
                 rows0.append(simulate_pulse(steps, quantum, lat_ms, moves, rule=_m_guard_zero, seed=seed))
         lost = [r["fed"] - r["sounded"] for r in rows]
@@ -348,7 +370,7 @@ def case_pulse(rule=None, verbose=True):
                   f"gaps without a refill {[r['no_refill'] for r in rows0]}")
         if rows0 and (lat_ms or quantum == 1024):
             check(f"{what}: with no guard (c1a929b9) frames are lost", sum(r["fed"] - r["sounded"] for r in rows0) > 0)
-    if rule is None:
+    if rule is None and gate is None:
         steps = EDGE_STEPS[:]
         big = 40 * FS // 1000
         r0 = simulate_pulse(steps, 1024, 0, False, seed=7, guard_extra=big, gated=False)
@@ -359,9 +381,146 @@ def case_pulse(rule=None, verbose=True):
               r0["refills"] > 100 and r1["refills"] <= len(steps) + 1 and r1["fed"] == r1["sounded"])
 
 
+# --- the Audio Decoder's sink end on a server: a blocked push, then an outage ---------------------------
+
+def simulate_decoder(steps_ms, quantum, rule=None, gate=None, seed=7, burst=10, hold_s=1.0, last_push=False):
+    """The Audio Decoder's sink end into pulsesink on a server (simulate_pulse's: read index R, the clock
+    rebased each 1.5 s, writes behind R dropped, 60 ms held), with no queue: the push into the sink waits while
+    the stream is full, in the thread the guard times. The feed comes 30 ms late; before each step `burst`
+    buffers come at once (the stream fills, the last push waits), then nothing until the clock is x ms short
+    of the next write (x the step), then on. The guard sees the last push that waited 2 ms or more and how
+    long before this write it ended (`last_push`: the last push, whatever it waited, as 21eade5e timed it).
+    Returns frames fed and sounded, refills, gaps with no refill."""
+    rule, gate = rule or sm.silence_frames, gate or sm.guard_applies
+    rng = random.Random(seed)
+    phase, upd_phase = rng.randrange(quantum), rng.randrange(UPDATE)
+    t0 = 0
+    read_index = lambda t: (t - t0 + phase) // quantum * quantum + quantum - phase
+
+    def clock(t, last=[0]):
+        tu = t0 + max(0, (t - t0 - upd_phase) // UPDATE * UPDATE + upd_phase)
+        c = max(last[0], read_index(tu) - random.Random(seed * 100003 + tu).randrange(quantum) + (t - tu))
+        last[0] = c
+        return c
+
+    guard = sm.SinkGuard(sm.server_latency_frames(TLENGTH, SPS), 500 * FS // 1000).frames()
+    seg_ns = SPS * 10**9 // FS
+    margin = MARGIN
+    kept, refills, nxt, t = [], 0, -1, 0
+    block_ns, block_end = 0, -(1 << 40)           # the last push that waited 2 ms or more, and when it ended
+    n_hold = int(hold_s * 100)
+    i, k = 0, -1
+    late = 30 * FS // 1000
+    while k < len(steps_ms):
+        arrive = i * BUF + late
+        step_i = (i // n_hold) * n_hold
+        if i >= 2 * n_hold and i % n_hold >= n_hold - burst and k + 1 < len(steps_ms):
+            arrive = (step_i + n_hold - burst) * BUF + late           # the burst before the step
+        if i >= 2 * n_hold and i % n_hold == 0:
+            k += 1
+            if k < len(steps_ms):
+                # the next write lands x ms ahead of the clock: wait until the clock is that short of it
+                x = steps_ms[k] * FS // 1000
+                tt = max(t, arrive)
+                while clock(tt) < nxt - x:
+                    tt += 1 if nxt - x - clock(tt) < 16 else (nxt - x - clock(tt)) // 2
+                late = max(late, tt - i * BUF)
+                arrive = i * BUF + late
+        if k >= len(steps_ms):
+            break
+        t = max(t, arrive)
+        play = clock(t) if i else None
+        g = guard if gate(0, block_ns, (t - block_end) * 10**9 // FS, seg_ns) else 0
+        sil = rule(nxt, 0, SPS, margin, play, g, CAP)
+        refills += 1 if sil else 0
+        start = sm.base_write_pos(nxt, 0, SPS) + sil
+        end = start + BUF
+        if i == 0:
+            t0 = t - phase
+        t_push = t
+        while end - read_index(t) > TLENGTH:
+            t += quantum - (t - t0 + phase) % quantum if (t - t0 + phase) % quantum else quantum
+        if last_push or (t - t_push) * 10**9 // FS >= sm.BLOCKED_NS:
+            block_ns, block_end = (t - t_push) * 10**9 // FS, t
+        r = read_index(t)
+        if end > r:
+            kept.append((max(start, r), end))
+        nxt = end
+        i += 1
+    fed = i * BUF
+    sounded = sum(e - s for s, e in kept)
+    gaps = sum(1 for (s0, e0), (s1, e1) in zip(kept, kept[1:]) if s1 > e0)
+    return {"fed": fed, "sounded": sounded, "refills": refills, "no_refill": max(0, gaps - (refills - 1))}
+
+
+def case_decoder(rule=None, gate=None, verbose=True):
+    print("\n--- the Audio Decoder's sink end on a server (no queue): a burst, a blocked push, then an outage ---")
+    for quantum in (512, 1024, 2048):
+        rows, rows_u = [], []
+        for seed in range(7, 12):
+            steps = [2, 4, 6, 8, 10, 12, 14, 16, 20, 30] * 2
+            random.Random(seed).shuffle(steps)
+            rows.append(simulate_decoder(steps, quantum, rule=rule, gate=gate, seed=seed))
+            if rule is None and gate is None:
+                rows_u.append(simulate_decoder(steps, quantum, gate=_g_unaged, seed=seed, last_push=True))
+        lost = [r["fed"] - r["sounded"] for r in rows]
+        check(f"decoder, quantum {quantum}: nothing lost ({lost} frames), every gap a refill's "
+              f"({[r['no_refill'] for r in rows]} without), a refill a step and at most two at the start "
+              f"({[r['refills'] for r in rows]} for {len(steps)} steps)",
+              all(v == 0 for v in lost) and all(r["no_refill"] == 0 for r in rows)
+              and all(r["refills"] <= len(steps) + 2 for r in rows))
+        if rows_u:
+            lu = [r["fed"] - r["sounded"] for r in rows_u]
+            if verbose:
+                print(f"  a blocked push counted however long ago (21eade5e): lost {lu} frames, gaps without a "
+                      f"refill {[r['no_refill'] for r in rows_u]}")
+            check(f"decoder, quantum {quantum}: the last push's wait counted however long ago (21eade5e) loses "
+                  f"frames ({sum(lu)})", sum(lu) > 0)
+
+
+# --- a refill's cap: a flush on pulsesink 1.22 after a long run ----------------------------------------
+
+def simulate_flush(run_s, rule=None, quantum=512):
+    """A flush `run_s` into the stream on a pulsesink whose segdone is still: the base sink writes the next
+    buffer from frame 0 while the server's read index R (a quantum past the clock, which runs at house
+    time) is `run_s` on; the feed keeps coming each 10 ms. A write behind R is dropped. Returns each refill's
+    silence, the writes until one sounds, and the refills in the 2 s after it."""
+    rule = rule or sm.silence_frames
+    guard = sm.server_latency_frames(TLENGTH, SPS)
+    t, nxt, sils, behind, after, sounded_at = run_s * FS, -1, [], 0, 0, None
+    for i in range(int(run_s * FS / CAP) + 300):
+        t += BUF
+        sil = rule(nxt, 0, SPS, MARGIN, t, guard, CAP)
+        start = sm.base_write_pos(nxt, 0, SPS) + sil
+        if sil:
+            if sounded_at is None:
+                sils.append(sil)
+            else:
+                after += 1
+        end = start + BUF
+        if sounded_at is None:
+            if end <= t + quantum:
+                behind += 1
+            else:
+                sounded_at = i
+        nxt = end
+    return {"sils": sils, "behind": behind, "after": after, "landed": sounded_at is not None}
+
+
+def case_cap(rule=None):
+    print("\n--- a refill's cap (REFILL_MAX_MS): a flush on pulsesink 1.22 after a long run ---")
+    for run_s in (20, 3600):
+        r = simulate_flush(run_s, rule)
+        need = -(-(run_s * FS) // CAP) + 1          # each capped write gains the cap on the read index
+        check(f"a flush {run_s} s in: refills {len(r['sils'])}, the largest {max(r['sils'] or [0]) * 1000 // FS} ms "
+              f"(cap {sm.REFILL_MAX_MS}), {r['behind']} writes dropped behind the read index before one sounds "
+              f"(at most {need}), {r['after']} refills after",
+              r["landed"] and r["sils"] and max(r["sils"]) <= CAP and r["behind"] <= need and r["after"] == 0)
+
+
 # --- mutants: each must fail a case ----------------------------------------------------------------
 
-def _m_inflight_ok(nxt, segdone, sps, margin, play_pos=None, guard=0):
+def _m_inflight_ok(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
     """The segment in flight counted as playable (the base sink's own test)."""
     c = segdone * sps
     if nxt >= 0 and nxt >= c:
@@ -369,12 +528,12 @@ def _m_inflight_ok(nxt, segdone, sps, margin, play_pos=None, guard=0):
     return max(0, c + margin - sm.base_write_pos(nxt, segdone, sps))
 
 
-def _m_start_only(nxt, segdone, sps, margin, play_pos=None, guard=0):
+def _m_start_only(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
     """The margin at the first write only: no re-prefill after a hole."""
-    return sm.silence_frames(nxt, segdone, sps, margin, play_pos, guard) if nxt < 0 else 0
+    return sm.silence_frames(nxt, segdone, sps, margin, play_pos, guard, cap) if nxt < 0 else 0
 
 
-def _m_eager(nxt, segdone, sps, margin, play_pos=None, guard=0):
+def _m_eager(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
     """Silence whenever less than the margin is left: holes of its own."""
     c = (segdone + 1) * sps
     if nxt >= 0 and nxt >= c + margin:
@@ -382,7 +541,7 @@ def _m_eager(nxt, segdone, sps, margin, play_pos=None, guard=0):
     return max(0, c + margin - sm.base_write_pos(nxt, segdone, sps))
 
 
-def _m_from_next(nxt, segdone, sps, margin, play_pos=None, guard=0):
+def _m_from_next(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
     """The silence counted from next_sample, not where the base sink realigns: the margin lost."""
     c = (segdone + 1) * sps
     if nxt >= 0 and nxt >= c:
@@ -390,33 +549,48 @@ def _m_from_next(nxt, segdone, sps, margin, play_pos=None, guard=0):
     return max(0, c + margin - max(nxt, 0)) if nxt >= 0 and nxt // sps >= segdone else 0
 
 
-def _m_start_single(nxt, segdone, sps, margin, play_pos=None, guard=0):
+def _m_start_single(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
     """One margin at a start: the device's own buffer comes out of it."""
-    return sm.silence_frames(nxt, segdone, sps, margin, play_pos, guard) if nxt >= 0 else \
+    return sm.silence_frames(nxt, segdone, sps, margin, play_pos, guard, cap) if nxt >= 0 else \
         max(0, (segdone + 1) * sps + margin - sm.base_write_pos(nxt, segdone, sps))
 
 
-def _m_guard_zero(nxt, segdone, sps, margin, play_pos=None, guard=0):
+def _m_guard_zero(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
     """The clock's position alone (c1a929b9): a server's read-ahead counted as playable."""
-    return sm.silence_frames(nxt, segdone, sps, margin, play_pos, 0)
+    return sm.silence_frames(nxt, segdone, sps, margin, play_pos, 0, cap)
 
 
-def _m_start_no_guard(nxt, segdone, sps, margin, play_pos=None, guard=0):
+def _m_start_no_guard(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
     """A start lands twice the margin past `consumed` whatever the guard."""
-    return sm.silence_frames(nxt, segdone, sps, margin, play_pos, guard) if nxt >= 0 else \
-        sm.silence_frames(nxt, segdone, sps, margin, play_pos, 0)
+    return sm.silence_frames(nxt, segdone, sps, margin, play_pos, guard, cap) if nxt >= 0 else \
+        sm.silence_frames(nxt, segdone, sps, margin, play_pos, 0, cap)
 
 
-MUTANTS = {"guard-zero": _m_guard_zero, "start-no-guard": _m_start_no_guard, "start-single": _m_start_single, "inflight-ok": _m_inflight_ok, "start-only": _m_start_only, "eager": _m_eager,
+def _m_no_cap(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
+    """No cap (21eade5e): a refill as long as the gap, an hour's silence in one buffer."""
+    return sm.silence_frames(nxt, segdone, sps, margin, play_pos, guard)
+
+
+def _g_unaged(residence_ns, push_ns, since_push_ns, seg_ns):
+    """A blocked push counted however long before this write (21eade5e)."""
+    return residence_ns < seg_ns and push_ns < sm.BLOCKED_NS
+
+
+MUTANTS = {"no-cap": _m_no_cap, "guard-zero": _m_guard_zero, "start-no-guard": _m_start_no_guard, "start-single": _m_start_single, "inflight-ok": _m_inflight_ok, "start-only": _m_start_only, "eager": _m_eager,
            "from-next": _m_from_next}
 
 
-def run_suite(rule=None):
+GATE_MUTANTS = {"push-unaged": _g_unaged}
+
+
+def run_suite(rule=None, gate=None):
     global _failures
     _failures = 0
     case_rule(rule)
     case_profiles(rule, verbose=rule is None)
-    case_pulse(rule, verbose=rule is None)
+    case_pulse(rule, verbose=rule is None and gate is None, gate=gate)
+    case_decoder(rule, gate, verbose=rule is None and gate is None)
+    case_cap(rule)
     return _failures
 
 
@@ -425,6 +599,10 @@ def main(argv):
         ok = True
         for name, fn in MUTANTS.items():
             fails = run_suite(fn)
+            print(f"MUTANT {name}: {'caught' if fails else 'NOT CAUGHT'} ({fails} failures)")
+            ok = ok and fails > 0
+        for name, fn in GATE_MUTANTS.items():
+            fails = run_suite(gate=fn)
             print(f"MUTANT {name}: {'caught' if fails else 'NOT CAUGHT'} ({fails} failures)")
             ok = ok and fails > 0
         print("ALL MUTANTS CAUGHT" if ok else "A MUTANT SURVIVED")

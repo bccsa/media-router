@@ -2613,7 +2613,10 @@ server's stream, which reads ahead of the clock and drops a write behind its
 read index) that frame is the clock plus a guard: the server's configured
 latency (tlength less two minreq, 40 ms at buffer-time 100 ms), plus the
 sink's latency learned from the segment count where it moves; held only while
-the stream may have run dry. `mrasrc-stats` adds `margin-refills`,
+the stream may have run dry (its buffer did not wait a segment in a queue
+before the sink, and no push from `mrasrc`'s own chain blocked 2 ms in the
+sink less than a segment before). A refill is at most 3 s; a longer gap is
+crossed by the writes after it. `mrasrc-stats` adds `margin-refills`,
 `margin-silence-ns` and `margin-guard-ns`.
 `mrasrc-stats` gains `mode` (`capture`, `bypass`, `decode`, `device`,
 `decode+device`), `source-ppb` and `device-ppb` (each clock against house

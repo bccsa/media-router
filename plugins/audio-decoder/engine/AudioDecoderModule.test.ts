@@ -110,6 +110,27 @@ describe('AudioDecoderModule.buildPipeline', () => {
         },
     );
 
+    it('builds the sink end gst_302m_late_feed_test.py runs on a real pulsesink (B-249)', () => {
+        const fixture = JSON.parse(
+            readFileSync(join(__dirname, '..', 'tests', 'fixtures', 'sink-end.json'), 'utf8'),
+        ).tail as string;
+        const { module } = makeModule({ playoutOffsetMs: 300 });
+        module.probeResult = { codec: 'opus' };
+        const p = module.buildPipeline({})!.pipeline;
+        const from = p.indexOf(' ! queue leaky=0 ') + 3;
+        const to = p.indexOf(' stream-properties=', from);
+        expect(from).toBeGreaterThan(3);
+        expect(
+            p
+                .slice(from, to)
+                .replace(' ! opusdec ! ', ' ! %DECODER% ! ')
+                .replace('pulsesink name=sink device=MR_PW_dec-1', '%SINK%')
+                .replace('ts-offset=200000000', 'ts-offset=%TS_OFFSET%'),
+        ).toBe(fixture);
+        // No queue between the ASRC and the sink: the push into the sink is the ASRC's own chain.
+        expect(fixture.slice(fixture.indexOf('mrasrc '))).not.toContain('queue');
+    });
+
     it('puts the parser directly after the demux for AAC (unframed → avdec_aac fails without it)', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'aac' };

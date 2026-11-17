@@ -1984,15 +1984,24 @@ int sink_margin_main(int argc, char** argv) {
         Json o;
         bool ok = parse_json(line, &o, &err);
         if (ok && o.get("next")) {   // a silence case
-            int64_t next = 0, segdone = 0, sps = 0, margin = 0, play = 0, g = 0;
+            int64_t next = 0, segdone = 0, sps = 0, margin = 0, play = 0, g = 0, cap = 0;
             ok = op_i64(o, "next", &next, &err) && op_i64(o, "segdone", &segdone, &err) && op_i64(o, "sps", &sps, &err) &&
                  op_i64(o, "margin", &margin, &err);
             const bool play_given = ok && o.get("play") && o.get("play")->type != Json::Type::null;
             if (ok && play_given) ok = op_i64(o, "play", &play, &err);
             if (ok && o.get("guard")) ok = op_i64(o, "guard", &g, &err);
+            if (ok && o.get("cap")) ok = op_i64(o, "cap", &cap, &err);
             if (ok) {
                 std::printf("{\"silence\":%lld}\n",
-                            (long long)asrc_sink_silence(next, segdone, sps, margin, play_given, play, g));
+                            (long long)asrc_sink_silence(next, segdone, sps, margin, play_given, play, g, cap));
+                continue;
+            }
+        } else if (ok && o.get("res")) {   // whether the guard holds a write
+            int64_t res = 0, push = 0, since = 0, segns = 0;
+            ok = op_i64(o, "res", &res, &err) && op_i64(o, "push", &push, &err) && op_i64(o, "since", &since, &err) &&
+                 op_i64(o, "segns", &segns, &err);
+            if (ok) {
+                std::printf("{\"applies\":%d}\n", asrc_sink_guard_applies(res, push, since, segns) ? 1 : 0);
                 continue;
             }
         } else if (ok) {   // a guard event
@@ -2005,7 +2014,7 @@ int sink_margin_main(int argc, char** argv) {
                 if (ok) guard.segdone_seen(a, b, c);
             } else {
                 ok = false;
-                err = "neither a silence case nor a guard event";
+                err = "neither a silence case, a guard event nor a guard test";
             }
             if (ok) {
                 std::printf("{\"guard\":%lld}\n", (long long)guard.frames());

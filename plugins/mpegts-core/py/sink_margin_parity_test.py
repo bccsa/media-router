@@ -7,9 +7,11 @@ sink_margin_ref.py's line format, and its silence must equal the reference's, li
     60 ms and 300 ms, guards 0, a segment and 2.5 margins (60 ms), at 10 ms and 20 ms segments (48 kHz)
     and 7 ms at 44.1 kHz;
   - 5,000 random cases (seeded): writes behind, into and past the segment in flight, long-running rings
-    (segdone up to 2^40), clocks behind and ahead, guards 0 to 500 ms;
+    (segdone up to 2^40), clocks behind and ahead, guards 0 to 500 ms, caps none, 3 s and smaller;
   - the guard (mrts::AsrcSinkGuard against SinkGuard): 300 seeded runs of 60 events (a new guard, then
-    segdone seen against the clock), the guard after each.
+    segdone seen against the clock), the guard after each;
+  - whether the guard holds a write (asrc_sink_guard_applies against guard_applies): every residence, push
+    and since around a segment and the 2 ms block, and 3,000 random ones.
 
 Then each of the reference suite's mutants (sink_margin_ref_test.MUTANTS) must differ from mrts_cli on
 these cases. Skips (exit 0) without mrts_cli (make native).
@@ -67,13 +69,31 @@ def random_cases(seed=11):
 
         if r.random() < 0.6:
             c["play"] = max(0, base + r.randrange(-10 * sps, 10 * sps))
+        if r.random() < 0.5:
+            c["cap"] = r.choice((0, sm.REFILL_MAX_MS * 48, r.randrange(1, 4000)))
         out.append(c)
+    return out
+
+
+def applies_cases(seed=17):
+    seg, out = 10_000_000, []
+    edges = (0, 1, sm.BLOCKED_NS - 1, sm.BLOCKED_NS, seg - 1, seg, seg + 1, 5 * seg)
+    for res in edges:
+        for push in edges:
+            for since in edges:
+                out.append({"res": res, "push": push, "since": since, "segns": seg})
+    r = random.Random(seed)
+    for _ in range(3000):
+        segns = r.choice((seg, 20_000_000, 7_000_000))
+        out.append({"res": r.randrange(3 * segns), "push": r.choice((0, r.randrange(4 * sm.BLOCKED_NS), r.randrange(10**8))),
+                    "since": r.choice((r.randrange(2 * segns), r.randrange(10**10))), "segns": segns})
     return out
 
 
 def ref(cases, rule=None):
     rule = rule or sm.silence_frames
-    return [rule(c["next"], c["segdone"], c["sps"], c["margin"], c.get("play"), c.get("guard", 0)) for c in cases]
+    return [rule(c["next"], c["segdone"], c["sps"], c["margin"], c.get("play"), c.get("guard", 0), c.get("cap", 0))
+            for c in cases]
 
 
 def guard_events(seed=13, runs=300, n=60):
@@ -136,6 +156,17 @@ def main():
               f"{'' if not diff else ', first at ' + str(diff[0]) + f' cli {gg[diff[0]]} ref {gw[diff[0]]}'})", not diff)
         check(f"... the events move it: {len(set(gw))} distinct guards, {sum(1 for v in gw if v == 0)} at 0",
               len(set(gw)) > 50)
+    ac = applies_cases()
+    ga, gw = cli(ac, "applies"), [int(sm.guard_applies(c["res"], c["push"], c["since"], c["segns"])) for c in ac]
+    check(f"mrts_cli sink-margin ran {len(ac)} guard tests", ga is not None and len(ga) == len(ac))
+    if ga is not None:
+        diff = [i for i, (a, b) in enumerate(zip(ga, gw)) if a != b]
+        check(f"... every answer equals the reference's ({len(diff)} differ"
+              f"{'' if not diff else ', first: ' + json.dumps(ac[diff[0]])}), {sum(gw)} hold, {len(gw) - sum(gw)} not",
+              not diff and 0 < sum(gw) < len(gw))
+        for name, fn in st.GATE_MUTANTS.items():
+            n = sum(1 for c, a in zip(ac, ga) if int(fn(c["res"], c["push"], c["since"], c["segns"])) != a)
+            check(f"mutant {name}: told from mrts_cli ({n} cases differ)", n > 0)
     r = subprocess.run([CLI, "sink-margin", "-"], input='{"seg":3}\n', capture_output=True, text=True, check=False)
     check(f"a malformed event is refused (exit {r.returncode}: {r.stderr.strip()})", r.returncode == 1 and "sps" in r.stderr)
     print(f"\n{'ALL PASS' if not _failures else f'{_failures} FAILED'}")

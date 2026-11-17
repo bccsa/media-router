@@ -341,10 +341,13 @@ class AsrcRenderLateness {
 // The sink margin (B-249): py/sink_margin_ref.py. Before a sync=false sink renders, the silence to put first when its
 // next write is behind the first frame the device can still play (past the segment in flight, or the clock plus the
 // guard), or there is none (a start, a flush): the buffer lands `margin` past it (then plus margin or guard).
+// At most `cap` (> 0) frames: a longer gap is crossed by the writes after it.
 int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos, int64_t guard);
 int64_t asrc_sink_write_pos(int64_t next_sample, int64_t segdone, int64_t sps);
 int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int64_t margin, bool have_play,
-                          int64_t play_pos, int64_t guard);
+                          int64_t play_pos, int64_t guard, int64_t cap = 0);
+// A refill's silence at most (sink_margin_ref.REFILL_MAX_MS).
+constexpr int64_t ASRC_SINK_REFILL_MAX_MS = 3000;
 // A pulse server's configured latency for a stream of tlength `buffer` frames, minreq `sps`.
 int64_t asrc_server_latency(int64_t buffer, int64_t sps);
 
@@ -363,13 +366,15 @@ class AsrcSinkGuard {
 };
 
 // Whether the guard holds a write: not when the stream was full at the write before (its buffer waited a segment
-// or more in the queue before the sink, or the push before it blocked in the sink for ASRC_SINK_BLOCKED_NS).
+// or more in the queue before the sink, or a push blocked in the sink for ASRC_SINK_BLOCKED_NS and ended less than
+// a segment before this write: push_ns that push's wait, since_push_ns since it ended).
 constexpr int64_t ASRC_SINK_BLOCKED_NS = 2000000;
-bool asrc_sink_guard_applies(int64_t residence_ns, int64_t push_ns, int64_t seg_ns);
+bool asrc_sink_guard_applies(int64_t residence_ns, int64_t push_ns, int64_t since_push_ns, int64_t seg_ns);
 
 class AsrcSinkMargin {
   public:
-    explicit AsrcSinkMargin(int64_t margin_frames = 0) : margin_(margin_frames > 0 ? margin_frames : 0) {}
+    explicit AsrcSinkMargin(int64_t margin_frames = 0, int64_t cap_frames = 0)
+        : margin_(margin_frames > 0 ? margin_frames : 0), cap_(cap_frames > 0 ? cap_frames : 0) {}
     // next_sample < 0: none; have_play false: the clock must not be read (before the first render).
     int64_t silence(int64_t next_sample, int64_t segdone, int64_t sps, bool have_play, int64_t play_pos,
                     int64_t guard);
@@ -378,7 +383,7 @@ class AsrcSinkMargin {
     int64_t silence_total() const { return silence_; }
 
   private:
-    int64_t margin_;
+    int64_t margin_, cap_;
     uint64_t refills_ = 0;
     int64_t silence_ = 0;
 };
