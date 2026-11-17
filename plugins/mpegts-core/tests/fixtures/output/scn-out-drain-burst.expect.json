@@ -8,7 +8,7 @@
     2
   ],
   "arms": [
-    {"name": "source", "note": "the muxer keeps running: what it held when its source stopped (its interleave wait, 60-80 ms here) plays out first, nothing lost", "expect": {"video_step_ms": [1880, 2041], "audio_step_ms": [1880, 2040]}},
+    {"name": "source", "note": "the muxer keeps running: what it held when its source stopped (its interleave wait, 60-80 ms here) plays out first, nothing lost", "expect": {"video_step_ms": [1880, 2041], "audio_step_ms": [1870, 2041]}},
     {"name": "muxer", "freeze": true}
   ],
   "expect": {
@@ -17,8 +17,8 @@
       2041
     ],
     "audio_step_ms": [
-      1960,
-      2040
+      1949,
+      2041
     ],
     "mux_pace_ms": 100,
     "slope_ms_s": [

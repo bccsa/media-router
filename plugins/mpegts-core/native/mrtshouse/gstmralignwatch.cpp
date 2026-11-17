@@ -2,9 +2,10 @@
  * at running time + the shared pace; silent past W, gapped, and so is an input that joins or
  * rejoins a running aggregator until it catches up (B-80); one steadily past the pace ceiling is
  * re-anchored, its running time moved by its anchor, and plays late (B-205); toward an audio
- * aggregator its PCM edges fade (B-83); a stall of every input together, or of our own process, is
- * held as delay up to the pace ceiling, its burst moving no pace (p4-20); LATENCY non-live. A
- * plain GstElement: lists stay lists, every push leaves from the src task, in order. */
+ * aggregator its PCM edges fade (B-83); a stall of every input together is held as delay up to
+ * the pace ceiling, one of our own process however long, its burst moving no pace (p4-20);
+ * LATENCY non-live. A plain GstElement: lists stay lists, every push leaves from the src task,
+ * in order. */
 #include <gst/audio/audio.h>
 
 #include <algorithm>

@@ -33,7 +33,8 @@ for fall-after, in one skip, content continuous (B-82), (17b) into mpegtsmux; (1
 an input held behind the pace at its next arrival, not at its old release (the armed check reads
 the pace as of the arrival); (19) its own process frozen 2 s or 5 s (a test clock jumped), the chain or
 the task first after it: no absence, nothing stale, the pace unchanged; 800 ms under a long W; a
-300 ms stop a freeze, 200 ms not (B-243). And the PCM edges toward audiomixer (B-83), to the
+300 ms stop a freeze, 200 ms not; (19b) a 500 ms common stall that holds an input of W 100 ms
+while one of W 800 ms is still under its W: the held input's backlog moves no pace (B-243). And the PCM edges toward audiomixer (B-83), to the
 sample: (F1) an absence fades out, (F2) a rejoin fades in from the horizon, (F3) a forwarded GAP's two edges,
 (F4) a joiner's entry, (F5) the fade before a forwarded EOS, (F7) a hole in the data, (F8) the
 formats and channel counts, (F9) a fade-in over short buffers, (F10) a tail under 1 ms, (F11) no
@@ -2780,6 +2781,25 @@ else:
     Gst.debug_add_log_function(Gst.debug_log_default, None)
     check(f"freeze boundary: a 300 ms stop is a freeze ({seen[300][:1]}), a 200 ms one is not ({seen[200][:1]})",
           len(seen[300]) == 1 and not seen[200])
+
+# (19b) A common stall of 500 ms, W 100 and 800 ms: input 0 is held past its W while input 1 is
+# still under its own, so only the hold's end makes input 0's backlog a burst (B-243). Input 1
+# comes back at its current content, so the backlog that could move the pace is input 0's alone.
+r = Rig("mpegtsmux", [{"props": {"silence-floor": 100 * MS}}, {"props": {"silence-floor": 800 * MS}}])
+poll = Poller(r, 0)
+r.run({0: [("rt", 0, 300, 30), ("at", 3520), ("now", 300, 350), ("rt", 350, 900, 30), ("eos",)],
+       1: [("rt", 0, 300, 30), ("at", 3520), ("rt", 350, 900, 30), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+reads = poll.stop()
+pre = max(p for t, p in reads if r.at(2000) <= t < r.at(3000))
+post = max(p for t, p in reads if t >= r.at(3000))
+check(f"common stall 500 ms, W 100 / 800 ms: no absence ({[r.prop(i, 'absences') for i in (0, 1)]}), "
+      f"no gap ({[r.prop(i, 'gaps') for i in (0, 1)]}), 0 stale, the held input's backlog moves no pace "
+      f"({in_ms(pre)} -> {in_ms(post)} ms); every PES written; EOS, no error",
+      all(r.prop(i, k) == 0 for i in (0, 1) for k in ("absences", "gaps", "stale-buffers"))
+      and post <= pre + 2 * MS and r.pes_ok(0, range(900))
+      and r.pes_ok(1, list(range(300)) + list(range(350, 900))) and eos and not r.errors)
+r.stop()
 
 print()
 if _failures:

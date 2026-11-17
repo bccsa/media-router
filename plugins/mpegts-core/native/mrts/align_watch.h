@@ -155,8 +155,8 @@ class PaceGroup {
     // to the ceiling; `absent`, another flowed for W while it was silent, or past the ceiling.
     enum class Quiet { no, held, absent };
     // An arrival of a member counting toward a common stall, its W as last taken; a silence over
-    // half that W starts a new run. True: the process or the group's feed stood still under the
-    // ceiling since its last arrival (an overdue task, all silent past W, a thaw): a burst follows.
+    // half that W starts a new run. True: the process or the group's feed stood still since its
+    // last arrival (an overdue task, all silent past W, a thaw): a burst follows.
     bool hear(Member m, int64_t now_ns, int64_t limit_ns);
     // A member's task woke overdue past FREEZE_NS at `now_ns`.
     void thaw(int64_t now_ns);
