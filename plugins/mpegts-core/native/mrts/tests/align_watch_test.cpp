@@ -1,9 +1,9 @@
 // ArrivalRhythm, PaceGroup, PaceRegistry and GapPlanner (plan ch. 6 WI-P2-6): W on synthetic
-// rhythms and deliveries (B-244), the pace's rules (seeds, the window, recomputed on leave, a lateness over wall time
-// that a backlog's drain does not move, as the sort before a1b found it), the pace read lock-free
-// (B-79), the slew (B-80), stale arrivals (B-81), the fall (B-82), the ceiling and held arrivals
-// (B-204), the re-anchor (B-205), a freeze's burst and the common stall (p4-20), a join into a
-// running group and the gap stretches or pieces an absent input gets.
+// rhythms and deliveries (B-244), the pace's rules (seeds, the window, recomputed on leave, a
+// lateness over wall time that a backlog's drain does not move, as the sort before a1b found it),
+// the pace read lock-free (B-79), the slew (B-80), stale arrivals (B-81), the fall (B-82), the
+// ceiling and held arrivals (B-204), the re-anchor (B-205), a freeze's burst and the common stall
+// (p4-20), a join into a running group and the gap stretches or pieces an absent input gets.
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -178,6 +178,16 @@ void test_rhythm_deliveries() {
     f.arrive(f.last_ns() + 1 * MS);
     CHECK("a resume opens a delivery: the next buffer 1 ms on joins it, no gap taken",
           f.arrivals() == 21 && f.p95_ns() == 4 * MS);
+
+    // A fresh input's first delivery while its aligner holds upstream: every frame a resume.
+    ArrivalRhythm h;
+    for (int k = 0; k < 17; k++) h.resume(k * 50000);
+    CHECK("a held first delivery of 17 frames is one arrival: still the ceiling",
+          h.arrivals() == 1 && h.limit_ns(c) == 2 * S);
+    h.arrive(4 * MS);
+    h.resume(5 * MS);
+    CHECK("... an arrival or a resume under 5 ms after its first joins it; at 5 ms one opens",
+          h.arrivals() == 2 && h.p95_ns() == 0 && h.last_ns() == 5 * MS);
 }
 
 // --- the pace ------------------------------------------------------------------------------

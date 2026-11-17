@@ -1052,7 +1052,8 @@ def p95(values):
 def scn_align_source_restart(tag, argv, exp):
     """F-3: the source stops and comes back as a new connection whose AAC deliveries carry one or two
     17-frame PES (DEV-P4cd's sender after its restart): audio present again, never absent after, W the
-    input's own rhythm and never at the floor (B-244). Arms: 3 s (held, p4-20) and 8 s (absent, a rejoin)."""
+    input's own rhythm and never at the floor (B-244). Arms: 3 s (held, p4-20), 8 s (absent, a rejoin) and
+    8 s with one double in 40, whose W after stays under the ceiling, so the check reads a learned W."""
     for arm in exp["arms"]:
         source_restart_arm(tag, argv, exp, arm)
 
@@ -1075,7 +1076,7 @@ def source_restart_arm(tag, argv, exp, arm):
     def build(t0):
         shift = (t0 * 9 // 100000 + rig.MUX_BASE - p0) % rig.WRAP
         timed = rig.ready_by_pcr([rig.rebase_ts(d, shift) for d in rel], t0)
-        return rig.hold_pes(timed, apid, x["hold_every"], t0 + int((at_s + length_s) * S))
+        return rig.hold_pes(timed, apid, arm.get("hold_every", x["hold_every"]), t0 + int((at_s + length_s) * S))
     s = Session(argv, exp["pipelines"])
     s.producer("one0", ts=build, stop_s=seconds, knobs=rig.Knobs(silence=[(at_s, length_s, "drop")]))
     try:

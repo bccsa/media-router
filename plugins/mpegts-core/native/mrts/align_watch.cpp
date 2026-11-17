@@ -23,7 +23,9 @@ void ArrivalRhythm::arrive(int64_t now_ns) {
 }
 
 void ArrivalRhythm::resume(int64_t now_ns) {
-    first_ns_ = last_ns_ = now_ns;
+    last_ns_ = now_ns;
+    if (arrivals_ > 0 && now_ns - first_ns_ < TOGETHER_NS) return;   // the same delivery
+    first_ns_ = now_ns;
     arrivals_++;
 }
 

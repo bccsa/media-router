@@ -4162,10 +4162,11 @@ reads. Deliveries of two PES after the restart put the long gaps under 5 %:
 W fell to its 100 ms floor and every gap between deliveries was an absence.
 As built, `ArrivalRhythm` counts deliveries: a buffer within `TOGETHER_NS`
 (5 ms) of its delivery's first joins it, no gap taken; the next gap runs from
-its last buffer, and MIN_ARRIVALS counts deliveries. 5 ms is under every
-rhythm the aligners carry (10 ms 302M blocks); leaving gaps out only raises
-the p95, so no W is lower than before. The brief's lead (a rejoin's burst,
-the epoch change) set nothing here, and the demux delivered every PES.
+its last buffer, a resume after a hold upstream joins the same way, and
+MIN_ARRIVALS counts deliveries. 5 ms is under every rhythm the aligners carry
+(10 ms 302M blocks); leaving gaps out only raises the p95, so no W is lower
+than before. The brief's lead (a rejoin's burst, the epoch change) set
+nothing here, and the demux delivered every PES.
 
 ### A muxer input with no stream does not hold the output (p4-22, B-245; F-4)
 

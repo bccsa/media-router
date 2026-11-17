@@ -30,7 +30,7 @@ class ArrivalRhythm {
 
     void arrive(int64_t now_ns);
     // An arrival after its aligner held upstream: the wait was ours, not the input's rhythm, so
-    // no gap is taken (B-204).
+    // no gap is taken (B-204); within TOGETHER_NS of its delivery's first it joins it (B-244).
     void resume(int64_t now_ns);
     int64_t limit_ns(const Config& cfg) const;
     // Nearest rank: the ceil(0.95 n)-th smallest of the n gaps kept; 0 before two arrivals.

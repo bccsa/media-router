@@ -1,12 +1,13 @@
 {
   "scenario": "scn-align-source-restart",
-  "graph": "H.264 + AAC from ffmpeg's mux (17 AAC frames a PES, 362 ms) -> mpegts-muxer (one input); the source stops at 12 s and comes back as a new connection whose every fourth PES comes with the next (DEV-P4cd's F-3): audio present again and never absent after, W the input's own rhythm (p4-21, B-244)",
+  "graph": "H.264 + AAC from ffmpeg's mux (17 AAC frames a PES, 362 ms) -> mpegts-muxer (one input); the source stops at 12 s and comes back as a new connection whose every fourth PES comes with the next (DEV-P4cd's F-3): audio present again and never absent after, W the input's own rhythm (p4-21, B-244); the 8s-rare arm holds one PES in 41, so W after the restart is 3 x its p95, under the 2 s ceiling",
   "pipelines": "muxOne",
   "generator": "h264-aac-pes362",
   "seconds": 80,
   "arms": [
     {"name": "3s", "restart": [12, 3]},
-    {"name": "8s", "restart": [12, 8]}
+    {"name": "8s", "restart": [12, 8]},
+    {"name": "8s-rare", "restart": [12, 8], "hold_every": 41}
   ],
   "expect": {
     "hold_every": 4,
