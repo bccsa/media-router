@@ -2501,8 +2501,9 @@ and no pace rise after a 7 s pause.
   Discarded on rejoin (ms; the watch's `stale-time`, which also counts a late
   joiner's trim); a dark input keeps its row without a lateness. In
   `timing`: Pace (ms), the largest added latency of any aligner over its
-  fastest present member, and Waiting for, every absent input or else the
-  slowest present member of the aligner that adds the most. When Waiting for
+  fastest present member, and Waiting for, the slowest present member of
+  the aligner that adds the most (since B-245 no absent input: it is gapped,
+  not waited for). When Waiting for
   is shown, Phase 0's Slowest input is not. A watch whose `input` is a bus
   connection id joins that edge's tap row; `GstPluginBase.alignerInputOf()`
   is the hook for any other label.
@@ -2523,7 +2524,7 @@ and no pace rise after a 7 s pause.
   number. A watch whose edge left the router's list keeps its row while
   the edge stands in the module's stored graph (`MediaRouter.hasStoredEdge`,
   ADR-0021's oracle): a producer stopped while wired shows State absent,
-  with the warning and in Waiting for; gone from the stored graph, the
+  with the warning (in Waiting for until B-245); gone from the stored graph, the
   operator removed it and the row goes. An input tap that reported this run
   and went stale under watches that report on makes its row absent too
   (the quiet tap: a dark muxer pin, whose routes end at EOS and stay
@@ -4182,7 +4183,12 @@ by an event probe on each routed pad (a mux whose pads all end, as the
 takeover left it for a moment in the first build, stops for good): a class
 the new program lacks keeps its route, silent, absent and gapped, until it
 comes back; releasing it would change the output's PMT for every consumer
-downstream.
+downstream. A mux with no sink pad at all ends too (mpegtsmux reads zero
+pads as every pad ended), so a takeover of its only route first requests a
+hold, a request pad that never gets caps on a free PID from the top down,
+and releases it once the new pad is linked. As a consequence, a source that
+really ends no longer ends the muxer once a class has left: its kept route
+never gets an EOS (harmless for live bus inputs).
 An input that sends nothing from the start (a PMT that lists AAC and carries
 none) still holds the muxer's start for its W, the 2 s ceiling: a bound of
 500 ms was built and taken out again, since it broke Phase 2's tested start
@@ -4259,7 +4265,8 @@ sections above give the reasons, the register rows the details.
   no TS Splitter in the rig's restart; the decoder's underruns left to
   DEV-P4fx (B-244).
 - **p4-22** (F-4): the cause in the routing hook, not the aligner; an old
-  program's EOS held back from the mux, a vanished class's route kept,
+  program's EOS held back from the mux, a hold pad through a takeover of
+  the mux's only route, a vanished class's route kept,
   absent and gapped; the start hold of a stream that never comes left at its
   2 s W; "Waiting for" no longer names absent inputs (B-245).
 - **p4-24** (fix batch FB3): the second ask goes at once after a miss, so

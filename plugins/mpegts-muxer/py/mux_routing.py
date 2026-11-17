@@ -40,13 +40,9 @@ What one input does at pad-added time:
     `no-more-pads`, so there the pads take PIDs in PMT order. Once a class
     has a PID in this run it keeps it. `prog-map` gets an entry for every
     extra PID before the pad is requested;
-  * a NEW PROGRAM's pad of a routed class (another generation in the pad
-    name: a codec change, A/V to video only and back) takes the route over:
-    the old branch is stopped and removed and its request pad released (the
-    old program's last items in it are dropped), then the new pad links to the
-    same request pad. An old program's EOS is held back from the mux (a mux
-    whose pads all end stops for good): a class the new program lacks keeps
-    its route, silent, absent and gapped, until it comes back (B-245);
+  * a NEW PROGRAM's pad of a routed class (another generation in its name) takes
+    the route over on the same request pad, a hold pad keeping the mux from zero
+    pads; an old program's EOS never reaches the mux (B-245);
   * everything else — a class without a route, a second pad of a routed
     class, an ignored PID — is sunk into a `fakesink` so the demuxer keeps
     flowing: it combines its pads' flow returns (mrtsdemux as tsdemux), a TS
@@ -469,12 +465,16 @@ def _install_input(pipe, entry):
             if gen is not None:
                 demux_gen["gen"] = gen
             why, pad_name, out_pid, branch, *rest = plan_route(pad, caps, caps_name, pid, media)
-        _drop_branch(pipe, link_to, rest[0] if rest else None)
+            replaced = rest[0] if rest else None
+            hold = _hold_mux(pipe, link_to) if replaced is not None and link_to else None
+        _drop_branch(pipe, link_to, replaced)
         if why is not None:
             _sink_unrouted(pipe, pad, rule_id, why)
+            _release_hold(hold)
             return
         bin_ = _link_pad(pipe, pad, rule_id, media, branch, link_to, pad_name,
                          {"media": media, "pid": pid, "outPid": out_pid})
+        _release_hold(hold)
         ok = bin_ is not None
         if ok:
             with _lock:
@@ -485,6 +485,36 @@ def _install_input(pipe, entry):
                                               "outPid": out_pid, "caps": caps.to_string() if caps else ""})
 
     _state["handlers"].append((src, src.connect("pad-added", on_pad_added)))
+
+
+def _hold_mux(pipe, link_to):
+    """A takeover's hold: a caps-less request pad on the mux, from the top PID down, so the mux
+    always has a sink pad between the old route's release and the new one's request (with none
+    it reads every pad ended and stops). Caller holds `_lock`."""
+    target = pipe.get_by_name(link_to)
+    if target is None:
+        return None
+    for p in range(MAX_ES_PID, 0x3F, -1):
+        if p in _state["taken"] or p in _RESERVED_PIDS or target.get_static_pad(f"sink_{p}") is not None:
+            continue
+        pad = target.request_pad_simple(f"sink_{p}")
+        if pad is not None:
+            _state["taken"].add(p)
+            return pad, p
+    return None
+
+
+def _release_hold(hold):
+    """The hold's release, once the new route is linked (or sunk). Caller does not hold `_lock`."""
+    if hold is None:
+        return
+    pad, p = hold
+    target = pad.get_parent_element()
+    if target is not None:
+        target.release_request_pad(pad)
+    with _lock:
+        if _state is not None:
+            _state["taken"].discard(p)
 
 
 def _drop_branch(pipe, link_to, branch):

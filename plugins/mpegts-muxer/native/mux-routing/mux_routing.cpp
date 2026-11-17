@@ -497,6 +497,47 @@ void drop_branch(Input& in, Branch& b) {
     b.bin = nullptr;
 }
 
+/** A takeover's hold: a caps-less request pad on the mux, from the top PID down, so the mux
+ *  always has a sink pad between the old route's release and the new one's request (with none
+ *  it reads every pad ended and stops). Caller holds g_state->mu. */
+GstPad* hold_mux(Input& in, int* hold_pid) {
+    GstElement* target = gst_bin_get_by_name(GST_BIN(in.pipe), in.link_to.c_str());
+    if (!target) return nullptr;
+    GstPad* pad = nullptr;
+    for (int p = MAX_ES_PID; p >= 0x40 && !pad; p--) {
+        bool reserved = false;
+        for (int r : RESERVED_PIDS) reserved = reserved || r == p;
+        if (reserved || g_state->taken.count(p)) continue;
+        const std::string name = "sink_" + std::to_string(p);
+        GstPad* existing = gst_element_get_static_pad(target, name.c_str());
+        if (existing) {
+            gst_object_unref(existing);
+            continue;
+        }
+        pad = gst_element_request_pad_simple(target, name.c_str());
+        if (pad) {
+            g_state->taken.insert(p);
+            *hold_pid = p;
+        }
+    }
+    gst_object_unref(target);
+    return pad;
+}
+
+/** The hold's release, once the new route is linked (or sunk). Caller does not hold g_state->mu. */
+void release_hold(GstPad* hold, int hold_pid) {
+    if (!hold) return;
+    GstElement* target = gst_pad_get_parent_element(hold);
+    if (target) {
+        gst_element_release_request_pad(target, hold);
+        gst_object_unref(target);
+    }
+    gst_object_unref(hold);
+    if (!g_state) return;
+    std::lock_guard<std::mutex> lock(g_state->mu);
+    g_state->taken.erase(hold_pid);
+}
+
 /** The routing decision for one demuxed pad, and the mux's prog-map and PCR edits it
  *  needs: "" with the request pad, output PID and branch to link, else why the pad is
  *  sunk. A new program's pad of a routed class takes the route over: the old branch comes back
@@ -592,6 +633,8 @@ void on_pad_added(GstElement*, GstPad* pad, gpointer user) {
     std::string unrouted, pad_name, branch;
     int out_pid = -1;
     Branch replaced;
+    GstPad* hold = nullptr;
+    int hold_pid = -1;
     {
         // Each demux adds its pads on its own streaming thread: one decision and one
         // prog-map edit at a time (two inputs' edits at once double-freed the map).
@@ -599,16 +642,19 @@ void on_pad_added(GstElement*, GstPad* pad, gpointer user) {
         const int gen = generation_from_pad_name(GST_PAD_NAME(pad));
         if (gen >= 0) in.generation = gen;
         unrouted = plan_route(in, pad, caps, caps_name, pid, media, &pad_name, &out_pid, &branch, &replaced);
+        if (replaced.bin && !in.link_to.empty()) hold = hold_mux(in, &hold_pid);
     }
     drop_branch(in, replaced);
     if (!unrouted.empty()) {
         sink_unrouted(in.pipe, pad, in.rule_id, unrouted);
+        release_hold(hold, hold_pid);
         if (caps) gst_caps_unref(caps);
         return;
     }
     gchar* caps_str = caps ? gst_caps_to_string(caps) : nullptr;
     if (caps) gst_caps_unref(caps);
     bool ok = link_pad(in, pad, media, branch, pad_name, pid, out_pid);
+    release_hold(hold, hold_pid);
     if (ok)
         gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, drop_program_eos, new std::shared_ptr<Input>(*holder),
                           [](gpointer p) { delete static_cast<std::shared_ptr<Input>*>(p); });

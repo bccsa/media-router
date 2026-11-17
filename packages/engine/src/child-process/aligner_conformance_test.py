@@ -181,11 +181,13 @@ def pace_at(reports, lo, hi):
 
 
 def no_restart(tag, label, runner, rc):
+    # An "eos" event stops the pipeline in the engine and schedules a restart (GstRunner).
     started = runner.count("started")
     playing = runner.count("state_change", state="playing")
-    check(f"{label} {tag}: one start, no error, no restart, exit 0 (started {started}, PLAYING "
-          f"{playing}, errors {[e.get('message') for e in runner.errors()][:2]}, rc {rc})",
-          started == 1 and playing == 1 and not runner.errors() and rc == 0)
+    eos = runner.count("eos")
+    check(f"{label} {tag}: one start, no error, no EOS, no restart, exit 0 (started {started}, PLAYING "
+          f"{playing}, EOS {eos}, errors {[e.get('message') for e in runner.errors()][:2]}, rc {rc})",
+          started == 1 and playing == 1 and eos == 0 and not runner.errors() and rc == 0)
 
 
 def presence_gaps(pcm, content, lo, hi, lag=0, floor=0.5, block=960):
@@ -1136,16 +1138,16 @@ def source_restart_arm(tag, argv, exp, arm):
 
 # --------------------------------------------------------------------------- scn-align-input-never (p4-22)
 def scn_align_input_never(tag, argv, exp):
-    """F-4: an input that has no stream, from the start or after its source drops it (A/V to video
-    only, a new codec), never holds the muxer for good: the video out within a second of its first
-    buffer (a listed stream that never comes: within its 2 s W), and within W + 1 s of a switch;
-    audio that starts late or comes back plays (B-245)."""
+    """F-4: an input with no stream, from the start or after its source drops one or changes codec,
+    never holds the muxer for good; within a second of a first buffer, W + 1 s of a switch (B-245).
+    An arm with `runs` repeats: its takeover's EOS race showed in 4 of 27 runs."""
     for arm in exp["arms"]:
-        input_never_arm(tag, argv, exp, arm)
+        for run in range(arm.get("runs", 1)):
+            input_never_arm(tag, argv, exp, arm, f" run {run + 1}" if arm.get("runs") else "")
 
 
-def input_never_arm(tag, argv, exp, arm):
-    label = f"{exp['scenario']} {arm['name']}"
+def input_never_arm(tag, argv, exp, arm, run=""):
+    label = f"{exp['scenario']} {arm['name']}{run}"
     x = exp["expect"]
     if not os.path.exists(_HOOK_SO):
         print(f"SKIP {label} {tag} — {_HOOK_SO} not built")

@@ -145,8 +145,8 @@ export interface ModuleTimingSummary {
     /** Aligner modules: what the aligner's pace adds to its fastest present input (ms); with
      *  several aligners, the largest. */
     paceMs?: number;
-    /** Aligner modules: the absent inputs, else the slowest input of the aligner whose pace
-     *  adds the most. Replaces `slowest` on the display. */
+    /** Aligner modules: the slowest present input of the aligner whose pace adds the most (an
+     *  absent input is gapped, not waited for: B-245). Replaces `slowest` on the display. */
     waitingFor?: string;
     /** Outputs that render: λ(render) − λ(input). */
     decodeMs?: number;

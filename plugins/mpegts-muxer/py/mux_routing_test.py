@@ -18,6 +18,8 @@
      hook adds no timer and no pad probe (no GAP keepalive).
   5. Inputs adding pads at once: the routing decision and the prog-map edit
      run one input at a time (mpegtsmux swaps its map unlocked).
+  6. A takeover of the mux's only route (B-245): both forms of the hook keep a
+     sink pad on the mux from the old route's release to the new one's link.
 
 Skips (exit 0) where GStreamer / PyGObject is unavailable.
 Run: python3 mux_routing_test.py   (from plugins/mpegts-muxer/py)
@@ -475,6 +477,93 @@ finally:
     m._lock = _lock
 check(f"mutant, the hook lock taken out: the edits overlap ({over_mut}), so the check above can fail",
       over_mut > 0)
+
+print("6. a takeover of the mux's only route never leaves the mux without a sink pad")
+# mpegtsmux with no sink pad reads every pad ended and posts EOS at its next aggregate: the
+# runner then stops the pipeline (a video-only muxer whose source gained audio, 4 in 27 runs).
+import ctypes  # noqa: E402
+
+_SO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "native", "mux-routing",
+                   "libmrhook_mux_routing.so")
+_EV = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p)
+_PEV = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p)
+
+
+class _Ctx(ctypes.Structure):
+    _fields_ = [("user", ctypes.c_void_p), ("emit_event", _EV), ("emit_plugin_event", _PEV), ("log", _EV)]
+
+
+def native_form():
+    """(install, clear) of the built native hook through its mr_hook.h ABI, else None."""
+    if not os.path.exists(_SO):
+        return None
+    lib = ctypes.CDLL(_SO)
+    lib.mr_hook_install.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(_Ctx)]
+    keep = []
+    get_ptr = ctypes.pythonapi.PyCapsule_GetPointer
+    get_ptr.restype, get_ptr.argtypes = ctypes.c_void_p, [ctypes.py_object, ctypes.c_char_p]
+
+    def install(pipe, config, _ctx):
+        import json
+        ctx = _Ctx(None, _EV(lambda _u, j: events.append(json.loads(j.decode()))),
+                   _PEV(lambda _u, _c, _p: None), _EV(lambda _u, _l: None))
+        keep[:] = [ctx]
+        return lib.mr_hook_install(get_ptr(pipe.__gpointer__, None), json.dumps(config).encode(), ctypes.byref(ctx))
+    return install, lib.mr_hook_clear
+
+
+def takeover_run(install, clear):
+    """A video-only input (H.264 on the mux's only request pad) whose next program is HEVC:
+    (fewest sink pads the mux had at a pad release, its sink pads after, linked pad names)."""
+    pipe = Gst.Pipeline.new("takeover")
+    demux = Gst.Bin.new("demux_0")
+    mux = Gst.ElementFactory.make("mpegtsmux", "mux")
+    pipe.add(demux)
+    pipe.add(mux)
+    events.clear()
+    install(pipe, {"inputs": [{"demux": "demux_0", "linkTo": "mux", "pid": 256,
+                               "routes": {c: {"branch": "queue"} for c in ("video", "audio")}}]}, CTX)
+    seen = []
+
+    def on_removed(el, _pad):
+        it, n = el.iterate_sink_pads(), 0
+        while it.next()[0] == Gst.IteratorResult.OK:
+            n += 1
+        seen.append(n)
+    mux.connect("pad-removed", on_removed)
+    for name, caps in (("video_0_0100", "video/x-h264,stream-format=byte-stream,alignment=au"),
+                       ("video_1_0100", "video/x-h265,stream-format=byte-stream,alignment=au")):
+        pad = Gst.GhostPad.new_no_target(name, Gst.PadDirection.SRC)
+        pad.set_active(True)
+        pad.store_sticky_event(Gst.Event.new_stream_start(name))
+        pad.store_sticky_event(Gst.Event.new_caps(Gst.Caps.from_string(caps)))
+        demux.add_pad(pad)
+    pads = [p.get_name() for p in mux.sinkpads]
+    linked = [e.get("padName") for e in events if e.get("event") == "pad_linked"]
+    clear()
+    pipe.set_state(Gst.State.NULL)
+    return min(seen) if seen else None, pads, linked
+
+
+forms = [("python", m.install, m.clear)]
+nat = native_form()
+if nat is None:
+    print(f"SKIP native form — {_SO} not built")
+else:
+    forms.append(("native", *nat))
+for form, install, clear in forms:
+    fewest, pads, linked = takeover_run(install, clear)
+    check(f"{form}: the new program's pad takes the route over", linked, ["video_0_0100", "video_1_0100"])
+    check(f"{form}: the mux kept a sink pad through the takeover (fewest at a release)", fewest, 1)
+    check(f"{form}: after it the mux has the route's pad only (the hold released)", pads, ["sink_256"])
+_hold = m._hold_mux
+m._hold_mux = lambda *_a: None
+try:
+    fewest_mut = takeover_run(m.install, m.clear)[0]
+finally:
+    m._hold_mux = _hold
+check(f"mutant, no hold: the mux had {fewest_mut} sink pads at the release, so the check above can fail",
+      fewest_mut, 0)
 
 print()
 if failures:
