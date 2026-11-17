@@ -3919,6 +3919,49 @@ def test_ingest_queue_sheds():
             r.kill()
 
 
+def test_probe_tap_unwatched():
+    """PQ (B-248), both runners: the player's probe tap (vp_probeq, leaky) in front of an appsink that
+    never pulls, for over 10 s, gives no queue_overrun, while a leaky tap of another name beside it
+    and the ingress queue upstream still do. The tap still drops: it holds its 64 buffers."""
+    src = "audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,rate=48000,channels=2"
+    held = "max-buffers=1 drop=false sync=false emit-signals=false"
+    pipe = (f"{src} ! queue name=ingestq leaky=2 max-size-time=0 max-size-buffers=0 max-size-bytes=19200"
+            f" ! identity name=stall ! tee name=vp_ts ! fakesink sync=false async=false"
+            f" vp_ts. ! queue name=vp_probeq leaky=downstream max-size-buffers=64 ! appsink name=tsprobe {held}"
+            f" vp_ts. ! queue name=othertap leaky=downstream max-size-buffers=64 ! appsink name=nopull {held}")
+    for tag, argv in (("native", None), ("py", _PY_ENV_RUNNER)):
+        r = RunnerProc(argv)
+        try:
+            r.send({"cmd": "start", "pipeline": pipe, "eosDrain": False})
+            check(f"PQ {tag} reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
+            # The ingress queue's episode: 500 ms a buffer for 1.5 s, as IQ.
+            time.sleep(1.0)
+            r.send({"cmd": "set_property", "id": "pqs1", "element": "stall", "property": "sleep-time",
+                    "value": 500000})
+            time.sleep(1.5)
+            r.send({"cmd": "set_property", "id": "pqs0", "element": "stall", "property": "sleep-time", "value": 0})
+            ing = r.wait_event(lambda e: e.get("channel") == "queue_overrun"
+                               and e["payload"].get("element") == "ingestq", timeout=4.0)
+            check(f"PQ {tag} the ingress queue's overrun still reported ({ing and ing['payload']})",
+                  ing is not None and ing["payload"].get("overruns", 0) > 0)
+            # The other tap has been full since about 0.7 s: its 10 s report as it stands.
+            other = r.wait_event(lambda e: e.get("channel") == "queue_overrun"
+                                 and e["payload"].get("element") == "othertap" and e["payload"].get("ongoing"),
+                                 timeout=13.0)
+            check(f"PQ {tag} a leaky tap of another name is watched (its 10 s report: {other and other['payload']})",
+                  other is not None and other["payload"].get("leaky") == 2 and other["payload"].get("overruns", 0) > 500)
+            level = _runner_prop(r, "vp_probeq", "current-level-buffers", f"pql{tag}")
+            check(f"PQ {tag} the probe tap still drops: full at its 64 buffers ({level})", level == 64)
+            code = r.stop_and_wait()
+            probe = _overruns(r, "vp_probeq")
+            check(f"PQ {tag} no queue_overrun from the probe tap, the stop's reports included ({probe}; "
+                  f"{sorted({x.get('element') for x in _overruns(r)})})",
+                  code == 0 and probe == [] and {x.get("element") for x in _overruns(r)} == {"ingestq", "othertap"})
+            check(f"PQ {tag} no error event", not r.has_event(ev_is("error")))
+        finally:
+            r.kill()
+
+
 def test_queue_label_jump():
     """IJ (B-177), both runners: the outputs' prefill (a 40 ms delay line, bound 1 s) fed over a bus
     input whose labels jump 2 s (an outage's return): the one buffer that meets it full behind the
@@ -4755,6 +4798,7 @@ test_ttx_formula()
 test_burnin_formula()
 test_transcode_formula()
 test_ingest_queue_sheds()
+test_probe_tap_unwatched()
 test_queue_label_jump()
 test_no_late_drop()
 test_transcode_rate()

@@ -11,6 +11,10 @@ export const QUEUE_OVERRUN_EVENT = 'queue_overrun';
  *  outputs' prefill. Both runners carry the same list (busRunnerContract.test.ts). */
 export const WATCHED_QUEUE_NAMES: readonly string[] = ['vp_esq', 'ad_esq', OUTPUT_PREFILL_NAME];
 
+/** Never watched though leaky: the Video Player's probe tap, whose drops are by design (B-248).
+ *  Both runners carry the same list (busRunnerContract.test.ts). */
+export const PROBE_QUEUE_NAMES: readonly string[] = ['vp_probeq'];
+
 /** The `queue_overrun` payload. An episode ends after 1 s without an overrun; one still open at
  *  10 s is reported once with `ongoing`, then again at its end, at a stop or at its removal. A held
  *  queue's one overrun, below its bounds at the end, is none: a label jump's (B-177). */

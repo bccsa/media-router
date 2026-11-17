@@ -259,6 +259,10 @@ export const TS_PROBE_SINK_NAME = 'tsprobe';
 /** Name of the tee that feeds the demux branch and the video-info tap. */
 const PROBE_TEE_NAME = 'vp_ts';
 
+/** The probe tap's leaky queue: its drops are by design, so the runners' queue watch leaves it
+ *  out (queueOverrun.ts PROBE_QUEUE_NAMES, B-248). */
+export const VP_PROBE_QUEUE_NAME = 'vp_probeq';
+
 /**
  * `name=` of the live pipeline's `mrtsdemux`: its `mrtsdemux:vpdemux` reports
  * (counters, unknown streams, off house time, no video) land on the video input.
@@ -400,7 +404,7 @@ export function buildLivePipeline(
     // (runner sets max-buffers/drop), so a stalled tap can never back-pressure
     // the render path through the tee.
     const probeTap =
-        ` ${PROBE_TEE_NAME}. ! queue leaky=downstream max-size-buffers=64` +
+        ` ${PROBE_TEE_NAME}. ! queue name=${VP_PROBE_QUEUE_NAME} leaky=downstream max-size-buffers=64` +
         ` ! appsink name=${TS_PROBE_SINK_NAME}`;
     // The pace after the convert stage and the overlay, right before the render lateness tap
     // and the sink: each frame leaves on the content's cadence, never before it arrives, and a

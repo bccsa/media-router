@@ -3892,7 +3892,8 @@ Phase 3 ships as v2.0.0.102).
   a QoS event, gst-libav's hurry-up skips non-reference frames whatever the
   decoder's `qos` says, so no QoS event may reach an avdec.
 - **The queue watch** (B-182's shed count grown, E29): every GstQueue whose
-  `leaky` is not 0, and those named `vp_esq`, `ad_esq` and `prefill`, counts
+  `leaky` is not 0 but the Video Player's probe tap `vp_probeq` (B-248), and
+  those named `vp_esq`, `ad_esq` and `prefill`, counts
   its `overrun`s into episodes (1 s quiet ends one; reported once open at
   10 s, at its end and at a stop), one `queue_overrun` an episode naming the
   bus input upstream (the first `unixfdsrc` through sink and ghost pads), its
@@ -3999,7 +4000,7 @@ Phase 3 ships as v2.0.0.102).
   decoder's prefill full after an input stall until the drain (B-179) plays
   the backlog down, about 200 s a second of stall past its 1 s, its text now
   "nothing lost" (F1, fixed); the player's probe tap overrunning once after a
-  gap and reading as content lost (F2, open); B-175's cap set live never
+  gap and reading as content lost (F2, fixed: B-248); B-175's cap set live never
   measured (F4, open, the owner's with DEV-P4c2); a 0.2 % slow display's
   first drop 18 s after the measurement (F5); a consumer holding a 5 s backlog
   silencing its edge's tap (F6); the 302M device term engaging 45–50 s in,
@@ -4171,6 +4172,10 @@ sections above give the reasons, the register rows the details.
   first real screen's `connector-id` (Writeback-* skipped) and the Display
   panel names that screen; the compositor gate stays, so V-P4-6's kmssink arm
   runs only on hosts without waylandsink: a CI case on our images (B-247).
+- **p4-26** (fix batch FB3): the Video Player's probe tap queue is named
+  `vp_probeq` and both runners' queue watch leaves it out, so B-174's F2 is
+  closed; Teletext Subtitles' and MPEG-TS IP Input's probe taps are still
+  watched (B-248).
 
 ### What this phase supersedes
 

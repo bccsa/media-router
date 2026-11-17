@@ -504,7 +504,7 @@ describe('VideoPlayerModule helpers', () => {
                 const s = buildLivePipeline(KMS, busSource);
                 expect(s).toContain('! tee name=vp_ts ! mrtsdemux');
                 expect(s).toContain(
-                    'vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe',
+                    'vp_ts. ! queue name=vp_probeq leaky=downstream max-size-buffers=64 ! appsink name=tsprobe',
                 );
                 expect(s.indexOf('watchdog')).toBeLessThan(s.indexOf('tee name=vp_ts'));
             });

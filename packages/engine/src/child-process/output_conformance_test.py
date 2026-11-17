@@ -186,27 +186,18 @@ def last(series):
     return series[-1][1] if series else {}
 
 
-def overruns(o, skip_tap=True):
-    """Its queue_overrun episodes: (element, leaky, levelTimeMs, overruns), the ts-probe tap's apart."""
-    tap = probe_tap(o)
+def overruns(o):
+    """Its queue_overrun episodes: (element, leaky, levelTimeMs, overruns). The player's ts-probe tap
+    (vp_probeq) is never watched (B-248), so any episode here is a content queue's."""
     return [(p.get("element"), p.get("leaky"), p.get("levelTimeMs"), p.get("overruns"))
-            for _t, p in o.overruns() if not (skip_tap and p.get("element") == tap)]
+            for _t, p in o.overruns()]
 
 
 def episodes(o, t0):
     """Its queue_overrun episodes at their first overrun (a report comes a second after its last, `ms`
-    after its first): (s, element, leaky, levelTimeMs, overruns), the ts-probe tap's apart."""
-    tap = probe_tap(o)
+    after its first): (s, element, leaky, levelTimeMs, overruns)."""
     return [(round((t - t0) / S - 1 - (p.get("ms") or 0) / 1000, 1), p.get("element"), p.get("leaky"),
-             p.get("levelTimeMs"), p.get("overruns")) for t, p in o.overruns() if p.get("element") != tap]
-
-
-def probe_tap(o):
-    """The player's ts-probe tap queue's name: unnamed queues are numbered in the string's order."""
-    s = o.start_cmd["pipeline"]
-    at = s.find("! appsink name=tsprobe")
-    n = len(re.findall(r"! queue (?!name=)", s[:at])) if at >= 0 else 0
-    return f"queue{n - 1}" if n else None
+             p.get("levelTimeMs"), p.get("overruns")) for t, p in o.overruns()]
 
 
 def demux_last(o):
@@ -348,10 +339,6 @@ def scn_out_gap_recovers(tag, argv, exp):
               and ps.get("gaps-collapsed") == want_gaps and ps.get("rate-drops") == 0
               and dm.get("gaps") == want_gaps and dm.get("markers") == arm.get("markers", 0)
               and not overruns(pl))
-        tap = [e for e in overruns(pl, skip_tap=False) if e[0] == probe_tap(pl)]
-        if tap:
-            print(f"    {label} player: its ts-probe tap ({probe_tap(pl)}, leaky) met full {tap} "
-                  "(a diagnostic tap; B-174 Found)")
         rb, ra = renders(dec, t0, 2, at), renders(dec, t0, at + length + 2, exp["seconds"] + 1)
         st, dd = last(dec.asrc_stats()), demux_last(dec)
         evs = [p.get("kind") + ":" + str(p.get("reason")) for _t, p in dec.asrc_events()]
