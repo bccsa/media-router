@@ -367,8 +367,8 @@ _s0 = _el.get_property("stats")
 STATS_FIELDS = ["state", "ratio-ppb", "phase-err-ns", "relocks", "in-frames", "out-frames",
                 "discont-in", "dropped-frames", "gaps", "lost-frames", "mode", "source-ppb", "device-ppb",
                 "rate-known", "device-relocks", "device-stalls", "render-lateness-ns", "margin-refills",
-                "margin-silence-ns", "margin-guard-ns"]
-COUNT_FIELDS = [k for k in STATS_FIELDS[1:] if k not in ("mode", "rate-known")]
+                "margin-silence-ns", "margin-guard-ns", "catch-up-state", "catch-up-excess-ns", "catch-up-removed-ns"]
+COUNT_FIELDS = [k for k in STATS_FIELDS[1:] if k not in ("mode", "rate-known", "catch-up-state")]
 check("stats is read-only; a fresh element's: mrasrc-stats, acquiring, mode capture, no rate, every count 0",
       not _st.flags & GObject.ParamFlags.WRITABLE and _s0.get_name() == "mrasrc-stats"
       and [_s0.nth_field_name(i) for i in range(_s0.n_fields())] == STATS_FIELDS
@@ -382,6 +382,11 @@ check("bypass-below-ppm: 0 (capture) by default, 0..1000; device-sink: \"\" by d
       and _el.get_property("device-sink") == "" and _el.get_property("margin-ms") == 0
       and _mm.minimum == 0 and _mm.maximum == 1000
       and all(p.flags & Gst.PARAM_MUTABLE_READY for p in (_bp, _ds, _mm)))
+_cu, _uq = _el.find_property("catch-up-ppm"), _el.find_property("upstream-queue")
+check("catch-up-ppm 0 (never) by default, 0..5000 (the owner's 0.5 %); upstream-queue \"\" by default; both apply at "
+      "a start (B-249)",
+      _el.get_property("catch-up-ppm") == 0 and _cu.minimum == 0 and _cu.maximum == 5000
+      and _el.get_property("upstream-queue") == "" and all(p.flags & Gst.PARAM_MUTABLE_READY for p in (_cu, _uq)))
 
 # --- the acceptance: THD+N and the PTS formula at a 1.0002 ratio -----------------------------
 print("\n--- a 1 kHz sine at a 1.0002 ratio (device 199.96 ppm slow, 1 ms jitter), 60 s ---")
@@ -697,13 +702,14 @@ _gaps = [b["out-frames"] - a["out-frames"] for a, b in zip(posts, posts[1:-1])]
 check(f"mrasrc-stats every 2 s of output ({len(posts)} posts, {sorted(set(_gaps))} frames "
       "apart) and once more at EOS", len(posts) == 6 and all(abs(g - 2 * FS) <= BUF for g in _gaps))
 check("each carries part 10's fields, WI-P3-5's mode and clocks, B-148's rate-known, B-166's device "
-      "relocks, stalls and render lateness and B-249's margin refills and guard, in order and typed (capture: mode "
-      "capture, no device)",
+      "relocks, stalls and render lateness and B-249's margin refills and guard and catch-up, in order and typed "
+      "(capture: mode capture, no device, catch-up off)",
       all(list(p) == STATS_FIELDS and isinstance(p["state"], str) and p["mode"] == "capture"
           and all(isinstance(p[k], int) for k in COUNT_FIELDS) and isinstance(p["rate-known"], bool)
           and p["device-ppb"] == 0 and p["device-relocks"] == 0 and p["device-stalls"] == 0
           and p["render-lateness-ns"] == 0 and p["margin-refills"] == 0 and p["margin-silence-ns"] == 0
-          and p["margin-guard-ns"] == 0 for p in posts))
+          and p["margin-guard-ns"] == 0 and p["catch-up-state"] == "off" and p["catch-up-excess-ns"] == 0
+          and p["catch-up-removed-ns"] == 0 for p in posts))
 _ev = h.messages("mrasrc-event")
 check(f"mrasrc-event relock: kind, reason, house-ns, jump-ns, dropped-ns "
       f"({sorted(_ev[0]) if _ev else []})",
@@ -1513,6 +1519,17 @@ for desc, what in (("fakesink name=sink", "not a GstAudioBaseSink"),
     check(f"{desc.split()[0]} {desc.split()[-1]}: the state change fails, an error from asrc naming it "
           f"({msg!r})", ret == Gst.StateChangeReturn.FAILURE and m is not None and m.src.get_name() == "asrc"
           and 'device-sink "sink"' in msg and what in msg)
+    _p.set_state(Gst.State.NULL)
+for desc, what in (("queue name=q ! ", "no element of that name in the pipeline"),
+                   ("identity name=decq ! ", "no current-level-time")):
+    _p = Gst.parse_launch(f"audiotestsrc num-buffers=4 ! {desc}mrasrc name=asrc device-sink=sink margin-ms=60 "
+                          "catch-up-ppm=5000 upstream-queue=decq ! mrtestaudiosink name=sink")
+    ret = _p.set_state(Gst.State.PAUSED)
+    m = _p.get_bus().timed_pop_filtered(2 * Gst.SECOND, Gst.MessageType.ERROR)
+    msg = m.parse_error()[0].message if m else ""
+    check(f"upstream-queue decq, {what}: the state change fails, an error from asrc naming it ({msg!r})",
+          ret == Gst.StateChangeReturn.FAILURE and m is not None and m.src.get_name() == "asrc"
+          and 'upstream-queue "decq"' in msg and what in msg)
     _p.set_state(Gst.State.NULL)
 _src = open(os.path.join(_HERE, "..", "..", "..", "..", "plugins", "mpegts-core", "native", "mrtshouse",
                          "gstmrasrc.cpp")).read()

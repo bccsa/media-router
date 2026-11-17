@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { OUTPUT_MARGIN_MS, OUTPUT_QUEUE_NAME, OUTPUT_RING_US, buildOutputQueue } from './outputSink.js';
+import {
+    OUTPUT_CATCH_UP_PPM,
+    OUTPUT_MARGIN_MS,
+    OUTPUT_QUEUE_NAME,
+    OUTPUT_RING_US,
+    buildOutputQueue,
+} from './outputSink.js';
 import { buildAsrc } from './ingestTiming.js';
 
 describe("the audio outputs' sink end (OQ-31, B-249)", () => {
@@ -18,9 +24,18 @@ describe("the audio outputs' sink end (OQ-31, B-249)", () => {
 
     it("every output's ASRC keeps the margin in its sink; no other mode has one", () => {
         expect(buildAsrc({ name: 'a', deviceSink: 'sink' })).toBe(
-            'mrasrc name=a device-sink=sink margin-ms=60',
+            'mrasrc name=a device-sink=sink margin-ms=60 catch-up-ppm=5000',
         );
         expect(buildAsrc({ name: 'a', bypassBelowPpm: 0.5 })).not.toContain('margin-ms');
         expect(buildAsrc({ name: 'a' })).not.toContain('margin-ms');
+    });
+
+    it('every output plays what it holds past the margin back down at 0.5 %, counting a named queue before it', () => {
+        expect(OUTPUT_CATCH_UP_PPM).toBe(5000);
+        expect(buildAsrc({ name: 'a', deviceSink: 'sink', upstreamQueue: 'decq' })).toBe(
+            'mrasrc name=a device-sink=sink margin-ms=60 catch-up-ppm=5000 upstream-queue=decq',
+        );
+        expect(buildAsrc({ name: 'a', upstreamQueue: 'decq' })).toBe('mrasrc name=a');
+        expect(buildAsrc({ name: 'a', bypassBelowPpm: 0.5 })).not.toContain('catch-up');
     });
 });

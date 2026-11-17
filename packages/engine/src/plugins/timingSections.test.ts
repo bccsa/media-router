@@ -420,6 +420,15 @@ describe('timingPublication: demux and ASRC rows (WI-P3-6)', () => {
         expect(early.data.timing.clockCorrection).toBe('measuring');
     });
 
+    it('an output catching up says so, with what is left; not while it is not (B-249)', () => {
+        const pub = timingPublication({ ...s, catchingUpMs: 120.4 });
+        expect(pub.data.timing.catchUp).toBe('catching up: playing 0.5 % fast, 120 ms to go');
+        expect(pub.sections[0].fields.at(-1)).toEqual({ key: 'catchUp', label: 'Catch-up' });
+        expect(timingPublication(s).data.timing.catchUp).toBeUndefined();
+        expect(timingChanged(s, { ...s, catchingUpMs: 120 })).toBe(true);
+        expect(timingChanged({ ...s, catchingUpMs: 120 }, { ...s, catchingUpMs: 120.5 })).toBe(false);
+    });
+
     it('timingChanged: 0.1 ppm, an engage, a PES/s or a counter is a change; less is not', () => {
         const at = (patch: Partial<ModuleTimingSummary>, in0: object = {}) => ({
             ...s,

@@ -81,6 +81,8 @@ export function audioTsOffsetNs(
 const DEMUX_NAME = 'addemux';
 /** `name=` of this leg's ASRC: the source's clock term and the sink's, one resampler (OQ-23). */
 const ASRC_NAME = 'asrc';
+/** The queue before the decoder: its level is `asrc`'s audio in hand too (B-249). */
+const DECODE_QUEUE_NAME = 'decq';
 
 /**
  * Audio Decoder plugin.
@@ -309,12 +311,18 @@ export class AudioDecoderModule extends GstPluginBase {
             // (the encoder re-stamps at capture). Operators tuning latency
             // must be able to shrink it; the old hard 300 ms floor was
             // demuxer-burst-era protection.
-            `${busDemux} ! queue leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
+            `${busDemux} ! queue name=${DECODE_QUEUE_NAME} leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
             // Interleaved for `asrc` (avdec_aac's output is planar). Render lateness is read
             // before it, where PTS is still content time (part 4.4).
             'audioconvert',
             buildLatenessTap('lat_render'),
-            buildAsrc({ name: ASRC_NAME, bypassBelowPpm: DECODE_BYPASS_PPM, deviceSink: 'sink' }),
+            // The queue's level is audio in hand for `asrc`'s catch-up: a late start's backlog waits there (B-249).
+            buildAsrc({
+                name: ASRC_NAME,
+                bypassBelowPpm: DECODE_BYPASS_PPM,
+                deviceSink: 'sink',
+                upstreamQueue: DECODE_QUEUE_NAME,
+            }),
             'audioconvert',
             `volume name=vol volume=${gstVolume}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',

@@ -10,6 +10,7 @@
 //        mrts_cli asrc seq.txt|-
 //        mrts_cli asrc-device seq.jsonl|-
 //        mrts_cli sink-margin cases.jsonl|-
+//        mrts_cli catch-up events.jsonl|-
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -2027,6 +2028,75 @@ int sink_margin_main(int argc, char** argv) {
     }
     return 0;
 }
+
+// --- catch-up: the catch-up (B-249), py/catch_up_ref.py's line format --------------------------------------
+
+int catch_up_main(int argc, char** argv) {
+    if (argc != 2) {
+        std::fprintf(stderr, "usage: mrts_cli catch-up events.jsonl|-\n");
+        return 2;
+    }
+    std::string text, err;
+    if (!read_file(argv[1], &text)) {
+        std::perror(argv[1]);
+        return 1;
+    }
+    size_t at = 0, lineno = 0;
+    AsrcCatchUp c(0, 48000);
+    while (at < text.size()) {
+        size_t nl = text.find('\n', at);
+        if (nl == std::string::npos) nl = text.size();
+        const std::string line = text.substr(at, nl - at);
+        at = nl + 1;
+        lineno++;
+        if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
+        Json o;
+        bool ok = parse_json(line, &o, &err);
+        if (ok && o.get("margin")) {   // a new catch-up
+            int64_t margin = 0, hz = 0, ppb = ASRC_CATCHUP_MAX_PPB, window = ASRC_CATCHUP_WINDOW_NS, start = -1;
+            ok = op_i64(o, "margin", &margin, &err) && op_i64(o, "hz", &hz, &err);
+            if (ok && o.get("ppb")) ok = op_i64(o, "ppb", &ppb, &err);
+            if (ok && o.get("window")) ok = op_i64(o, "window", &window, &err);
+            if (ok && o.get("start") && o.get("start")->type != Json::Type::null) ok = op_i64(o, "start", &start, &err);
+            if (ok) {
+                c = AsrcCatchUp(margin, hz, ppb, window, start);
+                std::printf("{\"ok\":1}\n");
+                continue;
+            }
+        } else if (ok && o.get("reset")) {
+            int64_t t = 0;
+            ok = op_i64(o, "reset", &t, &err);
+            if (ok) {
+                c.reset(t);
+                std::printf("{\"ok\":1}\n");
+                continue;
+            }
+        } else if (ok && o.get("produced")) {
+            int64_t frames = 0, ppb = 0;
+            ok = op_i64(o, "produced", &frames, &err) && op_i64(o, "ppb", &ppb, &err);
+            if (ok) {
+                c.produced(frames, ppb);
+                std::printf("{\"removed\":%lld}\n", (long long)c.removed());
+                continue;
+            }
+        } else if (ok) {   // a sample
+            int64_t t = 0, total = 0, consumed = 0, due = 0;
+            ok = op_i64(o, "t", &t, &err) && op_i64(o, "total", &total, &err) && op_i64(o, "consumed", &consumed, &err);
+            const bool have_due = ok && o.get("due") && o.get("due")->type != Json::Type::null;
+            if (ok && have_due) ok = op_i64(o, "due", &due, &err);
+            if (ok) {
+                const int64_t cmd = c.sample(t, total, consumed, have_due, due);
+                std::printf("{\"cmd\":%lld,\"excess\":%lld,\"state\":\"%s\"}\n", (long long)cmd,
+                            (long long)c.excess(), asrc_catchup_state_name(c.state()));
+                continue;
+            }
+        }
+        std::fflush(stdout);
+        std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", argv[1], lineno, err.c_str());
+        return 1;
+    }
+    return 0;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2039,6 +2109,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "asrc") == 0) return asrc_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "asrc-device") == 0) return asrc_device_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "sink-margin") == 0) return sink_margin_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "catch-up") == 0) return catch_up_main(argc - 1, argv + 1);
     std::fprintf(stderr,
                  "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
@@ -2050,6 +2121,7 @@ int main(int argc, char** argv) {
                  "[--house-ns T] [--bus in.bus.jsonl]\n"
                  "       mrts_cli asrc seq.txt|-\n"
                  "       mrts_cli asrc-device seq.jsonl|-\n"
-                 "       mrts_cli sink-margin cases.jsonl|-\n");
+                 "       mrts_cli sink-margin cases.jsonl|-\n"
+                 "       mrts_cli catch-up events.jsonl|-\n");
     return 2;
 }

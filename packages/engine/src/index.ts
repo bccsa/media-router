@@ -265,6 +265,7 @@ export {
 } from './plugins/backlogShed.js';
 export type { BacklogShedOptions, BacklogShedServices } from './plugins/backlogShed.js';
 export {
+    OUTPUT_CATCH_UP_PPM,
     OUTPUT_MARGIN_MS,
     OUTPUT_QUEUE_NAME,
     OUTPUT_RING_US,

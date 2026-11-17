@@ -152,9 +152,12 @@ void AsrcServo::device_recalibrated() {
     if (cfg_.device) cal_off_ = sat_sub(label_next(), house_pts());
 }
 
-// House-rate frames: each output frame is 1 + ε_dev of them.
+// The device term times the catch-up (B-249): (1 + ε_dev)(1 + cu) - 1; ε_dev itself without a catch-up.
+int64_t AsrcServo::out_ppb() const { return dev_ppb_ + cu_ppb_ + floor_div(dev_ppb_ * cu_ppb_, E9); }
+
+// House-rate frames: each output frame is 1 + ε_dev of them (times 1 + cu while catching up).
 void AsrcServo::house_advance(uint32_t frames) {
-    const int64_t f = mh_frac_ + (int64_t)frames * dev_ppb_;
+    const int64_t f = mh_frac_ + (int64_t)frames * out_ppb();
     mh_ += (uint64_t)((int64_t)frames + floor_div(f, E9));
     mh_frac_ = f - floor_div(f, E9) * E9;
 }
@@ -181,7 +184,7 @@ int64_t AsrcServo::measure_phase() const {
 
 // The commanded out/in against nominal, minus 1: the decode term times the device term.
 int64_t AsrcServo::ratio_ppb() const {
-    const int64_t d = E9 + dev_ppb_;
+    const int64_t d = E9 + out_ppb();
     return floor_div((E9 + eps_cmd_) * E9 + d / 2, d) - E9;
 }
 
@@ -189,7 +192,7 @@ int64_t AsrcServo::ratio_ppb() const {
 // out_rate itself: at equal rates GStreamer copies samples unfiltered (setup_functions), 31
 // frames off the filtered path; one unit (0.02 ppm at 48 kHz) keeps the filter in place.
 int32_t AsrcServo::in_rate() const {
-    const int64_t num = in_hz_ * 1000 * (E9 + dev_ppb_), den = E9 + eps_cmd_;
+    const int64_t num = in_hz_ * 1000 * (E9 + out_ppb()), den = E9 + eps_cmd_;
     int64_t r = (2 * num + den) / (2 * den);
     if (r == out_hz_ * 1000) r += ratio_ppb() < 0 ? 1 : -1;
     return (int32_t)r;
@@ -408,9 +411,10 @@ bool AsrcServo::check_cycle(int64_t pts_ns, uint32_t frames, int64_t dur_ns) {
 }
 
 AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont, int64_t device_ppb,
-                                   int64_t dur_ns) {
+                                   int64_t dur_ns, int64_t catchup_ppb) {
     const int64_t lim = cfg_.ratio_max_ppm * 1000;
     dev_ppb_ = cfg_.device ? clamp64(device_ppb, -lim, lim) : 0;
+    cu_ppb_ = cfg_.device ? clamp64(catchup_ppb, 0, ASRC_CATCHUP_MAX_PPB) : 0;
     const int64_t sigma = pos_ns(2 * (n_in_ + lost_));
     const int64_t step = !capture_ && started_ && !discont && !ended_ ? content_step(pts_ns) : 0;
     bool relocked = false, drain = false, gapped = false;
@@ -754,6 +758,15 @@ bool AsrcRenderLateness::at(int64_t now_ns, int64_t dev_ns, int64_t* lateness_ns
     return true;
 }
 
+bool AsrcRenderLateness::due(int64_t now_ns, int64_t pos, int64_t* lateness_ns) const {
+    for (const Seg& s : map_) {
+        if (s.write_pos + s.frames <= pos) continue;
+        *lateness_ns = now_ns - (s.pts + (int64_t)floor_div128((__int128)(pos - s.write_pos) * E9, rate_));
+        return true;
+    }
+    return false;
+}
+
 int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos, int64_t guard) {
     const int64_t c = (segdone + 1) * sps;
     return have_play && play_pos + guard > c ? play_pos + guard : c;
@@ -799,6 +812,63 @@ int64_t AsrcSinkMargin::silence(int64_t next_sample, int64_t segdone, int64_t sp
         silence_ += n;
     }
     return n;
+}
+
+// --- the catch-up (py/catch_up_ref.py's CatchUp, B-249) -----------------------------------------------------
+
+const char* asrc_catchup_state_name(AsrcCatchUp::State s) {
+    switch (s) {
+        case AsrcCatchUp::State::watching: return "watching";
+        case AsrcCatchUp::State::idle: return "idle";
+        case AsrcCatchUp::State::catching_up: return "catching-up";
+    }
+    return "";
+}
+
+AsrcCatchUp::AsrcCatchUp(int64_t margin_frames, int64_t rate_hz, int64_t ppb, int64_t window_ns, int64_t start_frames)
+    : margin_(std::max<int64_t>(0, margin_frames)),
+      ppb_(clamp64(ppb, 0, ASRC_CATCHUP_MAX_PPB)),
+      window_(std::max<int64_t>(0, window_ns)),
+      start_(start_frames < 0 ? ASRC_CATCHUP_START_MS * std::max<int64_t>(1, rate_hz) / 1000
+                              : std::max<int64_t>(1, start_frames)) {}
+
+void AsrcCatchUp::reset(int64_t t_ns) {
+    win_.clear();
+    since_ = t_ns;
+    active_ = have_prev_ = false;
+    excess_ = 0;
+}
+
+int64_t AsrcCatchUp::sample(int64_t t_ns, int64_t total, int64_t consumed, bool have_due, int64_t due) {
+    const int64_t low = have_prev_ ? std::min(total, prev_) : total;
+    have_prev_ = true;
+    prev_ = total;
+    int64_t s = sat_sub(low, consumed);
+    if (have_due) s = std::min(s, due);
+    const int64_t a = sat_add(s, removed_);
+    while (!win_.empty() && win_.back().a >= a) win_.pop_back();
+    win_.push_back(Point{t_ns, a});
+    while (win_.front().t < sat_sub(t_ns, window_)) win_.pop_front();
+    if (t_ns - since_ < window_) {
+        excess_ = 0;
+        active_ = false;
+        return 0;
+    }
+    excess_ = sat_sub(sat_sub(win_.front().a, removed_), margin_);
+    active_ = active_ ? excess_ > 0 : excess_ >= start_;
+    return command();
+}
+
+void AsrcCatchUp::produced(int64_t frames, int64_t ppb) {
+    if (frames <= 0 || ppb <= 0) return;
+    const __int128 f = (__int128)removed_frac_ + (__int128)frames * ppb;
+    removed_ += (int64_t)(f / E9);
+    removed_frac_ = (int64_t)(f % E9);
+}
+
+AsrcCatchUp::State AsrcCatchUp::state() const {
+    if (active_) return State::catching_up;
+    return !win_.empty() && win_.back().t - since_ >= window_ ? State::idle : State::watching;
 }
 
 }  // namespace mrts

@@ -60,6 +60,9 @@
     }
   },
   "mrasrc-stats": {
+    "catch-up-excess-ns": 0,
+    "catch-up-removed-ns": 0,
+    "catch-up-state": "watching",
     "device-ppb": 0,
     "device-relocks": 0,
     "device-stalls": 0,

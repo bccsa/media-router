@@ -321,7 +321,8 @@ else:
               f"then the one ASRC on the sink (no tsdemux, no audioresample; the sink sync=false, no slave-method)",
               " ! mrtsdemux name=addemux media=audio ! " in _desc
               and re.search(r" ! audioconvert ! mrlateness name=lat_render \S+ ! mrasrc name=asrc "
-                            r"bypass-below-ppm=0\.5 device-sink=sink margin-ms=60 ! audioconvert ! ", _desc) is not None
+                            r"bypass-below-ppm=0\.5 device-sink=sink margin-ms=60 catch-up-ppm=5000 upstream-queue=decq "
+                            r"! audioconvert ! ", _desc) is not None
               and not re.search(r"\btsdemux\b", _desc) and "audioresample" not in _desc
               and " sync=false " in _desc and "slave-method" not in _desc)
         _r = adec_run(_desc, os.path.join(_FIX, _fx))

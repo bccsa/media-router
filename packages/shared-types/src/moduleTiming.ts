@@ -99,6 +99,9 @@ export interface ModuleTimingSummary {
     clockCorrection?: ClockCorrection;
     /** An audio output's device clock against house time (ppm, positive when fast). */
     deviceClockPpm?: number;
+    /** An audio output catching up (B-249): playing 0.5 % fast what it holds past its margin; this much is left
+     *  (ms). Absent while it is not. */
+    catchingUpMs?: number;
     /** False when libgstmrlateness.so is not installed. */
     instrument: boolean;
 }

@@ -9,10 +9,16 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
   - rising: 30 ms for 10 s, then a walk within 30-300 ms (8 ms steps); field: the walk within 30-70 ms from 30 ms
     (MR-057 on TECH01); step: 30 ms, 70 ms from 10 s, 30 ms at 25 s, 70 ms at 30 s; old: c38's walk from its
     300 ms max. Each MR_302M_RUNS times (5), a seed each, waiting for a load under 3 first.
-  - pass: every frame fed sounds but at most 1 ms (the allowance: mrasrc's resampler holds 32 frames); no
-    hole after 2 s, except in the rising walk, where the feed gets later than any margin: there holes come only
-    until the walk first reached its maximum (each rebuilds the margin), none after, and their length is the
-    rise less the margin plus a margin each; the delay from then on flat, nothing lost.
+  - pass: every frame fed taken by mrasrc and every frame it made sounding but at most 1 ms (the allowance:
+    mrasrc's resampler holds 32 frames; the feed ends with EOS, where mrasrc posts its counts); no hole after 2 s,
+    except in the rising walk, where the feed gets later than any margin: there holes come only until the walk
+    first reached its maximum (each rebuilds the margin), none after, and their length is the rise less the
+    margin plus a margin each; the delay from then on flat (what the catch-up played out added back), nothing lost.
+  - the catch-up (B-249; MR_302M_CATCH_RUNS runs, 3): a late start (the first 0.8 s of the feed at once), a
+    400 ms spike for 1 s, rising then falling (30 ms, 30-200 ms over 10 s, 30 ms from 40 s): nothing lost, holes
+    only at the spike or on the rise, back to the target (the feed, the device, two segments, the margin and a
+    buffer: 160 ms) at the end; the late start in the time a 60 s window and 0.5 % imply (+-20 %); the field
+    walk after a 0.5 s late start, 190 s: the backlog played out, no more holes than with catch-up-ppm=0.
   - mutants: c38's sink end (a 40 ms min-threshold queue, no margin) fails that pass on every run: in the rising
     walk it plays holes to the end and loses audio, in the field walk it loses audio at the start and, on some
     runs, plays holes for good; v2.0.0.101's (sync=true, ts-offset 0: a budget of the ~110 ms its sink
@@ -28,12 +34,13 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     then 20 steps of 3 s each landing its writes 2 ms ahead of the clock, the 10 buffers before each step
     coming at once so the last push before the pause blocks in the sink (21eade5e dropped the write after it;
     seeds 7, 8), the flush profile (two flushes into the sink, as mrasrc's device flush makes them), then the
-    field and the rising profile for MR_302M_PULSE_SECS (600). Pass: every hole after the start has a refill
-    within 3 s of it, the rising walk none once at its max, and the frames heard within 1 ms of what the device
-    term's measured ratio (mrasrc's out/in frames) makes of the feed; a flush one hole, its refills each at most
+    field and the rising profile for MR_302M_PULSE_SECS (600), and the catch-up's late start and spike. Pass: every
+    hole after the start has a refill within 3 s of it, the rising walk none once at its max, every frame fed taken
+    and the frames heard within 1 ms of what mrasrc made; the late start and the spike back to the server's target
+    (190 ms), the late start in a window plus 0.5 % (+-20 %); a flush one hole, its refills each at most
     the 3 s cap (REFILL_MAX_MS: c1a929b9 put 5 and 10 s of silence in one), at most 200 ms lost, sound to the
     end. MR_302M_PULSE_MON_US sets the monitor's latency (so the graph quantum). Not in the chain (it needs a
-    server). MR_302M_PARTS picks parts (sink, mutants, pulse, drift).
+    server). MR_302M_PARTS picks parts (sink, mutants, catch, pulse, drift).
 
 A run that fails while the load was 3 or more is run again once, after the load fell. Skips (exit 0) without
 GStreamer or the built plugins."""
@@ -78,8 +85,9 @@ DRAIN_S = 2
 SECS = int(os.environ.get("MR_302M_SECS", "40"))
 RUNS = int(os.environ.get("MR_302M_RUNS", "5"))
 LOAD_MAX = 3.0
-# Which parts run (all by default): sink (the profiles), mutants, pulse (MR_302M_PULSE_SINK), drift.
-PARTS = set(os.environ.get("MR_302M_PARTS", "sink,mutants,pulse,drift").split(","))
+# Which parts run (all by default): sink (the profiles), mutants, catch (the catch-up's), pulse
+# (MR_302M_PULSE_SINK), drift.
+PARTS = set(os.environ.get("MR_302M_PARTS", "sink,mutants,catch,pulse,drift").split(","))
 SINK_KEYS = ("holes", "hole-frames", "hole-max", "underruns", "renders", "sounded-frames")
 
 with open(os.path.join(_PLUGINS, "audio-output-302m", "tests", "fixtures", "sink-end.json"), encoding="utf-8") as _fh:
@@ -150,6 +158,22 @@ PROFILES = {
     "step": lambda n, seed: [30.0 if (i < 1000 or 2500 <= i < 3000) else 70.0 for i in range(n)],
     "old": lambda n, seed: walk(n, 30.0, 300.0, 300.0, 0, seed),
 }
+# The catch-up's (B-249): a late start (the first 0.8 s of the feed at once at 0.83 s: the backlog a late sink start
+# leaves in the queue), a spike (400 ms for 1 s at 10 s), rising then falling (30 ms, 30-200 ms over 10 s, held,
+# 30 ms from 40 s), and the field walk after a 0.5 s late start, long enough to be caught up (against catch-up-ppm=0).
+CATCH = {
+    "late": (lambda n, seed: [max(30.0, 830.0 - 10 * i) for i in range(n)], 270),
+    "spike": (lambda n, seed: [400.0 if 1000 <= i < 1100 else 30.0 for i in range(n)], 180),
+    "risefall": (lambda n, seed: [30.0 if i < 1000 else min(200.0, 30 + (i - 1000) * 0.17) if i < 4000 else 30.0
+                                  for i in range(n)], 170),
+    "field-long": (lambda n, seed: [max(l, 530.0 - 10 * i) for i, l in enumerate(walk(n, 30.0, 70.0, 30.0, 0, seed))],
+                   190),
+}
+CATCH_RUNS = int(os.environ.get("MR_302M_CATCH_RUNS", "3"))
+# On a real pulsesink the sink's own start may come up 0.3-2 s late on top (the dev Pi): room for 2.8 s at 0.5 %.
+PULSE_CATCH_SECS = {"late": 660, "spike": 540}
+RATE = 0.005                               # OUTPUT_CATCH_UP_PPM
+WINDOW_S = 60                              # mrts::ASRC_CATCHUP_WINDOW_NS
 
 
 # --- the harness ---------------------------------------------------------------------------------------------
@@ -163,6 +187,7 @@ def wait_quiet(limit_s=900):
 
 
 LAST_LATENCY_NS = None   # the pipeline's min latency, read 3 s into the last run
+LAST_ASRC = {}           # the last run's mrasrc stats at its end (its EOS post where the feed ended)
 
 
 def run(desc, secs, speed=1, feed=None):
@@ -204,14 +229,17 @@ def run(desc, secs, speed=1, feed=None):
     stop.set()
     if th:
         th.join(2)
+    a = p.get_by_name("outasrc")
+    global LAST_ASRC
+    LAST_ASRC = sdict(a.get_property("stats")) if a else {}
     p.set_state(Gst.State.NULL)
     gc.enable()
     return sink, stats, levels, errors
 
 
-def late_feeder(late):
+def late_feeder(late, eos=False):
     """appsrc: buffer i stamped i x 10 ms (running time), pushed when the clock reads it + late[i] (a callable: its
-    value for i); then nothing."""
+    value for i); then nothing, or EOS (mrasrc posts its stats at it: the frames it took and made, exact)."""
     def feed(p, clk, stop):
         src = p.get_by_name("src")
         while p.get_base_time() == 0 and not stop.is_set():
@@ -228,6 +256,8 @@ def late_feeder(late):
             b.pts, b.duration = i * 10 * MS, 10 * MS
             if src.emit("push-buffer", b) != Gst.FlowReturn.OK:
                 return
+        if eos:
+            src.emit("end-of-stream")
     return feed
 
 
@@ -252,21 +282,33 @@ def last_hole_s(levels):
 
 def one_run(tail, name, seed):
     """One profile run on `tail`: the outcome, and the load before and after."""
-    n = SECS * 100
-    late = PROFILES[name](n, seed)
+    gen, secs = CATCH[name] if name in CATCH else (PROFILES[name], SECS)
+    n = secs * 100
+    late = gen(n, seed)
     load0 = wait_quiet()
-    sk, st, lv, err = run(SRC + tail, SECS + DRAIN_S, feed=late_feeder(late))
+    sk, st, lv, err = run(SRC + tail, secs + DRAIN_S, feed=late_feeder(late, eos=True))
     fed = n * BUF
+    # Lost: what mrasrc never took, and what it made that never sounded (its 32-frame tail leaves after the EOS
+    # post). The device term and the catch-up make fewer or more frames than were fed; neither is a loss (B-249).
+    took, made = LAST_ASRC.get("in-frames", 0), LAST_ASRC.get("out-frames", 0)
+    lost = (fed - took) + max(0, made - sk["sounded-frames"])
     h2, hf2 = holes_from(lv, sk, START_S)
     imax = next(i for i, l in enumerate(late) if l >= max(late))
     t_max = imax / 100 + late[imax] / 1000
-    lat = [(t, s.get("render-lateness-ns", 0) / MS) for t, s in st if s.get("render-lateness-ns", 0)]
-    steady = [v for t, v in lat if t >= max(START_S + 3, t_max + 3) and t <= SECS]
-    return {"name": name, "seed": seed, "fed": fed, "lost": fed - sk["sounded-frames"], "holes": h2,
+    # The render lateness with what the catch-up removed added back: flat unless the delay crept (B-249).
+    lat = [(t, (s.get("render-lateness-ns", 0) + s.get("catch-up-removed-ns", 0)) / MS) for t, s in st
+           if s.get("render-lateness-ns", 0)]
+    steady = [v for t, v in lat if t >= max(START_S + 3, t_max + 3) and t <= secs]
+    raw = [(t, s.get("render-lateness-ns", 0) / MS) for t, s in st if s.get("render-lateness-ns", 0)]
+    cu = [(t, s.get("catch-up-state", "off")) for t, s in st]
+    begins = [t for (t, a), (_, b) in zip(cu, cu[1:]) if b == "catching-up" and a != "catching-up"]
+    return {"name": name, "seed": seed, "fed": fed, "lost": lost, "short": fed - sk["sounded-frames"], "holes": h2,
             "hole_ms": hf2 / 48, "holes_all": sk["holes"], "last_hole": last_hole_s(lv), "t_max": t_max,
             "rise": max(late) - late[0], "lat": steady, "first_late": late[0], "err": err,
             "refills": (st[-1][1].get("margin-refills", 0) if st else 0), "load": (load0, os.getloadavg()[0]),
-            "latency": LAST_LATENCY_NS}
+            "latency": LAST_LATENCY_NS, "raw": raw, "begins": begins, "secs": secs,
+            "removed": (st[-1][1].get("catch-up-removed-ns", 0) / MS if st else 0),
+            "cu_end": cu[-1][1] if cu else "none"}
 
 
 def passes(r):
@@ -340,6 +382,69 @@ for _name in (("rising", "field") if "mutants" in PARTS else ()):
         check(f"v101 field: the field's feed is cut, as on TECH01 ({[r['holes'] for r in _rs]} holes, "
               f"{[round(r['lost'] / 48) for r in _rs]} ms lost)", all(r["lost"] > 4800 and r["holes"] > 0 for r in _rs))
 
+# --- the catch-up (B-249): back to the margin at 0.5 % ------------------------------------------------------------
+# The target: the feed's 30 ms, the device's 40 ms and up to two 10 ms segments in flight, the 60 ms margin and a
+# buffer (the trough is read just before a buffer comes). A run's render lateness 5-10 s in, at its end, and the time
+# from the start to within 5 ms of the end against a window plus (start - end) at 0.5 %.
+TARGET_MAX = 30 + 40 + 20 + MARGIN_MS + 10
+_c39_off = tail_for(MODULE_TAIL.replace(" catch-up-ppm=5000", ""))
+
+
+def recovery(r, t_from):
+    """Render lateness at t_from + 3-8 s and over the last 10 s; when it came within 5 ms of the end for good."""
+    early = [v for t, v in r["raw"] if t_from + 3 <= t <= t_from + 8]
+    tail = [v for t, v in r["raw"] if t >= r["secs"] - 10 and t <= r["secs"]]
+    if not early or not tail:
+        return None
+    end = sum(tail) / len(tail)
+    reach = 0.0
+    for t, v in r["raw"]:
+        if t <= r["secs"] and abs(v - end) > 5:
+            reach = t
+    return max(early), end, reach
+
+
+def describe_cu(r, rec):
+    lv = f"{rec[0]:.0f} -> {rec[1]:.0f} ms by {rec[2]:.0f} s" if rec else "no lateness read"
+    return (f"{r['holes']} holes after {START_S} s ({r['hole_ms']:.0f} ms), lost {r['lost'] / 48:.2f} ms, render "
+            f"lateness {lv}, catch-up runs from {[round(t) for t in r['begins']]} s removed {r['removed']:.0f} ms "
+            f"({r['cu_end']} at the end), {r['refills']} refills, load {r['load'][0]:.1f}/{r['load'][1]:.1f}"
+            f"{', errors ' + str(r['err']) if r['err'] else ''}")
+
+
+CU_TABLE = []
+if "catch" in PARTS:
+    print(f"\n--- the catch-up (B-249): {CATCH_RUNS} runs a profile on the module's sink end ---")
+    for _name in CATCH:
+        for _k in range(CATCH_RUNS):
+            _seed = 7 + _k
+            _r = one_run(_c39, _name, _seed)
+            if _name == "field-long":
+                _o = one_run(_c39_off, _name, _seed)
+                _ok = not _r["err"] and _r["holes"] <= _o["holes"] and 0 <= _r["lost"] <= 48 and _r["removed"] >= 400
+                CU_TABLE.append((_name, _seed, _r, _o))
+                check(f"field walk after a 0.5 s late start, 190 s, seed {_seed}: {describe_cu(_r, recovery(_r, 0.53))}; "
+                      f"catch-up-ppm=0: {_o['holes']} holes, lost {_o['lost'] / 48:.2f} ms: no more holes than with none, "
+                      f"the backlog played out", _ok)
+                continue
+            t_from = {"late": 0.83, "spike": 11.4, "risefall": 40.0}[_name]
+            rec = recovery(_r, t_from)
+            CU_TABLE.append((_name, _seed, _r, rec))
+            ok = not _r["err"] and 0 <= _r["lost"] <= 48 and rec is not None and rec[1] <= TARGET_MAX
+            if _name == "late":
+                # Proven for a window after the sink starts, then the excess at 0.5 %: +-20 %.
+                want = WINDOW_S + (rec[0] - rec[1]) / 1000 / RATE if rec else 0
+                ok = ok and _r["holes"] == 0 and rec[0] - rec[1] >= 700 and abs(rec[2] - want) <= 0.2 * want
+                extra = f"; back by {rec[2]:.0f} s, a window and 0.5 % imply {want:.0f} s (+-20 %)" if rec else ""
+            elif _name == "spike":
+                ok = ok and _r["holes"] <= 2 and len(_r["begins"]) >= 1 and _r["last_hole"] <= 12.5
+                extra = f"; holes only at the spike (last by {_r['last_hole']:.0f} s)"
+            else:
+                ok = ok and _r["last_hole"] <= 21.5 and len(_r["begins"]) >= 1 and all(b >= 40 + WINDOW_S - 2
+                                                                                       for b in _r["begins"][-1:])
+                extra = f"; holes only on the rise (last by {_r['last_hole']:.0f} s), caught up from a window after the fall"
+            check(f"{_name} seed {_seed}: {describe_cu(_r, rec)}{extra}; target at most {TARGET_MAX} ms", ok)
+
 print("\n--- the table: profile x runs x holes after the start x lost ---")
 print(f"{'tail':5} {'profile':7} {'runs':>4} {'holes':>18} {'lost ms':>30}")
 for _tail in ("c39", "c38", "v101"):
@@ -348,6 +453,16 @@ for _tail in ("c39", "c38", "v101"):
         if _rs:
             print(f"{_tail:5} {_name:7} {len(_rs):>4} {str([r['holes'] for r in _rs]):>18} "
                   f"{str([round(r['lost'] / 48, 1) for r in _rs]):>30}")
+if CU_TABLE:
+    print("\n--- the catch-up table: profile x seed x holes x lost x render lateness before -> after (by) x removed ---")
+    for _name, _seed, _r, _x in CU_TABLE:
+        if _name == "field-long":
+            print(f"  {_name:10} seed {_seed}: holes {_r['holes']} (none: {_x['holes']}), lost {_r['lost'] / 48:.2f} ms "
+                  f"(none: {_x['lost'] / 48:.2f}), removed {_r['removed']:.0f} ms")
+        else:
+            _lv = f"{_x[0]:.0f} -> {_x[1]:.0f} ms (by {_x[2]:.0f} s)" if _x else "none"
+            print(f"  {_name:10} seed {_seed}: holes {_r['holes']}, lost {_r['lost'] / 48:.2f} ms, {_lv}, removed "
+                  f"{_r['removed']:.0f} ms")
 
 # --- a real pulsesink (MR_302M_PULSE_SINK) ----------------------------------------------------------------------
 _PULSE = os.environ.get("MR_302M_PULSE_SINK", "")
@@ -401,8 +516,8 @@ class MonitorCount:
 EDGE_STEPS = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
 _EDGE_HOLD = int(os.environ.get("MR_302M_PULSE_EDGE_HOLD", "30"))
 _EDGE_SEEDS = [int(v) for v in os.environ.get("MR_302M_PULSE_EDGE_SEEDS", "7,8,9").split(",") if v]
-_PULSE_PROFILES = [v for v in os.environ.get("MR_302M_PULSE_PROFILES", "edge,dec-edge,flush,field,rising").split(",")
-                   if v]
+_PULSE_PROFILES = [v for v in os.environ.get("MR_302M_PULSE_PROFILES",
+                                             "edge,dec-edge,flush,field,rising,late,spike").split(",") if v]
 FLUSH_AT_S = (10, 20)                      # the flush profile: two flushes into the sink, 30 s at 30 ms
 REFILL_MAX_MS = 3000                       # mrts::ASRC_SINK_REFILL_MAX_MS
 # dec-edge: the Audio Decoder's sink end, 20 steps of 3 s each 2 ms ahead of the clock, a 10-buffer burst before each.
@@ -430,8 +545,11 @@ def pulse_run(name, secs, seed=7):
         secs = 10 + hold * len(steps)
     if flush:
         secs = 30
+    if name in CATCH:
+        secs = PULSE_CATCH_SECS[name]
     n = secs * 100
-    late = [30.0] * n if flush else (PROFILES[name](n, seed) if not edge else None)
+    gen = CATCH[name][0] if name in CATCH else PROFILES.get(name)
+    late = [30.0] * n if flush else (gen(n, seed) if not edge else None)
     state = {"late": 30.0, "rl": None, "step": -1, "set": []}
 
     def edge_late(i):
@@ -472,7 +590,7 @@ def pulse_run(name, secs, seed=7):
 
         p.get_by_name("outq").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, flusher)
     p.set_state(Gst.State.PLAYING)
-    feed = late_feeder([edge_late] * n if edge else late)
+    feed = late_feeder([edge_late] * n if edge else late, eos=True)
     th = threading.Thread(target=feed, args=(p, p.get_pipeline_clock(), stop), daemon=True)
     th.start()
     bus, t0, stats, errors = p.get_bus(), mon.t0, [], []
@@ -526,30 +644,36 @@ def pulse_run(name, secs, seed=7):
     lat = [s.get("render-lateness-ns", 0) / MS for t, s in stats if t > 20 and s.get("render-lateness-ns", 0)]
     last = stats[-1][1] if stats else {}
     fed = n * BUF
-    # The device term's measured ratio: what mrasrc made of what it took (out/in frames, read at the end).
-    ratio = final.get("out-frames", 0) / max(1, final.get("in-frames", 0))
-    ppb = (ratio - 1) * 1e9
-    want = fed * ratio
+    # What mrasrc made of what it took (its EOS post: exact), the device term's ratio and the catch-up in it; lost is
+    # what it never took and what it made that was not heard (its 32-frame tail leaves after the post: heard too).
+    took, want = final.get("in-frames", 0), final.get("out-frames", 0)
+    ppb = (want / max(1, took) - 1) * 1e9
     return {"holes": mon.holes, "hole_ms": mon.hole_frames / 48, "after": after, "orphans": orphans, "fed": fed,
-            "sounded": mon.sounded, "want": want, "lost": want - mon.sounded, "ppb": ppb, "lat": lat,
+            "sounded": mon.sounded, "want": want, "lost": (fed - took) + (want - mon.sounded), "ppb": ppb, "lat": lat,
             "refills": last.get("margin-refills", 0), "guard": last.get("margin-guard-ns", 0) / MS, "err": errors,
             "t_max": t_max, "steps": steps, "set": state["set"][1:], "holes_after_start": len(holes),
-            "flushed": [round(t, 1) for t in flushed], "refill_ms": refill_ms,
+            "flushed": [round(t, 1) for t in flushed], "refill_ms": refill_ms, "secs": secs,
+            "raw": [(t - 1.0, s.get("render-lateness-ns", 0) / MS) for t, s in stats if s.get("render-lateness-ns", 0)],
+            "begins": [round(t - 1.0, 1) for (_, a), (t, b) in zip(stats, stats[1:])
+                       if b.get("catch-up-state") == "catching-up" and a.get("catch-up-state") != "catching-up"],
+            "removed": final.get("catch-up-removed-ns", 0) / MS, "cu_end": final.get("catch-up-state", "none"),
             "last_sound": mon.last_sound - mon.t0 if mon.last_sound else 0, "end": time.monotonic() - t0}
 
 
-# The pulse pass: the frames heard within the 1 ms allowance (the resampler's 32 frames) of what the device term's
-# measured ratio (mrasrc's out/in frames) makes of the feed.
+# The pulse pass: every frame fed taken, and the frames heard within the 1 ms allowance (the resampler's 32 frames) of
+# what mrasrc made of them (the device term's ratio and the catch-up's).
 def pulse_lost_ok(r):
     return abs(r["lost"]) <= 48
 
 
 PULSE_TABLE = []
+PULSE_TARGET_MAX = 30 + 40 + MARGIN_MS + 10 + 30
 if _PULSE and "pulse" in PARTS:
     for _name in _PULSE_PROFILES:
         for _seed in (_EDGE_SEEDS if _name == "edge" else _DEC_SEEDS if _name == "dec-edge" else [7]):
             _secs = (10 + _EDGE_HOLD * len(EDGE_STEPS) if _name == "edge" else 10 + DEC_HOLD * len(DEC_STEPS)
-                     if _name == "dec-edge" else (30 if _name == "flush" else _PULSE_SECS))
+                     if _name == "dec-edge" else 30 if _name == "flush" else PULSE_CATCH_SECS[_name] if _name in CATCH
+                     else _PULSE_SECS)
             print(f"\n--- a real pulsesink on {_PULSE}: the {_name} profile"
                   f"{f' seed {_seed}' if _name in ('edge', 'dec-edge') else ''}, {_secs} s, holes on its monitor ---")
             wait_quiet()
@@ -558,7 +682,7 @@ if _PULSE and "pulse" in PARTS:
             _lat = f"{min(_r['lat']):.0f}..{max(_r['lat']):.0f}" if _r["lat"] else "none"
             _what = (f"{_r['holes']} holes ({_r['hole_ms']:.0f} ms) on the monitor, {_r['holes_after_start']} after the "
                      f"start, {len(_r['orphans'])} with no refill {_r['orphans']}; fed {_r['fed']}, sounded "
-                     f"{_r['sounded']}, the device term's ratio {_r['ppb'] / 1000:+.2f} ppm makes {_r['want']:.0f}: lost "
+                     f"{_r['sounded']}, mrasrc's ratio {_r['ppb'] / 1000:+.2f} ppm made {_r['want']:.0f}: lost "
                      f"{_r['lost'] / 48:.2f} ms; render lateness {_lat} ms; {_r['refills']} refills; guard "
                      f"{_r['guard']:.1f} ms; errors {_r['err']}")
             if _name in ("edge", "dec-edge"):
@@ -577,6 +701,23 @@ if _PULSE and "pulse" in PARTS:
                       and max(_r["refill_ms"] or [0]) <= REFILL_MAX_MS + 1
                       and _r["holes_after_start"] <= len(FLUSH_AT_S) and 0 <= _r["lost"] <= 48 + 9600 * len(FLUSH_AT_S)
                       and _r["last_sound"] >= _r["end"] - 5.0)   # the drain and teardown take 3-4 s
+            elif _name in CATCH:
+                # The catch-up on a real sink: no hole but the spike's (each with a refill), nothing lost, back to
+                # the server's target (the feed, the guard's 40 ms, the margin, a buffer and the clock's steps).
+                _rec = recovery(_r, {"late": 0.83, "spike": 11.4}[_name])
+                _ok = not _r["err"] and not _r["orphans"] and pulse_lost_ok(_r) and _rec is not None
+                _ok = _ok and _rec[1] <= PULSE_TARGET_MAX and len(_r["begins"]) >= 1
+                if _name == "late":
+                    _want = WINDOW_S + (_rec[0] - _rec[1]) / 1000 / RATE if _rec else 0
+                    _ok = _ok and _r["holes_after_start"] == 0 and _rec[0] - _rec[1] >= 600 and \
+                        abs(_rec[2] - _want) <= 0.2 * _want
+                    _x = f"back by {_rec[2]:.0f} s, a window and 0.5 % imply {_want:.0f} s (+-20 %)" if _rec else ""
+                else:
+                    _ok = _ok and _r["holes_after_start"] <= 2
+                    _x = "holes only at the spike"
+                _lv = f"{_rec[0]:.0f} -> {_rec[1]:.0f} ms" if _rec else "none"
+                check(f"pulse {_name}: {_what}; render lateness {_lv} (target at most {PULSE_TARGET_MAX}), catch-up "
+                      f"from {_r['begins']} s, removed {_r['removed']:.0f} ms ({_r['cu_end']}); {_x}", _ok)
             else:
                 check(f"pulse {_name}: {_what}; {len(_r['after'])} holes after "
                       f"{'the walk reached its max' if _name == 'rising' else 'the start'} "

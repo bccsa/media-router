@@ -11,7 +11,7 @@ import {
     SMOOTHING_COOLDOWN_MAX_MIN,
 } from '@media-router/shared-types';
 import { quoteGstString } from './busHelpers.js';
-import { OUTPUT_MARGIN_MS } from './outputSink.js';
+import { OUTPUT_CATCH_UP_PPM, OUTPUT_MARGIN_MS } from './outputSink.js';
 import type { BusReport } from './PluginModule.js';
 
 export { INGEST_OFFSET_KEY, PID_TRIMS_KEY, SMOOTHING_COOLDOWN_KEY };
@@ -116,8 +116,11 @@ export interface AsrcOptions {
     bypassBelowPpm?: number;
     /** The `GstAudioBaseSink` downstream (run `sync=false`) whose clock the output follows, read on
      *  a timer (B-166); with no bypass, that device term alone (S17). It keeps the sink's margin too
-     *  (`OUTPUT_MARGIN_MS`, B-249). */
+     *  (`OUTPUT_MARGIN_MS`, B-249) and plays what is held past it back down (`OUTPUT_CATCH_UP_PPM`). */
     deviceSink?: string;
+    /** With `deviceSink`: a queue upstream whose level is audio in hand too (the Audio Decoder's, before its
+     *  decoder: a late start's backlog sits there, B-249). */
+    upstreamQueue?: string;
     /** A `pipewiresrc` capture, one buffer per graph cycle, so lost cycles are a gap and no
      *  relock (B-180); capture mode only. */
     cycleInput?: boolean;
@@ -129,6 +132,7 @@ export function buildAsrc({
     outRate,
     bypassBelowPpm,
     deviceSink,
+    upstreamQueue,
     cycleInput = false,
 }: AsrcOptions = {}): string {
     const props = [`name=${name}`];
@@ -143,7 +147,9 @@ export function buildAsrc({
         props.push(
             `device-sink=${/^[\w.-]+$/.test(deviceSink) ? deviceSink : quoteGstString(deviceSink)}`,
             `margin-ms=${OUTPUT_MARGIN_MS}`,
+            `catch-up-ppm=${OUTPUT_CATCH_UP_PPM}`,
         );
+        if (upstreamQueue) props.push(`upstream-queue=${upstreamQueue}`);
     }
     if (outRate && outRate > 0) props.push(`out-rate=${Math.round(outRate)}`);
     if (cycleInput) props.push('cycle-input=true');

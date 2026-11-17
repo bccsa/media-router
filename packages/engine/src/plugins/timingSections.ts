@@ -79,6 +79,11 @@ const correctionRow = (c: ClockCorrection): Row => [
     clockCorrectionText(c),
 ];
 
+/** The catch-up row (B-249) in the operator's words: what it does and how much is left. */
+export function catchingUpText(leftMs: number): string {
+    return `catching up: playing 0.5 % fast, ${ms(leftMs)} ms to go`;
+}
+
 export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     const pub: TimingPublication = { sections: [], data: {}, badge: null };
     const rows: Row[] = [];
@@ -120,6 +125,7 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     if (s.deviceClockPpm !== undefined) {
         rows.push(['deviceClock', 'Device clock', signedPpm(s.deviceClockPpm)]);
     }
+    if (s.catchingUpMs !== undefined) rows.push(['catchUp', 'Catch-up', catchingUpText(s.catchingUpMs)]);
     if (rows.length) section(TIMING_SECTION, 'Timing', rows, pub);
 
     // Numbered by the input's fixed place, so one going dark never renumbers the rest.
@@ -164,6 +170,7 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
         c && (c.measuring ? 'measuring' : c.sourcePpm === undefined ? 'none' : c.sourcePpm * 10);
     put('cc', tenths(s.clockCorrection));
     put('deviceClock', s.deviceClockPpm === undefined ? undefined : s.deviceClockPpm * 10);
+    put('catchUp', s.catchingUpMs);
     for (const i of s.inputs) {
         put(`${i.tap}.n`, i.n);
         put(`${i.tap}.label`, i.label);

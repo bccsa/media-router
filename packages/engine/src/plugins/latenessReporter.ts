@@ -656,6 +656,7 @@ export class LatenessReporter {
         }
         const asrcs = new Map<string | null, AsrcWatch[]>();
         let devicePpm: number | undefined;
+        let catchingUpMs: number | undefined;
         for (const a of this.asrcs.list()) {
             const key = this.asrcKey(a.name);
             const place = key !== null && onRow.has(key) ? key : null;
@@ -663,6 +664,7 @@ export class LatenessReporter {
             if (a.devicePpm !== undefined && Math.abs(a.devicePpm) >= Math.abs(devicePpm ?? 0)) {
                 devicePpm = a.devicePpm;
             }
+            if (a.catchingUpMs !== undefined) catchingUpMs = Math.max(catchingUpMs ?? 0, a.catchingUpMs);
         }
         const inputs = new Map<string, Partial<ModuleTimingInput>>();
         for (const key of onRow) {
@@ -679,6 +681,7 @@ export class LatenessReporter {
             module: {
                 ...(clockCorrection ? { clockCorrection } : {}),
                 ...(devicePpm !== undefined ? { deviceClockPpm: devicePpm } : {}),
+                ...(catchingUpMs !== undefined ? { catchingUpMs } : {}),
             },
         };
     }

@@ -116,7 +116,8 @@ B-148 added `mrasrc-stats`' `rate-known`, the engage's `rate-known` and the lost
 B-166 (B-217) replaced the custom slaving's `device-resyncs` and its `device-relock` and
 `device-resync` events with `device-relocks`, `device-stalls` and `render-lateness-ns` and the
 `relock-device`, `device-stalled` and `device-resumed` events; B-249 added `margin-refills`,
-`margin-silence-ns` and `margin-guard-ns`.
+`margin-silence-ns` and `margin-guard-ns`, and its catch-up `catch-up-state`, `catch-up-excess-ns` and
+`catch-up-removed-ns`.
 
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|

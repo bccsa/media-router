@@ -129,7 +129,7 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain(
             'mixin_out. ! identity name=live_upstream sync=true' +
                 ' ! mrlateness name=lat_render reference=running-time ! audioconvert' +
-                ' ! mrasrc name=outasrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60 ! volume',
+                ' ! mrasrc name=outasrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60 catch-up-ppm=5000 ! volume',
         );
         expect(desc!.pipeline).toContain(
             'pulsesink name=sink device=alsa_output.usb-foo sync=false',
@@ -202,7 +202,7 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         const tail =
             ' ! capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=2" mixin_out.' +
             ' ! identity name=live_upstream sync=true ! mrlateness name=lat_render reference=running-time' +
-            ' ! audioconvert ! mrasrc name=outasrc%ASRC% device-sink=sink margin-ms=60 ! volume name=vol volume=1.00' +
+            ' ! audioconvert ! mrasrc name=outasrc%ASRC% device-sink=sink margin-ms=60 catch-up-ppm=5000 ! volume name=vol volume=1.00' +
             ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
             ' ! queue name=outq leaky=0 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0' +
             ' ! pulsesink name=sink device=alsa_output.usb-foo sync=false provide-clock=false' +
@@ -567,8 +567,8 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
 
     it('both arms play at stamp + D: one offset, and the sink sees a live upstream in each', () => {
         for (const [n, outasrc] of [
-            [1, 'mrasrc name=outasrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60'],
-            [2, 'mrasrc name=outasrc device-sink=sink margin-ms=60'],
+            [1, 'mrasrc name=outasrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60 catch-up-ppm=5000'],
+            [2, 'mrasrc name=outasrc device-sink=sink margin-ms=60 catch-up-ppm=5000'],
         ] as const) {
             const m = makeModule({ sources: n, playout: { playoutOffsetMs: 300 } }).module;
             const p: string = m.buildPipeline({ device: 'alsa_output.usb-foo' })!.pipeline;
@@ -610,10 +610,10 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
             return [...p.matchAll(/mrasrc ([^!]*?) ?!/g)].map((m) => m[1]);
         };
         // One source: outasrc carries the decode term and the device term, one resampler.
-        expect(asrcs(1)).toEqual(['name=outasrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60']);
+        expect(asrcs(1)).toEqual(['name=outasrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60 catch-up-ppm=5000']);
         // Two: outasrc the device term alone, and each live branch matches its source to house rate.
         expect(asrcs(2)).toEqual([
-            'name=outasrc device-sink=sink margin-ms=60',
+            'name=outasrc device-sink=sink margin-ms=60 catch-up-ppm=5000',
             `name=${liveAsrcName('mixin', 'c-0')} bypass-below-ppm=0.5 out-rate=48000`,
             `name=${liveAsrcName('mixin', 'c-1')} bypass-below-ppm=0.5 out-rate=48000`,
         ]);

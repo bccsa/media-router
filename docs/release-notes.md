@@ -686,10 +686,15 @@ elements" below do not start.
   after a gap, and 130 ms or more when it starts. Its feed may come up to
   60 ms later than before without a gap. If the feed falls further behind, or
   stops, you hear one gap; the output then plays on as late as the feed now
-  comes, with that much in hand again. It does not get earlier again by
-  itself: its delay is the latest its feed has come, plus what it keeps in
-  hand and its device's own delay, until the output restarts. The Audio
-  Decoder's output does the same. The output now plays behind a video player
+  comes, with that much in hand again. When it holds more than it needs (after
+  a spike in the feed's lateness, or a start that came up late), it plays it
+  out slightly fast until it is back to 60 ms in hand: at most 0.5 % fast, a
+  pitch change of under 9 cents, nothing skipped. It waits a minute first, so
+  a feed whose lateness keeps going up and down keeps the room its worst
+  moment in that minute needed, then gives back 5 ms a second: 0.8 s too much
+  takes under 4 minutes (60 s, then 160 s). Its Timing shows "Catch-up: catching
+  up" with what is left meanwhile. The Audio Decoder's output does the same.
+  The output now plays behind a video player
   on the same route by that much less the route's playout offset (60 ms by
   default); raise the route's playout offset to bring the picture back in
   line. The Audio Output (302M)'s Lip-Sync Trim is gone from its settings: it

@@ -36,6 +36,8 @@ enum {
     PROP_BYPASS_BELOW_PPM,
     PROP_DEVICE_SINK,
     PROP_MARGIN_MS,
+    PROP_CATCH_UP_PPM,
+    PROP_UPSTREAM_QUEUE,
 };
 
 /* AsrcServo clamps its rates to this range, so the caps keep to it. */
@@ -48,11 +50,19 @@ static const gint64 STATS_INTERVAL_NS = 2 * GST_SECOND;
 static const gsize HISTORY_FRAMES = 64;
 #define BYPASS_MAX_PPM 1000.0
 #define MARGIN_MAX_MS 1000
+/* The catch-up's rate at most (mrts::ASRC_CATCHUP_MAX_PPB: the owner's 0.5 %). */
+#define CATCH_UP_MAX_PPM 5000
 /* The sink guard's cap (mrts::AsrcSinkGuard; sink_margin_ref.GUARD_MAX_MS). */
 #define GUARD_MAX_MS 500
 
 static mrts::AsrcSinkMargin asrc_margin(guint margin_ms, gint rate) {
     return mrts::AsrcSinkMargin((int64_t)margin_ms * rate / 1000, mrts::ASRC_SINK_REFILL_MAX_MS * rate / 1000);
+}
+
+/* Its target is the margin: played out to it, never into it. */
+static mrts::AsrcCatchUp asrc_catch_up(guint margin_ms, guint ppm, gint rate) {
+    const int64_t hz = rate > 0 ? rate : 48000;
+    return mrts::AsrcCatchUp((int64_t)margin_ms * hz / 1000, hz, (int64_t)ppm * 1000);
 }
 
 /* What the capture branches produce (WI-P1-8), and a decoder through audioconvert (S15); the
@@ -61,9 +71,9 @@ static mrts::AsrcSinkMargin asrc_margin(guint margin_ms, gint rate) {
     "audio/x-raw, format = (string) { S16LE, S32LE, F32LE }, rate = (int) [ 1000, 768000 ], " \
     "channels = (int) [ 1, MAX ], layout = (string) interleaved"
 
-/* The device term (WI-P4-4, B-166): a timer thread reads the device sink's clock into mrts::AsrcDeviceTerm, and a
- * probe on the sink's pad starts it, maps each write to its content time and puts silence before a write the device
- * cannot play (the sink margin and guard, B-249). Term, map, margin and guard under `mu`; one per element. */
+/* The device term (WI-P4-4, B-166): a timer thread reads the device sink's clock into mrts::AsrcDeviceTerm, a probe
+ * on the sink's pad starts it, maps each write to its content time and puts silence before a write the device cannot
+ * play (B-249's margin and guard); the catch-up (B-249) reads what is in hand. All under `mu`; one per element. */
 struct AsrcDevice {
     std::mutex mu;
     AsrcDeviceTerm term;
@@ -93,6 +103,13 @@ struct AsrcDevice {
     std::atomic<GThread*> probe_thread{nullptr};
     std::atomic<int64_t> probe_ns{0};              // when the probe last let a buffer on into the sink
     std::atomic<int64_t> block_ns{0}, block_end_ns{0};
+    // The catch-up (catch-up-ppm): the sink's write end after the probe's last buffer (-1: none since a start or a
+    // flush), the frames a flush took from between mrasrc and the sink, and the stats' copy of its state.
+    guint catch_up_ppm = 0;
+    mrts::AsrcCatchUp catch_up;
+    int64_t write_end = -1, flushed = 0;
+    std::atomic<int> cu_state{0};
+    std::atomic<int64_t> cu_excess_ns{0}, cu_removed_ns{0};
     explicit AsrcDevice(const char* name) : lateness(mrts::AsrcDeviceConfig().rate_hz), sink_name(name) {
         gst_audio_info_init(&info);
     }
@@ -112,6 +129,8 @@ struct _GstMrAsrc {
     gdouble bypass_below_ppm;
     gchar* device_sink;
     guint margin_ms;
+    guint catch_up_ppm;
+    gchar* upstream_queue;
 
     /* The device term (AsrcDevice); its sink (a ref) and probe from READY->PAUSED to PAUSED->READY; its timer
      * thread from PAUSED->PLAYING to PLAYING->PAUSED, on the pipeline clock (the runners' house time). */
@@ -125,6 +144,7 @@ struct _GstMrAsrc {
     std::atomic<bool> own_flush;          // the timer's device flush is under way: a FLUSHING push is a drop
     GstPadChainFunction parent_chain;
     gboolean device_only;     // the device term alone (bypass-below-ppm 0): no source lock
+    GstElement* upq;          // upstream-queue (a ref), READY->PAUSED to PAUSED->READY: its level is in hand too
 
     /* Streaming state: set_caps, the transform and the serialized events, all on the streaming
      * thread. Built at negotiation, rebuilt by a flush. */
@@ -134,6 +154,7 @@ struct _GstMrAsrc {
     GstAudioResampler* resampler;   // capture mode never resets it inside a run: a relock keeps its history
     gint32 cur_in_rate;             // the in_rate last given to the resampler
     AsrcServo::Command cmd;         // the command of the buffer being transformed
+    int64_t cu_ppb;                 // ... and the catch-up's in it (B-249)
     gsize total;                    // ... the resampler's output for it, the first `discard` dropped
     gsize discard;                  // outputs still to drop after an engage's priming
     gboolean started;               // a buffer came since the build: there is a tail to drain
@@ -169,10 +190,9 @@ static void asrc_post(GstMrAsrc* self, GstStructure* s) {
                              gst_message_new_element(GST_OBJECT_CAST(self), s));
 }
 
-/* Part 10's mrasrc-stats fields from the servo (a fresh one before any buffer); WI-P3-5's mode, the clocks
- * against house time (ppb, positive fast; 0 unmeasured) and B-148's rate-known; the device term's relocks, stalls
- * and render lateness (0 while unknown; B-166), the margin's refills, their silence and the guard (B-249). The term
- * alone has no source lock: its state is its own. */
+/* Part 10's mrasrc-stats fields from the servo; WI-P3-5's mode, the clocks against house time (ppb, positive fast; 0
+ * unmeasured), B-148's rate-known; the device term's relocks, stalls, render lateness (B-166); the margin's refills,
+ * silence and guard, the catch-up's state, excess and removal (B-249). The term alone: its state is its own. */
 static GstStructure* asrc_stats_structure(const AsrcServo::Stats& s, const AsrcDevice* d, bool device_only) {
     const gchar* state = d && device_only ? (d->locked.load() ? "locked" : "acquiring")
                                           : mrts::asrc_state_name(s.state);
@@ -191,7 +211,10 @@ static GstStructure* asrc_stats_structure(const AsrcServo::Stats& s, const AsrcD
         (gint64)(d ? d->lateness_ns.load() : 0), "margin-refills", G_TYPE_UINT64,
         (guint64)(d ? d->refills.load() : 0), "margin-silence-ns", G_TYPE_INT64,
         (gint64)(d ? d->refill_ns.load() : 0), "margin-guard-ns", G_TYPE_INT64, (gint64)(d ? d->guard_ns.load() : 0),
-        NULL);
+        "catch-up-state", G_TYPE_STRING,
+        d && d->catch_up_ppm ? mrts::asrc_catchup_state_name((mrts::AsrcCatchUp::State)d->cu_state.load()) : "off",
+        "catch-up-excess-ns", G_TYPE_INT64, (gint64)(d ? d->cu_excess_ns.load() : 0), "catch-up-removed-ns",
+        G_TYPE_INT64, (gint64)(d ? d->cu_removed_ns.load() : 0), NULL);
 }
 
 /* The message, then the snapshot: the message's fields plus the run's configuration. */
@@ -327,6 +350,7 @@ static gboolean asrc_build_run(GstMrAsrc* self) {
     self->servo->set_delay((uint32_t)delay);
     self->cur_in_rate = in_hz * MRASRC_RATE_SCALE;
     self->cmd = AsrcServo::Command{self->cur_in_rate, out_hz * MRASRC_RATE_SCALE, false, 0};
+    self->cu_ppb = 0;
     self->total = self->discard = 0;
     self->history->clear();
     self->started = FALSE;
@@ -376,6 +400,7 @@ static void asrc_device_out(GstMrAsrc* self, gsize frames) {
     const guint64 rt = gst_segment_to_running_time(&GST_BASE_TRANSFORM(self)->segment, GST_FORMAT_TIME,
                                                    (guint64)MAX(self->servo->next_content_pts(), (int64_t)0));
     std::lock_guard<std::mutex> g(d->mu);
+    d->catch_up.produced((int64_t)frames, self->cu_ppb);
     if (d->contents.size() >= 4096) d->contents.pop_front();
     d->contents.push_back({self->servo->stats().out_frames, GST_CLOCK_TIME_IS_VALID(rt) ? (int64_t)rt : -1,
                            g_get_monotonic_time() * 1000});
@@ -507,6 +532,68 @@ static gint64 asrc_running(GstMrAsrc* self, GstClock* clock, gint64* mono) {
     return *mono - (gint64)gst_element_get_base_time(GST_ELEMENT_CAST(self));
 }
 
+/* The pipeline's running time now (0 without a clock). */
+static gint64 asrc_now(GstMrAsrc* self) {
+    GstClock* clock = gst_element_get_clock(GST_ELEMENT_CAST(self));
+    if (!clock) return 0;
+    gint64 mono = 0;
+    const gint64 now = asrc_running(self, clock, &mono);
+    gst_object_unref(clock);
+    return now;
+}
+
+/* Under `mu`: where the sink's write of `bytes` (silence and the buffer) ends, for the catch-up. */
+static void asrc_write_end(AsrcDevice* d, GstAudioBaseSink* sink, int64_t bytes) {
+    GstAudioRingBuffer* rb = sink->ringbuffer;
+    if (d->bpf <= 0 || !rb || rb->samples_per_seg <= 0) {
+        d->write_end = -1;
+        return;
+    }
+    const guint64 nu = sink->next_sample;
+    const int64_t segdone =
+        (int64_t)(gst_audio_ring_buffer_get_segdone(rb) - gst_audio_ring_buffer_get_segbase(rb));
+    d->write_end = mrts::asrc_sink_write_pos(nu == (guint64)-1 ? -1 : (int64_t)nu, segdone, rb->samples_per_seg) +
+                   bytes / d->bpf;
+}
+
+/* The catch-up's command for an input buffer of `frames` (B-249): what is in hand when it comes, from the sink's write
+ * end, what waits between mrasrc and the sink, upstream-queue's level and the buffer itself, against the device's
+ * point of no return (the guard held) and how late the content there is. 0 until the sink renders. */
+static int64_t asrc_catch_up_cmd(GstMrAsrc* self, guint64 frames) {
+    AsrcDevice* d = self->dev;
+    GstAudioBaseSink* sink = self->sink;
+    if (!d || !sink || !d->catch_up_ppm) return 0;
+    guint64 level = 0;   // read before `mu`: the queue's lock is its own
+    if (self->upq) g_object_get(self->upq, "current-level-time", &level, NULL);
+    const gint64 now = asrc_now(self);
+    std::lock_guard<std::mutex> g(d->mu);
+    GstAudioRingBuffer* rb = sink->ringbuffer;
+    int64_t cmd = 0;
+    const int64_t dev = d->term.rendering() && d->rate > 0 && d->write_end >= 0 && rb && rb->samples_per_seg > 0
+                            ? asrc_device_time(sink) : -1;
+    if (dev > 0) {
+        const int64_t rate = d->rate, sps = rb->samples_per_seg;
+        const int64_t play = (int64_t)gst_util_uint64_scale_int((guint64)dev, rate, GST_SECOND);
+        const int64_t segdone =
+            (int64_t)(gst_audio_ring_buffer_get_segdone(rb) - gst_audio_ring_buffer_get_segbase(rb));
+        const int64_t consumed = mrts::asrc_sink_consumed(segdone, sps, true, play, d->own_ring ? 0 : d->guard.frames());
+        const int64_t held = std::max<int64_t>(0, d->pushed.load() - d->rendered.load() - d->flushed);
+        const int64_t buf = (int64_t)gst_util_uint64_scale_int(frames, GST_AUDIO_INFO_RATE(&self->out_info),
+                                                               MAX(1, GST_AUDIO_INFO_RATE(&self->in_info)));
+        const int64_t total =
+            d->write_end + held + (int64_t)gst_util_uint64_scale_int(level, rate, GST_SECOND) + buf;
+        int64_t late = 0;
+        const bool due = d->lateness.due(now, consumed, &late);
+        cmd = d->catch_up.sample(now, total, consumed, due, due ? late * rate / GST_SECOND : 0);
+    }
+    const mrts::AsrcCatchUp::State st = d->catch_up.state();
+    d->cu_state.store((int)st);
+    d->cu_excess_ns.store(st == mrts::AsrcCatchUp::State::watching || d->rate <= 0
+                              ? 0 : std::max<int64_t>(0, d->catch_up.excess()) * GST_SECOND / d->rate);
+    if (d->rate > 0) d->cu_removed_ns.store(d->catch_up.removed() * GST_SECOND / d->rate);
+    return cmd;
+}
+
 /* The sink's pad: each buffer counts as rendered and maps the write before it to its content time; the first after
  * a render starts the term (DEV-P4a), new caps stop it. A write the device cannot play, or the first, gets the
  * margin's silence first (B-249), PTS-less so the sink plays it as next. */
@@ -517,6 +604,13 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
     if (!d || !sink) return GST_PAD_PROBE_OK;
     if (info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) {
         GstEvent* e = GST_PAD_PROBE_INFO_EVENT(info);
+        if (GST_EVENT_TYPE(e) == GST_EVENT_FLUSH_STOP) {   // nothing waits between mrasrc and the sink now
+            std::lock_guard<std::mutex> g(d->mu);
+            d->flushed = d->pushed.load() - d->rendered.load();
+            d->write_end = -1;
+            d->catch_up.reset(asrc_now(self));
+            return GST_PAD_PROBE_OK;
+        }
         if (GST_EVENT_TYPE(e) != GST_EVENT_CAPS) return GST_PAD_PROBE_OK;
         GstCaps* caps = NULL;
         gst_event_parse_caps(e, &caps);
@@ -534,6 +628,9 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
         d->info = ai;
         d->margin = asrc_margin(d->margin_ms, d->rate);
         d->guard = mrts::AsrcSinkGuard(0, (int64_t)GUARD_MAX_MS * d->rate / 1000);
+        d->catch_up = asrc_catch_up(d->margin_ms, d->catch_up_ppm, d->rate);
+        d->catch_up.reset(asrc_now(self));
+        d->write_end = -1;
         if (GST_AUDIO_INFO_RATE(&ai) != d->term.config().rate_hz) {   // another rate: another device
             mrts::AsrcDeviceConfig c;
             c.rate_hz = GST_AUDIO_INFO_RATE(&ai);
@@ -612,7 +709,9 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
             GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
             const bool rendering = d->term.rendering();
             one(buf, &ev);
+            if (!rendering && d->term.rendering()) d->catch_up.reset(now);   // the sink (re)started
             GstBuffer* sil = refill(GST_BUFFER_OFFSET(buf), rendering);
+            asrc_write_end(d, sink, (int64_t)((sil ? gst_buffer_get_size(sil) : 0) + gst_buffer_get_size(buf)));
             if (sil) {   // one buffer, the silence first: the probe's data stays a buffer
                 const guint64 off = GST_BUFFER_OFFSET(buf);
                 const bool disc = GST_BUFFER_IS_DISCONT(buf);
@@ -626,8 +725,10 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
             GstBufferList* l = GST_PAD_PROBE_INFO_BUFFER_LIST(info);
             const bool rendering = d->term.rendering();
             for (guint i = 0; i < gst_buffer_list_length(l); i++) one(gst_buffer_list_get(l, i), &ev);
+            if (!rendering && d->term.rendering()) d->catch_up.reset(now);
             GstBuffer* sil =
                 gst_buffer_list_length(l) ? refill(GST_BUFFER_OFFSET(gst_buffer_list_get(l, 0)), rendering) : NULL;
+            asrc_write_end(d, sink, (int64_t)((sil ? gst_buffer_get_size(sil) : 0) + gst_buffer_list_calculate_size(l)));
             if (sil) {
                 l = gst_buffer_list_make_writable(l);
                 GST_BUFFER_PTS(sil) = GST_BUFFER_DURATION(sil) = GST_CLOCK_TIME_NONE;
@@ -762,10 +863,12 @@ static GstFlowReturn asrc_chain(GstPad* pad, GstObject* parent, GstBuffer* buf) 
 static gboolean asrc_install_device(GstMrAsrc* self) {
     GST_OBJECT_LOCK(self);
     gchar* name = g_strdup(self->device_sink);
-    const guint margin_ms = self->margin_ms;
+    const guint margin_ms = self->margin_ms, catch_up_ppm = self->catch_up_ppm;
+    gchar* upq = g_strdup(self->upstream_queue);
     GST_OBJECT_UNLOCK(self);
     if (!name || !*name) {
         g_free(name);
+        g_free(upq);
         delete self->dev;
         self->dev = NULL;
         return TRUE;
@@ -780,17 +883,37 @@ static gboolean asrc_install_device(GstMrAsrc* self) {
                            el ? G_OBJECT_TYPE_NAME(el) : "none"));
         if (el) gst_object_unref(el);
         g_free(name);
+        g_free(upq);
         return FALSE;
     }
+    if (upq && *upq) {   // a builder bug too; by name: a decodebin before mrasrc links only once it plays
+        GstObject* bin = gst_object_get_parent(GST_OBJECT(self));
+        GstElement* q = bin && GST_IS_BIN(bin) ? gst_bin_get_by_name_recurse_up(GST_BIN(bin), upq) : NULL;
+        if (bin) gst_object_unref(bin);
+        if (!q || !g_object_class_find_property(G_OBJECT_GET_CLASS(q), "current-level-time")) {
+            GST_ELEMENT_ERROR(self, CORE, FAILED, ("upstream-queue \"%s\": %s", upq,
+                              q ? "no current-level-time" : "no element of that name in the pipeline"), (NULL));
+            if (q) gst_object_unref(q);
+            gst_object_unref(el);
+            g_free(name);
+            g_free(upq);
+            return FALSE;
+        }
+        self->upq = q;
+    }
+    g_free(upq);
     if (self->dev && self->dev->sink_name != name) {
         delete self->dev;
         self->dev = NULL;
     }
     if (!self->dev) self->dev = new AsrcDevice(name);
-    if (self->dev->margin_ms != margin_ms) {
+    if (self->dev->margin_ms != margin_ms || self->dev->catch_up_ppm != catch_up_ppm) {
         self->dev->margin_ms = margin_ms;
         self->dev->margin = asrc_margin(margin_ms, self->dev->rate);
+        self->dev->catch_up_ppm = catch_up_ppm;
+        self->dev->catch_up = asrc_catch_up(margin_ms, catch_up_ppm, self->dev->rate);
     }
+    self->dev->write_end = -1;
     self->dev->have_prev = false;
     self->dev->contents.clear();
     self->dev->own_ring = GST_IS_AUDIO_SINK(el);
@@ -807,6 +930,8 @@ static gboolean asrc_install_device(GstMrAsrc* self) {
 
 /* PAUSED->READY: the probe and the sink go; the term stays for the next start (READY->NULL frees it). */
 static void asrc_remove_device(GstMrAsrc* self) {
+    if (self->upq) gst_object_unref(self->upq);
+    self->upq = NULL;
     if (!self->sink) return;
     gst_pad_remove_probe(GST_BASE_SINK_PAD(self->sink), self->probe_id);
     self->probe_id = 0;
@@ -962,7 +1087,8 @@ static GstFlowReturn asrc_prepare_output_buffer(GstBaseTransform* trans, GstBuff
     const int64_t dev = self->dev ? self->dev->eps_ppb.load() : 0;
     /* The duration as the source stamped it: pipewiresrc's is the cycle's size (B-180). */
     const gint64 dur = GST_BUFFER_DURATION_IS_VALID(in) ? (gint64)GST_BUFFER_DURATION(in) : -1;
-    self->cmd = self->servo->push(pts, (uint32_t)frames, discont, dev, dur);
+    self->cu_ppb = asrc_catch_up_cmd(self, frames);
+    self->cmd = self->servo->push(pts, (uint32_t)frames, discont, dev, dur, self->cu_ppb);
     if (self->cmd.drain) asrc_drain_tail(self);
     if (self->cmd.engage) asrc_prime(self);
     if (!self->cmd.pass && self->cmd.in_rate != self->cur_in_rate) {
@@ -1198,6 +1324,17 @@ static void asrc_set_property(GObject* object, guint prop_id, const GValue* valu
             self->margin_ms = g_value_get_uint(value);
             GST_OBJECT_UNLOCK(self);
             break;
+        case PROP_CATCH_UP_PPM:
+            GST_OBJECT_LOCK(self);
+            self->catch_up_ppm = g_value_get_uint(value);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_UPSTREAM_QUEUE:
+            GST_OBJECT_LOCK(self);
+            g_free(self->upstream_queue);
+            self->upstream_queue = g_value_dup_string(value);
+            GST_OBJECT_UNLOCK(self);
+            break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
             break;
@@ -1238,6 +1375,16 @@ static void asrc_get_property(GObject* object, guint prop_id, GValue* value, GPa
             g_value_set_uint(value, self->margin_ms);
             GST_OBJECT_UNLOCK(self);
             break;
+        case PROP_CATCH_UP_PPM:
+            GST_OBJECT_LOCK(self);
+            g_value_set_uint(value, self->catch_up_ppm);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_UPSTREAM_QUEUE:
+            GST_OBJECT_LOCK(self);
+            g_value_set_string(value, self->upstream_queue ? self->upstream_queue : "");
+            GST_OBJECT_UNLOCK(self);
+            break;
         case PROP_STATS: {
             g_mutex_lock(&self->snap_lock);
             GstStructure* s = self->snapshot ? gst_structure_copy(self->snapshot) : NULL;
@@ -1259,6 +1406,7 @@ static void asrc_finalize(GObject* object) {
     if (self->snapshot) gst_structure_free(self->snapshot);
     g_mutex_clear(&self->snap_lock);
     g_free(self->device_sink);
+    g_free(self->upstream_queue);
     delete self->history;
     G_OBJECT_CLASS(gst_mrasrc_parent_class)->finalize(object);
 }
@@ -1272,6 +1420,10 @@ static void gst_mrasrc_init(GstMrAsrc* self) {
     self->bypass_below_ppm = 0.0;
     self->device_sink = NULL;
     self->margin_ms = 0;
+    self->catch_up_ppm = 0;
+    self->upstream_queue = NULL;
+    self->upq = NULL;
+    self->cu_ppb = 0;
     self->dev = NULL;
     self->sink = NULL;
     self->probe_id = 0;
@@ -1345,7 +1497,8 @@ static void gst_mrasrc_class_init(GstMrAsrcClass* klass) {
                            "The last mrasrc-stats post (state, ratio-ppb, phase-err-ns, relocks, "
                            "in-frames, out-frames, discont-in, dropped-frames, gaps, lost-frames, "
                            "mode, source-ppb, device-ppb, rate-known, device-relocks, device-stalls, "
-                           "render-lateness-ns, margin-refills, margin-silence-ns, margin-guard-ns) with the run's format, "
+                           "render-lateness-ns, margin-refills, margin-silence-ns, margin-guard-ns, catch-up-state, "
+                           "catch-up-excess-ns, catch-up-removed-ns) with the run's format, "
                            "channels, in-rate, out-rate, "
                            "delay-frames, buffers, resampler-updates and device-reads.",
                            GST_TYPE_STRUCTURE,
@@ -1376,6 +1529,22 @@ static void gst_mrasrc_class_init(GstMrAsrcClass* klass) {
                           "far ahead of the device; late audio then plays late, never cut. 0: none. "
                           "Applies at READY to PAUSED.",
                           0, MARGIN_MAX_MS, 0, at_start));
+    g_object_class_install_property(
+        gobject_class, PROP_CATCH_UP_PPM,
+        g_param_spec_uint("catch-up-ppm", "Catch-up (ppm)",
+                          "With device-sink and margin-ms: audio held past the margin for a whole 60 s (its least "
+                          "over that window, so a walking lateness keeps its room) is played out this much fast by "
+                          "the resampler, never dropped, until the output is back at its margin. 0: never. "
+                          "Applies at READY to PAUSED.",
+                          0, CATCH_UP_MAX_PPM, 0, at_start));
+    g_object_class_install_property(
+        gobject_class, PROP_UPSTREAM_QUEUE,
+        g_param_spec_string("upstream-queue", "Upstream queue",
+                            "With catch-up-ppm: the name of a queue upstream (found by name in the pipeline) whose level "
+                            "counts as audio in hand "
+                            "(one before a decoder: its backlog after a late start). \"\": none. Found at READY to "
+                            "PAUSED.",
+                            "", at_start));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */
     MrtsHouseCommon::install(gobject_class);
 

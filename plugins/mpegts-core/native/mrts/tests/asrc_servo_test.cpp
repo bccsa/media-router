@@ -3413,6 +3413,63 @@ static void test_sink_margin() {
     CHECK("... a capped refill counts its capped silence", mc.refills() == 1 && mc.silence_total() == CAP);
 }
 
+static void test_catch_up() {
+    std::printf("\n--- the catch-up (B-249) ---\n");
+    // The servo: the command multiplies the device term's ratio; each output frame carries 1 + it of content.
+    AsrcServoConfig cfg;
+    cfg.device = true;
+    AsrcServo a(48000, 48000, cfg), b(48000, 48000, cfg);
+    const int64_t DEV = 40000, CU = ASRC_CATCHUP_MAX_PPB;
+    AsrcServo::Command ca{}, cb{};
+    for (int k = 0; k < 1000; k++) {
+        ca = a.push(T0 + k * 10 * MS, 480, k == 0, DEV, -1, 0);
+        cb = b.push(T0 + k * 10 * MS, 480, k == 0, DEV, -1, CU);
+        a.produced(480);
+        b.produced(480);
+    }
+    const int64_t want_rate = (int64_t)std::llround(48000000.0 * 1.00004 * 1.005);
+    char name[300];
+    std::snprintf(name, sizeof name, "the resampler's in_rate carries both: %d (round(48e6 x 1.00004 x 1.005) = %lld), "
+                  "%d without the catch-up", cb.in_rate, (long long)want_rate, ca.in_rate);
+    CHECK(name, iabs(cb.in_rate - want_rate) <= 1 && iabs(ca.in_rate - 48001920) <= 1);
+    const int64_t ha = a.next_content_pts() - a.t0(), hb = b.next_content_pts() - b.t0();
+    std::snprintf(name, sizeof name, "480,000 output frames carry 0.5 %% more content: %.4f ms against %.4f ms (+%.4f, "
+                  "want 50.0020), the labels the same frames (%lld, %lld ns)", hb / 1e6, ha / 1e6, (hb - ha) / 1e6,
+                  (long long)(b.next_pts() - b.t0()), (long long)(a.next_pts() - a.t0()));
+    CHECK(name, iabs((hb - ha) - (int64_t)(10 * S * 1.00004 * 0.005)) <= 2000 && b.next_pts() == a.next_pts());
+    const AsrcServo::Stats sb = b.stats();
+    CHECK("the ratio stat is out/in less 1 with the catch-up in it (-0.5 % and the device's 40 ppm)",
+          iabs(sb.ratio_ppb - (int64_t)(1e9 / (1.00004 * 1.005) - 1e9)) <= 2);
+    AsrcServo c(48000, 48000, cfg);
+    const AsrcServo::Command cc = c.push(T0, 480, true, 0, -1, 3 * CU);
+    AsrcServo cap(48000, 48000, AsrcServoConfig());
+    const AsrcServo::Command ccap = cap.push(T0, 480, true, 0, -1, CU);
+    CHECK("the command is held to 0.5 %, and is the device mode's alone",
+          iabs(cc.in_rate - 48240000) <= 1 && ccap.in_rate == 48000000 - 1);
+    // The catch-up itself (py/catch_up_ref.py; catch_up_parity_test.py holds it to it line for line).
+    AsrcCatchUp u(100, 1000, CU, 10 * S, 20);
+    u.reset(0);
+    int64_t cmd = 0;
+    for (int k = 0; k < 10; k++) cmd |= u.sample(k * S, 1300, 1000);
+    CHECK("a window of watching first: no command", cmd == 0 && u.state() == AsrcCatchUp::State::watching);
+    cmd = u.sample(10 * S, 1300, 1000);
+    CHECK("then the trough less the margin: 200 frames, played out at 0.5 %",
+          u.excess() == 200 && cmd == CU && u.state() == AsrcCatchUp::State::catching_up);
+    u.produced(10000, cmd);
+    u.sample(11 * S, 1250, 1000);
+    CHECK("what it removed is counted, not read as a rise", u.removed() == 50 && u.excess() == 150);
+    u.sample(12 * S, 1040, 1000);
+    CHECK("a lateness rise ends it at once", u.excess() == -60 && u.command() == 0 &&
+                                                 u.state() == AsrcCatchUp::State::idle);
+    AsrcCatchUp v(100, 1000, CU, 10 * S, 20);
+    v.reset(0);
+    for (int k = 0; k <= 10; k++) v.sample(k * S, 5000, 1000, true, 150);
+    CHECK("audio not yet due is no excess", v.excess() == 50 && v.command() == CU);
+    v.reset(20 * S);
+    CHECK("a reset clears it", v.command() == 0 && v.state() == AsrcCatchUp::State::watching &&
+                                   !std::strcmp(asrc_catchup_state_name(v.state()), "watching"));
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && !std::strcmp(argv[1], "--sweep")) return sweep(std::atoi(argv[2]));
     if (const char* e = std::getenv("MRTS_FIXTURES")) {
@@ -3467,5 +3524,6 @@ int main(int argc, char** argv) {
     test_dev_replay_format();
     test_dev_recalibrated();
     test_sink_margin();
+    test_catch_up();
     return test_summary("asrc_servo");
 }

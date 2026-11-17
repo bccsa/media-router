@@ -21,8 +21,8 @@ const BUS_IN =
 /** The whole string at D = 300 ms with the default queue, for one decoder branch. */
 function decodeString(decoder: string): string {
     return (
-        `${BUS_IN} ! mrtsdemux name=addemux media=audio ! queue leaky=0 max-size-time=300000000 max-size-buffers=0 max-size-bytes=0 ! ${decoder}` +
-        ' ! audioconvert ! mrlateness name=lat_render reference=running-time ! mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60' +
+        `${BUS_IN} ! mrtsdemux name=addemux media=audio ! queue name=decq leaky=0 max-size-time=300000000 max-size-buffers=0 max-size-bytes=0 ! ${decoder}` +
+        ' ! audioconvert ! mrlateness name=lat_render reference=running-time ! mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60 catch-up-ppm=5000 upstream-queue=decq' +
         ' ! audioconvert ! volume name=vol volume=1.00 ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
         ' ! pulsesink name=sink device=MR_PW_dec-1 sync=false provide-clock=false processing-deadline=100000000 buffer-time=100000 ts-offset=200000000 max-lateness=-1' +
         ' stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true"'
@@ -117,7 +117,7 @@ describe('AudioDecoderModule.buildPipeline', () => {
         const { module } = makeModule({ playoutOffsetMs: 300 });
         module.probeResult = { codec: 'opus' };
         const p = module.buildPipeline({})!.pipeline;
-        const from = p.indexOf(' ! queue leaky=0 ') + 3;
+        const from = p.indexOf(' ! queue name=decq leaky=0 ') + 3;
         const to = p.indexOf(' stream-properties=', from);
         expect(from).toBeGreaterThan(3);
         expect(
@@ -128,7 +128,7 @@ describe('AudioDecoderModule.buildPipeline', () => {
                 .replace('ts-offset=200000000', 'ts-offset=%TS_OFFSET%'),
         ).toBe(fixture);
         // No queue between the ASRC and the sink: the push into the sink is the ASRC's own chain.
-        expect(fixture.slice(fixture.indexOf('mrasrc '))).not.toContain('queue');
+        expect(fixture.slice(fixture.indexOf('mrasrc '))).not.toContain('! queue');
     });
 
     it('puts the parser directly after the demux for AAC (unframed → avdec_aac fails without it)', () => {
@@ -218,18 +218,18 @@ describe('AudioDecoderModule.buildPipeline', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'opus' };
         const desc = module.buildPipeline({});
-        expect(desc!.pipeline).toMatch(/mrtsdemux[^!]+! queue leaky=0/);
+        expect(desc!.pipeline).toMatch(/mrtsdemux[^!]+! queue name=decq leaky=0/);
         // Unset bufferMs → safe 300 ms default (bursty demuxer-fed sources).
-        expect(desc!.pipeline).toContain('queue leaky=0 max-size-time=300000000');
+        expect(desc!.pipeline).toContain('queue name=decq leaky=0 max-size-time=300000000');
         // EXPLICIT low values are honoured (trapped fill in this non-leaky
         // queue lands 1:1 as A/V skew on re-encode paths) down to a 50 ms floor.
         const tuned = module.buildPipeline({ bufferMs: 100 });
-        expect(tuned!.pipeline).toContain('queue leaky=0 max-size-time=100000000');
+        expect(tuned!.pipeline).toContain('queue name=decq leaky=0 max-size-time=100000000');
         const floored = module.buildPipeline({ bufferMs: 0 });
-        expect(floored!.pipeline).toContain('queue leaky=0 max-size-time=50000000');
+        expect(floored!.pipeline).toContain('queue name=decq leaky=0 max-size-time=50000000');
         // Values above the default pass through (clamped at 5000).
         const raised = module.buildPipeline({ bufferMs: 1500 });
-        expect(raised!.pipeline).toContain('queue leaky=0 max-size-time=1500000000');
+        expect(raised!.pipeline).toContain('queue name=decq leaky=0 max-size-time=1500000000');
     });
 });
 
@@ -267,7 +267,7 @@ describe('AudioDecoderModule playout offset', () => {
         // first; content time comes from the demux's formula, nothing to align.
         const { module } = makeModule({ playoutOffsetMs: 300 });
         const desc = module.buildPipeline({})!;
-        expect(desc.pipeline).toContain(' ! mrtsdemux name=addemux media=audio ! queue leaky=0 ');
+        expect(desc.pipeline).toContain(' ! mrtsdemux name=addemux media=audio ! queue name=decq leaky=0 ');
         expect(desc.pipeline).not.toMatch(/\btsdemux\b/);
         expect(desc.pipeline).not.toContain('audioresample');
     });
@@ -305,7 +305,7 @@ describe('AudioDecoderModule playout offset', () => {
         const { module } = makeModule({ playoutOffsetMs: 300 });
         module.probeResult = { codec: 'opus' };
         const p = module.buildPipeline({})!.pipeline;
-        expect(p).toContain('mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60 !');
+        expect(p).toContain('mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60 catch-up-ppm=5000 upstream-queue=decq !');
         expect(p).toContain('pulsesink name=sink device=MR_PW_dec-1 sync=false ');
         expect(p).not.toContain('slave-method');
         expect(p.match(/\bmrasrc /g)).toHaveLength(1);

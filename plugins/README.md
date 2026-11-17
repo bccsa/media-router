@@ -2617,7 +2617,19 @@ the stream may have run dry (its buffer did not wait a segment in a queue
 before the sink, and no push from `mrasrc`'s own chain blocked 2 ms in the
 sink less than a segment before). A refill is at most 3 s; a longer gap is
 crossed by the writes after it. `mrasrc-stats` adds `margin-refills`,
-`margin-silence-ns` and `margin-guard-ns`.
+`margin-silence-ns` and `margin-guard-ns`. With `catch-up-ppm` (the outputs'
+`OUTPUT_CATCH_UP_PPM` 5000, the owner's 0.5 %, at most that) audio held past
+the margin is played back down to it: at each input buffer `mrasrc` reads what
+is in hand (the sink's write end, what waits between it and the sink, the
+level of `upstream-queue` where named: the Audio Decoder's `decq`, before its
+decoder, where a late start's backlog sits, and the buffer) less the device's
+point of no return, no more than how late the content there is; once the least
+of that over 60 s is 20 ms or more past the margin, the ratio runs that much
+fast (times the device term, the labels counting the content) until none is
+left. Nothing is dropped; a lateness rise mid-way ends it. `mrasrc-stats` adds
+`catch-up-state` (`off`, `watching` for the first 60 s after a start or flush,
+`idle`, `catching-up`), `catch-up-excess-ns` and `catch-up-removed-ns`; the
+module's Timing shows "Catch-up: catching up" while it runs.
 `mrasrc-stats` gains `mode` (`capture`, `bypass`, `decode`, `device`,
 `decode+device`), `source-ppb` and `device-ppb` (each clock against house
 time, positive when fast), `rate-known`, `device-relocks`, `device-stalls`

@@ -1,7 +1,8 @@
 // The ASRC (plan ch. 5 part 4.5, WI-P1-8; ch. 7 part 4.4, WI-P3-5, B-148), py/asrc_bypass_ref.py ported rule
 // for rule (OQ-1, S30): a ClockLock gives the source rate and a phase servo commands the resampler; its device
 // term follows the sink's clock on a timer (ch. 8 WI-P4-4, B-166: py/asrc_device_ref.py), its sink margin rebuilt
-// after a hole (B-249: py/sink_margin_ref.py). Integer-only.
+// after a hole and what is held past it played out slightly fast (B-249: py/sink_margin_ref.py,
+// py/catch_up_ref.py). Integer-only.
 #pragma once
 #include <cstdint>
 #include <deque>
@@ -122,11 +123,11 @@ class AsrcServo {
 
     // The resampler's lookahead in input frames (gst_audio_resampler_get_max_latency).
     void set_delay(uint32_t frames) { delay_ = frames; }
-    // pts_ns: the capture time (capture) or content time (decode) of the buffer's first frame;
-    // every buffer carries one. device_ppb: AsrcDeviceTerm::device_ppb(), with cfg.device only. dur_ns:
-    // the buffer's duration as its source stamped it (a cycle's size), < 0 when it has none.
+    // pts_ns: the capture time (capture) or content time (decode) of the buffer's first frame. device_ppb:
+    // AsrcDeviceTerm::device_ppb() and catchup_ppb: AsrcCatchUp's command, with cfg.device only. dur_ns: the
+    // buffer's duration as its source stamped it (a cycle's size), < 0 when it has none.
     Command push(int64_t pts_ns, uint32_t frames, bool discont, int64_t device_ppb = 0,
-                 int64_t dur_ns = -1);
+                 int64_t dur_ns = -1, int64_t catchup_ppb = 0);
     void produced(uint32_t frames);
     // Decode and device modes: the content breaks at a GAP, or before a DISCONT buffer (so the tail leaves
     // before the relock's jump is measured); the next push opens an epoch. True when the resampler holds a
@@ -163,6 +164,7 @@ class AsrcServo {
     int64_t frames_over(int64_t ns) const;
     int64_t measure_phase() const;
     int64_t ratio_ppb() const;
+    int64_t out_ppb() const;
     int32_t in_rate() const;
     void open_epoch(const char* why);
     void new_epoch(int64_t pts, const char* why);
@@ -195,6 +197,7 @@ class AsrcServo {
     int64_t start2_ = 0;         // input position of the epoch's first output, half frames
     int64_t eps_cmd_ = 0;        // ppb
     int64_t dev_ppb_ = 0;        // the device ε the last command carried
+    int64_t cu_ppb_ = 0;         // ... and the catch-up's (B-249): the content per output frame is (1 + ε_dev)(1 + it)
     int64_t phase_err_ = 0;
     uint64_t relocks_ = 0, discont_in_ = 0, gaps_ = 0;
     bool oob_ = false;           // out-of-bounds raised and not yet back inside
@@ -329,6 +332,9 @@ class AsrcRenderLateness {
     void flush() { map_.clear(); }
     // False while no buffer of the map is at the device's position.
     bool at(int64_t now_ns, int64_t dev_ns, int64_t* lateness_ns);
+    // How late the content at write position `pos` is (ns), not popping; silence before a buffer counts as its
+    // lateness (B-249's catch-up). False when no buffer of the map ends past `pos`.
+    bool due(int64_t now_ns, int64_t pos, int64_t* lateness_ns) const;
 
   private:
     struct Seg {
@@ -387,5 +393,40 @@ class AsrcSinkMargin {
     uint64_t refills_ = 0;
     int64_t silence_ = 0;
 };
+
+// The catch-up (B-249): py/catch_up_ref.py's CatchUp. A sample per input buffer: where the audio in hand ends, the
+// device's point of no return and how late the content there is (all sink frames; have_due false: unknown). The least
+// sample over the window less the margin is the excess, played out at `ppb` from `start` frames until none is left.
+constexpr int64_t ASRC_CATCHUP_MAX_PPB = 5000000;        // 0.5 %: the owner's drain rate (8.6 cents)
+constexpr int64_t ASRC_CATCHUP_WINDOW_NS = 60000000000LL;
+constexpr int64_t ASRC_CATCHUP_START_MS = 20;
+
+class AsrcCatchUp {
+  public:
+    enum class State { watching, idle, catching_up };
+    explicit AsrcCatchUp(int64_t margin_frames = 0, int64_t rate_hz = 48000, int64_t ppb = ASRC_CATCHUP_MAX_PPB,
+                         int64_t window_ns = ASRC_CATCHUP_WINDOW_NS, int64_t start_frames = -1);
+    void reset(int64_t t_ns);
+    // The command (ppb) for this buffer's output.
+    int64_t sample(int64_t t_ns, int64_t total, int64_t consumed, bool have_due = false, int64_t due = 0);
+    void produced(int64_t frames, int64_t ppb);
+    int64_t command() const { return active_ ? ppb_ : 0; }
+    State state() const;
+    int64_t excess() const { return excess_; }
+    int64_t removed() const { return removed_; }
+
+  private:
+    struct Point {
+        int64_t t, a;
+    };
+    int64_t margin_, ppb_, window_, start_;
+    std::deque<Point> win_;   // the samples with what was removed then added, increasing
+    int64_t since_ = 0;
+    bool active_ = false, have_prev_ = false;
+    int64_t prev_ = 0, excess_ = 0;
+    int64_t removed_ = 0, removed_frac_ = 0;   // frames, and ppb of a frame in [0, 1e9)
+};
+
+const char* asrc_catchup_state_name(AsrcCatchUp::State s);
 
 }  // namespace mrts

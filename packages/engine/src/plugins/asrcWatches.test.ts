@@ -57,6 +57,7 @@ describe('launchElements', () => {
             'bypass-below-ppm': '0.5',
             'device-sink': 'sink',
             'margin-ms': '60',
+            'catch-up-ppm': '5000',
         });
         expect(els.get('devasrc')!['device-sink']).toBe('out sink');
         expect(launchElements('xmrasrc name=a ! mrasrcx name=b', 'mrasrc').size).toBe(0);
@@ -104,6 +105,12 @@ describe('AsrcWatches', () => {
     it('the device term alone: a device clock, no correction', () => {
         const w = watches();
         w.take('mrasrc-stats', 'devasrc', stats('device', { 'device-ppb': 40_000 }), 0);
+        expect(one(w, 'devasrc')).toEqual({ name: 'devasrc', devicePpm: 40 });
+        // B-249's catch-up: what is left of the excess while it plays it out, nothing once it is idle.
+        const cu = { 'device-ppb': 40_000, 'catch-up-state': 'catching-up', 'catch-up-excess-ns': 120_400_000 };
+        w.take('mrasrc-stats', 'devasrc', stats('device', cu), 0);
+        expect(one(w, 'devasrc')).toEqual({ name: 'devasrc', devicePpm: 40, catchingUpMs: 120.4 });
+        w.take('mrasrc-stats', 'devasrc', stats('device', { ...cu, 'catch-up-state': 'idle' }), 0);
         expect(one(w, 'devasrc')).toEqual({ name: 'devasrc', devicePpm: 40 });
         // A live branch's ASRC (no description entry) is known by its mode.
         w.take('mrasrc-stats', 'mixin_asrc_abc123', stats('device', { 'device-ppb': 5 }), 0);

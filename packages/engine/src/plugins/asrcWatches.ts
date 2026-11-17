@@ -42,6 +42,8 @@ export interface AsrcWatch {
     devicePpm?: number;
     /** The source fit past the bound (ppm, positive fast), while it stands. */
     outOfBoundsPpm?: number;
+    /** An output's catch-up (B-249) while it plays its excess out: what is left of it (ms). */
+    catchingUpMs?: number;
 }
 
 /** An `mrasrc-event` of a consumer ASRC, for the module's log. */
@@ -68,6 +70,8 @@ interface Entry {
     rateKnown: boolean;
     /** The out-of-bounds fit as a rate (ppb), while it stands. */
     outOfBoundsPpb?: number;
+    /** `catch-up-state` is `catching-up`: its `catch-up-excess-ns`. */
+    catchingUpNs?: number;
 }
 
 type Payload = Record<string, unknown>;
@@ -142,6 +146,9 @@ export class AsrcWatches {
             inFrames,
             relocks,
             rateKnown: p['rate-known'] !== false,
+            ...(str(p, 'catch-up-state') === 'catching-up'
+                ? { catchingUpNs: num(p, 'catch-up-excess-ns') }
+                : {}),
             ...(old && !again && old.outOfBoundsPpb !== undefined
                 ? { outOfBoundsPpb: old.outOfBoundsPpb }
                 : {}),
@@ -179,6 +186,7 @@ export class AsrcWatches {
             }
             if (e.mode === 'device' || e.mode === 'decode+device') w.devicePpm = e.devicePpb / 1000;
             if (e.outOfBoundsPpb !== undefined) w.outOfBoundsPpm = e.outOfBoundsPpb / 1000;
+            if (e.catchingUpNs !== undefined) w.catchingUpMs = e.catchingUpNs / 1e6;
             out.push(w);
         }
         return out;

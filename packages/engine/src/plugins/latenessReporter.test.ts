@@ -921,6 +921,10 @@ describe('LatenessReporter: demuxes and consumer ASRCs (WI-P3-6)', () => {
         r.onEvent('mrasrc-stats:gone', st('decode', { 'rate-known': false }), 1000);
         expect(r.summary(1000).clockCorrection).toEqual({ measuring: true });
         expect(s.deviceClockPpm).toBe(-12.1);
+        expect(s.catchingUpMs).toBeUndefined();
+        const cu = { 'device-ppb': -12_100, 'catch-up-state': 'catching-up', 'catch-up-excess-ns': 80e6 };
+        r.onEvent('mrasrc-stats:outasrc', st('device', cu), 1000);
+        expect(r.summary(1000).catchingUpMs).toBe(80);
         // A capture ASRC shows nowhere (its ingest card's).
         const ingest = new LatenessReporter();
         ingest.configure('pulsesrc ! mrasrc name=asrc out-rate=48000 ! fakesink');
