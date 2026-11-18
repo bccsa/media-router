@@ -35,7 +35,9 @@ the pace as of the arrival); (19) its own process frozen 2 s or 5 s (a test cloc
 the task first after it: no absence, nothing stale, the pace unchanged; 800 ms under a long W; a
 300 ms stop a freeze, 200 ms not; (19b) a 500 ms common stall that holds an input of W 100 ms
 while one of W 800 ms is still under its W: the held input's backlog moves no pace (B-243); (19c) a backlog
-long due queued while the task posts: no freeze, its own or another member's (B-243). And the PCM edges toward audiomixer (B-83), to the
+long due queued while the task posts: no freeze, its own or another member's (B-243); (19d) a
+real 800 ms stop while the task posts: a freeze, the pace unchanged; a gap push held downstream
+400 ms, the input absent: none. And the PCM edges toward audiomixer (B-83), to the
 sample: (F1) an absence fades out, (F2) a rejoin fades in from the horizon, (F3) a forwarded GAP's two edges,
 (F4) a joiner's entry, (F5) the fade before a forwarded EOS, (F7) a hole in the data, (F8) the
 formats and channel counts, (F9) a fade-in over short buffers, (F10) a tail under 1 ms, (F11) no
@@ -1542,7 +1544,7 @@ r = Rig("audiomixer", [{}, {}])
 def _big(i, k0, k1, lag_ms, rise_ms=0):
     def go():
         for k in range(k0, k1):
-            # Built before the wait: building 400 ms of samples took 1.5-2.5 ms on the dev Pi.
+            # Built before the wait: building 400 ms of samples took 1.4-2.4 ms on the dev Pi.
             frames = RATE * BIG // 1000
             b = Gst.Buffer.new_wrapped(array.array("h", [VAL[i]] * 2 * frames).tobytes())
             b.pts, b.dts, b.duration = r.at(k * BIG), NONE, BIG * MS
@@ -2926,6 +2928,182 @@ if GstCheck is not None:
     check(f"backlog while posting, another input arriving during that wait: no freeze ({w[:1]}), "
           f"its 40 ms sets the pace (got {in_ms(f['pace'])} ms), no absence, 0 stale",
           not w and abs(f["pace"] - 40 * MS) <= 2 * MS and f["absences"] == 0 and f["stale"] == 0)
+
+
+# (19d) A real stop while the task posts its report (its lock dropped), its head 30 ms from its
+# release: the wait is then past by the stop, a freeze against the pass's clock read (p4-20).
+def _post_freeze(jump_ms=800, floor_ms=1500, late_ms=30, before_s=3, after_s=3):
+    """One input into mpegtsmux, `late_ms` late until 1.7 s, then on time; the clock jumped
+    `jump_ms` from the bus handler of the task's first report after `before_s`. -> props."""
+    clock = GstCheck.TestClock.new_with_start_time(0)
+    pipe = Gst.parse_launch(f"mralignwatch name=aw aligner=pfz input=in0 silence-floor={floor_ms * MS} "
+                            "! mpegtsmux latency=0 ! fakesink sync=false async=false")
+    pipe.use_clock(clock)
+    pipe.set_start_time(NONE)
+    pipe.set_base_time(0)
+    aw = pipe.get_by_name("aw")
+    src = Gst.Pad.new("src", Gst.PadDirection.SRC)
+    src.set_active(True)
+    src.link(aw.get_static_pad("sink"))
+    st = {"armed": False, "end": None}
+
+    def on_msg(_bus, m):
+        s = m.get_structure()
+        if (st["armed"] and m.type == Gst.MessageType.ELEMENT and s is not None
+                and m.src is aw and s.get_string("reason") == "interval"):
+            st["armed"] = False   # the task is in aw_post_now, its lock dropped: the stop
+            st["end"] = clock.get_time() + jump_ms * MS
+            clock.set_time(st["end"])
+        return Gst.BusSyncReply.DROP
+    pipe.get_bus().set_sync_handler(on_msg)
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_state(5 * S)
+    src.push_event(Gst.Event.new_stream_start("pfz"))
+    src.push_event(Gst.Event.new_caps(Gst.Caps.from_string(CAPS["mpegtsmux"])))
+    seg = Gst.Segment()
+    seg.init(Gst.Format.TIME)
+    src.push_event(Gst.Event.new_segment(seg))
+    paces, k = [], 0
+
+    def release(now):
+        while True:
+            give_up = time.monotonic() + 2
+            while clock.peek_id_count() < 1:
+                if time.monotonic() > give_up:
+                    return
+                time.sleep(0.0002)
+            if st["end"] is not None and now < st["end"]:
+                return   # the stop came: the loop goes on from its end
+            t = clock.get_next_entry_time()
+            if t == NONE or t > now:
+                return
+            clock.crank()
+
+    def push_due(now):
+        nonlocal k
+        while 200 * MS + k * 10 * MS + (late_ms if k < 150 else 0) * MS <= now:
+            b = Gst.Buffer.new_wrapped(payload(0, k))
+            b.pts = b.dts = 200 * MS + k * 10 * MS
+            b.duration = 10 * MS
+            src.push(b)
+            k += 1
+    try:
+        now = 10 * MS
+        while st["end"] is None and now <= 8 * S:
+            clock.set_time(now)
+            push_due(now)
+            st["armed"] = st["armed"] or now >= before_s * S
+            release(now)
+            paces.append((now, aw.get_property("pace")))
+            now += 10 * MS
+        end = st["end"] or now
+        pre = [p for t, p in paces if t >= end - jump_ms * MS - S]
+        post = []
+        push_due(end)   # the chain first after it
+        release(end)
+        for now in range(end + 10 * MS, end + after_s * S, 10 * MS):
+            clock.set_time(now)
+            push_due(now)
+            release(now)
+            post.append(aw.get_property("pace"))
+        return {"stopped": st["end"] is not None, "absences": aw.get_property("absences"),
+                "stale": aw.get_property("stale-buffers"), "pre": max(pre), "post": max(post)}
+    finally:
+        src.set_active(False)
+        pipe.set_state(Gst.State.NULL)
+
+
+def _gap_held(jump_ms=400, floor_ms=100, stop_s=1, after_s=2):
+    """Two inputs on time, input 0 into mpegtsmux; it stops at `stop_s`, absent and gapped while
+    input 1 flows; its first gap a second later held `jump_ms` downstream (a probe in that push
+    waits while the clock runs on). -> held, and input 0 absent once."""
+    clock = GstCheck.TestClock.new_with_start_time(0)
+    pipe = Gst.parse_launch(
+        f"mralignwatch name=aw0 aligner=gph input=in0 silence-floor={floor_ms * MS} ! mpegtsmux latency=0 ! "
+        f"fakesink sync=false async=false mralignwatch name=aw1 aligner=gph input=in1 "
+        f"silence-floor={floor_ms * MS} ! fakesink sync=false async=false")
+    pipe.use_clock(clock)
+    pipe.set_start_time(NONE)
+    pipe.set_base_time(0)
+    aws = [pipe.get_by_name(f"aw{i}") for i in (0, 1)]
+    srcs = []
+    for aw in aws:
+        src = Gst.Pad.new("src", Gst.PadDirection.SRC)
+        src.set_active(True)
+        src.link(aw.get_static_pad("sink"))
+        srcs.append(src)
+    st = {"armed": False, "until": None, "go": threading.Event()}
+
+    def on_gap(_pad, info):
+        if st["armed"] and info.get_event().type == Gst.EventType.GAP:
+            st["armed"], st["until"] = False, clock.get_time() + jump_ms * MS
+            st["go"].wait(10)   # input 0's task sits in this push; input 1 runs on
+        return Gst.PadProbeReturn.OK
+    aws[0].get_static_pad("src").add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, on_gap)
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_state(5 * S)
+    for i, src in enumerate(srcs):
+        src.push_event(Gst.Event.new_stream_start(f"gph{i}"))
+        src.push_event(Gst.Event.new_caps(Gst.Caps.from_string(CAPS["mpegtsmux"])))
+        seg = Gst.Segment()
+        seg.init(Gst.Format.TIME)
+        src.push_event(Gst.Event.new_segment(seg))
+
+    def release(now):
+        while True:
+            give_up = time.monotonic() + 2
+            while clock.peek_id_count() < (1 if st["until"] and not st["go"].is_set() else 2):
+                if time.monotonic() > give_up:
+                    return
+                time.sleep(0.0002)
+            t = clock.get_next_entry_time()
+            if t == NONE or t > now:
+                return
+            clock.crank()
+    try:
+        now, k = 10 * MS, [0, 0]
+        while now < (stop_s + 1 + after_s) * S:
+            clock.set_time(now)
+            if st["until"] is not None and now >= st["until"]:
+                st["go"].set()
+            for i in (0, 1):
+                while 200 * MS + k[i] * 10 * MS <= (min(now, stop_s * S) if i == 0 else now):
+                    b = Gst.Buffer.new_wrapped(payload(i, k[i]))
+                    b.pts = b.dts = 200 * MS + k[i] * 10 * MS
+                    b.duration = 10 * MS
+                    srcs[i].push(b)
+                    k[i] += 1
+            st["armed"] = st["armed"] or (st["until"] is None and now >= (stop_s + 1) * S)
+            release(now)
+            now += 10 * MS
+        return st["go"].is_set() and aws[0].get_property("absences") == 1
+    finally:
+        st["go"].set()
+        for src in srcs:
+            src.set_active(False)
+        pipe.set_state(Gst.State.NULL)
+
+
+if GstCheck is not None:
+    stops = []
+
+    def _on_stop(_cat, _level, _file, _fn, _line, _obj, msg, *_a):
+        if "held as delay" in msg.get():
+            stops.append(msg.get())
+    # Its own list: PyGObject's debug_remove_log_function by function removes nothing (returns 0).
+    Gst.debug_set_threshold_for_name("mrtshouse", Gst.DebugLevel.INFO)
+    Gst.debug_add_log_function(_on_stop, None)
+    f = _post_freeze()
+    froze, stops[:] = list(stops), []
+    held = _gap_held()
+    Gst.debug_set_threshold_for_name("mrtshouse", Gst.DebugLevel.NONE)
+    check(f"freeze 800 ms while the task posts, W 1.5 s: a freeze ({froze[:1]}), the pace unchanged "
+          f"({in_ms(f['pre'])} -> {in_ms(f['post'])} ms), no absence ({f['absences']}), 0 stale ({f['stale']})",
+          f["stopped"] and len(froze) == 1 and f["post"] <= f["pre"] + 2 * MS
+          and f["absences"] == 0 and f["stale"] == 0)
+    # A push held downstream is no freeze, a gap's as a buffer's (B-56).
+    check(f"a gap push held 400 ms downstream, the input absent: no freeze ({stops[:1]})",
+          held and not stops)
 
 print()
 if _failures:

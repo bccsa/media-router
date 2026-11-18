@@ -200,7 +200,7 @@ struct Run {
     GstClock* id_clock = nullptr;   // what clock_id was made on; cleared when the clock changes
     bool sleeping = false;          // the task waits on clock_id...
     gint64 wake_at = 0;             // ...to this running time (aw_enqueue's armed check)
-    gint64 due_at = 0;              // ...first able to end here: wake_at, or the sleep's start if past
+    gint64 due_at = 0;              // ...first able to end here: wake_at, or the pass's clock if later
     bool cond_waiting = false;      // the task waits on item_added (no clock)
     bool ahead = false;             // the last data out waited for its release
     GstSegment in_segment;
@@ -552,7 +552,8 @@ static void aw_burst(Run& r, gint64 now) {
 
 /* Under the lock, clocked: the task's wake is overdue by more than FREEZE_NS, whichever thread
  * runs first after it: the time since is held, and the group told (p4-20). Overdue counts from
- * when the wait could first end: a deadline already past at the sleep is no freeze. */
+ * when the wait could first end: a head already due is no freeze, a stop after the pass's last
+ * clock read (its posts) is. */
 static void aw_thaw(GstMrAlignWatch* self, gint64 now) {
     Run& r = *self->run;
     if (!r.sleeping || r.thawed || now - r.due_at <= FREEZE_NS) return;
@@ -1779,8 +1780,9 @@ static void aw_post_now(GstMrAlignWatch* self, guint* pending) {
     g_mutex_lock(&self->lock);
 }
 
-/* Under the lock: the task's sleep to `deadline` on its one clock id, re-armed. */
-static void aw_sleep(GstMrAlignWatch* self, gint64 deadline) {
+/* Under the lock: the task's sleep to `deadline` on its one clock id, re-armed; `since`: the
+ * pass's last clock read, after its last push. */
+static void aw_sleep(GstMrAlignWatch* self, gint64 deadline, gint64 since) {
     Run& r = *self->run;
     const GstClockTime at = (GstClockTime)(r.base + std::max<gint64>(deadline, 0));
     if (!r.clock_id || r.id_clock != r.clock ||
@@ -1794,8 +1796,8 @@ static void aw_sleep(GstMrAlignWatch* self, gint64 deadline) {
     r.sleeping = true;
     r.thawed = false;
     r.wake_at = deadline;
-    /* A deadline past by now (a backlog came in while we posted) ends the wait at once. */
-    r.due_at = aw_now(self, &now) ? std::max(deadline, now) : deadline;
+    /* A deadline before `since` (a backlog came in while we posted) ends the wait at once. */
+    r.due_at = std::max(deadline, since);
     if (r.member.asleep) r.member.asleep->store(r.due_at, std::memory_order_release);
     g_mutex_unlock(&self->lock);
     gst_clock_id_wait(id, NULL);
@@ -1851,6 +1853,7 @@ static void aw_loop(gpointer data) {
         aw_post_now(self, &pending);
     }
 
+    gint64 since = now;   // a push held downstream is no freeze, as a data push (B-56)
     if (self->srcresult == GST_FLOW_OK && clocked) {
         mrts::GapPlanner::Gap gap{};
         /* Paced gaps: every piece due by now (a late pass catches up); else one gap a tick. */
@@ -1863,7 +1866,7 @@ static void aw_loop(gpointer data) {
             aw_push_gap(self, gap.start_ns + fade, gap.end_ns, anchor);
             g_mutex_lock(&self->lock);
             gint64 t1;
-            if (aw_now(self, &t1)) r.push_done_at = t1;
+            if (aw_now(self, &t1)) r.push_done_at = since = t1;
             if (fade) r.fades++;
             aw_mark_running(self);
             if (!aw_paced_gaps(r)) break;
@@ -1877,7 +1880,7 @@ static void aw_loop(gpointer data) {
     const bool clocked_now = aw_now(self, &t);
     if (self->srcresult == GST_FLOW_OK) {
         if (clocked && clocked_now) {
-            aw_sleep(self, aw_deadline(self, now));
+            aw_sleep(self, aw_deadline(self, now), since);
         } else if (!clocked_now && r.fifo.empty()) {
             /* Nothing to watch before PLAYING: an item, PLAYING or a flush wakes it. */
             r.cond_waiting = true;
