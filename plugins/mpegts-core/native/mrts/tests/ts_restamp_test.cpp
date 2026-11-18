@@ -4228,6 +4228,7 @@ RestampConfig config(TimingMode m, int64_t e_ns = E_RX) {
     c.timing_mode = m;
     c.trust.l_ns = 2 * S;
     c.house_clock.e_ns = e_ns;
+    c.house_clock.known = e_ns != 0;
     c.house_clock.seq = 1;
     c.house_clock.disciplined = true;
     c.house_clock.error_us = 100;

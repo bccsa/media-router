@@ -6,9 +6,12 @@
 // in.bin, little-endian records: 'B' i64 arrival u32 len bytes (a buffer); 'O' i64 ns
 // (set_offset before the next buffer); 'T' u32 n, n x (i32 pid, i64 ns) (set_trims); 'C' i64 ns
 // (set_step_fall_hold, as smoothing-cooldown-ns); 'F' (flush); 'R' u32 len path (record the trace
-// from here, as trace-location); 'E' (EOS: the last stats, the trace closed). One JSON line per
-// buffer and at EOS: the bytes out, the gaps, the events, and the stats when the element's cadence
-// posts them.
+// from here, as trace-location); 'E' (EOS: the last stats, the trace closed). Trust (WI-P5-8),
+// applied at the next buffer on its arrival as the element applies them: 'H' i64 e_ns u32 seq u8
+// flags (1 known, 2 disciplined) i64 error_us (-1 unknown) (house-clock); 'L' i64 ns
+// (transport-latency-ms); 'U' i64 ns (trust-tolerance-ms); 'M' u8 trust (timing-mode). One JSON line
+// per buffer and at EOS: the bytes out, the gaps, the events, and the stats when the element's
+// cadence posts them.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -16,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "mrts/ts_hcdesc.h"
+#include "mrts/ts_house.h"
 #include "mrts/ts_restamp.h"
 
 using namespace mrts;
@@ -69,7 +74,7 @@ void print_events(Obj& line, RestampCore& rc) {
         const RestampCore::Event& e = ev[n];
         if (n) std::printf(",");
         Obj o;
-        o.s("kind", event_kind_name(e.kind));
+        o.s("kind", event_name(e));
         o.i("program", e.program);
         o.i("pid", e.pid);
         o.s("reason", e.reason);
@@ -78,6 +83,12 @@ void print_events(Obj& line, RestampCore& rc) {
         o.i("house-ns", e.house_ns);
         o.u("epoch", e.epoch);
         o.i("value-ns", e.value_ns);
+        if (e.kind >= RestampCore::Event::Kind::trust_switch && e.kind != RestampCore::Event::Kind::sender_reepoch) {
+            o.s("state", e.state);
+            o.s("from", e.from);
+            o.s("failed", e.failed);
+            if (!std::strcmp(e.state, "converging")) o.i("converging-ns", e.value_ns);
+        }
         o.end();
     }
     std::printf("]");
@@ -117,6 +128,49 @@ void print_stats(Obj& line, RestampCore& rc) {
         o.i("dropped-ns-total", p.dropped_ns_total);
         o.u("cc-lost", s.cc_lost);
         o.u("desync-bytes", s.desync_bytes);
+        o.end();
+    }
+    std::printf("]");
+    st.key("trust");
+    std::printf("[");
+    bool any = false;
+    for (const RestampCore::ProgramStats& p : s.programs) {
+        if (!p.has_trust) continue;
+        const TrustGate::Stats& t = p.trust;
+        if (any) std::printf(",");
+        any = true;
+        Obj o;
+        o.i("program", p.program);
+        o.s("selected", t.trust_selected ? "trust" : "restamp");
+        o.s("effective", trust_state_name(t.state));
+        o.b("qualifies", !t.failed);
+        o.s("failed", t.failed);
+        o.u("switches", t.switches);
+        if (t.have_transit) {
+            o.i("transit-min-ns", t.transit_min_ns);
+            o.i("transit-median-ns", t.transit_median_ns);
+            o.i("transit-max-ns", t.transit_max_ns);
+        }
+        o.i("bound-lo-ns", t.bound_lo_ns);
+        o.i("bound-ns", t.bound_hi_ns);
+        o.i("l-ns", t.l_ns);
+        o.i("tau-ns", t.tau_ns);
+        o.i("converging-remaining-ns", t.k_left_ns);
+        o.b("decl-present", t.have_decl);
+        if (t.have_decl) {
+            const HouseTimeDecl& d = t.decl;
+            o.b("decl-tai", d.house_time_tai);
+            o.b("decl-disciplined", d.disciplined);
+            o.b("decl-traceable", d.traceable);
+            o.s("decl-source", decl_source_name(d.sync_source));
+            o.i("decl-tai-offset-s", d.tai_utc_offset_s);
+            o.i("decl-ptp-domain", d.ptp_valid ? d.ptp_domain : -1);
+            o.s("decl-gm", d.ptp_valid ? hcdesc::gm_text(d.gm_identity).c_str() : "");
+            o.u("decl-error-class", d.clock_error_class);
+            o.u("decl-epoch-seq", d.epoch_seq);
+            o.i("decl-d-e-ns", pts90k_to_ns(d.d_e_90k));
+            o.s("decl-timeline-id", hcdesc::timeline_text(d.timeline_id).c_str());
+        }
         o.end();
     }
     std::printf("]");
@@ -223,9 +277,37 @@ int main(int argc, char** argv) {
     bool have_stats_at = false;
     int64_t stats_at = 0;
     std::vector<uint8_t> buf;
+    // Trust's settings wait for the next buffer, as the element takes them: clock, L, tau, mode.
+    bool have_clock = false, have_l = false, have_tau = false, have_mode = false;
+    ClockDecl clock;
+    int64_t l_ns = 0, tau_ns = 0;
+    bool trust = false;
     int kind;
     while ((kind = std::fgetc(f)) != EOF) {
-        if (kind == 'O') {
+        if (kind == 'H') {
+            int64_t e = 0, err = 0;
+            uint32_t seq = 0;
+            uint8_t flags = 0;
+            if (!get_le(f, &e) || !get_le(f, &seq) || !get_le(f, &flags) || !get_le(f, &err)) return 1;
+            clock = ClockDecl();
+            clock.e_ns = e;
+            clock.seq = seq;
+            clock.known = flags & 1;
+            clock.disciplined = flags & 2;
+            if (err >= 0) clock.error_us = err;
+            have_clock = true;
+        } else if (kind == 'L') {
+            if (!get_le(f, &l_ns)) return 1;
+            have_l = true;
+        } else if (kind == 'U') {
+            if (!get_le(f, &tau_ns)) return 1;
+            have_tau = true;
+        } else if (kind == 'M') {
+            uint8_t m = 0;
+            if (!get_le(f, &m)) return 1;
+            trust = m != 0;
+            have_mode = true;
+        } else if (kind == 'O') {
             int64_t ns = 0;
             if (!get_le(f, &ns)) return 1;
             rc.set_offset(ns);
@@ -267,6 +349,11 @@ int main(int argc, char** argv) {
             if (!get_le(f, &arrival) || !get_le(f, &len)) return 1;
             buf.resize(len);
             if (len && !get(f, buf.data(), len)) return 1;
+            if (have_clock) rc.set_house_clock(clock, arrival);
+            if (have_l) rc.set_transport_latency(l_ns);
+            if (have_tau) rc.set_trust_tolerance(tau_ns);
+            if (have_mode) rc.set_timing_mode(trust ? TimingMode::trust : TimingMode::restamp, arrival);
+            have_clock = have_l = have_tau = have_mode = false;
             const RestampCore::Result r = rc.process(buf.data(), buf.size(), arrival);
             Obj line;
             print_buffer(line, r);

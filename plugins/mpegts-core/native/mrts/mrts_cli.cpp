@@ -849,11 +849,12 @@ bool set_knob(RestampConfig& c, const std::string& key, const std::string& v, st
     } else if (key == "clock_e_ns") {
         found = true;
         ok = parse_int(v, &c.house_clock.e_ns);
+        c.house_clock.known = ok && c.house_clock.e_ns != 0;
     } else if (key == "clock_error_us") {
         found = true;
         ok = parse_int(v, &x);
-        if (x < 0) c.house_clock.error_us.reset();   // -1: unknown
-        else c.house_clock.error_us = x;
+        if (ok && x < 0) c.house_clock.error_us.reset();   // -1: unknown
+        else if (ok) c.house_clock.error_us = x;
     } else if (key == "clock_seq") {
         found = true;
         ok = parse_int(v, &x) && x >= 0 && x <= UINT32_MAX;
@@ -945,8 +946,8 @@ void print_event(int64_t t, const RestampCore::Event& e) {
                 "\"gap-ns\":%lld,\"dropped-ns\":%lld,\"house-ns\":%lld,\"epoch\":%u,\"value-ns\":%lld",
                 (long long)t, event_kind_name(e.kind), e.program, e.pid, jstr(e.reason ? e.reason : "").c_str(),
                 (long long)e.gap_ns, (long long)e.dropped_ns, (long long)e.house_ns, e.epoch, (long long)e.value_ns);
-    if (e.kind == RestampCore::Event::Kind::trust_switch)
-        std::printf(",\"state\":\"%s\",\"failed\":%s", e.state, jstr(e.failed).c_str());
+    if (e.kind >= RestampCore::Event::Kind::trust_switch && e.kind != RestampCore::Event::Kind::sender_reepoch)
+        std::printf(",\"state\":\"%s\",\"from\":\"%s\",\"failed\":%s", e.state, e.from, jstr(e.failed).c_str());
     std::printf("}\n");
 }
 
@@ -1161,6 +1162,11 @@ ProgramSum summarize(const Run& run, int program) {
             case RestampCore::Event::Kind::trust_switch:
                 s.trust_states.push_back(e.state);
                 s.trust_switches += !std::strncmp(e.reason, "switch-to-", 10);
+                break;
+            case RestampCore::Event::Kind::trust_qualified:   // told beside a transition counted above
+            case RestampCore::Event::Kind::trust_fallback:
+            case RestampCore::Event::Kind::trust_return:
+            case RestampCore::Event::Kind::sender_reepoch:
                 break;
             default: s.psi++; break;
         }
@@ -3702,6 +3708,8 @@ bool TrustReplay::feed(const Json& ev, std::string* err) {
         ClockDecl c;
         int64_t seq = 0, error_us = 0;
         if (!get_i64(ev, "eNs", &c.e_ns, err) || !get_bool(ev, "disciplined", &c.disciplined, err)) return false;
+        c.known = c.e_ns != 0;            // the reference's default; "known" overrides
+        if (ev.get("known") && !get_bool(ev, "known", &c.known, err)) return false;
         if (const Json* j = ev.get("seq"))
             if (!j->i64(&seq)) return *err = "bad \"seq\"", false;
         c.seq = seq;

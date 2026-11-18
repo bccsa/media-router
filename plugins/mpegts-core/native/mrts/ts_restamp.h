@@ -91,7 +91,7 @@ class RestampCore {
     // `lead_clamp`, the PID clamped (value_ns: its lead under the reference mapping).
     struct Event {
         enum class Kind { relock, degraded, recovered, envelope_step, gap, overlap, psi_change, lead_clamp,
-                          trust_switch };
+                          trust_switch, trust_qualified, trust_fallback, trust_return, sender_reepoch };
         Kind kind = Kind::relock;
         int program = -1;
         int pid = -1;
@@ -100,9 +100,11 @@ class RestampCore {
         int64_t house_ns = 0;             // arrival of what caused it
         uint32_t epoch = 0;
         int64_t value_ns = 0;             // envelope-step: the step; a leap's relock: Δσ - Δh
-        // trust-switch: every TrustGate transition. reason = its decision, state = the state
-        // entered, failed = the first failing condition ("" qualified); value_ns = k, gap_ns the gap.
+        // trust_switch: each gate transition (reason its decision, state/from entered/left, failed, value_ns k,
+        // gap_ns the gap); the other trust_* kinds (WI-P5-8) beside it, alike. sender_reepoch: a new
+        // epoch_seq (epoch the new, value_ns the old).
         const char* state = "";
+        const char* from = "";
         const char* failed = "";
     };
     struct ProgramStats {
@@ -119,7 +121,8 @@ class RestampCore {
         // house(PTS) - arrival of its PES header over LEAD_WINDOW_NS, before the shift.
         int64_t lead_min_ns = 0, lead_median_ns = 0, lead_max_ns = 0;
         uint32_t lead_count = 0;
-        int64_t trim_ns = 0, shift_ns = 0;   // trim set; O + trim in force
+        // The trim and O + trim in force: 0 while Trust is selected or the program Trust-mapped (C-10).
+        int64_t trim_ns = 0, shift_ns = 0;
         uint64_t dropped_pes = 0;
     };
     struct Stats {
@@ -215,6 +218,8 @@ class RestampCore {
         int gen = 0;
         uint64_t pmt_seen = 0;            // psi.pmt_count() last handled
         bool had_decl = false;            // the last PMT seen carried MRHT
+        bool have_seq = false;            // the last declaration's epoch_seq (a change: sender re-epoch)
+        uint16_t decl_seq = 0;
         int pcr_pid = -1, ref_pid = -1;
         std::vector<int> es;              // PMT order
         VirtualStc stc;
@@ -246,6 +251,7 @@ class RestampCore {
         // released when it leaves deciding (pending when that happens outside process()).
         std::unique_ptr<TrustGate> gate;
         bool decide_release = false;
+        bool ready_told = false;          // trust_qualified posted for this wait in qualifying
     };
     struct Op {
         bool internal;
@@ -316,5 +322,8 @@ class RestampCore {
 };
 
 const char* event_kind_name(RestampCore::Event::Kind k);
+// The element's mrtsrestamp-event kind: event_kind_name, but a trust_switch that is no switch of the
+// mapping (a decision other than switch-to-*) is "trust-state".
+const char* event_name(const RestampCore::Event& e);
 
 }  // namespace mrts

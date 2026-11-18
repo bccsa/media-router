@@ -36,6 +36,7 @@ HouseTimeDecl good_decl() {
 ClockDecl good_clock() {
     ClockDecl c;
     c.e_ns = E;
+    c.known = true;
     c.seq = 1;
     c.disciplined = true;
     c.error_us = 100;
@@ -172,6 +173,13 @@ void test_failed_names() {
     }
     {
         ClockDecl c = good_clock();
+        c.known = false;                  // the writer's unknown E: a value with no e-ns (B-253)
+        Sim s(true, 2 * S, c);
+        CHECK("known = false with E set -> local-undisciplined, no PCR judged",
+              !std::strcmp(first_failed(s, 1900 * MS), "local-undisciplined") && !s.g.stats(T0).have_transit);
+    }
+    {
+        ClockDecl c = good_clock();
         c.disciplined = false;
         Sim s(true, 2 * S, c);
         CHECK("local clock undisciplined -> local-undisciplined", !std::strcmp(first_failed(s, 1900 * MS), "local-undisciplined"));
@@ -182,7 +190,8 @@ void test_failed_names() {
         g.on_pmt(&d, T0);
         CHECK("a declaration and both clocks but no PCR judged yet -> no-pcr", !std::strcmp(g.failed(T0), "no-pcr"));
         g.on_pmt(&d, T0);
-        CHECK("a PMT older than 1 s -> no-descriptor", !std::strcmp(g.failed(T0 + S + 1), "no-descriptor"));
+        for (int64_t t = T0 + 10 * MS; t <= T0 + S + 10 * MS; t += 10 * MS) g.on_input(t);   // inputs, no PMT
+        CHECK("a PMT older than 1 s -> no-descriptor", !std::strcmp(g.failed(T0 + S + 10 * MS), "no-descriptor"));
         g.on_natural_gap(3 * S, T0 + 2 * S);
         CHECK("a natural gap restarts the PMT's age", std::strcmp(g.failed(T0 + 2 * S), "no-descriptor") != 0);
     }
@@ -218,6 +227,16 @@ void test_silence() {
     g.on_pcr(pcr_at(T0, 1900 * MS), T0);
     CHECK("inside a silence the PMT's age stops at its first 40 ms",
           !g.failed(T0 + 990 * MS) && !g.failed(T0 + 5 * S) && g.stats(T0 + 5 * S).failed == nullptr);
+    {
+        // B-253: the gate's creation is an input, so a silence right after the buffer that made it
+        // ages its PMT 40 ms at most, as one after any later buffer.
+        TrustGate c(1, cfg_l(2 * S), good_clock(), true, T0);
+        c.on_pmt(&d, T0);
+        c.on_pcr(pcr_at(T0, 1900 * MS), T0);
+        c.on_input(T0 + 1200 * MS);
+        CHECK("a 1.2 s silence right after the gate's creation: its PMT 40 ms old, not no-descriptor",
+              !c.failed(T0 + 1200 * MS));
+    }
     int64_t t = T0 + 5 * S;
     while (!g.failed(t) && t < T0 + 10 * S) g.on_input(t += 10 * MS);
     CHECK("inputs again from 5.01 s: the age runs on from its 40 ms, no-descriptor at 5.98 s", t == T0 + 5980 * MS);
@@ -291,6 +310,13 @@ void test_operator() {
     w.g.set_mode(true, T0 + 5 * S);
     w.run(T0 + 5 * S, T0 + 40 * S, 1900 * MS);
     CHECK("else at once 30 s after 2 s qualified", w.when(Dec::switch_to_trust) == T0 + 37 * S);
+    Sim q(false);
+    q.run(T0, T0 + 5 * S, 1900 * MS);
+    q.g.set_mode(true, T0 + 5 * S);
+    q.run(T0 + 5 * S, T0 + 6 * S, 1900 * MS);
+    const bool early = q.g.ready();
+    q.run(T0 + 6 * S, T0 + 8 * S, 1900 * MS);
+    CHECK("ready(): qualifying and 2 s qualified, waiting for its gap (not at 1 s, at 3 s)", !early && q.g.ready());
     w.g.set_mode(false, T0 + 40 * S);
     w.run(T0 + 40 * S, T0 + 45 * S, 1900 * MS);
     CHECK("Restamp selected from trust waits for a natural gap", w.g.state() == St::trust);
@@ -363,6 +389,14 @@ void test_converging() {
     log = s.g.take_log();
     CHECK("a 0.5 s natural gap takes 0.5 s off k", log.size() == 1 && log[0].state == St::converging &&
                                                        log[0].k90k == k90 - 9 - 45000 && s.g.k_at(x + 1800) == k90 - 9 - 45000);
+    const TrustGate::Stats cs = s.g.stats(T0 + 45 * S);
+    CHECK("stats while converging: k_left is what remains at the last PES, k the last rebase's; L and tau",
+          cs.k_left_ns == pts90k_to_ns(k90 - 9 - 45000) && cs.k_ns == pts90k_to_ns(k90 - 9 - 45000) &&
+              cs.l_ns == 2 * S && cs.tau_ns == 200 * MS);
+    s.g.emitted(0x100, x + 1800 + 18000, s.g.map(x + 1800 + 18000, 0, -1), T0 + 45 * S);
+    CHECK("... k_left falls with the content (0.2 s on: 90 ticks), k stays",
+          s.g.stats(T0 + 45 * S).k_left_ns == pts90k_to_ns(k90 - 9 - 45000 - 90) &&
+              s.g.stats(T0 + 45 * S).k_ns == pts90k_to_ns(k90 - 9 - 45000));
     const int64_t end_x = x + 1800 + (k90 - 9 - 45000) * 200;
     m = s.g.map(end_x, 0, -1);
     CHECK("k reaches 0 after k x 200 ticks of content", m.k90k == 0 && s.g.map(end_x - 200, 0, -1).k90k == 1);

@@ -1,6 +1,7 @@
 /* mrtsrestamp (plan ch. 5 WI-P1-4): mrts::RestampCore as an element. Output keeps the input's
  * timestamps, so a time-bounded queue after it still measures arrival; gaps leave as OQ-12
- * markers. A plain GstElement, as the plugin's others, so a buffer list leaves as one list. */
+ * markers. A plain GstElement, as the plugin's others, so a buffer list leaves as one list.
+ * Trust at a network ingest (ch. 9 WI-P5-8): timing-mode and its settings, mrtsrestamp-trust. */
 #include <atomic>
 #include <cerrno>
 #include <cstdlib>
@@ -11,6 +12,8 @@
 #include <vector>
 
 #include "mrts/ts_gap.h"
+#include "mrts/ts_hcdesc.h"
+#include "mrts/ts_house.h"
 #include "mrts/ts_restamp.h"
 #include "mrts/ts_stc.h"
 #include "mrts/ts_trace.h"
@@ -22,6 +25,7 @@ using mrts::RestampCore;
 
 enum { MRTSRESTAMP_MODE_STC = 0, MRTSRESTAMP_MODE_FIXED = 1 };
 enum { MRTSRESTAMP_ARRIVAL_CLOCK = 0, MRTSRESTAMP_ARRIVAL_BUFFER_PTS = 1 };
+enum { MRTSRESTAMP_TIMING_RESTAMP = 0, MRTSRESTAMP_TIMING_TRUST = 1 };
 
 enum {
     PROP_0,
@@ -33,10 +37,16 @@ enum {
     PROP_SMOOTHING_COOLDOWN_NS,
     PROP_STATS_INTERVAL_MS,
     PROP_TRACE_LOCATION,
+    PROP_TIMING_MODE,
+    PROP_TRANSPORT_LATENCY_MS,
+    PROP_TRUST_TOLERANCE_MS,
+    PROP_HOUSE_CLOCK,
     PROP_STATS,
 };
 
 #define DEFAULT_STATS_INTERVAL_MS 2000
+#define DEFAULT_TRUST_TOLERANCE_MS 200   /* tau, trustToleranceMs (Q12) */
+#define MAX_LATENCY_MS 60000             /* L and tau: past the 60 s a stamp may be off (B-203) */
 /* The ingest's Smoothing Cooldown: up to its 60 min; the default is the core's 300 s. */
 static const gint64 MAX_SMOOTHING_COOLDOWN_NS = 3600 * GST_SECOND;
 /* OQ-17: during an outage a marker at detection, then every 250 ms. */
@@ -75,6 +85,21 @@ static GType gst_mrtsrestamp_arrival_get_type(void) {
     return type;
 }
 
+static GType gst_mrtsrestamp_timing_mode_get_type(void) {
+    static GType type = 0;
+    static const GEnumValue values[] = {
+        {MRTSRESTAMP_TIMING_RESTAMP, "The receiver's STC, with the ingest offset and trims", "restamp"},
+        {MRTSRESTAMP_TIMING_TRUST, "The sender's house time where the link qualifies (ch. 9 part 4.8)",
+         "trust"},
+        {0, NULL, NULL},
+    };
+    if (g_once_init_enter(&type)) {
+        GType t = g_enum_register_static("GstMrtsRestampTimingMode", values);
+        g_once_init_leave(&type, t);
+    }
+    return type;
+}
+
 #define GST_TYPE_MRTSRESTAMP (gst_mrtsrestamp_get_type())
 G_DECLARE_FINAL_TYPE(GstMrtsRestamp, gst_mrtsrestamp, GST, MRTSRESTAMP, GstElement)
 
@@ -93,7 +118,12 @@ struct _GstMrtsRestamp {
     std::map<int, int64_t>* trims;
     gint64 smoothing_cooldown_ns;
     gchar* trace_location;
+    gint timing_mode;
+    guint transport_latency_ms, trust_tolerance_ms;
+    gchar* house_clock;
+    mrts::ClockDecl* clock;                 // house_clock parsed
     gboolean edits_pending, cooldown_pending, trace_pending;
+    gboolean mode_pending, latency_pending, tolerance_pending, clock_pending;
     std::atomic<bool> dirty;
     std::atomic<guint> stats_interval_ms;
 
@@ -189,6 +219,57 @@ static void parse_trims(const gchar* s, std::map<int, int64_t>* out, std::string
     g_strfreev(items);
 }
 
+static gboolean field_i64(const GstStructure* s, const gchar* name, gint64* out) {
+    const GValue* v = gst_structure_get_value(s, name);
+    if (!v) return FALSE;
+    if (G_VALUE_HOLDS_INT64(v)) *out = g_value_get_int64(v);
+    else if (G_VALUE_HOLDS_INT(v)) *out = g_value_get_int(v);
+    else if (G_VALUE_HOLDS_UINT(v)) *out = g_value_get_uint(v);
+    else if (G_VALUE_HOLDS_UINT64(v) && g_value_get_uint64(v) <= (guint64)G_MAXINT64)
+        *out = (gint64)g_value_get_uint64(v);
+    else return FALSE;
+    return TRUE;
+}
+
+/* Part 4.6's serialised GstStructure (houseClockProperty.ts), read as mrtsegress reads it: empty is
+ * no clock; E is known when `e-ns` is present and not 0; `error-us` absent is an unknown error. */
+static gboolean parse_house_clock(const gchar* text, mrts::ClockDecl* out) {
+    mrts::ClockDecl c;
+    if (!text || !*text) {
+        *out = c;
+        return TRUE;
+    }
+    GstStructure* s = gst_structure_from_string(text, NULL);
+    if (!s || !gst_structure_has_name(s, "house-clock")) {
+        if (s) gst_structure_free(s);
+        return FALSE;
+    }
+    gint64 v = 0;
+    gboolean b = FALSE;
+    if (field_i64(s, "e-ns", &v)) {
+        c.e_ns = v;
+        c.known = v != 0;
+    }
+    if (field_i64(s, "seq", &v)) c.seq = v;
+    if (gst_structure_get_boolean(s, "traceable", &b)) c.traceable = b;
+    if (gst_structure_get_boolean(s, "disciplined", &b)) c.disciplined = b;
+    const gchar* src = gst_structure_get_string(s, "source");
+    c.source = !src ? mrts::hcdesc::SYNC_NONE
+               : g_str_equal(src, "ntp") ? mrts::hcdesc::SYNC_NTP
+               : g_str_equal(src, "sntp") ? mrts::hcdesc::SYNC_SNTP
+               : g_str_equal(src, "ptp") ? mrts::hcdesc::SYNC_PTP
+                                         : mrts::hcdesc::SYNC_NONE;
+    if (field_i64(s, "error-us", &v) && v >= 0) c.error_us = v;
+    if (field_i64(s, "tai-offset-s", &v)) c.tai_offset_s = v;
+    if (field_i64(s, "ptp-domain", &v) && v >= -1 && v <= 255) c.ptp_domain = (int)v;
+    const gchar* gm = gst_structure_get_string(s, "gm");
+    uint64_t id = 0;
+    if (gm && *gm && mrts::hcdesc::parse_gm(gm, &id)) c.gm = id;
+    gst_structure_free(s);
+    *out = c;
+    return TRUE;
+}
+
 /* --- time ----------------------------------------------------------------------------- */
 
 /* Pipeline clock - base time; false without a clock (not PLAYING yet). */
@@ -268,6 +349,8 @@ static void restamp_build(GstMrtsRestamp* self) {
     self->run_arrival = self->arrival;
     self->edits_pending = self->cooldown_pending = FALSE;
     self->trace_pending = TRUE;   // the trace of this run opens below
+    /* Trust's settings go through the setters at the first buffer, on its arrival (no program yet). */
+    self->mode_pending = self->latency_pending = self->tolerance_pending = self->clock_pending = TRUE;
     GST_OBJECT_UNLOCK(self);
     self->dirty.store(true, std::memory_order_relaxed);
     if (cfg.add_base_time)
@@ -276,17 +359,25 @@ static void restamp_build(GstMrtsRestamp* self) {
     self->core = new RestampCore(cfg);
 }
 
-/* Live properties, taken under the object lock, applied here at the next buffer. */
-static void restamp_apply(GstMrtsRestamp* self) {
+/* Live properties, taken under the object lock, applied here at the next buffer: Trust's at its
+ * arrival `now`, the clock, L and tau before the mode (restamp_ref's order). */
+static void restamp_apply(GstMrtsRestamp* self, gint64 now) {
     if (!self->dirty.exchange(false, std::memory_order_acq_rel)) return;
     GST_OBJECT_LOCK(self);
     const gboolean edits = self->edits_pending, cooldown = self->cooldown_pending,
-                   retrace = self->trace_pending;
+                   retrace = self->trace_pending, mode = self->mode_pending,
+                   latency = self->latency_pending, tolerance = self->tolerance_pending,
+                   clock = self->clock_pending;
     const gint64 offset = self->offset_ns, hold = self->smoothing_cooldown_ns;
     std::map<int, int64_t> trims;
     if (edits) trims = *self->trims;
     const std::string path = self->trace_location ? self->trace_location : "";
+    const bool trust = self->timing_mode == MRTSRESTAMP_TIMING_TRUST;
+    const gint64 l_ns = (gint64)self->transport_latency_ms * GST_MSECOND,
+                 tau_ns = (gint64)self->trust_tolerance_ms * GST_MSECOND;
+    const mrts::ClockDecl decl = *self->clock;
     self->edits_pending = self->cooldown_pending = self->trace_pending = FALSE;
+    self->mode_pending = self->latency_pending = self->tolerance_pending = self->clock_pending = FALSE;
     GST_OBJECT_UNLOCK(self);
     if (edits) {
         self->core->set_offset(offset);
@@ -294,6 +385,10 @@ static void restamp_apply(GstMrtsRestamp* self) {
     }
     if (cooldown) self->core->set_step_fall_hold(hold);
     if (retrace) restamp_set_trace(self, path);
+    if (clock) self->core->set_house_clock(decl, now);
+    if (latency) self->core->set_transport_latency(l_ns);
+    if (tolerance) self->core->set_trust_tolerance(tau_ns);
+    if (mode) self->core->set_timing_mode(trust ? mrts::TimingMode::trust : mrts::TimingMode::restamp, now);
 }
 
 /* --- messages ------------------------------------------------------------------------- */
@@ -303,19 +398,62 @@ static void restamp_post(GstMrtsRestamp* self, GstStructure* s) {
                              gst_message_new_element(GST_OBJECT_CAST(self), s));
 }
 
-/* Part 10's mrtsrestamp-event, on occurrence. */
+/* Part 10's mrtsrestamp-event, on occurrence. Trust's (WI-P5-8) add the state entered and left and
+ * the failing condition; a switch into converging its k as converging-ns. */
 static void restamp_post_events(GstMrtsRestamp* self) {
     for (const RestampCore::Event& e : self->core->take_events()) {
-        GST_DEBUG_OBJECT(self, "event %s program %d pid %d reason %s",
-                         mrts::event_kind_name(e.kind), e.program, e.pid, e.reason);
-        restamp_post(self, gst_structure_new(
-            "mrtsrestamp-event", "kind", G_TYPE_STRING, mrts::event_kind_name(e.kind), "program",
+        const gchar* kind = mrts::event_name(e);
+        GST_DEBUG_OBJECT(self, "event %s program %d pid %d reason %s", kind, e.program, e.pid, e.reason);
+        GstStructure* st = gst_structure_new(
+            "mrtsrestamp-event", "kind", G_TYPE_STRING, kind, "program",
             G_TYPE_INT, e.program, "pid", G_TYPE_INT, e.pid, "reason", G_TYPE_STRING,
             e.reason ? e.reason : "", "gap-ns", G_TYPE_INT64, (gint64)e.gap_ns, "dropped-ns",
             G_TYPE_INT64, (gint64)e.dropped_ns, "house-ns", G_TYPE_INT64, (gint64)e.house_ns,
             "epoch", G_TYPE_UINT, (guint)e.epoch, "value-ns", G_TYPE_INT64, (gint64)e.value_ns,
-            NULL));
+            NULL);
+        if (e.kind >= RestampCore::Event::Kind::trust_switch &&
+            e.kind != RestampCore::Event::Kind::sender_reepoch) {
+            gst_structure_set(st, "state", G_TYPE_STRING, e.state, "from", G_TYPE_STRING, e.from,
+                              "failed", G_TYPE_STRING, e.failed, NULL);
+            if (g_str_equal(e.state, "converging"))
+                gst_structure_set(st, "converging-ns", G_TYPE_INT64, (gint64)e.value_ns, NULL);
+        }
+        restamp_post(self, st);
     }
+}
+
+/* mrtsrestamp-trust (ch. 9 WI-P5-8): one program's gate; the transit only once a PCR was judged,
+ * the sender's declaration only while its PMT carries one. */
+static GstStructure* restamp_trust_structure(const RestampCore::ProgramStats& p) {
+    const mrts::TrustGate::Stats& t = p.trust;
+    GstStructure* st = gst_structure_new(
+        "mrtsrestamp-trust", "program", G_TYPE_INT, p.program, "selected", G_TYPE_STRING,
+        t.trust_selected ? "trust" : "restamp", "effective", G_TYPE_STRING,
+        mrts::trust_state_name(t.state), "qualifies", G_TYPE_BOOLEAN, (gboolean)!t.failed, "failed",
+        G_TYPE_STRING, t.failed ? t.failed : "", "switches", G_TYPE_UINT64, (guint64)t.switches, NULL);
+    if (t.have_transit)
+        gst_structure_set(st, "transit-min-ns", G_TYPE_INT64, (gint64)t.transit_min_ns,
+                          "transit-median-ns", G_TYPE_INT64, (gint64)t.transit_median_ns,
+                          "transit-max-ns", G_TYPE_INT64, (gint64)t.transit_max_ns, NULL);
+    gst_structure_set(st, "bound-lo-ns", G_TYPE_INT64, (gint64)t.bound_lo_ns, "bound-ns", G_TYPE_INT64,
+                      (gint64)t.bound_hi_ns, "l-ns", G_TYPE_INT64, (gint64)t.l_ns, "tau-ns",
+                      G_TYPE_INT64, (gint64)t.tau_ns, "converging-remaining-ns", G_TYPE_INT64,
+                      (gint64)t.k_left_ns, "decl-present", G_TYPE_BOOLEAN, (gboolean)t.have_decl, NULL);
+    if (t.have_decl) {
+        const mrts::HouseTimeDecl& d = t.decl;
+        const std::string gm = d.ptp_valid ? mrts::hcdesc::gm_text(d.gm_identity) : "";
+        const std::string tl = mrts::hcdesc::timeline_text(d.timeline_id);
+        gst_structure_set(
+            st, "decl-tai", G_TYPE_BOOLEAN, (gboolean)d.house_time_tai, "decl-disciplined",
+            G_TYPE_BOOLEAN, (gboolean)d.disciplined, "decl-traceable", G_TYPE_BOOLEAN,
+            (gboolean)d.traceable, "decl-source", G_TYPE_STRING, mrts::decl_source_name(d.sync_source),
+            "decl-tai-offset-s", G_TYPE_INT64, (gint64)d.tai_utc_offset_s, "decl-ptp-domain",
+            G_TYPE_INT64, (gint64)(d.ptp_valid ? d.ptp_domain : -1), "decl-gm", G_TYPE_STRING,
+            gm.c_str(), "decl-error-class", G_TYPE_UINT64, (guint64)d.clock_error_class,
+            "decl-epoch-seq", G_TYPE_UINT64, (guint64)d.epoch_seq, "decl-d-e-ns", G_TYPE_INT64,
+            (gint64)mrts::pts90k_to_ns(d.d_e_90k), "decl-timeline-id", G_TYPE_STRING, tl.c_str(), NULL);
+    }
+    return st;
 }
 
 /* Appends `s` to the array, which takes it. */
@@ -331,9 +469,10 @@ static void array_take(GValue* arr, GstStructure* s) {
  * message alike. */
 static void restamp_post_stats(GstMrtsRestamp* self) {
     const RestampCore::Stats s = self->core->stats();
-    GValue programs = G_VALUE_INIT, pids = G_VALUE_INIT;
+    GValue programs = G_VALUE_INIT, pids = G_VALUE_INIT, trust = G_VALUE_INIT;
     g_value_init(&programs, GST_TYPE_ARRAY);
     g_value_init(&pids, GST_TYPE_ARRAY);
+    g_value_init(&trust, GST_TYPE_ARRAY);
     for (const RestampCore::ProgramStats& p : s.programs) {
         const mrts::VirtualStc::Stats& c = p.clock;
         GstStructure* st = gst_structure_new(
@@ -354,6 +493,12 @@ static void restamp_post_stats(GstMrtsRestamp* self) {
             "cc-lost", G_TYPE_UINT64, (guint64)s.cc_lost, "desync-bytes", G_TYPE_UINT64,
             (guint64)s.desync_bytes, NULL);
         array_take(&programs, gst_structure_copy(st));
+        restamp_post(self, st);
+    }
+    for (const RestampCore::ProgramStats& p : s.programs) {
+        if (!p.has_trust) continue;
+        GstStructure* st = restamp_trust_structure(p);
+        array_take(&trust, gst_structure_copy(st));
         restamp_post(self, st);
     }
     for (const RestampCore::PidStats& q : s.pids) {
@@ -389,6 +534,7 @@ static void restamp_post_stats(GstMrtsRestamp* self) {
         "outage-markers", G_TYPE_UINT64, self->outage_markers, NULL);
     gst_structure_take_value(snap, "programs", &programs);
     gst_structure_take_value(snap, "pids", &pids);
+    gst_structure_take_value(snap, "trust", &trust);
     g_mutex_lock(&self->snap_lock);
     if (self->snapshot) gst_structure_free(self->snapshot);
     self->snapshot = snap;
@@ -534,12 +680,12 @@ static GstFlowReturn restamp_push_list(GstMrtsRestamp* self, std::vector<GstBuff
 static GstFlowReturn restamp_chain(GstPad*, GstObject* parent, GstBuffer* buf) {
     GstMrtsRestamp* self = GST_MRTSRESTAMP(parent);
     if (!self->core) restamp_build(self);
-    restamp_apply(self);
     gint64 now = 0;
     const gboolean have_clock =
         self->run_arrival == MRTSRESTAMP_ARRIVAL_CLOCK && restamp_clock_now(self, &now);
     self->buffers++;
     const gint64 arrival = restamp_arrival(self, buf, have_clock, now);
+    restamp_apply(self, arrival);
     std::vector<GstBuffer*>& out = *self->pieces;
     restamp_buffer(self, buf, arrival, out);
     restamp_report(self, arrival, FALSE);
@@ -559,11 +705,12 @@ static GstFlowReturn restamp_chain(GstPad*, GstObject* parent, GstBuffer* buf) {
 static GstFlowReturn restamp_chain_list(GstPad*, GstObject* parent, GstBufferList* list) {
     GstMrtsRestamp* self = GST_MRTSRESTAMP(parent);
     if (!self->core) restamp_build(self);
-    restamp_apply(self);
     gint64 now = 0;
     const gboolean have_clock =
         self->run_arrival == MRTSRESTAMP_ARRIVAL_CLOCK && restamp_clock_now(self, &now);
     self->lists++;
+    if (gst_buffer_list_length(list) > 0)   // Trust's settings on the first member's arrival
+        restamp_apply(self, restamp_arrival(self, gst_buffer_list_get(list, 0), have_clock, now));
     /* The members held alone, so each is rewritten in place unless someone else holds it. */
     std::vector<GstBuffer*>& in = *self->members;
     const guint n = gst_buffer_list_length(list);
@@ -803,6 +950,45 @@ static void restamp_set_property(GObject* object, guint prop_id, const GValue* v
             GST_OBJECT_UNLOCK(self);
             self->dirty.store(true, std::memory_order_release);
             break;
+        case PROP_TIMING_MODE:
+            GST_OBJECT_LOCK(self);
+            self->timing_mode = g_value_get_enum(value);
+            self->mode_pending = TRUE;
+            GST_OBJECT_UNLOCK(self);
+            self->dirty.store(true, std::memory_order_release);
+            break;
+        case PROP_TRANSPORT_LATENCY_MS:
+            GST_OBJECT_LOCK(self);
+            self->transport_latency_ms = g_value_get_uint(value);
+            self->latency_pending = TRUE;
+            GST_OBJECT_UNLOCK(self);
+            self->dirty.store(true, std::memory_order_release);
+            break;
+        case PROP_TRUST_TOLERANCE_MS:
+            GST_OBJECT_LOCK(self);
+            self->trust_tolerance_ms = g_value_get_uint(value);
+            self->tolerance_pending = TRUE;
+            GST_OBJECT_UNLOCK(self);
+            self->dirty.store(true, std::memory_order_release);
+            break;
+        case PROP_HOUSE_CLOCK: {
+            const gchar* s = g_value_get_string(value);
+            mrts::ClockDecl d;
+            if (!parse_house_clock(s, &d)) {
+                GST_ELEMENT_WARNING(self, LIBRARY, SETTINGS,
+                                    ("house-clock not understood; the last value is kept"),
+                                    ("not a house-clock structure: %s", s));
+                break;
+            }
+            GST_OBJECT_LOCK(self);
+            *self->clock = d;
+            g_free(self->house_clock);
+            self->house_clock = g_strdup(s ? s : "");
+            self->clock_pending = TRUE;
+            GST_OBJECT_UNLOCK(self);
+            self->dirty.store(true, std::memory_order_release);
+            break;
+        }
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
             break;
@@ -820,8 +1006,11 @@ static GstStructure* restamp_empty_stats(GstMrtsRestamp* self) {
     GstStructure* s =
         gst_structure_new("mrtsrestamp-stats", "mode", G_TYPE_STRING, fixed ? "fixed" : "stc",
                           "arrival", G_TYPE_STRING, clock ? "clock" : "buffer-pts", NULL);
+    GValue empty3 = G_VALUE_INIT;
+    g_value_init(&empty3, GST_TYPE_ARRAY);
     gst_structure_take_value(s, "programs", &empty);
     gst_structure_take_value(s, "pids", &empty2);
+    gst_structure_take_value(s, "trust", &empty3);
     return s;
 }
 
@@ -867,6 +1056,26 @@ static void restamp_get_property(GObject* object, guint prop_id, GValue* value, 
             g_value_set_string(value, self->trace_location);
             GST_OBJECT_UNLOCK(self);
             break;
+        case PROP_TIMING_MODE:
+            GST_OBJECT_LOCK(self);
+            g_value_set_enum(value, self->timing_mode);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_TRANSPORT_LATENCY_MS:
+            GST_OBJECT_LOCK(self);
+            g_value_set_uint(value, self->transport_latency_ms);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_TRUST_TOLERANCE_MS:
+            GST_OBJECT_LOCK(self);
+            g_value_set_uint(value, self->trust_tolerance_ms);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_HOUSE_CLOCK:
+            GST_OBJECT_LOCK(self);
+            g_value_set_string(value, self->house_clock);
+            GST_OBJECT_UNLOCK(self);
+            break;
         case PROP_STATS: {
             g_mutex_lock(&self->snap_lock);
             GstStructure* s = self->snapshot ? gst_structure_copy(self->snapshot) : NULL;
@@ -891,8 +1100,10 @@ static void restamp_finalize(GObject* object) {
     delete self->trims;
     delete self->pieces;
     delete self->members;
+    delete self->clock;
     g_free(self->pid_trims);
     g_free(self->trace_location);
+    g_free(self->house_clock);
     if (self->snapshot) gst_structure_free(self->snapshot);
     g_mutex_clear(&self->snap_lock);
     g_rec_mutex_clear(&self->task_lock);
@@ -924,7 +1135,13 @@ static void gst_mrtsrestamp_init(GstMrtsRestamp* self) {
     self->trims = new std::map<int, int64_t>();
     self->smoothing_cooldown_ns = mrts::ClockLockConfig().step_fall_hold_ns;
     self->trace_location = NULL;
+    self->timing_mode = MRTSRESTAMP_TIMING_RESTAMP;
+    self->transport_latency_ms = 0;
+    self->trust_tolerance_ms = DEFAULT_TRUST_TOLERANCE_MS;
+    self->house_clock = g_strdup("");
+    self->clock = new mrts::ClockDecl();
     self->edits_pending = self->cooldown_pending = self->trace_pending = FALSE;
+    self->mode_pending = self->latency_pending = self->tolerance_pending = self->clock_pending = FALSE;
     self->core = NULL;
     self->run_arrival = MRTSRESTAMP_ARRIVAL_CLOCK;
     self->trace = new mrts::TraceWriter();
@@ -1015,11 +1232,39 @@ static void gst_mrtsrestamp_class_init(GstMrtsRestampClass* klass) {
                             "off. Live: a new path starts a new trace at the next buffer.",
                             NULL, live));
     g_object_class_install_property(
+        gobject_class, PROP_TIMING_MODE,
+        g_param_spec_enum("timing-mode", "Timing mode",
+                          "stc only (ch. 9 part 4.8). restamp: the receiver's STC with O and the "
+                          "trims. trust: the sender's house time while the link qualifies, else the "
+                          "STC without O or trims; switched at a natural gap, a switch into Trust "
+                          "converging at 0.5 %. Live.",
+                          gst_mrtsrestamp_timing_mode_get_type(), MRTSRESTAMP_TIMING_RESTAMP, live));
+    g_object_class_install_property(
+        gobject_class, PROP_TRANSPORT_LATENCY_MS,
+        g_param_spec_uint("transport-latency-ms", "Transport latency (ms)",
+                          "L, the transport's own latency (the module's): Trust's transit bound is "
+                          "L + trust-tolerance-ms. Live.",
+                          0, MAX_LATENCY_MS, 0, live));
+    g_object_class_install_property(
+        gobject_class, PROP_TRUST_TOLERANCE_MS,
+        g_param_spec_uint("trust-tolerance-ms", "Trust tolerance (ms)",
+                          "tau, the transit allowed past L before Trust falls back (Q12). Live.", 0,
+                          MAX_LATENCY_MS, DEFAULT_TRUST_TOLERANCE_MS, live));
+    g_object_class_install_property(
+        gobject_class, PROP_HOUSE_CLOCK,
+        g_param_spec_string("house-clock", "House clock",
+                            "The engine's E and sync state (ch. 9 part 4.6), a serialised "
+                            "house-clock structure. Empty: E unknown, Trust refused "
+                            "(local-undisciplined). Live; a value not understood is warned and the "
+                            "last kept.",
+                            "", live));
+    g_object_class_install_property(
         gobject_class, PROP_STATS,
         g_param_spec_boxed("stats", "Stats",
-                           "The last stats post: the mrtsrestamp-stats and mrtsrestamp-pid "
-                           "messages as `programs` and `pids`, the core's counters, buffers, "
-                           "lists, gap-markers and outage-markers since the start.",
+                           "The last stats post: the mrtsrestamp-stats, mrtsrestamp-pid and "
+                           "mrtsrestamp-trust messages as `programs`, `pids` and `trust`, the "
+                           "core's counters, buffers, lists, gap-markers and outage-markers since "
+                           "the start.",
                            GST_TYPE_STRUCTURE,
                            (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */

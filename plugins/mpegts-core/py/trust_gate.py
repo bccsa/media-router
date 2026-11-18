@@ -40,7 +40,7 @@ Run as a script it replays an event list: trust_gate.py events.jsonl|- [--pes]. 
 line, `t` in ns on every line but config: trace2jsonl's psi, decl, pcr, pes (optional "stc") and
 outage lines (a natural gap of silenceNs for every program), and {"kind":"config", camelCase
 TrustConfig fields}, {"kind":"mode","mode":"restamp"|"trust"}, {"kind":"l","ns"}, {"kind":"tau",
-"ns"}, {"kind":"clock","eNs","seq","disciplined","errorUs" (null: unknown)}, {"kind":"offset","ns"},
+"ns"}, {"kind":"clock","eNs","seq","disciplined","errorUs" (null: unknown)[,"known"]}, {"kind":"offset","ns"},
 {"kind":"trim","pid","ns"}, {"kind":"natural-gap","gapNs"[,"program"]}. After every event each
 program's gate steps at its t; the input lines (psi, decl, decl2, pcr, pes, outage) come first to
 every gate's on_input. No event steps the gates in a silence alone (no tick: the restamp's gates
@@ -106,10 +106,15 @@ class Config:
 
 
 class Clock:
-    """The local house-clock: E (0 = unknown), its seq, disciplined, error in us (None unknown)."""
+    """The local house-clock: E, its seq, disciplined, error in us (None unknown). E is known when
+    `known` (default: E not 0) and not 0, as the writer reads it (B-253)."""
 
-    def __init__(self, e_ns=0, seq=0, disciplined=False, error_us=None):
+    def __init__(self, e_ns=0, seq=0, disciplined=False, error_us=None, known=None):
         self.e_ns, self.seq, self.disciplined, self.error_us = e_ns, seq, disciplined, error_us
+        self.known = (e_ns != 0) if known is None else bool(known)
+
+    def e_known(self):
+        return self.known and self.e_ns != 0
 
 
 class TrustGate:
@@ -123,7 +128,8 @@ class TrustGate:
         self.trust_selected = trust_selected
         self.state = "deciding" if trust_selected else "restamp"
         self.since = now
-        self.decl, self.pmt_at, self.last_input = None, None, None
+        self.decl, self.pmt_at = None, None
+        self.last_input = now             # its creation is an input (B-253)
         self.ring = []
         self.bad_run, self.bad_side, self.judged, self.good = 0, None, False, 0
         self.qual_since, self.ready_at, self.restamp_pending = None, None, None
@@ -158,7 +164,7 @@ class TrustGate:
             return "not-house-time"
         if not d["disciplined"]:
             return "sender-undisciplined"
-        if not self.clock.disciplined or self.clock.e_ns == 0:
+        if not self.clock.disciplined or not self.clock.e_known():
             return "local-undisciplined"
         if self.bad_run >= self.cfg.bad_pcrs:
             return self.bad_side
@@ -183,7 +189,7 @@ class TrustGate:
 
     def on_pcr(self, pcr27, now):
         d = self.decl
-        if d is None or not d["houseTimeTai"] or self.clock.e_ns == 0:
+        if d is None or not d["houseTimeTai"] or not self.clock.e_known():
             return
         tr = self.transit(pcr27, now)
         self.ring.append(tr)
@@ -222,7 +228,7 @@ class TrustGate:
         """A receiver re-epoch: in a Trust state, a switch to the new constant at once."""
         old = self.clock
         self.clock = clock
-        if self.state in MAPPED and clock.e_ns != old.e_ns and clock.e_ns != 0 and self.last_pts is not None:
+        if self.state in MAPPED and clock.e_ns != old.e_ns and clock.e_known() and self.last_pts is not None:
             was = self._f(self.last_pts, old.e_ns)
             self._switch_trust(fold33(was - net_to_bus(self.last_pts, clock.e_ns)), now)
 
@@ -454,7 +460,7 @@ class Replay:
             for g in self.gates.values():
                 g.l_ns, g.tau_ns = self.l_ns, self.tau_ns
         elif k == "clock":
-            self.clock = Clock(ev["eNs"], ev.get("seq", 0), ev["disciplined"], ev.get("errorUs"))
+            self.clock = Clock(ev["eNs"], ev.get("seq", 0), ev["disciplined"], ev.get("errorUs"), ev.get("known"))
             for g in self.gates.values():
                 g.set_clock(self.clock, now)
         elif k == "offset":

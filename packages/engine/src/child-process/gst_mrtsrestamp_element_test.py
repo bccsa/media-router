@@ -17,6 +17,10 @@ not a twin; chapter 3 part 4.5 rule 1):
   - smoothing-cooldown-ns at the start and set live: the core's bytes, markers and events, and 0
     moving a step-seeded line at a burst's dip as the backlog rule does (b95s);
   - any chunking: packets split over buffers and over memories leave as the core makes them;
+  - Trust (ch. 9 WI-P5-8): a live timing-mode change mid-stream gives qualifying, then converging
+    with converging-remaining-ns about the transit + the declared D_e (k), then trust, nothing
+    dropped; an unknown E gives failed = local-undisciplined; a new epoch_seq sender-reepoch;
+    mrtsrestamp-trust and the events equal the core's, through both runners as well;
   - gst-inspect-1.0 lists every property.
 
 Skips (exit 0) without GStreamer or the built plugin; the reference is built with make."""
@@ -50,7 +54,7 @@ import ingest_restamp_fixture as fx  # noqa: E402
 from ingest_restamp_fixture import (MS, S, PKT, PTS_WRAP, TICK, PID_PMT, PID_V,  # noqa: E402
                                     PID_A, PID_SILENT, TS_CAPS, PAT, PMT, Stream, gap_length,
                                     pieces_of, pmt, psi_packet, ns90k, ref_counters,
-                                    ref_events, ref_stats)
+                                    ref_events, ref_stats, ref_trust, mrht, house_clock_value)
 
 # The plugin from MR_PLUGINS_DIR when set (a mutant, an install); the reference always from here.
 _SO = os.path.join(os.environ.get("MR_PLUGINS_DIR") or os.path.join(fx.ROOT, "plugins"),
@@ -196,6 +200,14 @@ def drive(h, records):
             h.el.set_property("smoothing-cooldown-ns", r[1])
         elif r[0] == "R":
             h.el.set_property("trace-location", r[1])
+        elif r[0] == "H":
+            h.el.set_property("house-clock", house_clock_value(*r[1:]))
+        elif r[0] == "L":
+            h.el.set_property("transport-latency-ms", r[1] // MS)
+        elif r[0] == "U":
+            h.el.set_property("trust-tolerance-ms", r[1] // MS)
+        elif r[0] == "M":
+            h.el.set_property("timing-mode", 1 if r[1] else 0)
         elif r[0] == "F":
             h.src.push_event(Gst.Event.new_flush_start())
             h.src.push_event(Gst.Event.new_flush_stop(False))
@@ -229,7 +241,8 @@ REC.append(("E",))
 print("\n--- gst-inspect-1.0 and the property contract ---")
 PROPS = ["clock-mode", "arrival", "add-base-time", "offset-ns", "pid-trims",
          "smoothing-cooldown-ns", "stats-interval-ms",
-         "trace-location", "stats", "abi", "desync-bytes", "cc-lost", "pes-oversize",
+         "trace-location", "timing-mode", "transport-latency-ms", "trust-tolerance-ms",
+         "house-clock", "stats", "abi", "desync-bytes", "cc-lost", "pes-oversize",
          "pes-dropped-cc", "header-spans", "psi-unsupported-sections", "pes-no-pts",
          "dts-discarded"]
 _inspect = subprocess.run(["gst-inspect-1.0", f"--gst-plugin-load={_SO}", "mrtsrestamp"],
@@ -238,22 +251,26 @@ _listed = [p for p in PROPS if f"\n  {p}" in _inspect.stdout and
            (f"\n  {p} " in _inspect.stdout or f"\n  {p}:" in _inspect.stdout)]
 check(f"gst-inspect-1.0 lists every property ({len(_listed)}/{len(PROPS)}: missing "
       f"{sorted(set(PROPS) - set(_listed))})", _inspect.returncode == 0 and _listed == PROPS)
-check("gst-inspect-1.0 shows the enum nicks stc, fixed, clock, buffer-pts",
-      all(f"): {n} " in _inspect.stdout for n in ("stc", "fixed", "clock", "buffer-pts")))
+check("gst-inspect-1.0 shows the enum nicks stc, fixed, clock, buffer-pts, restamp, trust",
+      all(f"): {n} " in _inspect.stdout
+          for n in ("stc", "fixed", "clock", "buffer-pts", "restamp", "trust")))
 _f = Gst.ElementFactory.find("mrtsrestamp")
 check("the factory table registers mrtsrestamp at rank NONE",
       _f is not None and _f.get_rank() == Gst.Rank.NONE and _f.get_plugin_name() == "mrtshouse")
 _el = Gst.ElementFactory.make("mrtsrestamp", None)
 _defaults = {p: _el.get_property(p) for p in ("add-base-time", "offset-ns", "pid-trims",
                                               "smoothing-cooldown-ns", "stats-interval-ms",
-                                              "trace-location")}
+                                              "trace-location", "transport-latency-ms",
+                                              "trust-tolerance-ms", "house-clock")}
 check(f"defaults: stc, arrival clock, no base time, O 0, no trims, a 300 s smoothing cooldown, "
-      f"stats every 2 s, no trace ({_defaults})",
+      f"stats every 2 s, no trace, timing-mode restamp, L 0, tau 200 ms, no house-clock ({_defaults})",
       _el.get_property("clock-mode").value_nick == "stc"
       and _el.get_property("arrival").value_nick == "clock"
+      and _el.get_property("timing-mode").value_nick == "restamp"
       and _defaults == {"add-base-time": False, "offset-ns": 0, "pid-trims": "",
                         "smoothing-cooldown-ns": 300 * S, "stats-interval-ms": 2000,
-                        "trace-location": None})
+                        "trace-location": None, "transport-latency-ms": 0,
+                        "trust-tolerance-ms": 200, "house-clock": ""})
 
 
 def _flags(name):
@@ -262,21 +279,23 @@ def _flags(name):
 
 _live = all(_flags(p) & Gst.PARAM_MUTABLE_PLAYING for p in
             ("offset-ns", "pid-trims", "smoothing-cooldown-ns", "stats-interval-ms",
-             "trace-location"))
+             "trace-location", "timing-mode", "transport-latency-ms", "trust-tolerance-ms",
+             "house-clock"))
 _at_start = all(_flags(p) & Gst.PARAM_MUTABLE_READY for p in
                 ("clock-mode", "arrival", "add-base-time"))
 _ro = not _flags("stats") & GObject.ParamFlags.WRITABLE
 _off = _el.find_property("offset-ns")
 _cool = _el.find_property("smoothing-cooldown-ns")
-check("offset-ns, pid-trims, smoothing-cooldown-ns, stats-interval-ms and trace-location are live; "
+check("offset-ns, pid-trims, smoothing-cooldown-ns, stats-interval-ms, trace-location and Trust's "
+      "four are live; "
       "clock-mode, arrival and add-base-time apply at a start; stats is read-only; O within ±10 s, "
       "the cooldown within 0-3600 s",
       _live and _at_start and _ro and _off.minimum == -10 * S and _off.maximum == 10 * S
       and _cool.minimum == 0 and _cool.maximum == 3600 * S)
 _s0 = _el.get_property("stats")
-check("a fresh element's stats: its mode and arrival, no programs, no PIDs",
+check("a fresh element's stats: its mode and arrival, no programs, no PIDs, no Trust",
       _s0.get_name() == "mrtsrestamp-stats" and _s0.get_value("mode") == "stc"
-      and _s0.get_value("arrival") == "clock")
+      and _s0.get_value("arrival") == "clock" and _s0.has_field("trust"))
 
 print("\n--- bytes, markers, events and stats equal RestampCore's (stc, arrival=buffer-pts) ---")
 REF = reference(REC, stats_ms=1000)
@@ -934,6 +953,248 @@ check(f"{len(_recc) - 1} buffers ({_split} of two memories): the core's bytes, n
       and _cc["desync-bytes"] == 0 and _cc["cc-lost"] == 0
       and hk.el.get_property("desync-bytes") == 0 and hk.el.get_property("cc-lost") == 0)
 hk.stop()
+
+print("\n--- Trust (ch. 9 WI-P5-8): a live timing-mode change, qualifying, converging, trust ---")
+D_E, TRANSIT, L_NS = 100 * MS, 60 * MS, 500 * MS
+TL_ID = 0x0123456789ABCDEF
+# The stream's PCR is the sender's H(emission) - D_e on its source clock (sigma0 7200 s, house
+# h0 100 s) and its datagrams arrive 20 ms after their last packet: this E puts every PCR TRANSIT
+# + D_e before its arrival on network time.
+E_RX = 7200 * S - 100 * S + D_E + TRANSIT - 20 * MS
+
+
+def trust_records(secs, mode_at=None, reepoch_at=None, e_ns=E_RX, trust_at_start=False, edits=(),
+                  before=()):
+    """`secs` of the Stream with an MRHT in its PMT, house-clock and L (and `before`) before the
+    first buffer; timing-mode trust at the first buffer from `mode_at` that posts stats (where a
+    runner can tell the element took everything before it); epoch_seq 1 -> 2 (PMT version 1) at
+    reepoch_at; `edits` (mux t, record) after the first buffer from t."""
+    pmt1 = pmt(program_info=mrht(D_E, epoch_seq=1, timeline_id=TL_ID))
+    pmt2 = pmt(program_info=mrht(D_E, epoch_seq=2, timeline_id=TL_ID), version=1)
+    old, new = psi_packet(PID_PMT, pmt1)[4:], psi_packet(PID_PMT, pmt2)[4:]
+    st = Stream(secs, pmt_sec=pmt1)
+    recs = [("H", e_ns, 1, True, 100), ("L", L_NS)] + list(before) + ([("M", True)] if trust_at_start else [])
+    stats_at, waiting, edits = None, mode_at is not None, sorted(edits)
+    for arrival, data in st.datagrams:
+        t = st.mux(arrival)
+        if reepoch_at is not None and t >= reepoch_at:
+            data = data.replace(old, new)
+        recs.append(("B", arrival, data))
+        stats_at = arrival if stats_at is None else stats_at
+        posted = arrival - stats_at >= S
+        stats_at = arrival if posted else stats_at
+        if waiting and posted and t >= mode_at:
+            recs.append(("M", True))
+            waiting = False
+        while edits and t >= edits[0][0]:
+            recs.append(edits.pop(0)[1])
+    return recs + [("E",)]
+
+
+def trust_events(evs):
+    return [e for e in evs if e["kind"].startswith("trust") or e["kind"] == "sender-reepoch"]
+
+
+# O and a trim set while Trust holds, then Restamp selected: still Trust-mapped until a natural gap
+# or 30 s (past the end), so neither is in force.
+TREC = trust_records(75, mode_at=3 * S, reepoch_at=20 * S,
+                     edits=[(68 * S, ("O", 300 * MS)), (68 * S, ("T", {PID_A: 40 * MS})),
+                            (70 * S, ("M", False))])
+TREF = reference(TREC, stats_ms=1000)
+ht = Harness(arrival="buffer-pts", stats_interval_ms=1000)
+drive(ht, TREC)
+_tev, _tmsg = ht.messages("mrtsrestamp-event"), ht.messages("mrtsrestamp-trust")
+check(f"Trust: every buffer and marker equals the core's ({len(ht.items())} out)",
+      ht.items() == expected_items(TREC, TREF))
+check(f"... mrtsrestamp-event equals the core's, Trust's fields too ({len(trust_events(_tev))} Trust "
+      "events)", _tev == ref_events(TREF) and len(trust_events(_tev)) >= 4)
+check(f"... mrtsrestamp-trust: one per program per interval, the core's ({len(_tmsg)} posts)",
+      _tmsg == ref_trust(TREF) and len(_tmsg) >= 70)
+_t0 = TREC[2][1]
+_mode_t = next(r[1] for r in TREC[TREC.index(("M", True)) + 1:] if r[0] == "B")   # taken there
+_seq = [(e["kind"], e["reason"], e["from"], e["state"]) for e in trust_events(_tev)
+        if e["kind"] != "sender-reepoch"]
+print("  Trust events:", [(e["kind"], e["reason"], e.get("state"), round((e["house-ns"] - _t0) / S, 2),
+                           e.get("converging-ns")) for e in trust_events(_tev)])
+check(f"the events: restamp -> qualifying at the change, qualified, the switch into converging, "
+      f"converging -> trust ({_seq})",
+      _seq == [("trust-state", "none", "restamp", "qualifying"),
+               ("trust-qualified", "qualifying", "qualifying", "qualifying"),
+               ("trust-switch", "switch-to-trust", "qualifying", "converging"),
+               ("trust-state", "none", "converging", "trust")])
+_ev = {e["kind"] + ":" + e.get("state", ""): e for e in trust_events(_tev)}
+_q, _sw = _ev["trust-qualified:qualifying"], _ev["trust-switch:converging"]
+check(f"... qualifying from the change ({(_ev['trust-state:qualifying']['house-ns'] - _mode_t) / MS:.0f} "
+      f"ms), qualified 2 s on ({(_q['house-ns'] - _mode_t) / S:.2f} s), switched 30 s later without a "
+      f"natural gap ({(_sw['house-ns'] - _q['house-ns']) / S:.2f} s)",
+      _ev["trust-state:qualifying"]["house-ns"] == _mode_t
+      and 2 * S <= _q["house-ns"] - _mode_t <= 2100 * MS
+      and 30 * S <= _sw["house-ns"] - _q["house-ns"] <= 30100 * MS)
+_k = _sw["converging-ns"]
+check(f"the switch's k = the transit + the declared D_e ({_k / MS:.1f} ms against "
+      f"{(TRANSIT + D_E) / MS:.0f} ms), value-ns alike, failed empty",
+      abs(_k - (TRANSIT + D_E)) <= 15 * MS and _sw["value-ns"] == _k and _sw["failed"] == "")
+_conv = [m for m in _tmsg if m["effective"] == "converging"]
+_rem = [m["converging-remaining-ns"] for m in _conv]
+check(f"mrtsrestamp-trust while converging: converging-remaining-ns from about k down, every post "
+      f"lower ({len(_rem)} posts: {_rem[0] / MS if _rem else 0:.1f} .. {_rem[-1] / MS if _rem else 0:.1f} ms)",
+      len(_rem) >= 25 and _k - 10 * MS <= _rem[0] <= _k
+      and all(b < a for a, b in zip(_rem, _rem[1:])) and _rem[-1] > 0)
+_after = _tmsg[_tmsg.index(_conv[-1]) + 1:] if _conv else []
+check(f"... then trust at 0.5 %: k / 0.005 of content ({(_ev['trust-state:trust']['house-ns'] - _sw['house-ns']) / S:.1f} s), "
+      "remaining 0, qualified, one switch",
+      _after and all(m["effective"] == "trust" and m["converging-remaining-ns"] == 0
+                     and m["qualifies"] and m["failed"] == "" and m["switches"] == 1 for m in _after)
+      and abs((_ev["trust-state:trust"]["house-ns"] - _sw["house-ns"]) - _k * 200) <= 2 * S)
+_last = ref_stats(TREF)[-1][0][0]
+check(f"nothing dropped through the switch: no overlap, no PES dropped, no gap ({_last['dropped-pes']} "
+      f"PES, {_last['gaps']} gaps)",
+      _last["dropped-pes"] == 0 and _last["gaps"] == 0
+      and not any(e["kind"] in ("overlap", "gap") for e in _tev))
+_m = _tmsg[-1]
+check(f"the transit and its bound: median {_m.get('transit-median-ns', 0) / MS:.1f} ms, bound L + tau, "
+      "L and tau as set",
+      abs(_m["transit-median-ns"] - TRANSIT) <= 10 * MS
+      and _m["transit-min-ns"] <= _m["transit-median-ns"] <= _m["transit-max-ns"]
+      and _m["bound-ns"] == L_NS + 200 * MS and _m["l-ns"] == L_NS and _m["tau-ns"] == 200 * MS
+      and _m["bound-lo-ns"] < 0 and _m["selected"] == "restamp" and _m["effective"] == "trust")
+check(f"the sender's declaration, each field ({ {k: v for k, v in _m.items() if k.startswith('decl')} })",
+      _m["decl-present"] and _m["decl-tai"] and _m["decl-disciplined"] and _m["decl-traceable"]
+      and _m["decl-source"] == "ntp" and _m["decl-tai-offset-s"] == 37 and _m["decl-ptp-domain"] == -1
+      and _m["decl-gm"] == "" and _m["decl-error-class"] == 10 and _m["decl-epoch-seq"] == 2
+      and _m["decl-d-e-ns"] == D_E and _m["decl-timeline-id"] == "0123456789abcdef")
+_re = [e for e in _tev if e["kind"] == "sender-reepoch"]
+check(f"a new epoch_seq: one sender-reepoch, epoch the new, value-ns the old ({_re})",
+      len(_re) == 1 and _re[0]["epoch"] == 2 and _re[0]["value-ns"] == 1 and _re[0]["reason"] == "epoch-seq"
+      and 19500 * MS <= _re[0]["house-ns"] - _t0 <= 20500 * MS)
+_restamp_msgs = _tmsg[:next(i for i, m in enumerate(_tmsg) if m["selected"] == "trust")]
+check(f"in Restamp the gate runs for display: qualifies with its transit before the change "
+      f"({len(_restamp_msgs)} posts)",
+      len(_restamp_msgs) >= 2 and all(m["effective"] == "restamp" for m in _restamp_msgs)
+      and _restamp_msgs[-1]["qualifies"] and "transit-median-ns" in _restamp_msgs[-1])
+_pq = ht.messages("mrtsrestamp-pid")
+_late = [q for q, line in zip(_pq, [l for l in TREF if "stats" in l for _ in l["stats"]["pids"]])
+         if line["stats"]["trust"][0]["selected"] == "restamp" and line["stats"]["trust"][0]["effective"] == "trust"]
+check(f"mrtsrestamp-pid: O 300 ms and a 40 ms trim set under Trust, then Restamp selected while still "
+      f"Trust-mapped: neither in force, trim-ns and shift-ns 0 ({len(_late)} such posts)",
+      len(_late) >= 6 and all(q["trim-ns"] == 0 and q["shift-ns"] == 0 for q in _pq))
+_snap_t = array_of(ht.el.get_property("stats"), "trust")
+check("the stats snapshot's trust: the last post's", _snap_t == _tmsg[-1:])
+ht.stop()
+
+print("\n--- Trust refused: an unknown E (local-undisciplined); house-clock values ---")
+UREC = trust_records(5, e_ns=0, trust_at_start=True,
+                     before=[("O", 300 * MS), ("T", {PID_A: 40 * MS})])
+UREF = reference(UREC, stats_ms=1000)
+hu = Harness(arrival="buffer-pts", stats_interval_ms=1000)
+drive(hu, UREC)
+_uev, _umsg = trust_events(hu.messages("mrtsrestamp-event")), hu.messages("mrtsrestamp-trust")
+check(f"the core's events and messages ({[(e['kind'], e['reason'], e['failed']) for e in _uev]})",
+      hu.messages("mrtsrestamp-event") == ref_events(UREF) and _umsg == ref_trust(UREF))
+check("deciding gives up at 1 s: trust-fallback with failed = local-undisciplined",
+      [(e["kind"], e["state"]) for e in _uev] == [("trust-state", "fallback"), ("trust-fallback", "fallback")]
+      and all(e["failed"] == "local-undisciplined" and e["reason"] == "release-restamp" for e in _uev))
+check("mrtsrestamp-pid: O and a trim set, Trust selected: none in force in fallback either (C-10)",
+      all(q["trim-ns"] == 0 and q["shift-ns"] == 0 for q in hu.messages("mrtsrestamp-pid"))
+      and len(hu.messages("mrtsrestamp-pid")) >= 6)
+check(f"mrtsrestamp-trust: deciding at the first post (1 s), then fallback; never qualified, "
+      f"local-undisciplined, no transit judged ({[m['effective'] for m in _umsg]})",
+      len(_umsg) >= 3 and [m["effective"] for m in _umsg] == ["deciding"] + ["fallback"] * (len(_umsg) - 1)
+      and all(not m["qualifies"] and m["failed"] == "local-undisciplined" and "transit-median-ns" not in m
+              for m in _umsg))
+hu.el.set_property("house-clock", "not a structure")
+check(f"a house-clock value not understood: warned, the last kept ({hu.warnings[-1:]})",
+      hu.el.get_property("house-clock") == house_clock_value(0, 1, True, 100)
+      and any("house-clock" in w for w in hu.warnings))
+hu.stop()
+
+
+def runner_trust_case(argv, tag):
+    """TREC through a runner: house-clock and L set before the data, timing-mode set live (1) at
+    its record once the element posted the stats before it; mrtsrestamp-trust and -event as the
+    engine gets them must be the core's."""
+    from gst_ingest_restamp_test import accept_input, gdp_chunks, plugin_events, wait_for
+    from gst_native_plugins_test import Runner, ev_is
+    import socket
+    import shutil
+    label = f"Trust through the {tag} runner"
+    for el in ("gdppay", "gdpdepay", "tcpclientsrc"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP {label} — {el} unavailable")
+            return
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    empty = os.path.join(tmp, "libexec")
+    os.makedirs(empty)
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    TREC, TREF = RREC, RREF
+    bufs = [r for r in TREC if r[0] == "B"]
+    prelude, chunks = gdp_chunks([(r[1], r[2]) for r in bufs])
+    chunk_of = {id(r): c for r, c in zip(bufs, chunks or [])}
+    at_mode = TREC.index(("M", True))
+    posts_before = sum(len(line["stats"]["trust"]) for line in TREF[:sum(1 for r in TREC[:at_mode] if r[0] == "B")]
+                       if "stats" in line)
+    chans = ("mrtsrestamp-trust", "mrtsrestamp-event")
+    plugins = os.environ.get("MR_PLUGINS_DIR") or os.path.join(fx.ROOT, "plugins")
+    r = Runner(argv, plugins, empty)
+    conn = None
+    try:
+        r.send({"cmd": "start", "pipeline": f"tcpclientsrc host=127.0.0.1 port={server.getsockname()[1]} "
+                "! gdpdepay ! mrtsrestamp name=restamp arrival=buffer-pts stats-interval-ms=1000 "
+                f"transport-latency-ms={L_NS // MS} ! fakesink sync=false",
+                "restartOnError": False,
+                "busReports": [{"element": "restamp", "structure": c} for c in chans]})
+        conn = accept_input(server)
+        started = r.wait_event(lambda e: e.get("event") in ("started", "error"))
+        check(f"{label}: starts and connects", conn is not None and started is not None
+              and started.get("event") == "started" and chunks is not None)
+        if conn is None or chunks is None:
+            return
+        r.send({"cmd": "set_property", "id": "hc", "element": "restamp", "property": "house-clock",
+                "value": house_clock_value(E_RX, 1, True, 100)})
+        ok = r.wait_event(ev_is("property_set", id="hc")) is not None
+        conn.sendall(prelude)
+        for rec in TREC[:at_mode]:
+            if rec[0] == "B":
+                conn.sendall(chunk_of[id(rec)])
+        ok &= wait_for(lambda: len(plugin_events(r, "mrtsrestamp-trust")) >= posts_before, 20.0)
+        r.send({"cmd": "set_property", "id": "tm", "element": "restamp", "property": "timing-mode",
+                "value": 1})
+        ok &= r.wait_event(ev_is("property_set", id="tm")) is not None
+        for rec in TREC[at_mode:]:
+            if rec[0] == "B":
+                conn.sendall(chunk_of[id(rec)])
+        conn.close()
+        conn = None
+        ok &= r.wait_event(ev_is("eos"), timeout=30) is not None
+        want = {"mrtsrestamp-trust": ref_trust(TREF), "mrtsrestamp-event": ref_events(TREF)}
+        wait_for(lambda: all(len(plugin_events(r, c)) >= len(want[c]) for c in chans), 10.0)
+        got = {c: plugin_events(r, c) for c in chans}
+        check(f"{label}: house-clock and timing-mode (1, trust) set live and taken; the input to EOS", ok)
+        check(f"{label}: mrtsrestamp-trust:restamp is the core's ({len(got['mrtsrestamp-trust'])} of "
+              f"{len(want['mrtsrestamp-trust'])})", got["mrtsrestamp-trust"] == want["mrtsrestamp-trust"])
+        check(f"{label}: mrtsrestamp-event:restamp is the core's, the switch into converging among them",
+              got["mrtsrestamp-event"] == want["mrtsrestamp-event"]
+              and any(e["kind"] == "trust-switch" and e["state"] == "converging" for e in got["mrtsrestamp-event"]))
+        errors = [e for e in r.events if e.get("event") == "error"]
+        check(f"{label}: no error event ({errors[:1]})", not errors)
+    finally:
+        if conn is not None:
+            conn.close()
+        server.close()
+        r.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+print("\n--- Trust through both runners ---")
+RREC = trust_records(75, mode_at=3 * S)
+RREF = reference(RREC, stats_ms=1000)
+from gst_native_plugins_test import NATIVE_RUNNER  # noqa: E402
+check(f"the native runner is built ({NATIVE_RUNNER})", os.access(NATIVE_RUNNER, os.X_OK))
+if os.access(NATIVE_RUNNER, os.X_OK):
+    runner_trust_case([NATIVE_RUNNER], "native")
+runner_trust_case([sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")], "Python")
 
 for _f in os.listdir(_tmp):
     os.remove(os.path.join(_tmp, _f))

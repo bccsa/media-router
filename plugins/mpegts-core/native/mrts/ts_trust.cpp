@@ -58,6 +58,16 @@ const char* trust_mapping_name(TrustGate::Mapping m) {
     }
 }
 
+const char* decl_source_name(uint8_t source) {
+    switch (source) {
+        case hcdesc::SYNC_NONE: return "none";
+        case hcdesc::SYNC_NTP: return "ntp";
+        case hcdesc::SYNC_SNTP: return "sntp";
+        case hcdesc::SYNC_PTP: return "ptp";
+        default: return "unknown";
+    }
+}
+
 uint32_t crc32_ieee(uint32_t crc, const void* data, size_t n) {
     static uint32_t table[256];
     static bool ready = false;
@@ -75,10 +85,11 @@ uint32_t crc32_ieee(uint32_t crc, const void* data, size_t n) {
     return ~crc;
 }
 
+// Its creation is an input: a silence right after the buffer that made it ages the PMT 40 ms at most.
 TrustGate::TrustGate(int program, const TrustConfig& cfg, const ClockDecl& clock, bool trust_selected,
                      int64_t now)
     : program_(program), cfg_(cfg), clock_(clock), trust_selected_(trust_selected),
-      state_(trust_selected ? State::deciding : State::restamp), since_(now) {}
+      state_(trust_selected ? State::deciding : State::restamp), since_(now), have_input_(true), last_input_(now) {}
 
 // --- the conditions -------------------------------------------------------------------------
 
@@ -100,7 +111,7 @@ const char* TrustGate::failed(int64_t now) const {
     if (!have_decl_ || !have_pmt_ || now - pmt_at_ - silence(now) > cfg_.pmt_stale_ns) return "no-descriptor";
     if (!decl_.house_time_tai) return "not-house-time";
     if (!decl_.disciplined) return "sender-undisciplined";
-    if (!clock_.disciplined || clock_.e_ns == 0) return "local-undisciplined";
+    if (!clock_.disciplined || !e_known(clock_)) return "local-undisciplined";
     if (bad_run_ >= cfg_.bad_pcrs) return bad_side_;
     if (!judged_) return "no-pcr";
     return nullptr;
@@ -122,7 +133,7 @@ void TrustGate::on_pmt(const HouseTimeDecl* decl, int64_t now) {
 }
 
 void TrustGate::on_pcr(int64_t pcr27, int64_t now) {
-    if (!have_decl_ || !decl_.house_time_tai || clock_.e_ns == 0) return;
+    if (!have_decl_ || !decl_.house_time_tai || !e_known(clock_)) return;
     const int64_t a = ns_to_pts90k(now + clock_.e_ns);
     const int64_t tr = fold33(a - (floor_div(pcr27, 300) + (int64_t)decl_.d_e_90k));
     ring_.push_back(tr);
@@ -166,7 +177,7 @@ void TrustGate::set_mode(bool trust, int64_t now) {
 void TrustGate::set_clock(const ClockDecl& clock, int64_t now) {
     const ClockDecl old = clock_;
     clock_ = clock;
-    if (mapped() && clock.e_ns != old.e_ns && clock.e_ns != 0 && have_last_) {
+    if (mapped() && clock.e_ns != old.e_ns && e_known(clock) && have_last_) {
         const int64_t was = f_on(last_pts_, old.e_ns);
         switch_trust(fold33(was - net_to_bus_e(last_pts_, clock.e_ns)), now);
     }
@@ -391,6 +402,9 @@ TrustGate::Stats TrustGate::stats(int64_t now) const {
     s.bound_lo_ns = pts90k_to_ns(lo);
     s.bound_hi_ns = pts90k_to_ns(hi);
     s.k_ns = pts90k_to_ns(k0_);
+    s.k_left_ns = state_ == State::converging && have_last_ ? pts90k_to_ns(k_at(last_pts_)) : 0;
+    s.l_ns = cfg_.l_ns;
+    s.tau_ns = cfg_.tau_ns;
     s.have_decl = have_decl_;
     if (have_decl_) s.decl = decl_;
     return s;

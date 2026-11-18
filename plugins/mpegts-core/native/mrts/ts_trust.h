@@ -27,8 +27,9 @@ struct TrustConfig {
     int64_t converge_div = 200;               // k falls 1 tick per 200 of content: 0.5 % (Q1 (b))
 };
 
-// The local house-clock is ts_hcdesc.h's ClockDecl: Trust reads E (0 unknown), disciplined
-// and the error in us (none unknown).
+// The local house-clock is ts_hcdesc.h's ClockDecl: Trust reads E, disciplined and the error in
+// us (none unknown). E is known when `known` and not 0, as the writer reads it (B-253).
+inline bool e_known(const ClockDecl& c) { return c.known && c.e_ns != 0; }
 
 class TrustGate {
   public:
@@ -65,6 +66,8 @@ class TrustGate {
         bool have_transit = false;
         int64_t transit_min_ns = 0, transit_median_ns = 0, transit_max_ns = 0;
         int64_t bound_lo_ns = 0, bound_hi_ns = 0, k_ns = 0;
+        int64_t k_left_ns = 0;                // converging: what remains of k at the last PES
+        int64_t l_ns = 0, tau_ns = 0;
         bool have_decl = false;
         HouseTimeDecl decl;
     };
@@ -99,6 +102,8 @@ class TrustGate {
     State state() const { return state_; }
     bool mapped() const { return state_ == State::trust || state_ == State::converging; }
     bool trust_selected() const { return trust_selected_; }
+    // qualifying: qualified for qualify_ns, waiting for a natural gap (or return_gap_wait_ns).
+    bool ready() const { return state_ == State::qualifying && have_ready_; }
     const char* failed(int64_t now) const;
     int64_t k_at(int64_t x) const;
     // net_to_bus(x) + k(x) on the clock's E (or `e_ns`).
@@ -150,6 +155,8 @@ class TrustGate {
 const char* trust_state_name(TrustGate::State s);
 const char* trust_decision_name(TrustGate::Decision d);
 const char* trust_mapping_name(TrustGate::Mapping m);
+// A declaration's sync_source as the element names it: none, ntp, sntp, ptp, else unknown.
+const char* decl_source_name(uint8_t source);
 // zlib's crc32 (the reference's digest), continued from `crc`.
 uint32_t crc32_ieee(uint32_t crc, const void* data, size_t n);
 

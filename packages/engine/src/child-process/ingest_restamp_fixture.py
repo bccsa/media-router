@@ -47,9 +47,10 @@ def crc32_mpeg(data):
     return crc
 
 
-def section(table_id, ext, payload):
+def section(table_id, ext, payload, version=0):
     length = 5 + len(payload) + 4
-    s = bytes([table_id, 0xB0 | (length >> 8), length & 0xFF, ext >> 8, ext & 0xFF, 0xC1, 0, 0])
+    s = bytes([table_id, 0xB0 | (length >> 8), length & 0xFF, ext >> 8, ext & 0xFF,
+               0xC1 | ((version & 0x1F) << 1), 0, 0])
     s += payload
     return s + crc32_mpeg(s).to_bytes(4, "big")
 
@@ -57,11 +58,23 @@ def section(table_id, ext, payload):
 PAT = section(0x00, 1, bytes([0x00, 0x01, 0xE0 | (PID_PMT >> 8), PID_PMT & 0xFF]))
 
 
-def pmt(extra=()):
-    """Video (the PCR PID) and audio, then `extra` (stream type, PID) entries no PES comes on."""
+def pmt(extra=(), program_info=b"", version=0):
+    """Video (the PCR PID) and audio, then `extra` (stream type, PID) entries no PES comes on;
+    `program_info` the program loop (an MRHT for Trust)."""
     es = [(0x1B, PID_V), (0x03, PID_A)] + list(extra)
-    return section(0x02, 1, bytes([0xE0 | (PID_V >> 8), PID_V & 0xFF, 0xF0, 0x00]) + b"".join(
-        bytes([t, 0xE0 | (pid >> 8), pid & 0xFF, 0xF0, 0x00]) for t, pid in es))
+    n = len(program_info)
+    return section(0x02, 1, bytes([0xE0 | (PID_V >> 8), PID_V & 0xFF, 0xF0 | (n >> 8), n & 0xFF])
+                   + program_info + b"".join(bytes([t, 0xE0 | (pid >> 8), pid & 0xFF, 0xF0, 0x00])
+                                             for t, pid in es), version)
+
+
+def mrht(d_e_ns, epoch_seq=1, timeline_id=0, error_class=10, tai=True, disciplined=True,
+         traceable=True, source=1, tai_offset_s=37):
+    """The house-time descriptor as ts_hcdesc.cpp encodes it (length 32, no PTP)."""
+    flags = (0x80 if tai else 0) | (0x40 if disciplined else 0) | (0x20 if traceable else 0) | 0x0F
+    return (bytes([0x05, 32]) + b"MRHT" + bytes([1, flags, source, tai_offset_s, 0xFF]) + b"\xff" * 8
+            + bytes([error_class]) + epoch_seq.to_bytes(2, "big") + ns90k(d_e_ns).to_bytes(4, "big")
+            + timeline_id.to_bytes(8, "big"))
 
 
 PMT = pmt()
@@ -227,6 +240,13 @@ def reference(records, tmp, fixed=False, stats_ms=2000, base=None):
                          + b"".join(struct.pack("<iq", p, ns) for p, ns in sorted(r[1].items())))
             elif r[0] == "R":
                 fh.write(b"R" + struct.pack("<I", len(r[1])) + r[1].encode())
+            elif r[0] == "H":   # (e_ns, seq, disciplined, error_us or None): known = e_ns != 0
+                fh.write(b"H" + struct.pack("<qIBq", r[1], r[2], (r[1] != 0) | (2 if r[3] else 0),
+                                            -1 if r[4] is None else r[4]))
+            elif r[0] in ("L", "U"):
+                fh.write(r[0].encode() + struct.pack("<q", r[1]))
+            elif r[0] == "M":
+                fh.write(b"M" + struct.pack("<B", 1 if r[1] else 0))
             else:
                 fh.write(r[0].encode())
     argv = [REF, path, "--stats-ms", str(stats_ms)] + (["--fixed"] if fixed else [])
@@ -289,6 +309,19 @@ def ref_events(ref):
 
 def ref_stats(ref):
     return [(line["stats"]["programs"], line["stats"]["pids"]) for line in ref if "stats" in line]
+
+
+def ref_trust(ref):
+    return [t for line in ref if "stats" in line for t in line["stats"]["trust"]]
+
+
+def house_clock_value(e_ns, seq, disciplined, error_us):
+    """houseClockProperty.ts's value for an 'H' record: no e-ns while E is unknown (0)."""
+    parts = ["house-clock"] + ([f"e-ns=(gint64){e_ns}"] if e_ns else []) + [
+        f"seq=(uint){seq}", "traceable=(boolean)true",
+        f"disciplined=(boolean){'true' if disciplined else 'false'}", "source=(string)ntp"]
+    parts += [f"error-us=(uint){error_us}"] if error_us is not None else []
+    return ", ".join(parts + ["tai-offset-s=(int)37", "ptp-domain=(int)-1", 'gm=(string)""'])
 
 
 def ref_counters(ref):

@@ -192,6 +192,10 @@ def case_failed_names():
     rows.append(("local E unknown -> local-undisciplined", d["failed"] == "local-undisciplined"))
     d = first_decision(gen(base(seconds=5), setup(disciplined=False)))
     rows.append(("local clock undisciplined -> local-undisciplined", d["failed"] == "local-undisciplined"))
+    ev = setup()
+    ev[0]["known"] = False                # E set, but not known: the writer's no-epoch value (B-253)
+    d = first_decision(gen(base(seconds=5), ev))
+    rows.append(("local E set but known = false -> local-undisciplined", d["failed"] == "local-undisciplined"))
     return rows
 
 

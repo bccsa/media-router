@@ -94,8 +94,18 @@ const char* event_kind_name(RestampCore::Event::Kind k) {
         case RestampCore::Event::Kind::overlap: return "overlap";
         case RestampCore::Event::Kind::lead_clamp: return "lead-clamp";
         case RestampCore::Event::Kind::trust_switch: return "trust-switch";
+        case RestampCore::Event::Kind::trust_qualified: return "trust-qualified";
+        case RestampCore::Event::Kind::trust_fallback: return "trust-fallback";
+        case RestampCore::Event::Kind::trust_return: return "trust-return";
+        case RestampCore::Event::Kind::sender_reepoch: return "sender-reepoch";
         default: return "psi-change";
     }
+}
+
+const char* event_name(const RestampCore::Event& e) {
+    if (e.kind == RestampCore::Event::Kind::trust_switch && std::strncmp(e.reason, "switch-to-", 10) != 0)
+        return "trust-state";
+    return event_kind_name(e.kind);
 }
 
 size_t RestampCore::Result::bytes() const {
@@ -177,13 +187,28 @@ void RestampCore::after_gate(Program& g, bool was_deciding) {
     auto is_mapped = [](TrustGate::State s) {
         return s == TrustGate::State::trust || s == TrustGate::State::converging;
     };
+    using St = TrustGate::State;
+    using Dec = TrustGate::Decision;
     for (const TrustGate::Transition& t : g.gate->take_log()) {
         Event e = make_event(Event::Kind::trust_switch, g.number, -1, trust_decision_name(t.decision), t.t, 0);
         e.state = trust_state_name(t.state);
+        e.from = trust_state_name(t.from);
         e.failed = t.failed ? t.failed : "";
         e.value_ns = t.k_ns;
         e.gap_ns = t.gap_ns;
         events_.push_back(e);
+        // The operator's events (WI-P5-8) beside the transition, its fields alike.
+        auto told = [&](Event::Kind k, const char* reason) {
+            Event o = e;
+            o.kind = k;
+            o.reason = reason;
+            events_.push_back(o);
+        };
+        if (t.decision == Dec::release_trust || (t.from == St::fallback && t.state == St::returning))
+            told(Event::Kind::trust_qualified, e.from);
+        if (t.state == St::fallback && (t.decision == Dec::switch_to_restamp || t.decision == Dec::release_restamp))
+            told(Event::Kind::trust_fallback, e.reason);
+        if (t.decision == Dec::switch_to_trust && t.from == St::returning) told(Event::Kind::trust_return, e.reason);
         if (is_mapped(t.from) != is_mapped(t.state) || t.decision == TrustGate::Decision::switch_to_trust) {
             for (int pid : g.es)
                 if (pids_[pid]) pids_[pid]->switched = true;
@@ -191,6 +216,14 @@ void RestampCore::after_gate(Program& g, bool was_deciding) {
             g.relocks++;
         }
     }
+    // Qualifying for 2 s: told once per wait for its gap.
+    const bool ready = g.gate->ready();
+    if (ready && !g.ready_told) {
+        Event q = make_event(Event::Kind::trust_qualified, g.number, -1, "qualifying", arrival_h_, 0);
+        q.state = q.from = "qualifying";
+        events_.push_back(q);
+    }
+    g.ready_told = ready;
     if (!was_deciding || deciding(g)) return;
     if (res_) release(g, true);
     else g.decide_release = true;
@@ -540,6 +573,16 @@ void RestampCore::on_pmt_seen(Program& g) {
     if (has || g.had_decl)
         for (uint64_t k = 0; k < n && trace_; k++) record_decl(g, has ? &d : nullptr);
     g.had_decl = has;
+    if (g.gate && has) {
+        if (g.have_seq && d.epoch_seq != g.decl_seq) {
+            Event e = make_event(Event::Kind::sender_reepoch, g.number, -1, "epoch-seq", arrival_h_, 0);
+            e.epoch = d.epoch_seq;
+            e.value_ns = g.decl_seq;
+            events_.push_back(e);
+        }
+        g.have_seq = true;
+        g.decl_seq = d.epoch_seq;
+    }
     if (g.gate) {
         g.gate->on_pmt(has ? &d : nullptr, arrival_h_);
         step_gate(g, arrival_h_);
@@ -1170,9 +1213,12 @@ RestampCore::Stats RestampCore::stats() {
                 q.lead_max_ns = v.back();
                 q.lead_count = (uint32_t)v.size();
             }
+            // In force: none while Trust is selected (target_shift) or the program still Trust-mapped.
+            const bool untouched = cfg_.mode == RestampConfig::Mode::stc && cfg_.timing_mode == TimingMode::trust;
+            const bool mapped = g.gate && g.gate->mapped();
             const auto it = trims_.find(pid);
-            q.trim_ns = it == trims_.end() ? 0 : it->second;
-            q.shift_ns = p->shift;
+            q.trim_ns = it == trims_.end() || untouched || mapped ? 0 : it->second;
+            q.shift_ns = mapped ? 0 : p->shift;
             q.dropped_pes = p->dropped_pes;
             s.pids.push_back(q);
         }
