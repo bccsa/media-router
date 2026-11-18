@@ -397,7 +397,7 @@ def case_group_cap():
 
 def case_video_late():
     """10c. A jittery video input (a late frame every 20 s) with the drain idle raises neither the
-    margin nor P (B4); the same late frame 10 s after a drain let go, or while it drains, raises
+    margin nor P (as it did before B-256); the same late frame 10 s after a drain let go, or while it drains, raises
     nothing either (B-256): `after-drain`, `drain`."""
     s = DrainServo(True, 40 * MS, 20 * MS)
     ln = Link(s, source(steady(40 * MS)), fill_ns=40 * MS, base_ns=100 * MS)

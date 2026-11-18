@@ -1091,7 +1091,7 @@ def case_drain_late():
     feeder.join(5)
     rig.stop()
     st = samples[-1]
-    check(f"drain-late: a decode stalled 60 ms while it drains is one late release counted `drain`, "
+    check(f"drain-late: a decode stalled 60 ms while it drains is at least one late release counted `drain`, "
           f"no raise, the margin at its 1-frame floor (stalled at {(stalled[0] - t0) / S if stalled else 0:.1f} s; "
           f"underruns {st['underruns']}, drain {st['underruns-drain']}, raises {st['drain-raises']}, "
           f"margin {st['drain-margin-ns'] / MS:.0f} ms)",

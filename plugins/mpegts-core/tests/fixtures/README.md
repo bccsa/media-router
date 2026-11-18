@@ -24,8 +24,8 @@ Arrival traces for the restamp are in `restamp/` (ch. 5 part 7.2, WI-P1-5); each
 one `scn-*.expect.json` per scenario of `output_conformance_test.py` (ch. 8 WI-P4-14, B-174; the
 drain's `scn-out-drain-burst`, 120 s, and `scn-out-drain-group`, 170 s, B-179; the raise rule's
 `scn-out-drain-cpu`, 175 s, and `scn-out-drain-dip`, 130 s, B-240; the video rule's `scn-out-drain-seam`,
-120 s, and `scn-out-drain-group-jitter`, 100 s, B-256); its streams are
-generated at test time or are the recordings here, none committed for it. The suite runs about 56
+60 s, and `scn-out-drain-group-jitter`, 50 s, B-256); its streams are
+generated at test time or are the recordings here, none committed for it. The suite runs about 57
 min in both runners on the 4-core dev Pi. An expectation's `cadenceWarning` means
 a PCR interval ran late against the PCR's own cadence (twice it, at least 500 ms, at most 4 s)
 at some point of the replay; `pcrCadenceMs` is the cadence learned at the end (B-86). A trace
