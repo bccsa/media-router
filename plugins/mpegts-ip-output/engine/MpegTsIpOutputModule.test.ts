@@ -207,7 +207,7 @@ describe('MpegTsIpOutputModule.pollStats', () => {
 describe('MpegTsIpOutputModule on the egress writer (WI-P5-10)', () => {
     afterEach(() => vi.restoreAllMocks());
 
-    const DEST = { host: '239.1.1.1', port: 5000 };
+    const DEST = { host: '239.0.0.1', port: 5000 };
     /** Where each part sits; every part present, in this order. */
     const inOrder = (pipeline: string, parts: string[]) => {
         const at = parts.map((p) => pipeline.indexOf(p));
@@ -252,7 +252,7 @@ describe('MpegTsIpOutputModule on the egress writer (WI-P5-10)', () => {
             destinations: [
                 DEST,
                 { host: '10.0.0.2', port: 5002 },
-                { host: '10.0.0.3', port: 5004 },
+                { host: '192.0.2.3', port: 5004 },
             ],
         }).pipeline;
         expect(p.match(/mrtsegress/g)).toHaveLength(1);
