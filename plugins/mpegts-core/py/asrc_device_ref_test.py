@@ -864,10 +864,51 @@ def test_recalibrated():
           not clean and len(told) == 1 and told[0][1] and len(restart) == 1 and first and not again)
 
 
+def test_restart_counts():
+    """16. READY empties what waited and the element counts from 0 again (B-249 fix round 4): after
+    restart_counts() a stall is read on the new counts; without it, what the old flushes discarded hides it."""
+    for recount in (True, False):
+        t = ad.DeviceTerm()
+        per = FS // 10
+        st = {"pushed": 0, "taken": 0, "mono": 0}
+        evs = []
+
+        def read(secs, takes):
+            for _ in range(secs * 10):
+                st["mono"] += 100 * MS
+                st["pushed"] += per
+                if takes:
+                    st["taken"] += per
+                evs.extend(t.sample(st["mono"], 1000 * SEC + st["mono"], st["pushed"], st["taken"])[0])
+
+        t.start(0)
+        read(20, True)
+        read(4, False)
+        read(5, True)
+        first = [e["event"] for e in evs if e["event"].startswith("device-")]
+        t.stop(st["mono"])
+        if recount:
+            t.restart_counts()
+        st["pushed"] = st["taken"] = 0
+        evs.clear()
+        t.start(st["mono"])
+        read(20, True)
+        read(2, False)
+        stalled = [e for e in evs if e["event"] == "device-stalled"]
+        if recount:
+            check("16: after a 4 s stall, READY and restart_counts(): a 2 s stall on the new counts is device-stalled "
+                  "once, %s frames waiting (the first: %s)" % ([e["pending"] for e in stalled], first),
+                  first == ["device-stalled", "device-resumed"] and len(stalled) == 1
+                  and stalled[0]["pending"] <= 13 * per)
+        else:
+            check("16: ... without it the old flushes' discard hides that stall (%d device-stalled)" % len(stalled),
+                  not stalled)
+
+
 CASES = (test_lock_port, test_ratio, test_jitter, test_fill_1h, test_input_stall, test_device_step,
          test_traces, test_trace_underrun, test_clock_stall_underrun, test_start_and_restart,
          test_device_stall_clock_stopped, test_device_stall_clock_running, test_render_lateness_ring,
-         test_replay_format, test_recalibrated)
+         test_replay_format, test_recalibrated, test_restart_counts)
 
 # (name, the case it must fail, file, [(text, its replacement), ...]). The first four are the brief's.
 MUTANTS = (
@@ -920,8 +961,7 @@ MUTANTS = (
     ("one read past the threshold relocks", 6, "asrc_device_ref.py",
      [("        self.relock_samples = 2 ", "        self.relock_samples = 1 ")]),
     ("a step relock leaves the servo's offset", 15, "asrc_device_ref.py",
-     [("        self.relocks[\"step\"] += 1\n        self.recal = True\n", "        self.relocks[\"step\"] += 1\n")]),
-)
+     [("        self.relocks[\"step\"] += 1\n        self.recal = True\n", "        self.relocks[\"step\"] += 1\n")]),)
 
 
 def run_mutants():

@@ -297,7 +297,7 @@ export class AudioDecoderModule extends GstPluginBase {
             // non-leaky retains the whole burst as an arrival-driven reservoir
             // (the pa ring blocks when full, so the queue holds the overflow)
             // → 0 % gaps. This is CONSUMER-side dejitter: it can only back-
-            // pressure this module's own bus edge (which sheds), never the
+            // pressure this module's own 5 s leaky bus ingress queue, never the
             // demuxer or sibling consumers — so it fixes choppiness without the
             // demuxer-side clocksync pacing that back-pressures tsdemux and
             // freezes the whole unixfd bus.
@@ -306,9 +306,10 @@ export class AudioDecoderModule extends GstPluginBase {
             // demuxer-fed sources). An EXPLICIT value is honoured down to a
             // 50 ms floor: splitter-fed inputs arrive at wire cadence (~4 ms,
             // measured gate01 2026-07-18), and because this queue is NON-LEAKY
-            // its startup backlog is trapped forever (in-rate = out-rate) —
-            // on a re-encode path that trapped fill lands 1:1 as A/V skew
-            // (the encoder re-stamps at capture). Operators tuning latency
+            // its startup backlog stays as delay (in-rate = out-rate) until
+            // `asrc`'s catch-up plays it out at 0.5 % (B-249) — on a re-encode
+            // path that fill lands 1:1 as A/V skew meanwhile (the encoder
+            // re-stamps at capture). Operators tuning latency
             // must be able to shrink it; the old hard 300 ms floor was
             // demuxer-burst-era protection.
             `${busDemux} ! queue name=${DECODE_QUEUE_NAME} leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,

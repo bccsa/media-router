@@ -274,6 +274,8 @@ class AsrcDeviceTerm {
     // relocks keeping the rate (reason restart): the stream's clock starts again from 0.
     void start(int64_t mono, std::vector<AsrcDeviceEvent>* events);
     void stop(int64_t mono);   // the ring released: no read until the next start
+    // The element's counts start again from 0 (READY emptied what waited): forget what the flushes discarded.
+    void restart_counts();
     // One timer read: the device clock, then house time; the counts or < 0 for none. True: flush downstream now.
     bool sample(int64_t dev_ns, int64_t mono_ns, int64_t pushed, int64_t rendered,
                 std::vector<AsrcDeviceEvent>* events);

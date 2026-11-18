@@ -29,6 +29,11 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     plus the margin, 40 ms and two segments to the delay, which is back at the target at the end, within a window and
     what was in hand at 0.5 % (+20 %) of the last stall, and a window more for each of decq's 300 ms of it on the
     Audio Decoder (what waits past decq, here in appsrc, comes into view only as decq drains; 900 s on a server).
+  - flushes (B-249 fix round 4; seeds 7, 8, 9, a 70-90 ms feed): a 3 s device stall past the first window (300 s),
+    a flush into the sink (150 s), outq held 0.6 s then READY and back (260 s), and the same with a 1.5 s input gap
+    20 s on (100 s): no hole and no refill after the event's own, the catch-up `watching` after it, the end at the
+    target and not below the feed, the device and the margin (after the flush and the gap reported only: the test
+    device's reading moves there, the flush's at HEAD too), no device stall but the device's own.
   - drift: an hour of a device 100 ppm fast, and an hour 100 ppm slow, a tone stamped at house rate: no hole, no
     underrun, no refill after the start, the render lateness's level the same at the end as after 2 min and its
     p1-p99 within 2 ms and max-min within 20 (B-166). `MR_302M_DRIFT_SECS`, `_SPEED` and `_PPM` set the run.
@@ -50,7 +55,7 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     10 ms buffer a cap crossed where pulsesink's segment count does not move (1.22: the write after each capped
     refill is behind the server's read index), nothing where it does (1.28). MR_302M_PULSE_MON_US sets the
     monitor's latency (so the graph quantum). Not in the chain (it needs a server). MR_302M_PARTS picks parts
-    (sink, mutants, catch, stalls, pulse, drift).
+    (sink, mutants, catch, stalls, flushes, pulse, drift).
 
 A run that fails while the load was 3 or more is run again once, after the load fell. Skips (exit 0) without
 GStreamer or the built plugins."""
@@ -96,8 +101,8 @@ SECS = int(os.environ.get("MR_302M_SECS", "40"))
 RUNS = int(os.environ.get("MR_302M_RUNS", "5"))
 LOAD_MAX = 3.0
 # Which parts run (all by default): sink (the profiles), mutants, catch (the catch-up's), stalls (writer stalls),
-# pulse (MR_302M_PULSE_SINK), drift.
-PARTS = set(os.environ.get("MR_302M_PARTS", "sink,mutants,catch,stalls,pulse,drift").split(","))
+# flushes (the catch-up across flushes and READY), pulse (MR_302M_PULSE_SINK), drift.
+PARTS = set(os.environ.get("MR_302M_PARTS", "sink,mutants,catch,stalls,flushes,pulse,drift").split(","))
 SINK_KEYS = ("holes", "hole-frames", "hole-max", "underruns", "renders", "sounded-frames")
 
 with open(os.path.join(_PLUGINS, "audio-output-302m", "tests", "fixtures", "sink-end.json"), encoding="utf-8") as _fh:
@@ -574,6 +579,168 @@ if "stalls" in PARTS:
             check(f"{_what} writer stalls seed {_seed} (test sink, load {_l0:.1f}/{os.getloadavg()[0]:.1f}): "
                   f"{describe_stall(_m, _plan, _h, _hf / 48, _lost, _rm, _rf, _q) if _m['base'] is not None else _m}; "
                   f"target at most {TARGET_MAX} ms{', errors ' + str(_err) if _err else ''}", _ok)
+
+# --- flushes with the catch-up on (B-249 fix round 4; review 4's x_edge.py shapes) --------------------------------
+# devstall: the test device stops 3 s (mrasrc's own flushes); flush: one from outq's src pad; ready: outq held 0.6 s,
+# READY and back (READY empties outq), a 1.5 s input gap. The catch-up must see each (the probe's EVENT_FLUSH).
+FLUSH_SECS = {"devstall": 300, "flush": 150, "ready": 260, "ready-gap": 100}
+_FLUSH_PROFILES = [v for v in os.environ.get("MR_302M_FLUSH_PROFILES", "devstall,flush,ready,ready-gap").split(",")
+                   if v]
+_FLUSH_SEEDS = [int(v) for v in os.environ.get("MR_302M_FLUSH_SEEDS", "7,8,9").split(",") if v]
+
+
+def flush_plan(name, seed):
+    """(the event's clock s, the feed's lateness ms)."""
+    rng = random.Random(seed * 53)
+    at = round(rng.uniform(25, 35) if name.startswith("ready") else rng.uniform(70, 90), 1)
+    return at, rng.choice((70.0, 80.0, 90.0))
+
+
+def gap_feeder(late, pause):
+    """appsrc as late_feeder, `late` ms each buffer, holding while `pause` is set; after a hold (or READY: a new base
+    time) the PTS goes on from the clock's running time, as a live source's."""
+    def feed(p, clk, stop):
+        src, i, nxt = p.get_by_name("src"), 0, None
+        while not stop.is_set():
+            base = p.get_base_time()
+            if pause.is_set() or base == 0:
+                nxt = None
+                time.sleep(0.005)
+                continue
+            if nxt is None:
+                nxt = max(0, clk.get_time() - base)
+            Gst.Clock.id_wait(clk.new_single_shot_id(base + nxt + int(late * MS)))
+            if stop.is_set() or pause.is_set() or p.get_base_time() != base:
+                nxt = None
+                continue
+            b = Gst.Buffer.new_wrapped(_TONE[i % len(_TONE)])
+            b.pts, b.duration = nxt, 10 * MS
+            src.emit("push-buffer", b)
+            i += 1
+            nxt += 10 * MS
+    return feed
+
+
+def flush_run(name, seed):
+    at, late = flush_plan(name, seed)
+    secs = FLUSH_SECS[name]
+    pause, marks = threading.Event(), {}
+
+    def act(p, clk, t0):
+        def wait_s(t):
+            while t0[0] is None:
+                time.sleep(0.01)
+            Gst.Clock.id_wait(clk.new_single_shot_id(t0[0] + int(t * S)))
+
+        def go():
+            wait_s(at)
+            outq = p.get_by_name("outq")
+            if name == "devstall":
+                p.get_by_name("sink").set_property("stall-ms", 3000)
+                marks["own"] = at + 3 + 5
+            elif name == "flush":
+                def once(pad, _info):
+                    seg = pad.get_sticky_event(Gst.EventType.SEGMENT, 0)
+                    pad.push_event(Gst.Event.new_flush_start())
+                    pad.push_event(Gst.Event.new_flush_stop(False))
+                    if seg:
+                        pad.push_event(seg)
+                    return Gst.PadProbeReturn.REMOVE
+                outq.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, once)
+                marks["own"] = at + 3
+            else:
+                pad = outq.get_static_pad("src")
+                pid = pad.add_probe(Gst.PadProbeType.BLOCK | Gst.PadProbeType.BUFFER, lambda *_: Gst.PadProbeReturn.OK)
+                time.sleep(0.6)
+                marks["held"] = outq.get_property("current-level-time") / MS
+                pause.set()
+                old = p.get_base_time()
+                p.set_state(Gst.State.READY)
+                pad.remove_probe(pid)
+                p.get_state(5 * S)
+                p.set_state(Gst.State.PLAYING)
+                while p.get_base_time() in (0, old):   # the feed goes on from the new base time's running time
+                    time.sleep(0.005)
+                marks["back"] = (clk.get_time() - t0[0]) / S
+                pause.clear()
+                marks["own"] = marks["back"] + 5
+                if name == "ready-gap":
+                    wait_s(at + 20)
+                    pause.set()
+                    time.sleep(1.5)
+                    pause.clear()
+                    marks["own"] = at + 20 + 1.5 + 5
+        threading.Thread(target=go, daemon=True).start()
+
+    wait_quiet()
+    l0 = os.getloadavg()[0]
+    sk, st, lv, err = run(SRC + _c39, secs, feed=gap_feeder(late, pause), setup=act)
+    own = marks.get("own", secs)
+    h, _ = holes_from(lv, sk, own)
+    ref = [s.get("margin-refills", 0) for t, s in st if t >= own]
+    after = [s.get("catch-up-state") for t, s in st if (at + 5 if name == "devstall" else at + 1) <= t <= at + 50]
+    before = [s.get("catch-up-state") for t, s in st if at - 6 <= t < at]
+    tail = [s.get("render-lateness-ns", 0) / MS for t, s in st if t >= secs - 10 and s.get("render-lateness-ns", 0)]
+    last = st[-1][1] if st else {}
+    trace, nxt = [], 0.0
+    for t, x in st:
+        if t >= nxt:
+            nxt = t + 10
+            trace.append((round(t), round(x.get("render-lateness-ns", 0) / MS, 1), x.get("catch-up-state"),
+                          round(x.get("catch-up-excess-ns", 0) / MS, 1), round(x.get("catch-up-removed-ns", 0) / MS, 1),
+                          x.get("margin-refills", 0), round(x.get("device-ppb", 0) / 1000, 1)))
+    return {"name": name, "seed": seed, "at": at, "trace": trace, "late": late, "own": own, "holes": h, "holes_all": sk["holes"],
+            "refills_after": (ref[-1] - ref[0]) if ref else -1, "refills": last.get("margin-refills", 0),
+            "after": after, "before": before, "end": sum(tail) / len(tail) if tail else None, "err": err,
+            "stalls": last.get("device-stalls", 0), "cu_end": last.get("catch-up-state", "none"),
+            "removed": last.get("catch-up-removed-ns", 0) / MS, "held": marks.get("held"), "back": marks.get("back"),
+            "gaps": max((b - a for (a, _), (b, _) in zip(st, st[1:])), default=0),
+            "load": (l0, os.getloadavg()[0]), "posts": len(st)}
+
+
+FLUSH_TABLE = []
+if "flushes" in PARTS:
+    print(f"\n--- flushes with the catch-up on: {_FLUSH_PROFILES}, seeds {_FLUSH_SEEDS}, the test sink ---")
+    for _name in _FLUSH_PROFILES:
+        for _seed in _FLUSH_SEEDS:
+            _r = flush_run(_name, _seed)
+            if _r["err"] and max(_r["load"]) >= LOAD_MAX:
+                _r = flush_run(_name, _seed)
+            FLUSH_TABLE.append(_r)
+            # The target as the catch-up's (the feed, the device, two segments, the margin, a buffer) and the 20 ms
+            # under which it does not start; below the feed, the device and the margin the margin was played out.
+            _lo, _hi = _r["late"] + 40 + MARGIN_MS, _r["late"] + 40 + 20 + MARGIN_MS + 10 + 20
+            _watch = bool(_r["after"]) and all(a == "watching" for a in _r["after"])
+            # Past the first window before the event, so `watching` after it is a reset.
+            _past = bool(_r["before"]) and all(b != "watching" for b in _r["before"]) if _name in ("devstall", "flush") \
+                else True
+            # A stats post at least every 8 s: the feed never waited out a stale base time.
+            _stall_ok = _r["stalls"] == (1 if _name == "devstall" else 0) and _r["gaps"] < 8
+            # Ends reported, not held: after a flush from outq's src pad the test device's render lateness creeps
+            # (at HEAD too); after an input gap it carries the gap (most likely the device clock held in the underrun).
+            _held = _name not in ("flush", "ready-gap")
+            _at_target = not _held or (_r["end"] is not None and _lo <= _r["end"] <= _hi)
+            _ok = (not _r["err"] and _r["holes"] == 0 and _r["refills_after"] == 0 and _watch and _past and _stall_ok
+                   and _at_target and (not _held or _r["cu_end"] != "catching-up"))
+            _ev = {"devstall": "a 3 s device stall", "flush": "a flush into the sink",
+                   "ready": f"outq held {_r['held'] or 0:.0f} ms, READY and back (playing again "
+                            f"{(_r['back'] or 0) - _r['at']:.1f} s on)",
+                   "ready-gap": f"outq held {_r['held'] or 0:.0f} ms, READY and back, a 1.5 s input gap 20 s on"}[_name]
+            _end = f"{_r['end']:.1f}" if _r["end"] is not None else "none"
+            check(f"{_name} seed {_seed} ({_ev} at {_r['at']} s, a {_r['late']:.0f} ms feed, load {_r['load'][0]:.1f}/"
+                  f"{_r['load'][1]:.1f}): {_r['holes']} holes and {_r['refills_after']} refills after {_r['own']:.1f} s "
+                  f"({_r['holes_all']} holes, {_r['refills']} refills in all); catch-up after it {sorted(set(_r['after']))}, "
+                  f"before {sorted(set(_r['before']))}; device-stalls {_r['stalls']}; posts at most {_r['gaps']:.1f} s "
+                  f"apart; end {_end} ms (target {_lo:.0f}-{_hi:.0f}{'' if _held else ', not held'}); removed "
+                  f"{_r['removed']:.1f} ms ({_r['cu_end']} at the end)"
+                  f"{', errors ' + str(_r['err']) if _r['err'] else ''}", _ok)
+            print(f"   each 10 s (s, render lateness ms, catch-up state, excess ms, removed ms, refills, device ppm): "
+                  f"{_r['trace']}")
+    print("\n--- the flush table: profile x seed x holes after x refills after x end x removed ---")
+    for _r in FLUSH_TABLE:
+        print(f"  {_r['name']:9} seed {_r['seed']}: holes {_r['holes']}, refills {_r['refills_after']}, end "
+              f"{(_r['end'] or 0):.1f} ms (feed {_r['late']:.0f}), removed {_r['removed']:.1f} ms, device-stalls "
+              f"{_r['stalls']}")
 
 print("\n--- the table: profile x runs x holes after the start x lost ---")
 print(f"{'tail':5} {'profile':7} {'runs':>4} {'holes':>18} {'lost ms':>30}")

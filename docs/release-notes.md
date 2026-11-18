@@ -700,13 +700,14 @@ elements" below do not start.
   5.5 minutes after the last). Hiccups that add more than 5 ms a second for
   minutes on end (a 0.1 s one more often than every 20 to 30 seconds) make it
   later and later until they stop: an Audio Output (302M) then holds up its
-  mix once it is 1 s behind, and an Audio Decoder loses what its Buffer and
-  its input cannot hold. Its Timing shows "Catch-up: catching up" with what is
-  left meanwhile. The Audio Decoder's output does the same. The output now
-  plays behind a video player on the same route by that much less the route's
-  playout offset (60 ms by default); raise the route's playout offset to bring
-  the picture back in line. The Audio Output (302M)'s Lip-Sync Trim is gone
-  from its settings: it no longer moved anything.
+  mix once it is 1 s behind, and an Audio Decoder drops audio once it is
+  about 5 s behind (more than its Buffer and its input queue hold). Its
+  Timing shows "Catch-up: catching up" with what is left meanwhile. The Audio
+  Decoder's output does the same. The output now plays behind a video player
+  on the same route by that much less the route's playout offset (60 ms by
+  default); raise the route's playout offset to bring the picture back in
+  line. The Audio Output (302M)'s Lip-Sync Trim is gone from its settings: it
+  no longer moved anything.
 - **Audio inputs capture again by themselves after PipeWire restarts.** Up to
   v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
   buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and

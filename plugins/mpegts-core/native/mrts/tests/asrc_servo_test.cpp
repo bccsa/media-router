@@ -3192,6 +3192,55 @@ void test_dev_stall_clock_running() {
     CHECK("12: a device that keeps reading (a suspended null sink runs on a timer): no stall, no flush", quiet);
 }
 
+// 16 (py's): READY empties what waited and the element counts from 0 again (B-249 fix round 4).
+void test_dev_restart_counts() {
+    for (const bool recount : {true, false}) {
+        AsrcDeviceTerm t;
+        const int64_t per = t.config().rate_hz / 10;
+        int64_t pushed = 0, taken = 0, mono = 0;
+        std::vector<AsrcDeviceEvent> ev;
+        auto read = [&](int64_t secs, bool takes) {
+            for (int64_t k = 0; k < secs * 10; k++) {
+                mono += 100 * MS;
+                pushed += per;
+                if (takes) taken += per;
+                t.sample(mono, 1000 * S + mono, pushed, taken, &ev);
+            }
+        };
+        t.start(0, &ev);
+        read(20, true);
+        read(4, false);
+        read(5, true);
+        int first = 0;
+        for (const AsrcDeviceEvent& e : ev)
+            first += e.kind == AsrcDeviceEvent::Kind::device_stalled || e.kind == AsrcDeviceEvent::Kind::device_resumed;
+        t.stop(mono);
+        if (recount) t.restart_counts();
+        pushed = taken = 0;
+        ev.clear();
+        t.start(mono, &ev);
+        read(20, true);
+        read(2, false);
+        int stalled = 0;
+        int64_t waiting = 0;
+        for (const AsrcDeviceEvent& e : ev)
+            if (e.kind == AsrcDeviceEvent::Kind::device_stalled) {
+                stalled++;
+                waiting = e.value;
+            }
+        char name[300];
+        if (recount) {
+            std::snprintf(name, sizeof name, "16: after a 4 s stall, READY and restart_counts(): a 2 s stall on the new "
+                          "counts is device-stalled once (%d), %lld frames waiting", stalled, (long long)waiting);
+            CHECK(name, first == 2 && stalled == 1 && waiting <= 13 * per);
+        } else {
+            std::snprintf(name, sizeof name, "16: ... without it the old flushes' discard hides that stall (%d "
+                          "device-stalled)", stalled);
+            CHECK(name, stalled == 0);
+        }
+    }
+}
+
 void test_dev_render_lateness_ring() {
     char name[400];
     {
@@ -3468,6 +3517,20 @@ static void test_catch_up() {
     v.reset(20 * S);
     CHECK("a reset clears it", v.command() == 0 && v.state() == AsrcCatchUp::State::watching &&
                                    !std::strcmp(asrc_catchup_state_name(v.state()), "watching"));
+    // The default start, ASRC_CATCHUP_START_MS at 48 kHz: 959 frames past the margin start nothing, 960 a run.
+    int64_t ex[2] = {0, 0};
+    AsrcCatchUp::State stt[2] = {AsrcCatchUp::State::watching, AsrcCatchUp::State::watching};
+    for (int i = 0; i < 2; i++) {
+        AsrcCatchUp w(2880, 48000, CU, 10 * S);
+        w.reset(0);
+        for (int k = 0; k <= 10; k++) w.sample(k * S, 1000 + 2880 + 959 + i, 1000);
+        ex[i] = w.excess();
+        stt[i] = w.state();
+    }
+    std::snprintf(name, sizeof name, "the default start is %lld ms: 959 frames over the margin %s, 960 %s",
+                  (long long)ASRC_CATCHUP_START_MS, asrc_catchup_state_name(stt[0]), asrc_catchup_state_name(stt[1]));
+    CHECK(name, ASRC_CATCHUP_START_MS == 20 && ex[0] == 959 && ex[1] == 960 && stt[0] == AsrcCatchUp::State::idle &&
+                    stt[1] == AsrcCatchUp::State::catching_up);
 }
 
 int main(int argc, char** argv) {
@@ -3520,6 +3583,7 @@ int main(int argc, char** argv) {
     test_dev_start_and_restart();
     test_dev_stall_clock_stopped();
     test_dev_stall_clock_running();
+    test_dev_restart_counts();
     test_dev_render_lateness_ring();
     test_dev_replay_format();
     test_dev_recalibrated();

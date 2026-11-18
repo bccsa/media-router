@@ -216,6 +216,13 @@ class DeviceTerm:
         self.wait_since = None
         self.taken_prev = None
 
+    def restart_counts(self):
+        """The element's counts start again from 0 (READY emptied what waited): forget what the flushes discarded."""
+        self.taken_prev = None
+        self.wait_since = None
+        self.discarded = 0
+        self.taken_at_flush = 0
+
     def _relock(self, mono, step_ns, events):
         self.lock.relock(True)
         self.relocks["step"] += 1

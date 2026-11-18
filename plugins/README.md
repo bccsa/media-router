@@ -2620,17 +2620,21 @@ crossed by the writes after it. `mrasrc-stats` adds `margin-refills`,
 `margin-silence-ns` and `margin-guard-ns`. With `catch-up-ppm` (the outputs'
 `OUTPUT_CATCH_UP_PPM` 5000, the owner's 0.5 %, at most that) audio held past
 the margin is played back down to it: at each input buffer `mrasrc` reads what
-is in hand (the sink's write end, what waits between it and the sink, the
-level of `upstream-queue` where named: the Audio Decoder's `decq`, before its
-decoder, where a late start's backlog sits, and the buffer) less the device's
-point of no return, no more than how late the content there is; once the least
-of that over 60 s is 20 ms or more past the margin, the ratio runs
+is in hand (the sink's write end, what waits between it and the sink less
+what a flush took, the level of `upstream-queue` where named: the Audio
+Decoder's `decq`, before its decoder, where a late start's backlog sits, and
+the buffer) less the device's point of no return, no more than how late the
+content there is; once the least of that over 60 s is 20 ms or more past the
+margin, the ratio runs
 `catch-up-ppm` fast (times the device term, the labels counting the content)
-until none is left. Nothing is dropped; a lateness rise mid-way ends it.
+until none is left. Nothing is dropped; a lateness rise mid-way ends it. A
+backlog past `decq` waits in the Audio Decoder's 5 s leaky ingress queue
+(`buildBusSrc`), seen only as it reaches `decq` (a window for each 300 ms),
+and is shed only once that output is about 5.3 s behind.
 `mrasrc-stats` adds `catch-up-state` (`off`, `watching` for the first 60 s
-after a start or flush, `idle`, `catching-up`), `catch-up-excess-ns` and
-`catch-up-removed-ns`; the module's Timing shows "Catch-up: catching up" while
-it runs.
+after a start, a flush or new caps, `idle`, `catching-up`),
+`catch-up-excess-ns` and `catch-up-removed-ns`; the module's Timing shows
+"Catch-up: catching up" while it runs.
 `mrasrc-stats` gains `mode` (`capture`, `bypass`, `decode`, `device`,
 `decode+device`), `source-ppb` and `device-ppb` (each clock against house
 time, positive when fast), `rate-known`, `device-relocks`, `device-stalls`

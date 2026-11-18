@@ -612,6 +612,11 @@ void AsrcDeviceTerm::stop(int64_t) {
     have_prev_ = stalled_ = waiting_ = have_taken_ = false;
 }
 
+void AsrcDeviceTerm::restart_counts() {
+    have_taken_ = waiting_ = false;
+    taken_prev_ = discarded_ = taken_at_flush_ = 0;
+}
+
 void AsrcDeviceTerm::relock_step(int64_t mono, int64_t step_ns, std::vector<AsrcDeviceEvent>* events) {
     lock_.relock(true);
     relocks_step_++;

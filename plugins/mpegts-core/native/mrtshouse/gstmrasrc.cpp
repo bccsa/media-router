@@ -602,13 +602,16 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
     AsrcDevice* d = self->dev;
     GstAudioBaseSink* sink = self->sink;
     if (!d || !sink) return GST_PAD_PROBE_OK;
-    if (info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) {
+    if (info->type & (GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_EVENT_FLUSH)) {
         GstEvent* e = GST_PAD_PROBE_INFO_EVENT(info);
         if (GST_EVENT_TYPE(e) == GST_EVENT_FLUSH_STOP) {   // nothing waits between mrasrc and the sink now
+            const gint64 now = asrc_now(self);
             std::lock_guard<std::mutex> g(d->mu);
             d->flushed = d->pushed.load() - d->rendered.load();
             d->write_end = -1;
-            d->catch_up.reset(asrc_now(self));
+            d->have_prev = false;
+            d->lateness.flush();   // the sink's write positions start again
+            d->catch_up.reset(now);
             return GST_PAD_PROBE_OK;
         }
         if (GST_EVENT_TYPE(e) != GST_EVENT_CAPS) return GST_PAD_PROBE_OK;
@@ -750,7 +753,7 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
 
 /* The timer's flush (Q2: skip what the stopped device cannot play, resume live): FLUSH_START from the src pad
  * unblocks the sink; under the sink pad's stream lock FLUSH_STOP and the SEGMENT it dropped follow, while a push
- * it refused is a drop for upstream (asrc_chain). The map starts again with the sink's next write. */
+ * it refused is a drop for upstream (asrc_chain). The map starts again with the sink's next write (the probe). */
 static void asrc_device_flush(GstMrAsrc* self) {
     GstPad* src = GST_BASE_TRANSFORM_SRC_PAD(self);
     GstPad* sinkpad = GST_BASE_TRANSFORM_SINK_PAD(self);
@@ -763,13 +766,8 @@ static void asrc_device_flush(GstMrAsrc* self) {
     self->own_flush.store(true);
     gst_pad_push_event(src, start);
     GST_PAD_STREAM_LOCK(sinkpad);
-    gst_pad_push_event(src, stop);
+    gst_pad_push_event(src, stop);   // the sink probe's FLUSH_STOP starts the map again
     if (seg) gst_pad_push_event(src, seg);
-    {
-        std::lock_guard<std::mutex> g(self->dev->mu);
-        self->dev->have_prev = false;
-        self->dev->lateness.flush();
-    }
     self->own_flush.store(false);
     GST_PAD_STREAM_UNLOCK(sinkpad);
 }
@@ -914,6 +912,13 @@ static gboolean asrc_install_device(GstMrAsrc* self) {
         self->dev->catch_up_ppm = catch_up_ppm;
         self->dev->catch_up = asrc_catch_up(margin_ms, catch_up_ppm, self->dev->rate);
     }
+    {   // READY emptied what waited before the sink: the counts start again (B-249)
+        std::lock_guard<std::mutex> g(self->dev->mu);
+        self->dev->pushed.store(0);
+        self->dev->rendered.store(0);
+        self->dev->flushed = 0;
+        self->dev->term.restart_counts();
+    }
     self->dev->write_end = -1;
     self->dev->have_prev = false;
     self->dev->contents.clear();
@@ -922,7 +927,8 @@ static gboolean asrc_install_device(GstMrAsrc* self) {
     GstPad* pad = GST_BASE_SINK_PAD(el);
     self->probe_id = gst_pad_add_probe(pad,
                                        (GstPadProbeType)(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST |
-                                                         GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
+                                                         GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM |
+                                                         GST_PAD_PROBE_TYPE_EVENT_FLUSH),
                                        asrc_sink_probe, self, NULL);
     GST_INFO_OBJECT(self, "device-sink %s: following its clock on a timer", name);
     g_free(name);

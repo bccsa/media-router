@@ -223,6 +223,22 @@ def case_class(factory=cu.CatchUp):
           c4.sample(21 * S, 5000, 1000) == 0)
     c5 = factory(0, 48000, ppb=50_000_000)
     check(f"the rate is held to 0.5 %: {c5.ppb} ppb", c5.ppb == cu.RATE_PPM * 1000)
+    # The default start threshold, 20 ms at 48 kHz (960 frames; review 4 minor 4): 959 frames past the margin
+    # starts nothing, 960 starts a run, which then goes on below 960 while above 0.
+    got = {}
+    for over in (959, 960):
+        c6 = factory(2880, 48000, window_ns=10 * S)
+        c6.reset(0)
+        for k in range(11):
+            c6.sample(k * S, 1000 + 2880 + over, 1000)
+        got[over] = (c6.excess, c6.state())
+        if over == 960:
+            c6.produced(48_000, cu.RATE_PPM * 1000)
+            c6.sample(11 * S, 1000 + 2880 + over - 240, 1000)
+            got["on"] = (c6.excess, c6.state())
+    check(f"the default start is 20 ms: 959 frames over the margin {got[959]}, 960 {got[960]}; once running, "
+          f"below it {got.get('on')}", got[959] == (959, "idle") and got[960] == (960, "catching-up")
+          and got.get("on") == (720, "catching-up"))
 
 
 # --- the model -------------------------------------------------------------------------------------------------
@@ -404,6 +420,12 @@ class NoPrev(cu.CatchUp):
         return super().sample(t, total, consumed, due)
 
 
+class StartHalf(cu.CatchUp):
+    def __init__(self, m, hz, **kw):
+        super().__init__(m, hz, **kw)
+        self.start = max(1, self.start // 2)
+
+
 class Fast(cu.CatchUp):
     def __init__(self, m, hz, **kw):
         super().__init__(m, hz, **kw)
@@ -411,7 +433,7 @@ class Fast(cu.CatchUp):
 
 
 MUTANTS = {"window-30s": Window30, "no-window": NoWindow, "overshoot": Overshoot, "no-adjust": NoAdjust, "no-due": NoDue, "no-prev": NoPrev,
-           "fast": Fast}
+           "fast": Fast, "start-half": StartHalf}
 
 
 def run_suite(factory=cu.CatchUp):

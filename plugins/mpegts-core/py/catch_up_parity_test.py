@@ -4,7 +4,7 @@ catch_up_ref.py's line format, and every answer (the command, the excess, the st
 the reference's, line for line, on
 
   - the event streams of catch_up_ref_test.py's model: the late start, a field walk, rising then falling, two
-    spikes, a device 100 ppm fast, an early feed and the Audio Decoder's bursts;
+    spikes, a device 100 ppm fast, an early feed and the Audio Decoder's bursts; and the default start threshold;
   - 200 seeded random runs of 400 events: new catch-ups (margins, rates, the rate past its cap, windows 0 to 60 s,
     start thresholds), resets, samples with and without `due`, totals behind and far past the point of no return
     (up to 2^50), and output under a command;
@@ -81,6 +81,12 @@ def model_streams():
         tr = []
         ct.simulate(trace=tr, **kw)
         streams[name] = tr
+    # The default start (20 ms at 48 kHz: 960 frames): a window at 959 past the margin, then at 960 (review 4).
+    th = []
+    for over in (959, 960):
+        th += [{"margin": 2880, "hz": 48000, "window": 10 ** 10}]
+        th += [{"t": k * 10 ** 9, "total": 1000 + 2880 + over, "consumed": 1000} for k in range(12)]
+    streams["start threshold"] = th
     return streams
 
 
