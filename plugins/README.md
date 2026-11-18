@@ -2599,12 +2599,17 @@ run `sync=false`, is followed on its own clock: a timer reads it every 100 ms
 from the first buffer the sink renders, never while it starts, and the ratio
 carries that device term, times the decode term when both are set (one
 resampler); the sink is never asked to skew. A device that stops taking
-samples (1 s with more than 100 ms waiting) is flushed and skipped, and plays
-live again once it takes (`device-stalled`, `device-resumed`; the owner's
-Q2). The output counter runs on from the first PTS on the device timeline: a
+samples (1 s with more than 100 ms waiting between `mrasrc` and the sink, or
+in `upstream-queue` where named: the Audio Decoder has no queue before its
+sink) is flushed and skipped, and plays live again once it takes
+(`device-stalled`, `device-resumed`; the owner's Q2). A flush that is not
+`mrasrc`'s own is counted for what it took (read off the first buffer after
+it) and restarts the clock reads, keeping the rate (`relock-device` `flush`):
+the sink's clock steps there. The output counter runs on from the first PTS on the device timeline: a
 break's new epoch starts at the last label end plus the gap at the device
 ratio, the offset restarting at each `relock-device` (B-148, B-166).
-`bypass-below-ppm=0` with `device-sink` is the device term alone.
+`bypass-below-ppm=0` with `device-sink` is the device term alone; an
+unflagged PTS hole is lost time and a step back a break there too (c40).
 `margin-ms` (B-249; the outputs' `OUTPUT_MARGIN_MS` 60) keeps that much in
 the sink's ring: a write the device can no longer play (a hole), or the first,
 gets silence first so it lands the margin past the first frame the device can
@@ -2641,7 +2646,7 @@ time, positive when fast), `rate-known`, `device-relocks`, `device-stalls`
 and `render-lateness-ns` (house time less the content time of the sample at
 the device, 0 while unknown); `mrasrc-event` gains `engaged` (`reason` ratio
 or phase, `source-ppb`, `phase-ns`, `rate-known`), `relock-device` (`reason`
-restart or step, `step-ns`), `device-stalled` (`pending-frames`) and
+restart, step or flush, `step-ns`), `device-stalled` (`pending-frames`) and
 `device-resumed` (`dropped-frames`; B-166). A decode +
 device element whose source still passes reports
 mode `device`, so read its decode term from `bypass-below-ppm`, not from
