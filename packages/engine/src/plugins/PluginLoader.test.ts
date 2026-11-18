@@ -241,7 +241,7 @@ describe('PluginLoader', () => {
             'x-live': true,
             title: 'Smoothing Cooldown',
             description:
-                "Adds latency only when this input's stream is bursty (packets arriving in bursts, as through some relays). The input then runs at its bursts' height and comes back down no sooner than this long after the last burst, instead of skipping and re-syncing after every burst. A steady stream gets no added latency. Set it longer than the time between bursts; 0 turns smoothing off.",
+                "While restamping, adds latency only when this input's stream is bursty (packets arriving in bursts, as through some relays). The input then runs at its bursts' height and comes back down no sooner than this long after the last burst, instead of skipping and re-syncing after every burst. A steady stream gets no added latency. Set it longer than the time between bursts; 0 turns smoothing off.",
         };
         const manifest = (id: string, timing?: unknown) => ({
             pluginId: id,

@@ -442,3 +442,40 @@ describe('SrtStatPoller misc', () => {
         expect(host.clearBadge).toHaveBeenCalledWith('bitrate');
     });
 });
+
+describe('SrtStatPoller.negotiatedLatencyMs (L for Trust, WI-P5-11, S16)', () => {
+    it('listener mode: the largest over the callers, from a stats fixture with two callers', async () => {
+        const host = makeHost({
+            callers: [
+                { 'negotiated-latency-ms': 120, 'bytes-received': 10 },
+                { 'negotiated-latency-ms': 250, 'bytes-received': 20 },
+            ],
+        });
+        const poller = new SrtStatPoller(host, 'receive');
+        expect(poller.negotiatedLatencyMs()).toBeUndefined();
+        await poller.poll();
+        expect(poller.negotiatedLatencyMs()).toBe(250);
+    });
+
+    it('caller mode: the element-level field', async () => {
+        const poller = new SrtStatPoller(makeHost({ 'negotiated-latency-ms': 2000 }), 'receive');
+        await poller.poll();
+        expect(poller.negotiatedLatencyMs()).toBe(2000);
+    });
+
+    it('keeps the last value while no caller reports one; reset forgets it', async () => {
+        let stats: Record<string, unknown> = { callers: [{ 'negotiated-latency-ms': 400 }] };
+        const host = makeHost();
+        host.getElementStats.mockImplementation(async () => stats);
+        const poller = new SrtStatPoller(host, 'receive');
+        await poller.poll();
+        stats = { callers: [] };
+        await poller.poll();
+        expect(poller.negotiatedLatencyMs()).toBe(400);
+        stats = { callers: [{ 'negotiated-latency-ms': 'x' }, { 'rtt-ms': 3 }] };
+        await poller.poll();
+        expect(poller.negotiatedLatencyMs()).toBe(400);
+        poller.reset();
+        expect(poller.negotiatedLatencyMs()).toBeUndefined();
+    });
+});

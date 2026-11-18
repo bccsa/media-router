@@ -5,6 +5,8 @@ what to expect, what to do. Engineering detail is in `docs/adr/`.
 
 ## Unreleased — house-clock timing, Phase 5 (v2.0.0.104)
 
+Draft: Phase 5 is being built. Lines are added as its parts land.
+
 **SRT Output, RIST Output and MPEG-TS IP Output put house time on the wire**
 
 - **The PTS these outputs send are now TAI** (international atomic time), the
@@ -23,6 +25,41 @@ what to expect, what to do. Engineering detail is in `docs/adr/`.
   held at max; receivers get late content" and, on a box with no house time,
   "Network time unknown: the egress carries no house time". Each clears by
   itself.
+
+**Trust on the network inputs**
+
+- **SRT Input, RIST Input and MPEG-TS over IP Input gain Timing Mode.**
+  Restamp, the default and what every input did before, lands the stream on
+  this box's timeline when it arrives. Trust keeps the sender's timeline
+  instead, after checking that the sender declares house time, that both
+  clocks are synchronised and that the link's transit stays within the
+  link's latency plus **Trust Tolerance** (200 ms by default, shown in Trust
+  only). Both settings change live, without a restart. A stream that stops
+  qualifying falls back to Restamp at once. Once it has qualified again for
+  10 s it returns to Trust by itself, at the next pause in the stream or 30 s
+  later, and slides onto the sender's timeline at 0.5 % (Converging): no
+  content is dropped on the way.
+- **Choose Trust** when streams of one programme reach this box by different
+  routes (video over one link, its audio over another, or a processed return
+  muxed back with its own video): their timing then lines up exactly.
+  **Keep Restamp** for a remote feed combined live with local content, or
+  when the two boxes' clocks are not synchronised.
+- **In Trust, Ingest Offset and Per-PID Trim are greyed** with the reason;
+  their values are kept and apply again when you switch back to Restamp.
+  Smoothing Cooldown still applies whenever the input is restamping.
+- **The input's new Trust section** shows the mode in effect (Deciding,
+  Qualifying, Trust, Converging with the time left, Restamp — fallback,
+  Returning), why a stream does not qualify, the transit against its bound
+  with where the link's latency comes from (SRT negotiated, RIST buffer,
+  RTP jitter buffer, UDP 0 ms), and what the sender declares. A badge reads
+  Trust, Converging, Deciding or Qualifying, or Fallback; none in Restamp.
+- **Warnings:** "Trust fallback: …; restamping" while a Trust input falls
+  back; "Trust selected but stream does not qualify: …" after a minute
+  without qualifying; and "Trust bound above the aligners' 4 s ceiling" when
+  the link's latency plus tolerance passes 4 s, where every mixer, muxer or
+  aligner fed by the input loses its alignment to the origin and plays it
+  re-anchored, as late content does. Keep a Trust link's latency below
+  about 3.8 s.
 
 ## v2.0.0.103 — house-clock timing, Phase 4
 

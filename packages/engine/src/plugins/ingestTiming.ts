@@ -1,6 +1,6 @@
-// Ingest timing (house-clock plan WI-P1-9; WI-P3-5): the `mrtsrestamp` and `mrasrc` fragments,
-// their bus reports and the live edits of O, the per-PID trims and the smoothing cooldown, for the
-// seven ingest modules. The card is IngestTimingReporter; the settings are injected from shared-types.
+// Ingest timing (house-clock plan WI-P1-9; WI-P3-5; WI-P5-11): the `mrtsrestamp` and `mrasrc`
+// fragments, their bus reports and the live edits of O, the trims, the cooldown, Timing Mode and
+// Trust Tolerance. The card is IngestTimingReporter; the settings are injected from shared-types.
 import {
     INGEST_OFFSET_KEY,
     INGEST_OFFSET_MAX_MS,
@@ -9,11 +9,21 @@ import {
     SMOOTHING_COOLDOWN_DEFAULT_MIN,
     SMOOTHING_COOLDOWN_KEY,
     SMOOTHING_COOLDOWN_MAX_MIN,
+    TIMING_MODE_KEY,
+    TRUST_TOLERANCE_DEFAULT_MS,
+    TRUST_TOLERANCE_KEY,
+    TRUST_TOLERANCE_MAX_MS,
 } from '@media-router/shared-types';
 import { quoteGstString } from './busHelpers.js';
 import type { BusReport } from './PluginModule.js';
 
-export { INGEST_OFFSET_KEY, PID_TRIMS_KEY, SMOOTHING_COOLDOWN_KEY };
+export {
+    INGEST_OFFSET_KEY,
+    PID_TRIMS_KEY,
+    SMOOTHING_COOLDOWN_KEY,
+    TIMING_MODE_KEY,
+    TRUST_TOLERANCE_KEY,
+};
 
 export const RESTAMP_ELEMENT = 'restamp';
 export const ASRC_ELEMENT = 'asrc';
@@ -21,6 +31,8 @@ export const ASRC_ELEMENT = 'asrc';
 export const RESTAMP_STATS = 'mrtsrestamp-stats';
 export const RESTAMP_PID = 'mrtsrestamp-pid';
 export const RESTAMP_EVENT = 'mrtsrestamp-event';
+/** Ch. 9 WI-P5-8: one program's Trust gate per stats interval. */
+export const RESTAMP_TRUST = 'mrtsrestamp-trust';
 export const ASRC_STATS = 'mrasrc-stats';
 export const ASRC_EVENT = 'mrasrc-event';
 
@@ -46,6 +58,23 @@ function smoothingCooldownNs(min: unknown): number {
         return SMOOTHING_COOLDOWN_DEFAULT_MIN * NS_PER_MIN;
     }
     return Math.round(Math.min(SMOOTHING_COOLDOWN_MAX_MIN, Math.max(0, min)) * NS_PER_MIN);
+}
+
+/** Timing Mode as the element's enum value: 1 `trust`, anything else 0 `restamp` (the default).
+ *  A number, which both runners set on an enum (the Python one only takes numbers). */
+export function timingModeValue(mode: unknown): 0 | 1 {
+    return mode === 'trust' ? 1 : 0;
+}
+
+/** τ as `trust-tolerance-ms`, clamped to 0-10 s; anything but a finite number is the 200 ms default. */
+function trustToleranceMs(ms: unknown): number {
+    if (typeof ms !== 'number' || !Number.isFinite(ms)) return TRUST_TOLERANCE_DEFAULT_MS;
+    return Math.round(Math.min(TRUST_TOLERANCE_MAX_MS, Math.max(0, ms)));
+}
+
+/** L in whole ms for `transport-latency-ms` (a uint): negative or unknown is 0. */
+export function transportLatencyValue(ms: unknown): number {
+    return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? Math.round(ms) : 0;
 }
 
 /** The trims as `pid-trims`: `<pid>=<ns>;…` in PID order, each clamped to ±2 s. Keys that are
@@ -76,18 +105,30 @@ export interface RestampOptions {
     pidTrimsMs?: unknown;
     /** `stc` only: the module's `smoothingCooldownMin` as configured. */
     smoothingCooldownMin?: unknown;
+    /** A network ingest (WI-P5-11): its `timingMode` as configured. Unset: no Trust properties. */
+    timingMode?: unknown;
+    /** L in ms (ch. 9 part 4.8): the SRT latency, the RIST buffer, the RTP jitter buffer, UDP 0. */
+    transportLatencyMs?: unknown;
+    /** τ: the module's `trustToleranceMs` as configured. */
+    trustToleranceMs?: unknown;
+    /** The `house-clock="…"` term from GstPluginBase.houseClockProperty(), as it stands. */
+    houseClock?: string;
     name?: string;
 }
 
 /** The restamp goes right after the transport element, before any queue: it reads arrival
  *  itself (part 4.1). No trims leaves `pid-trims` at its empty default; a capture (`fixed`) has
- *  no clock lock, so no cooldown. */
+ *  no clock lock, so no cooldown, and no Timing Mode. */
 export function buildRestamp({
     mode,
     addBaseTime = false,
     offsetMs,
     pidTrimsMs,
     smoothingCooldownMin,
+    timingMode,
+    transportLatencyMs,
+    trustToleranceMs: tolerance,
+    houseClock,
     name = RESTAMP_ELEMENT,
 }: RestampOptions): string {
     const props = [`name=${name}`, `clock-mode=${mode}`];
@@ -98,6 +139,14 @@ export function buildRestamp({
     props.push(`offset-ns=${ingestOffsetNs(offsetMs)}`);
     const trims = pidTrimsProperty(pidTrimsMs);
     if (trims) props.push(`pid-trims=${quoteGstString(trims)}`);
+    if (mode === 'stc' && timingMode !== undefined) {
+        props.push(
+            `timing-mode=${timingModeValue(timingMode) ? 'trust' : 'restamp'}`,
+            `transport-latency-ms=${transportLatencyValue(transportLatencyMs)}`,
+            `trust-tolerance-ms=${trustToleranceMs(tolerance)}`,
+        );
+        if (houseClock) props.push(houseClock);
+    }
     return `mrtsrestamp ${props.join(' ')}`;
 }
 
@@ -147,11 +196,11 @@ export function buildAsrc({
     return `mrasrc ${props.join(' ')}`;
 }
 
-export function restampBusReports(name = RESTAMP_ELEMENT): BusReport[] {
-    return [RESTAMP_STATS, RESTAMP_PID, RESTAMP_EVENT].map((structure) => ({
-        element: name,
-        structure,
-    }));
+/** `trust`: a network ingest's restamp also reports its Trust gate (`mrtsrestamp-trust`). */
+export function restampBusReports(name = RESTAMP_ELEMENT, { trust = false } = {}): BusReport[] {
+    const structures = [RESTAMP_STATS, RESTAMP_PID, RESTAMP_EVENT];
+    if (trust) structures.push(RESTAMP_TRUST);
+    return structures.map((structure) => ({ element: name, structure }));
 }
 
 export function asrcBusReports(name = ASRC_ELEMENT): BusReport[] {
@@ -164,9 +213,9 @@ export interface RestampControl {
     setElementProperty(element: string, property: string, value: unknown): Promise<void>;
 }
 
-/** Live edits of O, the trims and the cooldown, from `onLiveConfigUpdate`; other keys are ignored.
- *  The restamp applies O and the trims from each PID's next PES: a gap, or a dropped overlap
- *  (§5.5); the cooldown from each clock's next 1 s close. */
+/** Live edits of O, the trims, the cooldown, Timing Mode and τ, from `onLiveConfigUpdate`; other
+ *  keys are ignored. The restamp applies O and the trims from each PID's next PES: a gap, or a
+ *  dropped overlap (§5.5); the cooldown from each clock's next 1 s close; the mode and τ at its next buffer. */
 export async function applyIngestTimingLiveUpdate(
     module: RestampControl,
     changes: Record<string, unknown>,
@@ -191,6 +240,20 @@ export async function applyIngestTimingLiveUpdate(
             name,
             'smoothing-cooldown-ns',
             smoothingCooldownNs(changes[SMOOTHING_COOLDOWN_KEY]),
+        );
+    }
+    if (TIMING_MODE_KEY in changes) {
+        await module.setElementProperty(
+            name,
+            'timing-mode',
+            timingModeValue(changes[TIMING_MODE_KEY]),
+        );
+    }
+    if (TRUST_TOLERANCE_KEY in changes) {
+        await module.setElementProperty(
+            name,
+            'trust-tolerance-ms',
+            trustToleranceMs(changes[TRUST_TOLERANCE_KEY]),
         );
     }
 }

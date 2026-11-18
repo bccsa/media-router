@@ -8,7 +8,11 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isSecretKey } from '@media-router/shared-types';
+import {
+    isSecretKey,
+    parseManifestTiming,
+    withIngestTimingSettings,
+} from '@media-router/shared-types';
 
 const PLUGINS_DIR = path.resolve(__dirname, '../../../../plugins');
 const MAX_DESCRIPTION = 120;
@@ -20,6 +24,21 @@ interface Prop {
     title?: unknown;
     description?: unknown;
     items?: { properties?: Record<string, Prop> };
+}
+
+/** Each manifest's settings with the ingest timing ones injected, as the registry shows them. */
+function loadInjected(): Map<string, Record<string, Prop>> {
+    const out = new Map<string, Record<string, Prop>>();
+    for (const dir of fs.readdirSync(PLUGINS_DIR)) {
+        const file = path.join(PLUGINS_DIR, dir, 'package.json');
+        if (!fs.existsSync(file)) continue;
+        const mr = JSON.parse(fs.readFileSync(file, 'utf8')).mediaRouter;
+        const timing = parseManifestTiming(mr?.timing);
+        if (!timing || !mr?.configSchema) continue;
+        const schema = withIngestTimingSettings(mr.configSchema, timing);
+        out.set(dir, schema.properties as Record<string, Prop>);
+    }
+    return out;
 }
 
 function loadProps(): Array<{ where: string; key: string; prop: Prop }> {
@@ -84,5 +103,40 @@ describe('plugin manifest help text', () => {
             'srt-input.passphrase',
             'srt-output.passphrase',
         ]);
+    });
+
+    it('pins Timing Mode and Trust Tolerance, one wording on the three network ingests, and the amended Smoothing Cooldown (WI-P5-11)', () => {
+        const injected = loadInjected();
+        const wording = (key: string) => {
+            const seen = new Map<string, string[]>();
+            for (const [dir, props] of injected) {
+                const p = props[key];
+                if (!p) continue;
+                const text = `${p.title}|${p.description}`;
+                seen.set(text, [...(seen.get(text) ?? []), dir]);
+            }
+            return Object.fromEntries(seen);
+        };
+        const NET = ['mpegts-ip-input', 'rist-input', 'srt-input'];
+        expect(wording('timingMode')).toEqual({
+            "Timing Mode|Restamp lands the stream on arrival; Trust keeps the sender's timeline after checking it.":
+                NET,
+        });
+        expect(wording('trustToleranceMs')).toEqual({
+            'Trust Tolerance|How far transit may exceed the link latency before Trust falls back to Restamp.':
+                NET,
+        });
+        for (const key of ['timingMode', 'trustToleranceMs']) {
+            for (const dir of NET) {
+                expect((injected.get(dir)![key].description as string).length).toBeLessThanOrEqual(
+                    MAX_DESCRIPTION,
+                );
+            }
+        }
+        const cooldown = Object.keys(wording('smoothingCooldownMin'));
+        expect(cooldown).toHaveLength(1);
+        expect(cooldown[0]).toMatch(
+            /^Smoothing Cooldown\|While restamping, adds latency only when this input's stream is bursty /,
+        );
     });
 });

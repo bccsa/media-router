@@ -241,4 +241,14 @@ describe('SystemStatsCollector features', () => {
             expect.arrayContaining(['dashboards', 'interlocks', 'house-clock', 'egress-writer']),
         );
     });
+
+    it("announces 'trust-ingest' so a manager can tell a Phase 5 engine (WI-P5-11)", () => {
+        vi.useFakeTimers();
+        const onStats = vi.fn();
+        const c = new SystemStatsCollector(onStats, 1000);
+        c.start();
+        vi.advanceTimersByTime(1000);
+        c.stop();
+        expect(onStats.mock.calls[0][0].features).toContain('trust-ingest');
+    });
 });

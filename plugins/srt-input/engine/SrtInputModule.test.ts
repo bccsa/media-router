@@ -16,6 +16,13 @@ import {
 } from '@media-router/engine';
 import { SrtInputModule } from './SrtInputModule.js';
 
+/** The restamp's Trust terms (WI-P5-11) cut out, for the WI-P1-10 assertions written before them. */
+const noTrust = (p: string): string =>
+    p.replace(
+        / timing-mode=\w+ transport-latency-ms=\d+ trust-tolerance-ms=\d+ house-clock="(?:[^"\\]|\\.)*"/,
+        '',
+    );
+
 // pollStats logic moved to packages/engine/src/plugins/srtHelpers.ts (SrtStatPoller)
 // and is covered by srtHelpers.test.ts. These tests focus on what the module
 // still owns directly: pipeline construction and the static status fields.
@@ -258,6 +265,7 @@ const CH = {
     stats: 'mrtsrestamp-stats:restamp',
     pid: 'mrtsrestamp-pid:restamp',
     event: 'mrtsrestamp-event:restamp',
+    trust: 'mrtsrestamp-trust:restamp',
 };
 /** The element's messages as the runner forwards them (plan ch. 5 part 10). */
 const stats = (o: Record<string, unknown> = {}) => ({
@@ -336,7 +344,7 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
             'mrlateness',
             'tee',
         ]);
-        expect(desc!.pipeline).toContain(
+        expect(noTrust(desc!.pipeline)).toContain(
             ' ! mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=300000000000 ' +
                 'offset-ns=0 ! queue name=ingestq leaky=2 ',
         );
@@ -344,6 +352,7 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
             { element: 'restamp', structure: 'mrtsrestamp-stats' },
             { element: 'restamp', structure: 'mrtsrestamp-pid' },
             { element: 'restamp', structure: 'mrtsrestamp-event' },
+            { element: 'restamp', structure: 'mrtsrestamp-trust' },
         ]);
     });
 
@@ -354,7 +363,7 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
             pidTrimsMs: { 257: 40, 256: -12 },
             smoothingCooldownMin: 10,
         });
-        expect(desc!.pipeline).toContain(
+        expect(noTrust(desc!.pipeline)).toContain(
             'mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=600000000000 ' +
                 'offset-ns=-250000000 pid-trims="256=-12000000;257=40000000" ! queue',
         );
@@ -372,7 +381,7 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
         const queue = /^SRT_QUEUE = "(.+)"$/m.exec(py)?.[1];
         expect(queue).toMatch(/^queue /);
         const { module } = makeModule();
-        expect(module.buildPipeline({})!.pipeline).toContain(
+        expect(noTrust(module.buildPipeline({})!.pipeline)).toContain(
             `offset-ns=0 ! ${queue} ! capssetter `,
         );
     });
@@ -664,4 +673,166 @@ describe.skipIf(!HAVE_SRT)('SrtInputModule on a real srtsrc (B-112)', () => {
         const { listener, caller } = await listenerAndCaller(`${PASSPHRASE}x`);
         expect(await receives(listener, caller, 4_000)).toBe(false);
     }, 30_000);
+});
+
+describe('SrtInputModule: Timing Mode, Trust Tolerance and L (WI-P5-11)', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+    const trust = (o: Record<string, unknown> = {}) => ({
+        program: 1,
+        selected: 'trust',
+        effective: 'trust',
+        qualifies: true,
+        failed: '',
+        'transit-min-ns': 40 * MS,
+        'transit-median-ns': 50 * MS,
+        'transit-max-ns': 60 * MS,
+        'bound-ns': 450 * MS,
+        'l-ns': 250 * MS,
+        'tau-ns': 200 * MS,
+        'decl-present': true,
+        'decl-timeline-id': '00000000000000a1',
+        ...o,
+    });
+
+    it('starts the restamp on the mode, the latency setting as L, τ and the house clock', () => {
+        const { module } = makeModule();
+        const restamp = (config: Record<string, unknown>) =>
+            module
+                .buildPipeline(config)!
+                .pipeline.split(' ! ')
+                .find((e: string) => e.startsWith('mrtsrestamp'));
+        expect(restamp({})).toMatch(
+            / offset-ns=0 timing-mode=restamp transport-latency-ms=125 trust-tolerance-ms=200 house-clock="house-clock, e-ns=\(gint64\)0, .*"$/,
+        );
+        expect(restamp({ timingMode: 'trust', latency: 2000, trustToleranceMs: 300 })).toContain(
+            ' timing-mode=trust transport-latency-ms=2000 trust-tolerance-ms=300 house-clock="',
+        );
+    });
+
+    it('is the fragment the element test parses, under a chrony and a PTP house clock', () => {
+        // gst_mrtsrestamp_element_test.py parses these as the runners do: the quoting must not drift.
+        const py = readFileSync(
+            join(
+                __dirname,
+                '../../../packages/engine/src/child-process/gst_mrtsrestamp_element_test.py',
+            ),
+            'utf8',
+        );
+        const pinned = (name: string) => new RegExp(`^${name} = r'(.+)'$`, 'm').exec(py)?.[1];
+        const base = {
+            source: 'chrony',
+            synced: true,
+            traceable: true,
+            taiOffsetS: 37,
+            estErrorUs: 1200,
+        };
+        const ptp = {
+            ...base,
+            source: 'ptp',
+            ptp: {
+                portState: 'SLAVE',
+                offsetNs: -812,
+                domain: 127,
+                gmIdentity: '2C-CF-67-FF-FE-76-E6-69',
+            },
+        };
+        for (const [name, state] of [
+            ['INGEST_RESTAMP_NTP', base],
+            ['INGEST_RESTAMP_PTP', ptp],
+        ] as const) {
+            const { module } = makeModule();
+            module.services.houseClock = {
+                epoch: () => ({ eNs: 1_760_283_215_123_456_789n, seq: 3 }),
+                state: () => state,
+            };
+            const fragment = module
+                .buildPipeline({ timingMode: 'trust', latency: 2000 })!
+                .pipeline.split(' ! ')
+                .find((e: string) => e.startsWith('mrtsrestamp'));
+            expect(pinned(name)).toMatch(/^mrtsrestamp /);
+            expect(fragment).toBe(pinned(name));
+        }
+    });
+
+    it('a live edit of Timing Mode or τ sets the restamp property, with no restart', async () => {
+        const { module } = makeModule();
+        const setElementProperty = vi.fn(async () => {});
+        module.setElementProperty = setElementProperty;
+        const instance = new ModuleInstance('srt-in-1', 'srt-input', module, {});
+        await instance.applyConfigUpdate({ timingMode: 'trust' });
+        await instance.applyConfigUpdate({ trustToleranceMs: 500 });
+        expect(setElementProperty.mock.calls).toEqual([
+            ['restamp', 'timing-mode', 1],
+            ['restamp', 'trust-tolerance-ms', 500],
+        ]);
+        expect(instance.getState().pendingRestart).toBe(false);
+        expect(module.buildPipeline(module.config)!.pipeline).toContain(
+            'timing-mode=trust transport-latency-ms=125 trust-tolerance-ms=500',
+        );
+    });
+
+    it('pushes the negotiated latency (max over two callers) on a change of 1 ms or more', async () => {
+        const module = cardModule();
+        const setElementProperty = vi.fn(async () => {});
+        module.setElementProperty = setElementProperty;
+        module.buildPipeline({ latency: 125 });
+        module.running = true;
+        let callers = [{ 'negotiated-latency-ms': 120 }, { 'negotiated-latency-ms': 250 }];
+        module.getElementStats = vi.fn(async () => ({ callers }));
+        // Before any poll the Trust section names the setting.
+        module.dispatchPluginEvent(CH.trust, trust({ 'l-ns': 125 * MS }));
+        module.ingestTiming.tick();
+        expect(module.getState().statusData.trust.latency).toBe('SRT latency setting 125 ms');
+        await module.pollStats();
+        expect(setElementProperty.mock.calls).toEqual([['restamp', 'transport-latency-ms', 250]]);
+        await module.pollStats();
+        callers = [{ 'negotiated-latency-ms': 250.6 }];
+        await module.pollStats();
+        expect(setElementProperty).toHaveBeenCalledTimes(1);
+        callers = [{ 'negotiated-latency-ms': 300 }];
+        await module.pollStats();
+        expect(setElementProperty).toHaveBeenLastCalledWith('restamp', 'transport-latency-ms', 300);
+        module.dispatchPluginEvent(CH.trust, trust({ 'l-ns': 300 * MS }));
+        module.ingestTiming.tick();
+        expect(module.getState().statusData.trust.latency).toBe('SRT negotiated 300 ms');
+    });
+
+    it('binds the house clock to the restamp at start; drainOriginKey is the Trust timeline', async () => {
+        vi.useFakeTimers();
+        const child = Object.assign(new EventEmitter(), { stop: vi.fn(async () => {}) });
+        vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async function (this: any) {
+            this.childProcess = child;
+        });
+        const module = cardModule();
+        const bind = vi.fn();
+        module.bindHouseClock = bind;
+        await module.onStart();
+        expect(bind).toHaveBeenCalledWith(['restamp']);
+        module.dispatchPluginEvent(CH.trust, trust());
+        expect(module.drainOriginKey()).toBe('00000000000000a1');
+        module.dispatchPluginEvent(CH.event, {
+            kind: 'trust-fallback',
+            program: 1,
+            pid: -1,
+            reason: 'switch-to-restamp',
+            state: 'fallback',
+            from: 'trust',
+            failed: 'transit-high',
+        });
+        expect(module.drainOriginKey()).toBeUndefined();
+        vi.advanceTimersByTime(2000);
+        const state = module.getState();
+        expect(state.badges).toContainEqual({
+            id: 'timing',
+            icon: 'clock',
+            text: 'Fallback',
+            color: '#f59e0b',
+        });
+        expect(state.statusData.trust).toMatchObject({ effective: 'Restamp — fallback' });
+        expect(state.error).toBe('Trust fallback: transit above the 450 ms bound; restamping');
+        await module.onStop();
+    });
 });

@@ -3,7 +3,10 @@ import {
     INGEST_OFFSET_KEY,
     IngestTimingReporter,
     PID_TRIMS_KEY,
+    RESTAMP_ELEMENT,
     SMOOTHING_COOLDOWN_KEY,
+    TIMING_MODE_KEY,
+    TRUST_TOLERANCE_KEY,
     applyIngestTimingLiveUpdate,
     buildBusSink,
     buildNetUdpSrc,
@@ -18,6 +21,7 @@ import {
     interfaceAddress,
     registerNetworkInterfaceDeviceProvider,
     restampBusReports,
+    transportLatencyValue,
     type IngestTimingHost,
     type PipelineDescription,
     type EngineServices,
@@ -38,10 +42,20 @@ import { sniffEncapsulation, type Encapsulation } from './detectEncapsulation.js
  */
 /** Time budget for sniffing the first packet before falling back to raw. */
 const DETECT_TIMEOUT_MS = 2000;
+/** The RTP jitter buffer's name, and its `latency` default: L in RTP mode (OQ-38). */
+const JITTER_BUFFER = 'jbuf';
+const JITTER_BUFFER_DEFAULT_MS = 200;
 
 export class MpegTsIpInputModule extends GstPluginBase {
-    /** O, the trims and the smoothing cooldown are the restamp's live properties (§5.5, B-95). */
-    protected liveUpdatableParams = [INGEST_OFFSET_KEY, PID_TRIMS_KEY, SMOOTHING_COOLDOWN_KEY];
+    /** O, the trims, the smoothing cooldown, Timing Mode and τ are the restamp's live properties
+     *  (§5.5, B-95, WI-P5-11). */
+    protected liveUpdatableParams = [
+        INGEST_OFFSET_KEY,
+        PID_TRIMS_KEY,
+        SMOOTHING_COOLDOWN_KEY,
+        TIMING_MODE_KEY,
+        TRUST_TOLERANCE_KEY,
+    ];
     private statsTimer: ReturnType<typeof setInterval> | null = null;
     /** Encapsulation detected this run when the operator left it on `auto`. */
     private detectedEncap: Encapsulation | null = null;
@@ -51,6 +65,9 @@ export class MpegTsIpInputModule extends GstPluginBase {
     });
     /** The reporter's warning text, so its clear never takes another warning down. */
     private clockWarning: string | null = null;
+    /** L as the restamp has it: the jitter buffer's latency in RTP mode, 0 for raw UDP (OQ-38);
+     *  null when this run has no jitter buffer. */
+    private jitterLatencyMs: number | null = null;
 
     static registerServices(services: EngineServices): void {
         registerNetworkInterfaceDeviceProvider(services);
@@ -69,6 +86,7 @@ export class MpegTsIpInputModule extends GstPluginBase {
         await this.detectEncapsulation();
 
         await super.onStart();
+        this.bindHouseClock([RESTAMP_ELEMENT]);
 
         // A stalled/down udpsrc is silent; reflect outages on the face immediately
         // rather than leaving a stale "flowing" badge across the restart backoff.
@@ -115,9 +133,28 @@ export class MpegTsIpInputModule extends GstPluginBase {
         );
     }
 
-    /** Every PLAYING sets health ok: put a standing clock warning back. */
+    /** Every PLAYING sets health ok: put a standing clock warning back. In RTP mode L is the
+     *  jitter buffer's `latency`, read now it runs (the 200 ms default went in at build). */
     protected onPipelinePlaying(): void {
         this.ingestTiming.reassert();
+        if (this.jitterLatencyMs !== null) void this.readJitterLatency();
+    }
+
+    /** p5-20's drain key: the sender's timeline while this input is on it (WI-P5-11). */
+    drainOriginKey(): string | undefined {
+        return this.ingestTiming.drainOriginKey();
+    }
+
+    private async readJitterLatency(): Promise<void> {
+        const ms = await this.getElementProperty(JITTER_BUFFER, 'latency');
+        if (typeof ms !== 'number' || !Number.isFinite(ms) || this.jitterLatencyMs === null) return;
+        if (Math.abs(ms - this.jitterLatencyMs) < 1) return;
+        this.jitterLatencyMs = ms;
+        await this.setElementProperty(
+            RESTAMP_ELEMENT,
+            'transport-latency-ms',
+            transportLatencyValue(ms),
+        );
     }
 
     /** A return to ok shows a standing clock warning again: another warning (udp silence) may
@@ -220,7 +257,8 @@ export class MpegTsIpInputModule extends GstPluginBase {
         // datagrams are already ~1316 B (7×188); leaving them un-aggregated
         // keeps every datagram well under the UDP limit. Downstream tsdemux
         // does the parsing — no need to re-frame/re-timestamp here.
-        const depay = encapsulation === 'rtp' ? ['rtpjitterbuffer', 'rtpmp2tdepay'] : [];
+        const rtp = encapsulation === 'rtp';
+        const depay = rtp ? [`rtpjitterbuffer name=${JITTER_BUFFER}`, 'rtpmp2tdepay'] : [];
 
         // Non-leaky (back-pressure, not drop): this is a pure loopback relay to
         // a `lo` multicast group, so the udpsink always drains and the queue
@@ -233,11 +271,19 @@ export class MpegTsIpInputModule extends GstPluginBase {
         // paced/recovered delivery never bursts the queue.)
         // The restamp reads arrival itself, so it sits before the queue (OQ-19): the instant
         // the transport hands the packets over, after the jitterbuffer for RTP.
+        // L (ch. 9 part 4.8, OQ-38): the jitter buffer's latency in RTP mode, read once it runs;
+        // raw UDP has no buffer before the restamp, so 0.
+        this.jitterLatencyMs = rtp ? JITTER_BUFFER_DEFAULT_MS : null;
+        this.ingestTiming.setLatencySource(rtp ? 'RTP jitter buffer' : 'UDP');
         const restamp = buildRestamp({
             mode: 'stc',
             offsetMs: config[INGEST_OFFSET_KEY],
             pidTrimsMs: config[PID_TRIMS_KEY],
             smoothingCooldownMin: config[SMOOTHING_COOLDOWN_KEY],
+            timingMode: config[TIMING_MODE_KEY] ?? 'restamp',
+            transportLatencyMs: rtp ? JITTER_BUFFER_DEFAULT_MS : 0,
+            trustToleranceMs: config[TRUST_TOLERANCE_KEY],
+            houseClock: this.houseClockProperty(),
         });
         const pipeline = [
             netSrc,
@@ -258,7 +304,7 @@ export class MpegTsIpInputModule extends GstPluginBase {
             pipeline: pipeline + probeTap,
             restartOnError: true,
             restartBackoffMs: { baseMs: 2000, maxMs: 10000 },
-            busReports: restampBusReports(),
+            busReports: restampBusReports(RESTAMP_ELEMENT, { trust: true }),
             tsProbe: { appsink: 'tsprobe' },
             udpSilenceRestartMs: multicast ? 60_000 : 0,
         };

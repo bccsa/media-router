@@ -4,13 +4,26 @@ import {
     INGEST_OFFSET_KEY,
     PID_TRIMS_KEY,
     SMOOTHING_COOLDOWN_KEY,
+    TIMING_MODE_KEY,
+    TRUST_TOLERANCE_KEY,
     applyIngestTimingLiveUpdate,
     asrcBusReports,
     buildAsrc,
     buildRestamp,
     restampBusReports,
+    timingModeValue,
+    transportLatencyValue,
 } from './ingestTiming.js';
-import { CH, MS, event, pidMsg, setup, stats } from './testing/ingestTimingFixtures.js';
+import {
+    CH,
+    MS,
+    event,
+    pidMsg,
+    setup,
+    stats,
+    trustEvent,
+    trustMsg,
+} from './testing/ingestTimingFixtures.js';
 
 const MIN = 60_000 * MS;
 // The default cooldown, 5 min: B-95's 300 s.
@@ -87,6 +100,61 @@ describe('buildRestamp', () => {
     });
 });
 
+describe('buildRestamp: Timing Mode, L, τ and the house clock (WI-P5-11)', () => {
+    const CLOCK = 'house-clock="house-clock, e-ns=(gint64)5, seq=(uint)2"';
+
+    it('a network ingest carries the mode, L, τ and the house-clock term after its O and trims', () => {
+        expect(
+            buildRestamp({
+                mode: 'stc',
+                pidTrimsMs: { 256: 1 },
+                timingMode: 'trust',
+                transportLatencyMs: 2000,
+                trustToleranceMs: 300,
+                houseClock: CLOCK,
+            }),
+        ).toBe(
+            `${STC} offset-ns=0 pid-trims="256=1000000" timing-mode=trust ` +
+                `transport-latency-ms=2000 trust-tolerance-ms=300 ${CLOCK}`,
+        );
+        expect(buildRestamp({ mode: 'stc', timingMode: 'restamp' })).toBe(
+            `${STC} offset-ns=0 timing-mode=restamp transport-latency-ms=0 trust-tolerance-ms=200`,
+        );
+    });
+
+    it('anything but trust is Restamp; τ clamped to 0-10 s, junk the 200 ms default; L whole ms, never negative', () => {
+        const term = (o: Record<string, unknown>, key: string) =>
+            buildRestamp({ mode: 'stc', timingMode: 'restamp', ...o }).replace(
+                new RegExp(`.* ${key}=(\\S+).*`),
+                '$1',
+            );
+        for (const timingMode of ['Trust', 'TRUST', 1, true, null, 'x']) {
+            expect(term({ timingMode }, 'timing-mode')).toBe('restamp');
+        }
+        expect(term({ trustToleranceMs: 20_000 }, 'trust-tolerance-ms')).toBe('10000');
+        expect(term({ trustToleranceMs: -5 }, 'trust-tolerance-ms')).toBe('0');
+        expect(term({ trustToleranceMs: 12.6 }, 'trust-tolerance-ms')).toBe('13');
+        expect(term({ trustToleranceMs: '50' }, 'trust-tolerance-ms')).toBe('200');
+        expect(term({ transportLatencyMs: 125.4 }, 'transport-latency-ms')).toBe('125');
+        expect(term({ transportLatencyMs: -1 }, 'transport-latency-ms')).toBe('0');
+        expect(timingModeValue('trust')).toBe(1);
+        expect(timingModeValue('restamp')).toBe(0);
+        expect(transportLatencyValue(Number.NaN)).toBe(0);
+    });
+
+    it('a capture, or a module passing no mode, gets none of them', () => {
+        expect(
+            buildRestamp({
+                mode: 'fixed',
+                timingMode: 'trust',
+                transportLatencyMs: 5,
+                houseClock: CLOCK,
+            }),
+        ).toBe('mrtsrestamp name=restamp clock-mode=fixed offset-ns=0');
+        expect(buildRestamp({ mode: 'stc', houseClock: CLOCK })).toBe(`${STC} offset-ns=0`);
+    });
+});
+
 describe('buildAsrc and the bus reports', () => {
     it('builds the ASRC with an optional fixed output rate', () => {
         expect(buildAsrc()).toBe('mrasrc name=asrc');
@@ -132,6 +200,13 @@ describe('buildAsrc and the bus reports', () => {
             { element: 'restamp', structure: 'mrtsrestamp-pid' },
             { element: 'restamp', structure: 'mrtsrestamp-event' },
         ]);
+        // A network ingest also takes its Trust gate (WI-P5-11).
+        expect(restampBusReports('rs', { trust: true })).toEqual([
+            { element: 'rs', structure: 'mrtsrestamp-stats' },
+            { element: 'rs', structure: 'mrtsrestamp-pid' },
+            { element: 'rs', structure: 'mrtsrestamp-event' },
+            { element: 'rs', structure: 'mrtsrestamp-trust' },
+        ]);
         expect(asrcBusReports('a1')).toEqual([
             { element: 'a1', structure: 'mrasrc-stats' },
             { element: 'a1', structure: 'mrasrc-event' },
@@ -175,6 +250,20 @@ describe('applyIngestTimingLiveUpdate', () => {
             ['restamp', 'smoothing-cooldown-ns', 0],
             ['restamp', 'smoothing-cooldown-ns', 60 * MIN],
             ['restamp', 'smoothing-cooldown-ns', 5 * MIN],
+        ]);
+    });
+
+    it('Timing Mode goes to timing-mode as the enum number, τ to trust-tolerance-ms (WI-P5-11)', async () => {
+        const m = control();
+        await applyIngestTimingLiveUpdate(m, { [TIMING_MODE_KEY]: 'trust' });
+        await applyIngestTimingLiveUpdate(m, { [TIMING_MODE_KEY]: 'restamp' });
+        await applyIngestTimingLiveUpdate(m, { [TRUST_TOLERANCE_KEY]: 350 });
+        await applyIngestTimingLiveUpdate(m, { [TRUST_TOLERANCE_KEY]: 99_999 });
+        expect(m.calls).toEqual([
+            ['restamp', 'timing-mode', 1],
+            ['restamp', 'timing-mode', 0],
+            ['restamp', 'trust-tolerance-ms', 350],
+            ['restamp', 'trust-tolerance-ms', 10_000],
         ]);
     });
 
@@ -280,6 +369,96 @@ describe('IngestTimingReporter: a recorded locked → degraded → recovered seq
                 { 'mrtsrestamp-event': event('recovered', { reason: 'freeze' }) },
                 'mrtsrestamp-event recovered (freeze)',
             ],
+        ]);
+    });
+});
+
+describe('IngestTimingReporter: a recorded deciding → trust → fallback → returning → trust sequence (WI-P5-11)', () => {
+    it('maps to the Trust section, the timing badge, one warning raised and cleared, and the events in the log', () => {
+        const { rep, card } = setup();
+        rep.setLatencySource('SRT negotiated');
+        const report = (t: number, o: Record<string, unknown>) => {
+            rep.onEvent(CH.trust, trustMsg(o), t);
+            rep.tick(t);
+        };
+        // Deciding, before its PMT: no PCR judged yet, so no transit.
+        const deciding = {
+            effective: 'deciding',
+            qualifies: false,
+            failed: 'no-descriptor',
+            'decl-present': false,
+            'transit-min-ns': undefined,
+            'transit-median-ns': undefined,
+            'transit-max-ns': undefined,
+        };
+        report(2000, deciding);
+        expect(card.sections.map((s) => [s.id, s.label])).toEqual([['trust', 'Trust']]);
+        expect(card.data.trust).toMatchObject({
+            mode: 'Trust',
+            effective: 'Deciding',
+            transit: '—',
+            failed: 'No house-time descriptor from the sender',
+        });
+        expect(card.badges.timing).toEqual({ icon: 'clock', text: 'Deciding', color: '#6b7280' });
+        expect(card.badges.clock).toBeUndefined();
+
+        const released = { reason: 'release-trust' };
+        rep.onEvent(CH.event, trustEvent('trust-state', 'trust', 'deciding', released), 2600);
+        rep.onEvent(CH.event, trustEvent('trust-qualified', 'trust', 'deciding', released), 2600);
+        report(4000, {});
+        expect(card.data.trust).toMatchObject({ effective: 'Trust', failed: '—' });
+        expect(card.badges.timing).toEqual({ icon: 'clock', text: 'Trust', color: '#10b981' });
+        expect(rep.drainOriginKey()).toBe('0123456789abcdef');
+
+        const fb = { reason: 'switch-to-restamp', failed: 'transit-high', 'gap-ns': 90 * MS };
+        rep.onEvent(CH.event, trustEvent('trust-switch', 'fallback', 'trust', fb), 9000);
+        rep.onEvent(CH.event, trustEvent('trust-fallback', 'fallback', 'trust', fb), 9000);
+        // The key moved on the event; the badge and warning at the next tick.
+        expect(rep.drainOriginKey()).toBeUndefined();
+        rep.tick(10_000);
+        expect(card.badges.timing).toEqual({ icon: 'clock', text: 'Fallback', color: '#f59e0b' });
+        expect(card.warning).toBe('Trust fallback: transit above the 2.2 s bound; restamping');
+        const high = {
+            effective: 'fallback',
+            qualifies: false,
+            failed: 'transit-high',
+            'transit-max-ns': 37_000 * MS,
+        };
+        report(12_000, high);
+        expect(card.data.trust).toMatchObject({
+            effective: 'Restamp — fallback',
+            failed: 'Transit 37.0 s above the 2.2 s bound',
+            transit: '40 / 52 / 37000',
+            lastSwitch: 'to Restamp, gap 90 ms, just now',
+        });
+
+        rep.onEvent(CH.event, trustEvent('trust-state', 'returning', 'fallback'), 21_000);
+        rep.onEvent(CH.event, trustEvent('trust-qualified', 'returning', 'fallback'), 21_000);
+        report(22_000, { effective: 'returning' });
+        expect(card.data.trust.effective).toBe('Returning');
+        // Still restamping while it returns: the same warning, raised once.
+        expect(card.warning).toBe('Trust fallback: transit above the 2.2 s bound; restamping');
+
+        const back = { reason: 'switch-to-trust', 'converging-ns': 352 * MS };
+        rep.onEvent(CH.event, trustEvent('trust-switch', 'converging', 'returning', back), 29_000);
+        rep.onEvent(CH.event, trustEvent('trust-return', 'converging', 'returning', back), 29_000);
+        report(30_000, { effective: 'converging', 'converging-remaining-ns': 200 * MS });
+        expect(card.data.trust.effective).toBe('Converging (200 ms left)');
+        expect(card.warning).toBeNull();
+        report(32_000, {});
+        expect(card.badges.timing).toMatchObject({ text: 'Trust' });
+        expect([card.warns, card.clears]).toEqual([1, 1]);
+        expect(
+            card.logs.map(([level, obj]) => [level, (obj['mrtsrestamp-event'] as any).kind]),
+        ).toEqual([
+            ['info', 'trust-state'],
+            ['info', 'trust-qualified'],
+            ['info', 'trust-switch'],
+            ['warn', 'trust-fallback'],
+            ['info', 'trust-state'],
+            ['info', 'trust-qualified'],
+            ['info', 'trust-switch'],
+            ['info', 'trust-return'],
         ]);
     });
 });

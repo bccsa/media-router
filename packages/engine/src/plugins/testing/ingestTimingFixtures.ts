@@ -10,6 +10,7 @@ export const CH = {
     stats: 'mrtsrestamp-stats:restamp',
     pid: 'mrtsrestamp-pid:restamp',
     event: 'mrtsrestamp-event:restamp',
+    trust: 'mrtsrestamp-trust:restamp',
     asrc: 'mrasrc-stats:asrc',
     asrcEvent: 'mrasrc-event:asrc',
 };
@@ -66,6 +67,43 @@ export const event = (kind: string, o: Fields = {}) => ({
     epoch: 1,
     ...o,
 });
+
+/** `mrtsrestamp-trust` (ch. 9 WI-P5-8) of a qualified link on its Trust timeline: SRT latency
+ *  2000 ms, τ 200 ms, transit about 50 ms, a chrony sender with D_e 300 ms. */
+export const trustMsg = (o: Fields = {}) => ({
+    program: 1,
+    selected: 'trust',
+    effective: 'trust',
+    qualifies: true,
+    failed: '',
+    switches: 0,
+    'transit-min-ns': 40 * MS,
+    'transit-median-ns': 52 * MS,
+    'transit-max-ns': 70 * MS,
+    'bound-lo-ns': -22 * MS,
+    'bound-ns': 2200 * MS,
+    'l-ns': 2000 * MS,
+    'tau-ns': 200 * MS,
+    'converging-remaining-ns': 0,
+    'decl-present': true,
+    'decl-tai': true,
+    'decl-disciplined': true,
+    'decl-traceable': true,
+    'decl-source': 'ntp',
+    'decl-tai-offset-s': 37,
+    'decl-ptp-domain': -1,
+    'decl-gm': '',
+    'decl-error-class': 11,
+    'decl-epoch-seq': 3,
+    'decl-d-e-ns': 300 * MS,
+    'decl-timeline-id': '0123456789abcdef',
+    ...o,
+});
+
+/** A Trust transition as the element posts it: `trust-switch` (a switch-to decision) or
+ *  `trust-state`, and the operator kinds beside it, with the state entered and left. */
+export const trustEvent = (kind: string, state: string, from: string, o: Fields = {}) =>
+    event(kind, { state, from, failed: '', 'value-ns': 0, ...o });
 
 /** `mrasrc-stats` (WI-P1-8). */
 export const asrcStats = (o: Fields = {}) => ({

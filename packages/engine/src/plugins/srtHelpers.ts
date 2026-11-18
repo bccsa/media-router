@@ -139,6 +139,8 @@ function keysFor(direction: SrtDirection): {
 export class SrtStatPoller {
     private callerStats = new Map<number, CallerTracker>();
     private lastBytes = 0;
+    /** libsrt's `negotiated-latency-ms`, the max over callers in listener mode (WI-P5-11, S16). */
+    private negotiatedMs: number | undefined;
     private readonly keys: ReturnType<typeof keysFor>;
     private readonly callerFields: StatusSection['fields'];
 
@@ -161,9 +163,16 @@ export class SrtStatPoller {
     reset(): void {
         this.callerStats.clear();
         this.lastBytes = 0;
+        this.negotiatedMs = undefined;
         // Drop the live-bitrate face badge too, so a stale rate doesn't linger
         // next to the "Connecting" badge across the restart-backoff window.
         this.host.clearBadge('bitrate');
+    }
+
+    /** The link latency the SRT handshake settled on, in ms: the largest over the callers in
+     *  listener mode. Undefined until a poll has seen one (no caller yet, or after a reset). */
+    negotiatedLatencyMs(): number | undefined {
+        return this.negotiatedMs;
     }
 
     /** Read one set of stats and update the host. Safe to call when not running. */
@@ -181,6 +190,10 @@ export class SrtStatPoller {
             } else {
                 this.handleCallerMode(stats);
             }
+            const negotiated = (callers ?? [stats])
+                .map((c) => c['negotiated-latency-ms'])
+                .filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0);
+            if (negotiated.length) this.negotiatedMs = Math.max(...negotiated);
         } catch {
             /* best-effort polling */
         }

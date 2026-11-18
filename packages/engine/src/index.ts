@@ -134,12 +134,15 @@ export { liveInputLaunchText } from './plugins/liveInputBranches.js';
 export type { AlignerInputRef, AlignerWatchRef } from './plugins/alignerWatches.js';
 export type { DemuxInputRef } from './plugins/demuxWatches.js';
 // Ingest timing (house-clock plan WI-P1-9): restamp/ASRC fragments, live O, trims, cooldown, card;
-// the ASRC's decode and device modes (WI-P3-5).
+// the ASRC's decode and device modes (WI-P3-5); Timing Mode, τ and L (WI-P5-11).
 export {
     INGEST_OFFSET_KEY,
     PID_TRIMS_KEY,
     SMOOTHING_COOLDOWN_KEY,
+    TIMING_MODE_KEY,
+    TRUST_TOLERANCE_KEY,
     RESTAMP_ELEMENT,
+    transportLatencyValue,
     ASRC_ELEMENT,
     DECODE_BYPASS_PPM,
     buildRestamp,
@@ -160,6 +163,8 @@ export {
     CLOCK_SECTION,
     CLOCK_BADGE,
     PIDS_OPTIONS,
+    TRUST_SECTION,
+    TRUST_BADGE,
 } from './plugins/ingestTimingReporter.js';
 export type {
     IngestTimingHost,

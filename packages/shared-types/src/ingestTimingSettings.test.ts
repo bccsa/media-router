@@ -5,6 +5,8 @@ import {
     INGEST_OFFSET_KEY,
     PID_TRIMS_KEY,
     SMOOTHING_COOLDOWN_KEY,
+    TIMING_MODE_KEY,
+    TRUST_TOLERANCE_KEY,
     parseManifestTiming,
     withIngestTimingSettings,
     type ManifestTiming,
@@ -34,7 +36,7 @@ const TRIMS = {
     description:
         "Shifts one stream against the others, on top of Ingest Offset, to correct a source's fixed A/V error.",
 };
-// The owner's words (2026-10-23): latency only when the stream is bursty.
+// The owner's words (2026-10-23): latency only when the stream is bursty; while restamping (S6).
 const COOLDOWN = {
     type: 'number',
     default: 5,
@@ -44,10 +46,37 @@ const COOLDOWN = {
     'x-live': true,
     title: 'Smoothing Cooldown',
     description:
-        "Adds latency only when this input's stream is bursty (packets arriving in bursts, as through some relays). The input then runs at its bursts' height and comes back down no sooner than this long after the last burst, instead of skipping and re-syncing after every burst. A steady stream gets no added latency. Set it longer than the time between bursts; 0 turns smoothing off.",
+        "While restamping, adds latency only when this input's stream is bursty (packets arriving in bursts, as through some relays). The input then runs at its bursts' height and comes back down no sooner than this long after the last burst, instead of skipping and re-syncing after every burst. A steady stream gets no added latency. Set it longer than the time between bursts; 0 turns smoothing off.",
 };
-const NETWORK = { pidTrims: true, pcrLock: true };
-const CAPTURE = { pidTrims: false, pcrLock: false };
+// Ch. 9 part 8 (WI-P5-11): the two Trust settings, and O and the trims greyed in Trust.
+const MODE = {
+    type: 'string',
+    enum: ['restamp', 'trust'],
+    'x-enumLabels': ['Restamp', 'Trust'],
+    default: 'restamp',
+    'x-live': true,
+    title: 'Timing Mode',
+    description:
+        "Restamp lands the stream on arrival; Trust keeps the sender's timeline after checking it.",
+};
+const TOLERANCE = {
+    type: 'number',
+    minimum: 0,
+    maximum: 10000,
+    default: 200,
+    'x-unit': 'ms',
+    'x-live': true,
+    'x-showWhen': 'timingMode=trust',
+    title: 'Trust Tolerance',
+    description: 'How far transit may exceed the link latency before Trust falls back to Restamp.',
+};
+const GREYED = {
+    'x-disabledWhen': 'timingMode=trust',
+    'x-disabledReason':
+        "Trust keeps the sender's timeline. Switch Timing Mode to Restamp to set an offset.",
+};
+const NETWORK = { pidTrims: true, pcrLock: true, trust: true };
+const CAPTURE = { pidTrims: false, pcrLock: false, trust: false };
 const base = () => ({
     type: 'object',
     properties: { port: { type: 'number', default: 5000 } },
@@ -55,23 +84,43 @@ const base = () => ({
 const props = (s: Record<string, unknown>) => s.properties as Record<string, unknown>;
 
 describe('withIngestTimingSettings', () => {
-    it('a network ingest gets Ingest Offset, Per-PID Trim and Smoothing Cooldown, after its own settings', () => {
+    it('a network ingest gets Timing Mode, Trust Tolerance, Ingest Offset, Per-PID Trim and Smoothing Cooldown, after its own settings', () => {
         const schema = withIngestTimingSettings(base(), NETWORK);
         expect(schema).toEqual({
             type: 'object',
             properties: {
                 port: { type: 'number', default: 5000 },
-                ingestOffsetMs: OFFSET,
-                pidTrimsMs: TRIMS,
+                timingMode: MODE,
+                trustToleranceMs: TOLERANCE,
+                ingestOffsetMs: { ...OFFSET, ...GREYED },
+                pidTrimsMs: { ...TRIMS, ...GREYED },
                 smoothingCooldownMin: COOLDOWN,
             },
         });
         expect(Object.keys(props(schema))).toEqual([
             'port',
+            TIMING_MODE_KEY,
+            TRUST_TOLERANCE_KEY,
             INGEST_OFFSET_KEY,
             PID_TRIMS_KEY,
             SMOOTHING_COOLDOWN_KEY,
         ]);
+    });
+
+    it('the two Trust settings and the greying come with trust alone (S6)', () => {
+        const noTrust = props(withIngestTimingSettings(base(), { ...NETWORK, trust: false }));
+        expect(Object.keys(noTrust)).toEqual([
+            'port',
+            INGEST_OFFSET_KEY,
+            PID_TRIMS_KEY,
+            SMOOTHING_COOLDOWN_KEY,
+        ]);
+        expect(noTrust[INGEST_OFFSET_KEY]).toEqual(OFFSET);
+        expect(noTrust[PID_TRIMS_KEY]).toEqual(TRIMS);
+        // Smoothing stays enabled in a Trust-selected ingest: no greying (E6).
+        expect(props(withIngestTimingSettings(base(), NETWORK))[SMOOTHING_COOLDOWN_KEY]).toEqual(
+            COOLDOWN,
+        );
     });
 
     it('a capture gets Ingest Offset only (OQ-15)', () => {
@@ -83,11 +132,11 @@ describe('withIngestTimingSettings', () => {
 
     it('Smoothing Cooldown follows pcrLock alone, never pidTrims', () => {
         const trimsOnly = props(
-            withIngestTimingSettings(base(), { pidTrims: true, pcrLock: false }),
+            withIngestTimingSettings(base(), { pidTrims: true, pcrLock: false, trust: false }),
         );
         expect(Object.keys(trimsOnly)).toEqual(['port', INGEST_OFFSET_KEY, PID_TRIMS_KEY]);
         const lockOnly = props(
-            withIngestTimingSettings(base(), { pidTrims: false, pcrLock: true }),
+            withIngestTimingSettings(base(), { pidTrims: false, pcrLock: true, trust: false }),
         );
         expect(Object.keys(lockOnly)).toEqual(['port', INGEST_OFFSET_KEY, SMOOTHING_COOLDOWN_KEY]);
         expect(lockOnly[SMOOTHING_COOLDOWN_KEY]).toEqual(COOLDOWN);
@@ -113,12 +162,12 @@ describe('withIngestTimingSettings', () => {
             },
         };
         const p = props(withIngestTimingSettings(own, NETWORK));
-        expect(p.ingestOffsetMs).toEqual(OFFSET);
+        expect(p.ingestOffsetMs).toEqual({ ...OFFSET, ...GREYED });
         expect(p.smoothingCooldownMin).toEqual(COOLDOWN);
     });
 
     it('keeps the help-text contract of manifestHelpText.test.ts', () => {
-        for (const p of [OFFSET, TRIMS]) {
+        for (const p of [OFFSET, TRIMS, MODE, TOLERANCE]) {
             expect(p.description.length).toBeLessThanOrEqual(120);
             expect(p.title.length).toBeLessThanOrEqual(40);
             expect(p.title.endsWith('.')).toBe(false);
@@ -130,25 +179,27 @@ describe('withIngestTimingSettings', () => {
 
     it("the cooldown says plainly where latency comes from: a bursty stream's, never a steady one's", () => {
         const { description } = COOLDOWN;
-        expect(description).toMatch(/^Adds latency only when this input's stream is bursty /);
+        expect(description).toMatch(
+            /^While restamping, adds latency only when this input's stream is bursty /,
+        );
         expect(description).toContain('A steady stream gets no added latency.');
         expect(description).toContain('0 turns smoothing off');
     });
 });
 
 describe('parseManifestTiming', () => {
-    it('reads an ingest declaration; pidTrims and pcrLock only when exactly true', () => {
-        expect(parseManifestTiming({ role: 'ingest', pidTrims: true, pcrLock: true })).toEqual({
-            role: 'ingest',
-            pidTrims: true,
-            pcrLock: true,
-        });
+    it('reads an ingest declaration; pidTrims, pcrLock and trust only when exactly true', () => {
+        expect(
+            parseManifestTiming({ role: 'ingest', pidTrims: true, pcrLock: true, trust: true }),
+        ).toEqual({ role: 'ingest', pidTrims: true, pcrLock: true, trust: true });
         expect(parseManifestTiming({ role: 'ingest', pidTrims: false })).toEqual({
             role: 'ingest',
             pidTrims: false,
             pcrLock: false,
+            trust: false,
         });
         const ingest = (v: unknown) => parseManifestTiming(v) as ManifestTiming | null;
+        expect(ingest({ role: 'ingest', trust: 'yes' })?.trust).toBe(false);
         expect(ingest({ role: 'ingest' })?.pidTrims).toBe(false);
         expect(ingest({ role: 'ingest', pidTrims: 'yes' })?.pidTrims).toBe(false);
         // Never inferred from pidTrims.
@@ -173,7 +224,7 @@ describe('parseManifestTiming', () => {
 describe('the plugin manifests', () => {
     const PLUGINS_DIR = path.resolve(__dirname, '../../../plugins');
 
-    it('the three stc-mode network ingests declare pcrLock, the four captures do not (b95s); the three network outputs are egress', () => {
+    it('the three stc-mode network ingests declare pcrLock and trust, the four captures neither (b95s, WI-P5-11); the three network outputs are egress', () => {
         const timings: Record<string, unknown> = {};
         for (const dir of fs.readdirSync(PLUGINS_DIR)) {
             const file = path.join(PLUGINS_DIR, dir, 'package.json');

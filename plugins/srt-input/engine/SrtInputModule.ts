@@ -3,7 +3,10 @@ import {
     INGEST_OFFSET_KEY,
     IngestTimingReporter,
     PID_TRIMS_KEY,
+    RESTAMP_ELEMENT,
     SMOOTHING_COOLDOWN_KEY,
+    TIMING_MODE_KEY,
+    TRUST_TOLERANCE_KEY,
     applyIngestTimingLiveUpdate,
     buildBusSink,
     buildIngestQueue,
@@ -11,6 +14,7 @@ import {
     isIngestTimingSection,
     restampBusReports,
     SrtStatPoller,
+    transportLatencyValue,
     type IngestTimingHost,
     type PipelineDescription,
     type SrtStatPollerHost,
@@ -27,8 +31,15 @@ import {
  * and rendezvous modes. Optional AES encryption via passphrase.
  */
 export class SrtInputModule extends GstPluginBase {
-    /** O, the trims and the smoothing cooldown are the restamp's live properties (§5.5, B-95). */
-    protected liveUpdatableParams = [INGEST_OFFSET_KEY, PID_TRIMS_KEY, SMOOTHING_COOLDOWN_KEY];
+    /** O, the trims, the smoothing cooldown, Timing Mode and τ are the restamp's live properties
+     *  (§5.5, B-95, WI-P5-11). */
+    protected liveUpdatableParams = [
+        INGEST_OFFSET_KEY,
+        PID_TRIMS_KEY,
+        SMOOTHING_COOLDOWN_KEY,
+        TIMING_MODE_KEY,
+        TRUST_TOLERANCE_KEY,
+    ];
     private statsTimer: ReturnType<typeof setInterval> | null = null;
     private statPoller: SrtStatPoller;
     /** The restamp's card: Clock badge and sections, one section per PID, part 10's warnings. */
@@ -37,6 +48,8 @@ export class SrtInputModule extends GstPluginBase {
     });
     /** The reporter's warning text, so its clear never takes another warning down. */
     private clockWarning: string | null = null;
+    /** L as the restamp has it (ch. 9 part 4.8): the latency setting, then the negotiated one. */
+    private latencyMs = 0;
 
     constructor() {
         super();
@@ -82,7 +95,8 @@ export class SrtInputModule extends GstPluginBase {
             }
         });
 
-        this.statsTimer = setInterval(() => this.statPoller.poll(), 2000);
+        this.bindHouseClock([RESTAMP_ELEMENT]);
+        this.statsTimer = setInterval(() => void this.pollStats(), 2000);
         this.ingestTiming.start();
         this.updateStatusData();
     }
@@ -107,6 +121,27 @@ export class SrtInputModule extends GstPluginBase {
 
     protected onPluginEvent(channel: string, payload: unknown): void {
         this.ingestTiming.onEvent(channel, payload);
+    }
+
+    /** p5-20's drain key: the sender's timeline while this input is on it (WI-P5-11). */
+    drainOriginKey(): string | undefined {
+        return this.ingestTiming.drainOriginKey();
+    }
+
+    /** The stats poll, then L: libsrt's negotiated latency (max over callers), pushed to the
+     *  restamp on a change of 1 ms or more (S16). */
+    private async pollStats(): Promise<void> {
+        await this.statPoller.poll();
+        const negotiated = this.statPoller.negotiatedLatencyMs();
+        if (negotiated === undefined) return;
+        this.ingestTiming.setLatencySource('SRT negotiated');
+        if (Math.abs(negotiated - this.latencyMs) < 1) return;
+        this.latencyMs = negotiated;
+        await this.setElementProperty(
+            RESTAMP_ELEMENT,
+            'transport-latency-ms',
+            transportLatencyValue(negotiated),
+        );
     }
 
     /** Every PLAYING sets health ok: put a standing clock warning back. */
@@ -154,11 +189,18 @@ export class SrtInputModule extends GstPluginBase {
         const keepListening = mode === 'listener' ? ' keep-listening=true' : '';
         // The restamp reads arrival itself, so it sits before the queue (OQ-19): srtsrc's
         // buffer PTS is the sender's send time in gst-plugins-bad 1.28, not receipt.
+        // L is the latency setting until a stats poll reads the negotiated one.
+        this.latencyMs = latency;
+        this.ingestTiming.setLatencySource('SRT latency setting');
         const restamp = buildRestamp({
             mode: 'stc',
             offsetMs: config[INGEST_OFFSET_KEY],
             pidTrimsMs: config[PID_TRIMS_KEY],
             smoothingCooldownMin: config[SMOOTHING_COOLDOWN_KEY],
+            timingMode: config[TIMING_MODE_KEY] ?? 'restamp',
+            transportLatencyMs: latency,
+            trustToleranceMs: config[TRUST_TOLERANCE_KEY],
+            houseClock: this.houseClockProperty(),
         });
         // A queue by bytes: srtsrc's stamps are send times, which step past any time bound (B-182).
         const pipeline = [
@@ -172,7 +214,7 @@ export class SrtInputModule extends GstPluginBase {
             pipeline,
             restartOnError: true,
             restartBackoffMs: { baseMs: 5000, maxMs: 10000 },
-            busReports: restampBusReports(),
+            busReports: restampBusReports(RESTAMP_ELEMENT, { trust: true }),
         };
     }
 

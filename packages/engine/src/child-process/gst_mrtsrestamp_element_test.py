@@ -21,6 +21,7 @@ not a twin; chapter 3 part 4.5 rule 1):
     with converging-remaining-ns about the transit + the declared D_e (k), then trust, nothing
     dropped; an unknown E gives failed = local-undisciplined; a new epoch_seq sender-reepoch;
     mrtsrestamp-trust and the events equal the core's, through both runners as well;
+  - the ingest modules' restamp terms (WI-P5-11) parse, the house-clock value as the engine quotes it;
   - gst-inspect-1.0 lists every property.
 
 Skips (exit 0) without GStreamer or the built plugin; the reference is built with make."""
@@ -1107,6 +1108,22 @@ check(f"a house-clock value not understood: warned, the last kept ({hu.warnings[
       hu.el.get_property("house-clock") == house_clock_value(0, 1, True, 100)
       and any("house-clock" in w for w in hu.warnings))
 hu.stop()
+
+print("\n--- the ingest modules' restamp terms (WI-P5-11), parsed as both runners parse a launch line ---")
+# srt-input's fragment under a chrony and a PTP house clock; SrtInputModule.test.ts pins its build to these.
+INGEST_RESTAMP_NTP = r'mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=300000000000 offset-ns=0 timing-mode=trust transport-latency-ms=2000 trust-tolerance-ms=200 house-clock="house-clock, e-ns=(gint64)1760283215123456789, seq=(uint)3, traceable=(boolean)true, disciplined=(boolean)true, source=(string)ntp, error-us=(uint)1200, tai-offset-s=(int)37, ptp-domain=(int)-1, gm=(string)\"\""'
+INGEST_RESTAMP_PTP = r'mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=300000000000 offset-ns=0 timing-mode=trust transport-latency-ms=2000 trust-tolerance-ms=200 house-clock="house-clock, e-ns=(gint64)1760283215123456789, seq=(uint)3, traceable=(boolean)true, disciplined=(boolean)true, source=(string)ptp, error-us=(uint)1, tai-offset-s=(int)37, ptp-domain=(int)127, gm=(string)\"2C-CF-67-FF-FE-76-E6-69\""'
+for _tag, _frag in (("chrony", INGEST_RESTAMP_NTP), ("PTP", INGEST_RESTAMP_PTP)):
+    _hc = _frag.split('house-clock="', 1)[1][:-1].replace('\\"', '"')
+    _pipe = Gst.parse_launch(f"fakesrc num-buffers=0 ! {_frag} ! fakesink")
+    _el = _pipe.get_by_name("restamp")
+    check(f"{_tag}: timing-mode trust, L 2000 ms, tau 200 ms and the house-clock value taken as built "
+          f"({_el.get_property('house-clock')[-48:]})",
+          _el.get_property("timing-mode").value_nick == "trust"
+          and _el.get_property("transport-latency-ms") == 2000
+          and _el.get_property("trust-tolerance-ms") == 200
+          and _el.get_property("house-clock") == _hc
+          and Gst.Structure.from_string(_hc)[0].get_value("gm") == ("" if _tag == "chrony" else "2C-CF-67-FF-FE-76-E6-69"))
 
 
 def runner_trust_case(argv, tag):

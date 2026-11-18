@@ -44,8 +44,15 @@ const PREFERRED_ZONE_TYPES = [
 
 /** What this router announces: `dashboards` it serves at :8081/d (ADR-0026); `interlocks` it
  *  keeps itself (ADR-0028); `house-clock`: it reports `timeSync` (house-clock design §10.3);
- *  `egress-writer`: its network outputs put house time on the wire (WI-P5-10). */
-const ENGINE_FEATURES = ['dashboards', 'interlocks', 'house-clock', 'egress-writer'];
+ *  `egress-writer`: its network outputs put house time on the wire (WI-P5-10);
+ *  `trust-ingest`: its network ingests offer Timing Mode (plan ch. 9 part 8, WI-P5-11). */
+const ENGINE_FEATURES = [
+    'dashboards',
+    'interlocks',
+    'house-clock',
+    'egress-writer',
+    'trust-ingest',
+];
 
 const isCoreLabel = (label: string): boolean => /^core\b/i.test(label);
 

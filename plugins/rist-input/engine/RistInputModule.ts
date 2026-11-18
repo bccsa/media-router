@@ -3,7 +3,10 @@ import {
     INGEST_OFFSET_KEY,
     IngestTimingReporter,
     PID_TRIMS_KEY,
+    RESTAMP_ELEMENT,
     SMOOTHING_COOLDOWN_KEY,
+    TIMING_MODE_KEY,
+    TRUST_TOLERANCE_KEY,
     applyIngestTimingLiveUpdate,
     buildBusSink,
     buildIngestQueue,
@@ -65,8 +68,15 @@ const PEER_FIELDS = [
 ];
 
 export class RistInputModule extends GstPluginBase {
-    /** O, the trims and the smoothing cooldown are the restamp's live properties (§5.5, B-95). */
-    protected liveUpdatableParams = [INGEST_OFFSET_KEY, PID_TRIMS_KEY, SMOOTHING_COOLDOWN_KEY];
+    /** O, the trims, the smoothing cooldown, Timing Mode and τ are the restamp's live properties
+     *  (§5.5, B-95, WI-P5-11). */
+    protected liveUpdatableParams = [
+        INGEST_OFFSET_KEY,
+        PID_TRIMS_KEY,
+        SMOOTHING_COOLDOWN_KEY,
+        TIMING_MODE_KEY,
+        TRUST_TOLERANCE_KEY,
+    ];
     private linkHealth = new RistLinkHealth();
     private flows = new RistFlowTracker();
     private peerNames = new Map<number, string>();
@@ -89,6 +99,7 @@ export class RistInputModule extends GstPluginBase {
         }
 
         await super.onStart();
+        this.bindHouseClock([RESTAMP_ELEMENT]);
 
         const links = this.links();
         const profile = (this.config.profile as number) ?? 1;
@@ -140,10 +151,11 @@ export class RistInputModule extends GstPluginBase {
         const secret = (this.config.secret as string) || '';
         const encType = (this.config.encryptionType as number) || 0;
         const sessionTimeout = (this.config.sessionTimeout as number) || 0;
+        const buffer = (this.config.buffer as number) ?? 1000;
         const props = [
             `urls=${quoteGstString(this.links().map(buildRistUrl).join(' '))}`,
             `profile=${(this.config.profile as number) ?? 1}`,
-            `buffer=${(this.config.buffer as number) ?? 1000}`,
+            `buffer=${buffer}`,
             // librist deletes a flow after this long with no data (default
             // 2000 ms); on links with brief blackouts ~10000 ms keeps the flow
             // alive through the gap instead of a delete/reconnect churn.
@@ -153,12 +165,17 @@ export class RistInputModule extends GstPluginBase {
             `stats-interval=${this.statsIntervalMs()}`,
         ];
         // The restamp reads arrival itself, so it sits before the queue (OQ-19): the instant
-        // librist hands the packets over, after its recovery buffer.
+        // librist hands the packets over, after its recovery buffer, which is L (ch. 9 part 4.8).
+        this.ingestTiming.setLatencySource('RIST buffer');
         const restamp = buildRestamp({
             mode: 'stc',
             offsetMs: this.config[INGEST_OFFSET_KEY],
             pidTrimsMs: this.config[PID_TRIMS_KEY],
             smoothingCooldownMin: this.config[SMOOTHING_COOLDOWN_KEY],
+            timingMode: this.config[TIMING_MODE_KEY] ?? 'restamp',
+            transportLatencyMs: buffer,
+            trustToleranceMs: this.config[TRUST_TOLERANCE_KEY],
+            houseClock: this.houseClockProperty(),
         });
         const pipeline =
             `mrristsrc name=${RIST_SRC} ${props.join(' ')} ! ${restamp} ! ` +
@@ -173,9 +190,14 @@ export class RistInputModule extends GstPluginBase {
             busReports: [
                 { element: RIST_SRC, structure: RIST_STATS_STRUCTURE },
                 { element: RIST_SRC, structure: RIST_PEER_STRUCTURE },
-                ...restampBusReports(),
+                ...restampBusReports(RESTAMP_ELEMENT, { trust: true }),
             ],
         };
+    }
+
+    /** p5-20's drain key: the sender's timeline while this input is on it (WI-P5-11). */
+    drainOriginKey(): string | undefined {
+        return this.ingestTiming.drainOriginKey();
     }
 
     protected onPluginEvent(channel: string, payload: unknown): void {

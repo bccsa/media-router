@@ -10,6 +10,7 @@ import {
     RESTAMP_EVENT,
     RESTAMP_PID,
     RESTAMP_STATS,
+    RESTAMP_TRUST,
     type RestampMode,
 } from './ingestTiming.js';
 import { IngestClock, str } from './ingestTimingState.js';
@@ -21,13 +22,15 @@ import {
     viewChanged,
     type View,
 } from './ingestTimingView.js';
+import { TRUST_BADGE } from './ingestTrust.js';
 import type { TimingSection } from './timingSections.js';
 
 export { CLOCK_BADGE, CLOCK_SECTION, PIDS_OPTIONS } from './ingestTimingView.js';
+export { TRUST_BADGE, TRUST_SECTION } from './ingestTrust.js';
 
 /** This reporter's section ids, for a module merging them with its own dynamic sections. */
 export function isIngestTimingSection(id: string): boolean {
-    return /^(clock(-\d+)?|pid-\d+)$/.test(id);
+    return /^(clock(-\d+)?|trust(-\d+)?|pid-\d+)$/.test(id);
 }
 
 /** The module side, bound by the module to GstPluginBase's methods. */
@@ -58,7 +61,7 @@ export interface IngestTimingReporterOptions {
 }
 
 const STALE_REPORTS = 3;
-const WARN_EVENTS = new Set(['degraded', 'lead-clamp', 'ratio-out-of-bounds']);
+const WARN_EVENTS = new Set(['degraded', 'lead-clamp', 'ratio-out-of-bounds', 'trust-fallback']);
 
 type Payload = Record<string, unknown>;
 
@@ -69,6 +72,10 @@ export class IngestTimingReporter {
     private clock = new IngestClock();
     private shown: View = EMPTY_VIEW;
     private timer: ReturnType<typeof setInterval> | null = null;
+    /** Where L comes from, for the Trust section ("SRT negotiated"); the module sets it. */
+    private lSource = '';
+    /** The last MPTS disagreement logged, so each change is logged once. */
+    private disagreeLogged = '';
 
     constructor(
         private readonly host: IngestTimingHost,
@@ -81,6 +88,7 @@ export class IngestTimingReporter {
         this.channels = new Map([
             [`${RESTAMP_STATS}:${restamp}`, (p, now) => this.clock.stats(p, now)],
             [`${RESTAMP_PID}:${restamp}`, (p, now) => this.clock.pid(p, now)],
+            [`${RESTAMP_TRUST}:${restamp}`, (p, now) => this.clock.trustReport(p, now)],
             [
                 `${RESTAMP_EVENT}:${restamp}`,
                 (p, now) => {
@@ -101,6 +109,17 @@ export class IngestTimingReporter {
         return true;
     }
 
+    /** Where the module's L comes from, as the Trust section names it: "SRT negotiated". */
+    setLatencySource(source: string): void {
+        this.lSource = source;
+    }
+
+    /** p5-20's drain key (WI-P5-11): the sender's timeline id, 16 hex digits, while every program
+     *  is on the Trust timeline with one non-zero id; else undefined. Moves on the Trust events. */
+    drainOriginKey(): string | undefined {
+        return this.clock.trust.originKey();
+    }
+
     /** From the module's start: publish every stats interval. */
     start(): void {
         if (this.timer) clearInterval(this.timer);
@@ -114,12 +133,13 @@ export class IngestTimingReporter {
     stop(): void {
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
-        const { sections, badge, options } = this.shown;
-        if (sections.length || badge || options.length) {
+        const { sections, badge, trustBadge, options } = this.shown;
+        if (sections.length || badge || trustBadge || options.length) {
             this.publish({ ...EMPTY_VIEW, warnings: this.shown.warnings });
         }
         this.clock = new IngestClock();
         this.shown = EMPTY_VIEW;
+        this.disagreeLogged = '';
     }
 
     /** The transport dropped, its runner down: No PCR at once, the last values kept (B-118). */
@@ -136,8 +156,19 @@ export class IngestTimingReporter {
     tick(now = Date.now()): void {
         const staleMs = STALE_REPORTS * this.intervalMs;
         this.clock.expire(now, staleMs);
-        const view = ingestView(this.clock, this.mode, now, staleMs);
+        const view = ingestView(this.clock, this.mode, now, staleMs, this.lSource);
         if (viewChanged(this.shown, view)) this.publish(view);
+        const { disagree = '' } = this.clock.trust.origin();
+        if (disagree !== this.disagreeLogged) {
+            this.disagreeLogged = disagree;
+            if (disagree) {
+                this.host.log(
+                    'info',
+                    { trustPrograms: disagree },
+                    `drain origin: programs disagree (${disagree}); grouped by module`,
+                );
+            }
+        }
     }
 
     private logEvent(structure: string, p: Payload): void {
@@ -172,6 +203,10 @@ export class IngestTimingReporter {
         if (JSON.stringify(view.badge) !== JSON.stringify(prev.badge)) {
             if (view.badge) this.host.setBadge(CLOCK_BADGE, view.badge);
             else this.host.clearBadge(CLOCK_BADGE);
+        }
+        if (JSON.stringify(view.trustBadge) !== JSON.stringify(prev.trustBadge)) {
+            if (view.trustBadge) this.host.setBadge(TRUST_BADGE, view.trustBadge);
+            else this.host.clearBadge(TRUST_BADGE);
         }
         if (this.mode === 'stc' && JSON.stringify(view.options) !== JSON.stringify(prev.options)) {
             this.host.setFieldOptions(PIDS_OPTIONS, view.options);

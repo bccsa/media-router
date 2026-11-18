@@ -268,7 +268,7 @@ describe('PluginRegistry', () => {
             'x-live': true,
             title: 'Smoothing Cooldown',
             description:
-                "Adds latency only when this input's stream is bursty (packets arriving in bursts, as through some relays). The input then runs at its bursts' height and comes back down no sooner than this long after the last burst, instead of skipping and re-syncing after every burst. A steady stream gets no added latency. Set it longer than the time between bursts; 0 turns smoothing off.",
+                "While restamping, adds latency only when this input's stream is bursty (packets arriving in bursts, as through some relays). The input then runs at its bursts' height and comes back down no sooner than this long after the last burst, instead of skipping and re-syncing after every burst. A steady stream gets no added latency. Set it longer than the time between bursts; 0 turns smoothing off.",
         };
         const manifest = (id: string, timing?: unknown) => ({
             pluginId: id,
@@ -361,6 +361,34 @@ describe('PluginRegistry', () => {
             )) {
                 expect((p.configSchema as any).properties.smoothingCooldownMin).toEqual(COOLDOWN);
             }
+        });
+
+        it('on the real manifests: Timing Mode and Trust Tolerance on the three network ingests only, O and the trims greyed in Trust (WI-P5-11)', () => {
+            const all = new PluginRegistry(path.resolve(__dirname, '../../../../plugins')).getAll();
+            const props = (p: (typeof all)[number]) =>
+                ((p.configSchema as any)?.properties ?? {}) as Record<string, any>;
+            const withTrust = all
+                .filter((p) => 'timingMode' in props(p) || 'trustToleranceMs' in props(p))
+                .map((p) => p.pluginId)
+                .sort();
+            expect(withTrust).toEqual(['mpegts-ip-input', 'rist-input', 'srt-input']);
+            for (const p of all.filter((x) => withTrust.includes(x.pluginId))) {
+                const q = props(p);
+                expect(q.timingMode).toMatchObject({ default: 'restamp', 'x-live': true });
+                expect(q.trustToleranceMs).toMatchObject({
+                    default: 200,
+                    'x-showWhen': 'timingMode=trust',
+                });
+                for (const key of ['ingestOffsetMs', 'pidTrimsMs']) {
+                    expect(q[key]['x-disabledWhen']).toBe('timingMode=trust');
+                    expect(q[key]['x-disabledReason']).toMatch(
+                        /^Trust keeps the sender's timeline/,
+                    );
+                }
+            }
+            // A capture keeps O with no greying: it has no Trust.
+            const cap = all.find((p) => p.pluginId === 'video-encoder')!;
+            expect(props(cap).ingestOffsetMs['x-disabledWhen']).toBeUndefined();
         });
 
         it('a module gets them through overlayManifest, and initManifest sees them', async () => {

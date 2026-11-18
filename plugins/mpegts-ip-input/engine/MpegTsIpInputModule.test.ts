@@ -13,6 +13,13 @@ import {
 import { sniffEncapsulation } from './detectEncapsulation.js';
 import { MpegTsIpInputModule } from './MpegTsIpInputModule.js';
 
+/** The restamp's Trust terms (WI-P5-11) cut out, for the WI-P1-10 assertions written before them. */
+const noTrust = (p: string): string =>
+    p.replace(
+        / timing-mode=\w+ transport-latency-ms=\d+ trust-tolerance-ms=\d+ house-clock="(?:[^"\\]|\\.)*"/,
+        '',
+    );
+
 // The sniff binds a real UDP socket and waits — stub it so these tests only
 // assert the options the module hands it (the socket itself is covered by
 // detectEncapsulation.test.ts).
@@ -106,7 +113,7 @@ describe('MpegTsIpInputModule.buildPipeline', () => {
         const desc = module.buildPipeline({ encapsulation: 'rtp' });
         expect(desc!.pipeline).toContain('application/x-rtp');
         expect(desc!.pipeline).toContain('encoding-name=(string)MP2T');
-        expect(desc!.pipeline).toContain('rtpjitterbuffer ! rtpmp2tdepay');
+        expect(desc!.pipeline).toContain('rtpjitterbuffer name=jbuf ! rtpmp2tdepay');
     });
 
     it('applies the jitterMs buffer to the leaky queue', () => {
@@ -338,6 +345,7 @@ const CH = {
     stats: 'mrtsrestamp-stats:restamp',
     pid: 'mrtsrestamp-pid:restamp',
     event: 'mrtsrestamp-event:restamp',
+    trust: 'mrtsrestamp-trust:restamp',
 };
 /** The element's messages as the runner forwards them (plan ch. 5 part 10). */
 const clockStats = (o: Record<string, unknown> = {}) => ({
@@ -421,7 +429,7 @@ describe('MpegTsIpInputModule on the restamp (WI-P1-10)', () => {
             'mrtsrestamp',
             ...BUS,
         ]);
-        expect(rtp.pipeline).toContain(
+        expect(noTrust(rtp.pipeline)).toContain(
             'rtpmp2tdepay ! mrtsrestamp name=restamp clock-mode=stc ' +
                 'smoothing-cooldown-ns=300000000000 offset-ns=0 ! queue leaky=0',
         );
@@ -430,6 +438,7 @@ describe('MpegTsIpInputModule on the restamp (WI-P1-10)', () => {
                 { element: 'restamp', structure: 'mrtsrestamp-stats' },
                 { element: 'restamp', structure: 'mrtsrestamp-pid' },
                 { element: 'restamp', structure: 'mrtsrestamp-event' },
+                { element: 'restamp', structure: 'mrtsrestamp-trust' },
             ]);
             expect(desc.tsProbe).toEqual({ appsink: 'tsprobe' });
         }
@@ -442,7 +451,7 @@ describe('MpegTsIpInputModule on the restamp (WI-P1-10)', () => {
             pidTrimsMs: { 256: 7, x: 9 },
             smoothingCooldownMin: 0,
         });
-        expect(desc.pipeline).toContain(
+        expect(noTrust(desc.pipeline)).toContain(
             'mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=0 offset-ns=12400000 ' +
                 'pid-trims="256=7000000" ! ',
         );
@@ -462,7 +471,7 @@ describe('MpegTsIpInputModule on the restamp (WI-P1-10)', () => {
             ['restamp', 'smoothing-cooldown-ns', 3_600_000_000_000],
         ]);
         expect(instance.getState().pendingRestart).toBe(false);
-        expect(module.buildPipeline(module.config).pipeline).toContain(
+        expect(noTrust(module.buildPipeline(module.config).pipeline)).toContain(
             'smoothing-cooldown-ns=3600000000000 offset-ns=40000000 ! ',
         );
     });
@@ -591,5 +600,73 @@ describe('MpegTsIpInputModule on the restamp (WI-P1-10)', () => {
         expect(module.error).toMatch(/^Degraded clock: PCR frozen/);
         report(module);
         expect([module.health, module.error]).toEqual(['ok', undefined]);
+    });
+});
+
+describe('MpegTsIpInputModule: Timing Mode, Trust Tolerance and L (WI-P5-11, OQ-38)', () => {
+    afterEach(() => vi.restoreAllMocks());
+    const trustReport = (lMs: number) => ({
+        program: 1,
+        selected: 'trust',
+        effective: 'deciding',
+        qualifies: false,
+        failed: 'no-descriptor',
+        'bound-ns': (lMs + 200) * MS,
+        'l-ns': lMs * MS,
+        'decl-present': false,
+    });
+
+    it('raw UDP: L is 0, named UDP', () => {
+        const module = cardModule();
+        expect(module.buildPipeline({ encapsulation: 'raw' })!.pipeline).toContain(
+            'timing-mode=restamp transport-latency-ms=0 trust-tolerance-ms=200 house-clock="',
+        );
+        module.dispatchPluginEvent(CH.trust, trustReport(0));
+        module.ingestTiming.tick();
+        expect(module.getState().statusData.trust.latency).toBe('UDP 0 ms');
+    });
+
+    it('RTP: the jitter buffer is named, L its 200 ms default at build, then its latency read once it plays', async () => {
+        const module = cardModule();
+        const p = module.buildPipeline({ encapsulation: 'rtp', timingMode: 'trust' })!.pipeline;
+        expect(p).toContain(' ! rtpjitterbuffer name=jbuf ! rtpmp2tdepay ! ');
+        expect(p).toContain('timing-mode=trust transport-latency-ms=200 trust-tolerance-ms=200');
+        const setElementProperty = vi.fn(async () => {});
+        let latency: unknown = 200;
+        const getElementProperty = vi.fn(async () => latency);
+        module.setElementProperty = setElementProperty;
+        module.getElementProperty = getElementProperty;
+        module.onPipelinePlaying();
+        await vi.waitFor(() => expect(getElementProperty).toHaveBeenCalledWith('jbuf', 'latency'));
+        expect(setElementProperty).not.toHaveBeenCalled();
+        latency = 500;
+        module.onPipelinePlaying();
+        await vi.waitFor(() =>
+            expect(setElementProperty).toHaveBeenCalledWith('restamp', 'transport-latency-ms', 500),
+        );
+        module.dispatchPluginEvent(CH.trust, trustReport(500));
+        module.ingestTiming.tick();
+        expect(module.getState().statusData.trust.latency).toBe('RTP jitter buffer 500 ms');
+        // A raw run reads no jitter buffer.
+        module.buildPipeline({ encapsulation: 'raw' });
+        getElementProperty.mockClear();
+        module.onPipelinePlaying();
+        await Promise.resolve();
+        expect(getElementProperty).not.toHaveBeenCalled();
+    });
+
+    it('a live edit of Timing Mode or τ sets the restamp property, with no restart', async () => {
+        const { module } = makeModule();
+        const setElementProperty = vi.fn(async () => {});
+        module.setElementProperty = setElementProperty;
+        const instance = new ModuleInstance('mpegts-ip-in-1', 'mpegts-ip-input', module, {});
+        await instance.applyConfigUpdate({ trustToleranceMs: 250 });
+        await instance.applyConfigUpdate({ timingMode: 'restamp' });
+        expect(setElementProperty.mock.calls).toEqual([
+            ['restamp', 'trust-tolerance-ms', 250],
+            ['restamp', 'timing-mode', 0],
+        ]);
+        expect(instance.getState().pendingRestart).toBe(false);
+        expect(module.drainOriginKey()).toBeUndefined();
     });
 });

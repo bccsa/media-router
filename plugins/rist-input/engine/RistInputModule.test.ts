@@ -12,6 +12,13 @@ import {
 } from '@media-router/engine';
 import { RistInputModule } from './RistInputModule.js';
 
+/** The restamp's Trust terms (WI-P5-11) cut out, for the WI-P1-10 assertions written before them. */
+const noTrust = (p: string): string =>
+    p.replace(
+        / timing-mode=\w+ transport-latency-ms=\d+ trust-tolerance-ms=\d+ house-clock="(?:[^"\\]|\\.)*"/,
+        '',
+    );
+
 function makeModule() {
     const module = new RistInputModule() as any;
     module.services = {
@@ -64,6 +71,7 @@ describe('RistInputModule.buildPipeline', () => {
             { element: 'restamp', structure: 'mrtsrestamp-stats' },
             { element: 'restamp', structure: 'mrtsrestamp-pid' },
             { element: 'restamp', structure: 'mrtsrestamp-event' },
+            { element: 'restamp', structure: 'mrtsrestamp-trust' },
         ]);
     });
 
@@ -555,6 +563,7 @@ const CH = {
     stats: 'mrtsrestamp-stats:restamp',
     pid: 'mrtsrestamp-pid:restamp',
     event: 'mrtsrestamp-event:restamp',
+    trust: 'mrtsrestamp-trust:restamp',
 };
 /** The element's messages as the runner forwards them (plan ch. 5 part 10). */
 const clockStats = (o: Record<string, unknown> = {}) => ({
@@ -641,7 +650,7 @@ describe('RistInputModule on the restamp (WI-P1-10)', () => {
             'mrlateness',
             'tee',
         ]);
-        expect(desc.pipeline).toContain(
+        expect(noTrust(desc.pipeline)).toContain(
             ' ! mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=300000000000 ' +
                 'offset-ns=0 ! queue name=ingestq leaky=2 ',
         );
@@ -655,7 +664,7 @@ describe('RistInputModule on the restamp (WI-P1-10)', () => {
             smoothingCooldownMin: 2,
         };
         // Clamped to ±2 s; a zero trim is no trim.
-        expect(module.buildPipeline({})!.pipeline).toContain(
+        expect(noTrust(module.buildPipeline({})!.pipeline)).toContain(
             'mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=120000000000 ' +
                 'offset-ns=1500000000 pid-trims="4097=2000000000" ! queue',
         );
@@ -807,5 +816,65 @@ describe('RistInputModule on the restamp (WI-P1-10)', () => {
         module.onPipelinePlaying();
         expect(module.health).toBe('warning');
         expect(module.error).toMatch(/^Degraded clock: PCR frozen/);
+    });
+});
+
+describe('RistInputModule: Timing Mode, Trust Tolerance and L (WI-P5-11)', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    it('L is the RIST buffer, in the pipeline and in the Trust section', () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({})!.pipeline).toContain(
+            'offset-ns=0 timing-mode=restamp transport-latency-ms=1000 trust-tolerance-ms=200 house-clock="',
+        );
+        const card = cardModule();
+        card.config = { buffer: 3000, timingMode: 'trust', trustToleranceMs: 150 };
+        const p = card.buildPipeline({})!.pipeline;
+        expect(p).toContain(' buffer=3000 ');
+        expect(p).toContain('timing-mode=trust transport-latency-ms=3000 trust-tolerance-ms=150');
+        card.dispatchPluginEvent(CH.trust, {
+            program: 1,
+            selected: 'trust',
+            effective: 'trust',
+            qualifies: true,
+            failed: '',
+            'bound-ns': 3150 * MS,
+            'l-ns': 3000 * MS,
+            'decl-present': true,
+            'decl-timeline-id': '00000000000000b2',
+        });
+        card.ingestTiming.tick();
+        expect(card.getState().statusData.trust).toMatchObject({
+            latency: 'RIST buffer 3000 ms',
+            bound: 3150,
+        });
+        expect(card.drainOriginKey()).toBe('00000000000000b2');
+    });
+
+    it('a live edit of Timing Mode or τ sets the restamp property, with no restart', async () => {
+        const { module } = makeModule();
+        const setElementProperty = vi.fn(async () => {});
+        module.setElementProperty = setElementProperty;
+        const instance = new ModuleInstance('rist-in-1', 'rist-input', module, {});
+        await instance.applyConfigUpdate({ timingMode: 'trust', trustToleranceMs: 0 });
+        expect(setElementProperty.mock.calls).toEqual([
+            ['restamp', 'timing-mode', 1],
+            ['restamp', 'trust-tolerance-ms', 0],
+        ]);
+        expect(instance.getState().pendingRestart).toBe(false);
+    });
+
+    it('binds the house clock to the restamp at start', async () => {
+        vi.useFakeTimers();
+        vi.spyOn(GstPluginBase.prototype, 'onStart').mockResolvedValue(undefined);
+        const module = cardModule();
+        const bind = vi.fn();
+        module.bindHouseClock = bind;
+        await module.onStart();
+        expect(bind).toHaveBeenCalledWith(['restamp']);
+        await module.onStop();
     });
 });

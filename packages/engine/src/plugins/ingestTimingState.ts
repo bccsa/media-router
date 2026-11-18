@@ -1,6 +1,8 @@
 // What an ingest's timing messages say (house-clock plan ch. 5 part 10), kept for its card: per
 // program the clock, per PID the lead and trims, the ASRC, the transport counters, and the windows
-// behind part 10's warnings. IngestTimingReporter feeds it; ingestTimingView.ts renders it.
+// behind part 10's warnings, and the Trust gates (ingestTrust.ts). IngestTimingReporter feeds it;
+// ingestTimingView.ts renders it.
+import { IngestTrust } from './ingestTrust.js';
 
 const MINUTE = 60_000;
 const NS_PER_MS = 1_000_000;
@@ -131,6 +133,8 @@ export class IngestClock {
     asrc: AsrcClock | undefined;
     readonly ccLost = new Counter(CORRUPTION_MS);
     readonly desyncBytes = new Counter(CORRUPTION_MS);
+    /** A network ingest's Trust gates, per program (WI-P5-11). */
+    readonly trust = new IngestTrust();
     /** Arrival of the newest periodic report: entries far behind it have left the stream. */
     private newest = 0;
 
@@ -193,6 +197,13 @@ export class IngestClock {
         if (kind === 'degraded') prog.refPid = pid >= 0 ? pid : undefined;
         if (kind === 'recovered') prog.refPid = undefined;
         if (kind === 'lead-clamp' && pid >= 0) this.leadClamps.set(pid, now);
+        this.trust.event(p, now);
+    }
+
+    /** `mrtsrestamp-trust`: one program's gate. */
+    trustReport(p: Payload, now: number): void {
+        this.newest = now;
+        this.trust.report(p, now);
     }
 
     asrcStats(p: Payload, now: number): void {
@@ -211,6 +222,7 @@ export class IngestClock {
      *  stats, not only once its reports age out (B-118). */
     down(): void {
         for (const p of this.programs.values()) if (p.at !== undefined) p.down = true;
+        this.trust.down();
     }
 
     /** Drop what is behind the newest report by `staleMs` (gone from the stream; a silent
@@ -228,6 +240,7 @@ export class IngestClock {
             if (now - at > LEAD_CLAMP_HOLD_MS) this.leadClamps.delete(pid);
         }
         if (this.asrc && this.newest - this.asrc.at > staleMs) this.asrc = undefined;
+        this.trust.expire(this.newest, staleMs);
     }
 
     private program(n: number): ProgramClock {

@@ -8,6 +8,7 @@ import {
     type IngestClock,
     type PidClock,
 } from './ingestTimingState.js';
+import { TRUST_SECTION, trustBadge, trustRows, trustWarnings } from './ingestTrust.js';
 
 export const CLOCK_SECTION = 'clock';
 export const CLOCK_BADGE = 'clock';
@@ -81,11 +82,19 @@ export interface Row {
 export interface View {
     sections: Array<{ id: string; label: string; rows: Row[] }>;
     badge: Omit<ModuleBadge, 'id'> | null;
+    /** The `timing` badge: Trust, Converging, Deciding, Fallback; none in Restamp (WI-P5-11). */
+    trustBadge: Omit<ModuleBadge, 'id'> | null;
     options: Array<{ value: string; label: string }>;
     warnings: string[];
 }
 
-export const EMPTY_VIEW: View = { sections: [], badge: null, options: [], warnings: [] };
+export const EMPTY_VIEW: View = {
+    sections: [],
+    badge: null,
+    trustBadge: null,
+    options: [],
+    warnings: [],
+};
 
 const unitOf = (unit?: string) => (unit ? { unit } : {});
 function numRow(key: string, label: string, raw: number | undefined, unit?: string): Row {
@@ -119,11 +128,20 @@ const held = (since: number | undefined, now: number): boolean =>
     since !== undefined && now - since >= OFF_HOLD_MS;
 const sorted = <T>(m: Map<number, T>): Array<[number, T]> => [...m].sort(([a], [b]) => a - b);
 
-/** The card and its warnings; a program without stats for `staleMs` reads "No PCR". */
-export function ingestView(c: IngestClock, mode: RestampMode, now: number, staleMs: number): View {
-    const v: View = { sections: [], badge: null, options: [], warnings: [] };
-    if (mode === 'stc') networkView(v, c, now, staleMs);
-    else captureView(v, c, now, staleMs);
+/** The card and its warnings; a program without stats for `staleMs` reads "No PCR". `lSource`
+ *  names where a network ingest's L comes from, for its Trust section. */
+export function ingestView(
+    c: IngestClock,
+    mode: RestampMode,
+    now: number,
+    staleMs: number,
+    lSource = '',
+): View {
+    const v: View = { ...EMPTY_VIEW, sections: [], options: [], warnings: [] };
+    if (mode === 'stc') {
+        trustView(v, c, now, lSource);
+        networkView(v, c, now, staleMs);
+    } else captureView(v, c, now, staleMs);
     const rising = Math.max(c.ccLost.risingFor(now), c.desyncBytes.risingFor(now));
     if (rising >= CORRUPTION_MS) {
         const cc = c.ccLost.over(now);
@@ -224,6 +242,34 @@ function networkView(v: View, c: IngestClock, now: number, staleMs: number): voi
     }
 }
 
+/** Part 8's `trust` section per program the gate reports, first on the card; part 10's warnings. */
+function trustView(v: View, c: IngestClock, now: number, lSource: string): void {
+    const programs = sorted(c.trust.programs);
+    const one = programs.length === 1;
+    for (const [n, t] of programs) {
+        v.sections.push({
+            id: one ? TRUST_SECTION : `${TRUST_SECTION}-${n}`,
+            label: one ? 'Trust' : `Trust · program ${n}`,
+            rows: trustRows(t, now, lSource).map(({ key, label, unit, value, triple }) => {
+                if (triple) {
+                    const row = numRow(key, label, undefined, unit);
+                    return {
+                        ...row,
+                        value: triple.map((x) => Math.round(x)).join(' / '),
+                        cmp: triple,
+                    };
+                }
+                return typeof value === 'string'
+                    ? textRow(key, label, value)
+                    : numRow(key, label, value, unit);
+            }),
+        });
+        const prefix = one ? '' : `Program ${n}: `;
+        for (const w of trustWarnings(t, now)) v.warnings.push(prefix + w);
+    }
+    v.trustBadge = trustBadge(programs.map(([, t]) => t));
+}
+
 function captureView(v: View, c: IngestClock, now: number, staleMs: number): void {
     const rows: Row[] = [];
     const a = c.asrc;
@@ -251,6 +297,7 @@ export function viewChanged(prev: View, next: View): boolean {
         JSON.stringify([
             v.sections.map((s) => [s.id, s.label, s.rows.map((r) => [r.key, r.label, r.unit])]),
             v.badge,
+            v.trustBadge,
             v.options,
             v.warnings,
         ]);

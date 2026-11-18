@@ -76,12 +76,13 @@ describe('shared-types', () => {
             ports: [],
             configSchema: {},
             engine: './engine/SrtInputModule.ts',
-            timing: { role: 'ingest', pidTrims: true, pcrLock: true },
+            timing: { role: 'ingest', pidTrims: true, pcrLock: true, trust: true },
         };
         expect(parseManifestTiming(manifest.timing)).toEqual({
             role: 'ingest',
             pidTrims: true,
             pcrLock: true,
+            trust: true,
         });
     });
 });
