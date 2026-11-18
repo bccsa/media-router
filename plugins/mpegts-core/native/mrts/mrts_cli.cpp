@@ -1816,8 +1816,9 @@ bool device_config(const Json& op, AsrcDeviceConfig* c, std::string* err) {
 
 void print_device_events(const std::vector<AsrcDeviceEvent>& events) {
     for (const AsrcDeviceEvent& e : events) {
-        if (e.kind == AsrcDeviceEvent::Kind::relock_device && !std::strcmp(e.reason, "restart"))
-            std::printf("{\"event\":\"relock-device\",\"reason\":\"restart\",\"at\":%lld}\n", (long long)e.at);
+        if (e.kind == AsrcDeviceEvent::Kind::relock_device && (!std::strcmp(e.reason, "restart") ||
+                                                               !std::strcmp(e.reason, "flush")))
+            std::printf("{\"event\":\"relock-device\",\"reason\":\"%s\",\"at\":%lld}\n", e.reason, (long long)e.at);
         else if (e.kind == AsrcDeviceEvent::Kind::relock_device)
             std::printf("{\"event\":\"relock-device\",\"reason\":\"%s\",\"at\":%lld,\"step_ns\":%lld}\n", e.reason,
                         (long long)e.at, (long long)e.value);
@@ -1881,6 +1882,19 @@ bool device_op(const Json& o, std::unique_ptr<AsrcDeviceTerm>* term, std::unique
     }
     std::vector<AsrcDeviceEvent> events;
     int64_t dev = 0, mono = 0, in_ppb = 0, pushed = -1, rendered = -1, upstream = 0;
+    if (op == "discard") {
+        int64_t n = 0;
+        if (!op_i64(o, "n", &n, err)) return false;
+        t.discard(n);
+        return true;
+    }
+    if (op == "resync") {
+        if (!op_i64(o, "mono", &mono, err)) return false;
+        t.resync(mono, &events);
+        print_device_events(events);
+        print_recalibrated(&t);
+        return true;
+    }
     if (op == "start" || op == "stop") {
         if (!op_i64(o, "mono", &mono, err)) return false;
         if (op == "start") t.start(mono, &events);

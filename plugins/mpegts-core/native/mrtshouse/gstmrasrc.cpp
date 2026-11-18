@@ -97,6 +97,7 @@ struct AsrcDevice {
     struct Content {
         uint64_t offset;
         int64_t rt, pushed;   // content running time; when pushed (monotonic ns): its time in a queue
+        int64_t before;       // frames pushed before it: what a flush took is read off the first that comes after
     };
     std::deque<Content> contents;                  // what the probe has not met
     // The sink's time on a push from mrasrc's own chain (no queue between): the last that blocked, when it ended.
@@ -108,6 +109,9 @@ struct AsrcDevice {
     guint catch_up_ppm = 0;
     mrts::AsrcCatchUp catch_up;
     int64_t write_end = -1, flushed = 0;
+    // A flush reached the sink: `flushed` is counted again at the next buffer (c40); one not ours told to the term.
+    bool recount = false, foreign = false;
+    int64_t flushed_was = 0;
     std::atomic<int> cu_state{0};
     std::atomic<int64_t> cu_excess_ns{0}, cu_removed_ns{0};
     explicit AsrcDevice(const char* name) : lateness(mrts::AsrcDeviceConfig().rate_hz), sink_name(name) {
@@ -292,7 +296,7 @@ static void asrc_post_events(GstMrAsrc* self) {
     }
 }
 
-/* The device term's mrasrc-event: relock-device (restart or step, the step), device-stalled (the frames that
+/* The device term's mrasrc-event: relock-device (restart, step or flush; the step), device-stalled (the frames that
  * waited), device-resumed (the frames the stall rule dropped so far); house-ns, the read's running time. */
 static void asrc_post_device(GstMrAsrc* self, const std::vector<AsrcDeviceEvent>& events, gint64 house_ns) {
     for (const AsrcDeviceEvent& e : events) {
@@ -396,14 +400,14 @@ static gint64 asrc_input_pts(GstMrAsrc* self, GstBuffer* buf, guint64 frames) {
 static void asrc_device_out(GstMrAsrc* self, gsize frames) {
     AsrcDevice* d = self->dev;
     if (!d || frames == 0) return;
-    d->pushed.fetch_add((int64_t)frames);
+    const int64_t before = d->pushed.fetch_add((int64_t)frames);
     const guint64 rt = gst_segment_to_running_time(&GST_BASE_TRANSFORM(self)->segment, GST_FORMAT_TIME,
                                                    (guint64)MAX(self->servo->next_content_pts(), (int64_t)0));
     std::lock_guard<std::mutex> g(d->mu);
     d->catch_up.produced((int64_t)frames, self->cu_ppb);
     if (d->contents.size() >= 4096) d->contents.pop_front();
     d->contents.push_back({self->servo->stats().out_frames, GST_CLOCK_TIME_IS_VALID(rt) ? (int64_t)rt : -1,
-                           g_get_monotonic_time() * 1000});
+                           g_get_monotonic_time() * 1000, before});
 }
 
 /* An epoch's end in decode and device modes (a GAP, a DISCONT): the filter's lookahead of zeros
@@ -604,14 +608,23 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
     if (!d || !sink) return GST_PAD_PROBE_OK;
     if (info->type & (GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_EVENT_FLUSH)) {
         GstEvent* e = GST_PAD_PROBE_INFO_EVENT(info);
-        if (GST_EVENT_TYPE(e) == GST_EVENT_FLUSH_STOP) {   // nothing waits between mrasrc and the sink now
+        if (GST_EVENT_TYPE(e) == GST_EVENT_FLUSH_STOP) {
+            // All that waited before the sink, until its next buffer says what a flush entering below mrasrc left.
             const gint64 now = asrc_now(self);
-            std::lock_guard<std::mutex> g(d->mu);
-            d->flushed = d->pushed.load() - d->rendered.load();
-            d->write_end = -1;
-            d->have_prev = false;
-            d->lateness.flush();   // the sink's write positions start again
-            d->catch_up.reset(now);
+            std::vector<AsrcDeviceEvent> ev;
+            {
+                std::lock_guard<std::mutex> g(d->mu);
+                d->flushed_was = d->flushed;
+                d->flushed = d->pushed.load() - d->rendered.load();
+                d->recount = true;
+                d->foreign = !self->own_flush.load();
+                d->write_end = -1;
+                d->have_prev = false;
+                d->lateness.flush();   // the sink's write positions start again
+                d->catch_up.reset(now);
+                if (d->foreign) d->term.resync(now, &ev);   // its clock may step there (c40)
+            }
+            asrc_post_device(self, ev, now);
             return GST_PAD_PROBE_OK;
         }
         if (GST_EVENT_TYPE(e) != GST_EVENT_CAPS) return GST_PAD_PROBE_OK;
@@ -701,7 +714,13 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
         if (d->have_prev && next != (guint64)-1) d->lateness.rendered((int64_t)next - d->prev_frames, d->prev_frames, d->prev_pts);
         const guint64 off = GST_BUFFER_OFFSET(buf);
         while (!d->contents.empty() && d->contents.front().offset < off) d->contents.pop_front();
-        d->have_prev = !d->contents.empty() && d->contents.front().offset == off && d->contents.front().rt >= 0;
+        const bool met = !d->contents.empty() && d->contents.front().offset == off;
+        if (d->recount) {   // the first after a flush: what was pushed before it and never reached the sink was taken
+            d->recount = false;
+            if (met) d->flushed = d->contents.front().before - d->rendered.load();
+            if (d->foreign) d->term.discard(d->flushed - d->flushed_was);
+        }
+        d->have_prev = met && d->contents.front().rt >= 0;
         d->prev_frames = frames;
         d->prev_pts = d->have_prev ? d->contents.front().rt : 0;
         d->rendered.fetch_add(frames);
@@ -1220,7 +1239,12 @@ static gboolean asrc_sink_event(GstBaseTransform* trans, GstEvent* event) {
     GstMrAsrc* self = GST_MRASRC(trans);
     switch (GST_EVENT_TYPE(event)) {
         case GST_EVENT_FLUSH_STOP:
-            /* Nothing before the flush joins what follows: a fresh lock and filter. */
+            /* Nothing before the flush joins what follows: a fresh lock and filter; its offsets start again from 0,
+             * so the map of what was pushed goes too (review 5's minor 1). */
+            if (self->dev) {
+                std::lock_guard<std::mutex> g(self->dev->mu);
+                self->dev->contents.clear();
+            }
             if (self->servo && !asrc_build_run(self))
                 GST_ELEMENT_ERROR(self, CORE, FAILED, ("Cannot make the resampler"), (NULL));
             break;

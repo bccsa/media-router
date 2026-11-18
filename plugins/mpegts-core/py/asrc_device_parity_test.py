@@ -135,6 +135,10 @@ def random_run(r, seed, out):
             op.update(pushed=pushed, rendered=rendered)
             if noqueue:
                 op["upstream"] = up
+        if started and rq.random() < 0.004:   # a flush from elsewhere: what it took, the clock's step after it
+            took = rq.randrange(0, rate)
+            out.write(line({"op": "discard", "n": took}))
+            out.write(line({"op": "resync", "mono": mono0 + h + late}))
         if r.random() < 0.3:
             op["in_ppb"] = r.randrange(-60000, 60001)
         out.write(line(op))

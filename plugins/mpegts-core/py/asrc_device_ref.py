@@ -223,6 +223,25 @@ class DeviceTerm:
         self.discarded = 0
         self.taken_at_flush = 0
 
+    def discard(self, frames):
+        """A flush from elsewhere discarded `frames` that waited before the sink (c40): not waiting any more."""
+        self.discarded += max(0, frames)
+
+    def resync(self, mono):
+        """A flush from elsewhere reached the sink, whose clock may step there (c40): the next read starts a new pair,
+        the lock relocks keeping its rate (reason flush), as at a restart. Its events."""
+        if not self.rendering:
+            return []
+        self.prev = None
+        self.moved_at = None
+        self.beyond = 0
+        if not self.epoch:
+            return []
+        self.lock.relock(True)
+        self.relocks["restart"] += 1
+        self.recal = True
+        return [{"event": "relock-device", "reason": "flush", "at": mono}]
+
     def _relock(self, mono, step_ns, events):
         self.lock.relock(True)
         self.relocks["step"] += 1
@@ -419,6 +438,13 @@ def replay(lines):
             continue
         if op == "stop":
             term.stop(o["mono"])
+            continue
+        if op == "discard":
+            term.discard(o["n"])
+            continue
+        if op == "resync":
+            out.extend(_line(e) for e in term.resync(o["mono"]))
+            _recalibrated(term, out)
             continue
         if op == "sample":
             dev, mono, in_ppb = o["dev"], o["mono"], o.get("in_ppb", 0)

@@ -947,10 +947,71 @@ def test_upstream_waiting():
                 check("17: ... without the upstream count that stall is never read (%s)" % names, not names)
 
 
+def test_foreign_flush_discard():
+    """18. A flush from elsewhere took 590 ms that waited between the element and the sink (c40, review 5's minor 2):
+    told to the term (discard), a 1.5 s input gap after it is no device stall; not told, that gap reads as one."""
+    per = FS // 10
+    for told in (True, False):
+        t = ad.DeviceTerm()
+        st = {"pushed": 0, "taken": 0, "mono": 0}
+        evs = []
+
+        def read(tenths, push, take):
+            for _ in range(tenths):
+                st["mono"] += 100 * MS
+                st["pushed"] += per if push else 0
+                st["taken"] += per if take else 0
+                evs.extend(t.sample(st["mono"], 1000 * SEC + st["mono"], st["pushed"], st["taken"])[0])
+
+        t.start(0)
+        read(200, True, True)
+        st["pushed"] += 59 * FS // 100   # 590 ms more pushed, waiting before the sink, then flushed from elsewhere
+        if told:
+            t.discard(59 * FS // 100)
+        read(100, True, True)
+        read(15, False, False)            # the input gap: nothing pushed, nothing taken
+        read(50, True, True)
+        names = [e["event"] for e in evs if e["event"].startswith("device-")]
+        if told:
+            check("18: the flush's 590 ms told to the term: the 1.5 s gap after it is no device stall (%s)" % names,
+                  not names)
+        else:
+            check("18: ... not told, the gap reads as a device stall (%s)" % names, "device-stalled" in names)
+
+
+def test_foreign_flush_resync():
+    """19. A flush from elsewhere steps the sink's clock (the ring's content dropped: 33 ms on pulsesink, 49 on the
+    test device, under relock_ns). resync() at the flush starts the clock pairs again keeping the rate (c40); without
+    it a step at 30 s, inside the first fit, puts the rate at the clamp, a device 100 ppm fast read 1000 ppm fast."""
+    for resync in (True, False):
+        t = ad.DeviceTerm()
+        evs, worst = [], 0.0
+        t.start(0)
+        step = 0
+        for k in range(1, 1201):   # 120 s of 100 ms reads
+            mono = k * 100 * MS
+            if k == 300:
+                step = 45 * MS
+                if resync:
+                    evs.extend(t.resync(mono))
+            dev = mono + mono * 100 // 1000000 + step
+            evs.extend(t.sample(dev, 1000 * SEC + mono)[0])
+            if t.device_ppb():
+                worst = max(worst, abs(device_rate_ppm(t) - 100))
+        rel = [e.get("reason") for e in evs if e["event"] == "relock-device"]
+        if resync:
+            check("19: a 45 ms clock step at a flush from elsewhere, resync() there: the rate within %.1f ppm of the "
+                  "device's 100 from its first fit (20 at most), relocks %s" % (worst, rel), worst <= 20)
+        else:
+            check("19: ... without it the step is fit as a rate: %.1f ppm off at worst (more than 200)" % worst,
+                  worst > 200)
+
+
 CASES = (test_lock_port, test_ratio, test_jitter, test_fill_1h, test_input_stall, test_device_step,
          test_traces, test_trace_underrun, test_clock_stall_underrun, test_start_and_restart,
          test_device_stall_clock_stopped, test_device_stall_clock_running, test_render_lateness_ring,
-         test_replay_format, test_recalibrated, test_restart_counts, test_upstream_waiting)
+         test_replay_format, test_recalibrated, test_restart_counts, test_upstream_waiting, test_foreign_flush_discard,
+         test_foreign_flush_resync)
 
 # (name, the case it must fail, file, [(text, its replacement), ...]). The first four are the brief's.
 MUTANTS = (
@@ -1007,7 +1068,11 @@ MUTANTS = (
     # c40 (B-249 D2): what waits before the element.
     ("the upstream queue not counted", 17, "asrc_device_ref.py",
      [("        waiting = pending + max(0, upstream)\n", "        waiting = pending\n")]),
-)
+    ("a foreign flush's discard not counted", 18, "asrc_device_ref.py",
+     [("        self.discarded += max(0, frames)\n", "        pass\n")]),
+    ("no resync at a foreign flush", 19, "asrc_device_ref.py",
+     [("        if not self.rendering:\n            return []\n        self.prev = None\n        self.moved_at = None\n",
+       "        if True:\n            return []\n        self.prev = None\n        self.moved_at = None\n")]),)
 
 
 def run_mutants():

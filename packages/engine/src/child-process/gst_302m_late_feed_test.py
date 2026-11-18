@@ -31,10 +31,11 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     Audio Decoder (what waits past decq, here in appsrc, comes into view only as decq drains; 900 s on a server).
   - flushes (B-249 fix round 4; seeds 7, 8, 9, a 70-90 ms feed): a 3 s device stall past the first window (300 s),
     a flush into the sink (150 s), outq held 0.6 s then READY and back (260 s), and the same with a 1.5 s input gap
-    20 s on (100 s), and the gap alone (c40, 150 s): no hole and no refill after the event's own, the catch-up
-    `watching` after it (not after a gap: it resets nothing), the end at the target and not below the feed, the device
-    and the margin (after the flush reported only: the test device's reading creeps there), after the gap alone at
-    most 20 ms over the reading before it (it kept the gap before c40), no device stall but the device's own.
+    20 s on (100 s), the gap alone (c40, 150 s), and outq held 0.6 s then a flush into the sink below it (c40,
+    330 s): no hole and no refill after the event's own, the catch-up `watching` after it (not after a gap: it resets
+    nothing), the end at the target and not below the feed, the device and the margin (before c40 the gap kept its
+    length, what outq held past a flush stayed, and the reading crept after a flush), after the gap alone at most
+    20 ms over the reading before it, no device stall but the device's own.
   - drift: an hour of a device 100 ppm fast, and an hour 100 ppm slow, a tone stamped at house rate: no hole, no
     underrun, no refill after the start, the render lateness's level the same at the end as after 2 min and its
     p1-p99 within 2 ms and max-min within 20 (B-166). `MR_302M_DRIFT_SECS`, `_SPEED` and `_PPM` set the run.
@@ -584,9 +585,11 @@ if "stalls" in PARTS:
 # --- flushes with the catch-up on (B-249 fix round 4; review 4's x_edge.py shapes) --------------------------------
 # devstall: the test device stops 3 s (mrasrc's own flushes); flush: one from outq's src pad; ready: outq held 0.6 s,
 # READY and back (READY empties outq), a 1.5 s input gap. The catch-up must see each (the probe's EVENT_FLUSH).
-# gap (c40, D1): a 1.5 s input gap alone; the reading after it must not keep the gap.
-FLUSH_SECS = {"devstall": 300, "flush": 150, "ready": 260, "ready-gap": 100, "gap": 150}
-_FLUSH_PROFILES = [v for v in os.environ.get("MR_302M_FLUSH_PROFILES", "devstall,flush,ready,ready-gap,gap").split(",")
+# gap (c40, D1): a 1.5 s input gap alone; the reading after it must not keep the gap. flush-held (c40, D3): outq held
+# 0.6 s, then the flush into the sink below it, so what outq holds outlives the flush and must be played out.
+FLUSH_SECS = {"devstall": 300, "flush": 150, "ready": 260, "ready-gap": 100, "gap": 150, "flush-held": 330}
+_FLUSH_PROFILES = [v for v in os.environ.get("MR_302M_FLUSH_PROFILES",
+                                             "devstall,flush,ready,ready-gap,gap,flush-held").split(",")
                    if v]
 _FLUSH_SEEDS = [int(v) for v in os.environ.get("MR_302M_FLUSH_SEEDS", "7,8,9").split(",") if v]
 
@@ -640,7 +643,14 @@ def flush_run(name, seed):
             if name == "devstall":
                 p.get_by_name("sink").set_property("stall-ms", 3000)
                 marks["own"] = at + 3 + 5
-            elif name == "flush":
+            elif name in ("flush", "flush-held"):
+                hold = None
+                if name == "flush-held":
+                    hold = outq.get_static_pad("src").add_probe(Gst.PadProbeType.BLOCK | Gst.PadProbeType.BUFFER,
+                                                                lambda *_: Gst.PadProbeReturn.OK)
+                    time.sleep(0.6)
+                    marks["held"] = outq.get_property("current-level-time") / MS
+
                 def once(pad, _info):
                     seg = pad.get_sticky_event(Gst.EventType.SEGMENT, 0)
                     pad.push_event(Gst.Event.new_flush_start())
@@ -649,6 +659,8 @@ def flush_run(name, seed):
                         pad.push_event(seg)
                     return Gst.PadProbeReturn.REMOVE
                 outq.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, once)
+                if hold is not None:
+                    outq.get_static_pad("src").remove_probe(hold)
                 marks["own"] = at + 3
             elif name == "gap":
                 pause.set()
@@ -722,19 +734,21 @@ if "flushes" in PARTS:
             # An input gap resets nothing: the catch-up's window goes on across it.
             _watch = _name == "gap" or (bool(_r["after"]) and all(a == "watching" for a in _r["after"]))
             # Past the first window before the event, so `watching` after it is a reset.
-            _past = bool(_r["before"]) and all(b != "watching" for b in _r["before"]) if _name in ("devstall", "flush") \
+            _past = bool(_r["before"]) and all(b != "watching" for b in _r["before"]) \
+                if _name in ("devstall", "flush", "flush-held") \
                 else True
             # A stats post at least every 8 s: the feed never waited out a stale base time.
             _stall_ok = _r["stalls"] == (1 if _name == "devstall" else 0) and _r["gaps"] < 8
-            # The flush's end reported, not held: after a flush from outq's src pad the test device's render lateness
-            # creeps. After an input gap the end is held, and at most 20 ms over the reading before it (c40, D1).
-            _held = _name != "flush"
+            # Every end held (c40): the creep after a flush from outq's src pad was the sink clock's step fit as a rate
+            # (D3); after an input gap alone also at most 20 ms over the reading before it (D1).
+            _held = True
             _at_target = not _held or (_r["end"] is not None and _lo <= _r["end"] <= _hi)
             if _name == "gap":
                 _at_target = _at_target and _r["pre"] is not None and _r["end"] <= _r["pre"] + 20
             _ok = (not _r["err"] and _r["holes"] == 0 and _r["refills_after"] == 0 and _watch and _past and _stall_ok
                    and _at_target and (not _held or _r["cu_end"] != "catching-up"))
             _ev = {"devstall": "a 3 s device stall", "flush": "a flush into the sink",
+                   "flush-held": f"outq held {_r['held'] or 0:.0f} ms, then a flush into the sink below it",
                    "ready": f"outq held {_r['held'] or 0:.0f} ms, READY and back (playing again "
                             f"{(_r['back'] or 0) - _r['at']:.1f} s on)",
                    "ready-gap": f"outq held {_r['held'] or 0:.0f} ms, READY and back, a 1.5 s input gap 20 s on",

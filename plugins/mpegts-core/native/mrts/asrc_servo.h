@@ -246,9 +246,9 @@ struct AsrcDeviceConfig {
 struct AsrcDeviceEvent {
     enum class Kind { relock_device, device_stalled, device_resumed };
     Kind kind;
-    const char* reason;   // relock_device: "restart" or "step"; "" otherwise
+    const char* reason;   // relock_device: "restart", "step" or "flush" (a flush from elsewhere, c40); "" otherwise
     int64_t at;           // house time of the read (a restart: of the start)
-    // relock_device step: the step (ns, 0 for a restart); stalled: frames waiting; resumed: frames dropped so far.
+    // relock_device step: the step (ns, 0 for a restart or flush); stalled: frames waiting; resumed: frames dropped.
     int64_t value;
 };
 
@@ -276,6 +276,10 @@ class AsrcDeviceTerm {
     void stop(int64_t mono);   // the ring released: no read until the next start
     // The element's counts start again from 0 (READY emptied what waited): forget what the flushes discarded.
     void restart_counts();
+    // A flush from elsewhere (c40): it discarded `frames` that waited before the sink; and the sink's clock may step
+    // there, so resync() starts the pairs again, the lock relocking keeping its rate (reason "flush").
+    void discard(int64_t frames) { discarded_ += frames > 0 ? frames : 0; }
+    void resync(int64_t mono, std::vector<AsrcDeviceEvent>* events);
     // One timer read: the device clock, then house time; the counts or < 0 for none. True: flush downstream now.
     // upstream: frames waiting before the element (its upstream-queue), counted as waiting, never as discarded.
     bool sample(int64_t dev_ns, int64_t mono_ns, int64_t pushed, int64_t rendered,

@@ -3270,6 +3270,62 @@ void test_dev_restart_counts() {
     }
 }
 
+// 18 (py's, c40): a flush from elsewhere took 590 ms that waited before the sink; told (discard), no false stall.
+void test_dev_foreign_flush_discard() {
+    for (const bool told : {true, false}) {
+        AsrcDeviceTerm t;
+        const int64_t per = t.config().rate_hz / 10, fs = t.config().rate_hz;
+        int64_t pushed = 0, taken = 0, mono = 0;
+        std::vector<AsrcDeviceEvent> ev;
+        auto read = [&](int64_t tenths, bool push, bool take) {
+            for (int64_t k = 0; k < tenths; k++) {
+                mono += 100 * MS;
+                pushed += push ? per : 0;
+                taken += take ? per : 0;
+                t.sample(mono, 1000 * S + mono, pushed, taken, &ev);
+            }
+        };
+        t.start(0, &ev);
+        read(200, true, true);
+        pushed += 59 * fs / 100;
+        if (told) t.discard(59 * fs / 100);
+        read(100, true, true);
+        read(15, false, false);
+        read(50, true, true);
+        int stalled = 0;
+        for (const AsrcDeviceEvent& e : ev) stalled += e.kind == AsrcDeviceEvent::Kind::device_stalled;
+        char name[300];
+        std::snprintf(name, sizeof name, told ? "18: the flush's 590 ms told to the term: the 1.5 s gap after it is no "
+                      "device stall (%d)" : "18: ... not told, the gap reads as a device stall (%d)", stalled);
+        CHECK(name, told ? stalled == 0 : stalled == 1);
+    }
+}
+
+// 19 (py's, c40): a 45 ms clock step at a flush from elsewhere inside the first fit; resync() keeps it out of the rate.
+void test_dev_foreign_flush_resync() {
+    for (const bool resync : {true, false}) {
+        AsrcDeviceTerm t;
+        std::vector<AsrcDeviceEvent> ev;
+        t.start(0, &ev);
+        int64_t step = 0;
+        double worst = 0;
+        for (int64_t k = 1; k <= 1200; k++) {
+            const int64_t mono = k * 100 * MS;
+            if (k == 300) {
+                step = 45 * MS;
+                if (resync) t.resync(mono, &ev);
+            }
+            t.sample(mono + mono * 100 / 1000000 + step, 1000 * S + mono, -1, -1, &ev);
+            if (t.device_ppb()) worst = std::max(worst, std::abs(device_rate_ppm(t) - 100));
+        }
+        char name[300];
+        std::snprintf(name, sizeof name, resync ? "19: a 45 ms clock step at a flush from elsewhere, resync() there: "
+                      "the rate within %.1f ppm of the device's 100 from its first fit (20 at most)" : "19: ... without it "
+                      "the step is fit as a rate: %.1f ppm off at worst (more than 200)", worst);
+        CHECK(name, resync ? worst <= 20 : worst > 200);
+    }
+}
+
 // 17 (py's, c40 B-249 D2): no queue between the element and the sink, so what waits is the upstream queue's (decq).
 void test_dev_upstream_waiting() {
     for (const bool counted : {true, false}) {
@@ -3659,6 +3715,8 @@ int main(int argc, char** argv) {
     test_dev_stall_clock_running();
     test_dev_restart_counts();
     test_dev_upstream_waiting();
+    test_dev_foreign_flush_discard();
+    test_dev_foreign_flush_resync();
     test_dev_render_lateness_ring();
     test_dev_replay_format();
     test_dev_recalibrated();

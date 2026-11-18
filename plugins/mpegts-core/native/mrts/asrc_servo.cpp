@@ -612,6 +612,17 @@ void AsrcDeviceTerm::stop(int64_t) {
     have_prev_ = stalled_ = waiting_ = have_taken_ = false;
 }
 
+void AsrcDeviceTerm::resync(int64_t mono, std::vector<AsrcDeviceEvent>* events) {
+    if (!rendering_) return;
+    have_prev_ = moved_ = false;
+    beyond_ = 0;
+    if (!epoch_) return;
+    lock_.relock(true);
+    relocks_restart_++;
+    recal_ = true;
+    events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::relock_device, "flush", mono, 0});
+}
+
 void AsrcDeviceTerm::restart_counts() {
     have_taken_ = waiting_ = false;
     taken_prev_ = discarded_ = taken_at_flush_ = 0;
