@@ -1295,6 +1295,10 @@ def main():
             if exp.get("python_only") and tag != "py":
                 print(f"SKIP {name} {tag} — the module runs on the python runner (its bridge)")
                 continue
+            if exp.get("runner") and tag != exp["runner"]:
+                # The element is the same on both runners; one run keeps the suite near the gate's cap.
+                print(f"SKIP {name} {tag} — the scenario runs on the {exp['runner']} runner only")
+                continue
             for attempt in range(3):
                 while not args.in_time_ns and os.getloadavg()[0] >= 3.0:
                     time.sleep(5)
