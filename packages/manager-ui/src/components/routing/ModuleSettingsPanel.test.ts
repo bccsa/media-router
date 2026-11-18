@@ -3,7 +3,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DOMWrapper, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
-import { ModuleWriteCheck } from '@media-router/shared-types';
+import {
+    ModuleWriteCheck,
+    TRUST_DISABLES_OFFSET_REASON,
+    withIngestTimingSettings,
+} from '@media-router/shared-types';
 
 const mockCloneModule = vi.fn();
 const mockModuleSetting = vi.fn();
@@ -697,6 +701,125 @@ async function save(wrapper: VueWrapper): Promise<void> {
         .find((b) => b.text() === 'Save')!
         .trigger('click');
 }
+
+/** srt-input as the engine's loader and the manager's registry inject its timing settings (WI-P5-11). */
+const SRT_TRUST_SCHEMA = withIngestTimingSettings(
+    { type: 'object', properties: { latency: { type: 'number', default: 125, title: 'Latency' } } },
+    { pidTrims: true, pcrLock: true, trust: true },
+);
+
+function seedTrustInput(timingMode: string) {
+    seedSrtInput({
+        configSchema: SRT_TRUST_SCHEMA,
+        liveUpdatableParams: [
+            'timingMode',
+            'trustToleranceMs',
+            'ingestOffsetMs',
+            'pidTrimsMs',
+            'smoothingCooldownMin',
+        ],
+        settings: { timingMode, ingestOffsetMs: -40, pidTrimsMs: { '257': 120, '300': 15 } },
+    });
+}
+
+const reasonsIn = (block: DOMWrapper<Element>) =>
+    block.findAll('[data-test="disabled-reason"]').map((r) => r.text());
+const shown = (block: DOMWrapper<Element>) =>
+    (block.element as HTMLElement).style.display !== 'none';
+
+describe('ModuleSettingsPanel — Ingest Offset and Per-PID Trim disabled with a reason in Trust (WI-P5-12)', () => {
+    beforeEach(() => {
+        setActivePinia(createPinia());
+        mockModuleSetting.mockReset();
+        mockModuleSettings.mockReset();
+    });
+
+    it('in Trust both controls are disabled, their stored values shown, the reason under each heading', () => {
+        seedTrustInput('trust');
+        const wrapper = mountPanel('srt-input-1');
+
+        const offset = settingBlock(wrapper, 'Ingest Offset');
+        const box = offset.get('input').element as HTMLInputElement;
+        expect(box.disabled).toBe(true);
+        expect(box.value).toBe('-40');
+        expect(reasonsIn(offset)).toEqual([TRUST_DISABLES_OFFSET_REASON]);
+
+        const trims = settingBlock(wrapper, 'Per-PID Trim');
+        const inputs = trims.findAll('input');
+        expect(inputs).toHaveLength(3);
+        for (const input of inputs) expect((input.element as HTMLInputElement).disabled).toBe(true);
+        expect((trimBox(wrapper, '257').element as HTMLInputElement).value).toBe('120');
+        // Once, inside the trim widget's box, not again under the heading.
+        expect(reasonsIn(trims)).toEqual([TRUST_DISABLES_OFFSET_REASON]);
+
+        // Timing Mode, Trust Tolerance and Smoothing Cooldown stay editable.
+        expect(settingBlock(wrapper, 'Timing Mode').get('button').text()).toBe('Trust');
+        expect((cooldownBox(wrapper).element as HTMLInputElement).disabled).toBe(false);
+        const tolerance = settingBlock(wrapper, 'Trust Tolerance');
+        expect(shown(tolerance)).toBe(true);
+        expect((tolerance.get('input').element as HTMLInputElement).disabled).toBe(false);
+        expect(reasonsIn(settingBlock(wrapper, 'Smoothing Cooldown'))).toEqual([]);
+    });
+
+    it('an edit of either in Trust writes nothing', async () => {
+        seedTrustInput('trust');
+        const wrapper = mountPanel('srt-input-1');
+
+        await offsetBox(wrapper).setValue('500');
+        await trimBox(wrapper, '256').setValue('30');
+        await wrapper
+            .findAll('button')
+            .find((b) => b.text() === 'Save')!
+            .trigger('click');
+
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect(mockModuleSettings).not.toHaveBeenCalled();
+    });
+
+    it('switching to Restamp enables both with the stored values, and hides Trust Tolerance', async () => {
+        seedTrustInput('trust');
+        const wrapper = mountPanel('srt-input-1');
+
+        const mode = settingBlock(wrapper, 'Timing Mode');
+        await mode.get('button').trigger('click');
+        const restamp = mode.findAll('div').find((d) => d.text() === 'Restamp');
+        await restamp!.trigger('click');
+
+        expect(mockModuleSetting).toHaveBeenCalledWith(
+            'eng-1',
+            'srt-input-1',
+            'timingMode',
+            'restamp',
+        );
+        const box = offsetBox(wrapper).element as HTMLInputElement;
+        expect(box.disabled).toBe(false);
+        expect(box.value).toBe('-40');
+        for (const pid of ['256', '257', '300']) {
+            expect((trimBox(wrapper, pid).element as HTMLInputElement).disabled).toBe(false);
+        }
+        expect((trimBox(wrapper, '257').element as HTMLInputElement).value).toBe('120');
+        expect(wrapper.findAll('[data-test="disabled-reason"]')).toHaveLength(0);
+        expect(shown(settingBlock(wrapper, 'Trust Tolerance'))).toBe(false);
+
+        await offsetBox(wrapper).setValue('-100');
+        expect(mockModuleSetting).toHaveBeenLastCalledWith(
+            'eng-1',
+            'srt-input-1',
+            'ingestOffsetMs',
+            -100,
+        );
+    });
+
+    it('in Restamp nothing is disabled and no reason shows', () => {
+        seedTrustInput('restamp');
+        const wrapper = mountPanel('srt-input-1');
+
+        expect(settingBlock(wrapper, 'Timing Mode').get('button').text()).toBe('Restamp');
+        expect((offsetBox(wrapper).element as HTMLInputElement).disabled).toBe(false);
+        expect((trimBox(wrapper, '256').element as HTMLInputElement).disabled).toBe(false);
+        expect(wrapper.findAll('[data-test="disabled-reason"]')).toHaveLength(0);
+    });
+});
 
 describe('ModuleSettingsPanel — every typed setting validates and writes at Enter or on leaving it (B-104)', () => {
     beforeEach(() => {

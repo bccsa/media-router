@@ -9,6 +9,13 @@ vi.mock('@/stores/socket', () => ({
 }));
 
 import ModuleSettingsForm from './ModuleSettingsForm.vue';
+import MrArrayField from '@/components/common/MrArrayField.vue';
+import MrInput from '@/components/common/MrInput.vue';
+import MrMultiSelect from '@/components/common/MrMultiSelect.vue';
+import MrSelect from '@/components/common/MrSelect.vue';
+import MrSlider from '@/components/common/MrSlider.vue';
+import MrToggle from '@/components/common/MrToggle.vue';
+import PidTrimField from '@/components/routing/widgets/PidTrimField.vue';
 import { useEngineStore } from '@/stores/engines';
 import type { FormField } from '@/composables/useModuleSettingsForm';
 
@@ -30,6 +37,7 @@ function mountForm(moduleId: string) {
             fields: [IMAGE],
             settings: {},
             isVisible: () => true,
+            isDisabled: () => false,
             getEnum: () => undefined,
             getMax: () => undefined,
             deviceOptions: () => [],
@@ -100,5 +108,118 @@ describe('ModuleSettingsForm: an image upload belongs to the module it was made 
         await flushPromises();
 
         expect(form.emitted('update')).toBeUndefined();
+    });
+});
+
+/** One field of every control kind the form renders, each greyed while `mode=locked`. */
+function field(key: string, extra: Partial<FormField>): FormField {
+    return {
+        key,
+        type: 'string',
+        label: key,
+        description: '',
+        defaultValue: undefined,
+        liveUpdatable: true,
+        disabledWhen: 'mode=locked',
+        disabledReason: `${key} is locked`,
+        ...extra,
+    };
+}
+const EVERY_CONTROL: FormField[] = [
+    field('device', { deviceType: 'audio-input' }),
+    field('choice', { enumValues: ['a', 'b'] }),
+    field('langs', { type: 'array', optionsFrom: 'langs' }),
+    field('rows', {
+        type: 'array',
+        items: { type: 'object', properties: { n: { type: 'number' } } },
+    }),
+    field('on', { type: 'boolean' }),
+    field('gain', { type: 'number', widget: 'slider', minimum: 0, maximum: 100 }),
+    field('slate', { widget: 'imageUpload' }),
+    field('offset', { type: 'number' }),
+    field('name', {}),
+    field('trims', { type: 'object', widget: 'pidTrim', optionsFrom: 'pids' }),
+];
+
+function mountEveryControl(disabled: boolean) {
+    return mount(ModuleSettingsForm, {
+        props: {
+            fields: EVERY_CONTROL,
+            settings: {
+                slate: '/uploads/video-player/slate.png',
+                rows: [{ n: 1 }],
+                trims: { '256': 5 },
+            },
+            isVisible: () => true,
+            isDisabled: (f: FormField) => disabled && !!f.disabledWhen,
+            getEnum: (f: FormField) => f.enumValues,
+            getMax: (f: FormField) => f.maximum,
+            deviceOptions: () => [{ value: 'hw:0', label: 'Card 0' }],
+            engineId: 'eng-1',
+            moduleId: 'player-1',
+        },
+    });
+}
+
+describe('ModuleSettingsForm: disabled with a reason (WI-P5-12)', () => {
+    beforeEach(() => {
+        setActivePinia(createPinia());
+        mockCall.mockReset().mockResolvedValue(undefined);
+        Object.assign(URL, { createObjectURL: () => 'blob:slate', revokeObjectURL: () => {} });
+        useEngineStore().addEngine({
+            engine_id: 'eng-1',
+            display_name: 'Test Engine',
+            modules: {
+                'player-1': {
+                    pluginId: 'video-player',
+                    displayName: 'Player 1',
+                    fieldOptions: {
+                        langs: [{ value: 'en', label: 'English' }],
+                        pids: [{ value: '256', label: '0x0100 H.264 video' }],
+                    },
+                },
+            },
+        });
+    });
+
+    const controlsDisabled = (form: ReturnType<typeof mountEveryControl>) => [
+        ...form.findAllComponents(MrSelect).map((w) => ['MrSelect', w.props('disabled')]),
+        ...form.findAllComponents(MrMultiSelect).map((w) => ['MrMultiSelect', w.props('disabled')]),
+        ...form.findAllComponents(MrArrayField).map((w) => ['MrArrayField', w.props('disabled')]),
+        ...form.findAllComponents(MrToggle).map((w) => ['MrToggle', w.props('disabled')]),
+        ...form.findAllComponents(MrSlider).map((w) => ['MrSlider', w.props('disabled')]),
+        ...form.findAllComponents(MrInput).map((w) => ['MrInput', w.props('disabled')]),
+        ['slate input', (form.get('input[type="file"]').element as HTMLInputElement).disabled],
+        [
+            'slate remove',
+            (
+                form.findAll('button').find((b) => b.text() === 'Remove')!
+                    .element as HTMLButtonElement
+            ).disabled,
+        ],
+        [
+            'trims',
+            (form.getComponent(PidTrimField).find('input').element as HTMLInputElement).disabled,
+        ],
+    ];
+
+    it('every control is disabled while its x-disabledWhen holds, the reason shown once per field', () => {
+        const form = mountEveryControl(true);
+
+        const states = controlsDisabled(form);
+        // Two MrSelects (device, choice), one MrInput each for offset and name.
+        expect(states.length).toBeGreaterThanOrEqual(10);
+        for (const [name, disabled] of states) expect([name, disabled]).toEqual([name, true]);
+        const reasons = form.findAll('[data-test="disabled-reason"]').map((r) => r.text());
+        expect(reasons).toEqual(EVERY_CONTROL.map((f) => `${f.key} is locked`));
+    });
+
+    it('and none is, with no reason, while it does not', () => {
+        const form = mountEveryControl(false);
+
+        for (const [name, disabled] of controlsDisabled(form)) {
+            expect([name, !!disabled]).toEqual([name, false]);
+        }
+        expect(form.findAll('[data-test="disabled-reason"]')).toHaveLength(0);
     });
 });

@@ -29,6 +29,8 @@ const props = defineProps<{
     settings: Record<string, unknown>;
     /** Visibility predicate from `useModuleSettingsForm`. */
     isVisible: (field: FormField) => boolean;
+    /** `x-disabledWhen` predicate from `useModuleSettingsForm`. */
+    isDisabled: (field: FormField) => boolean;
     /** Effective enum resolver (handles x-enumBy). */
     getEnum: (field: FormField) => unknown[] | undefined;
     /** Effective max resolver (handles x-maxBy). */
@@ -44,6 +46,16 @@ const emit = defineEmits<{ update: [key: string, value: unknown] }>();
 
 function onUpdate(key: string, value: unknown): void {
     emit('update', key, value);
+}
+
+/** Why the field cannot be edited now, while its `x-disabledWhen` holds (WI-P5-12). */
+function disabledReason(field: FormField): string | undefined {
+    return props.isDisabled(field) ? (field.disabledReason ?? '') : undefined;
+}
+
+/** Every control greys for a read-only field and for one whose `x-disabledWhen` holds. */
+function isLocked(field: FormField): boolean {
+    return !!field.readOnly || props.isDisabled(field);
 }
 
 // Every typed box writes once, at Enter or on leaving it, after its field's rules (B-104): a live
@@ -254,6 +266,14 @@ function clearUpload(field: FormField): void {
             </MrHelpTip>
             <MrHelpTip v-if="field.description" :text="field.description" />
         </label>
+        <!-- The trim widget shows its reason inside its own box. -->
+        <p
+            v-if="disabledReason(field) && field.widget !== 'pidTrim'"
+            class="text-[10px] text-subtle"
+            data-test="disabled-reason"
+        >
+            {{ disabledReason(field) }}
+        </p>
         <!-- Display-only widget: holds no value, renders data the plugin
              publishes. `useModuleSettingsForm` keeps it out of saved settings. -->
         <GraphField
@@ -270,6 +290,7 @@ function clearUpload(field: FormField): void {
             :model-value="settings[field.key]"
             :options="field.optionsFrom ? optionsFromState(field.optionsFrom) : []"
             :offset-ms="settings[INGEST_OFFSET_KEY] as number | undefined"
+            :disabled-reason="disabledReason(field)"
             @update:model-value="onUpdate(field.key, $event)"
         />
         <!-- Read-only field (auto-detected values) -->
@@ -285,6 +306,7 @@ function clearUpload(field: FormField): void {
                 v-if="field.deviceType"
                 :model-value="(settings[field.key] as string) ?? ''"
                 :options="deviceOptions(field.key, field.deviceType)"
+                :disabled="isLocked(field)"
                 @update:model-value="onUpdate(field.key, $event)"
             />
             <!-- Enum select (supports field-dependent options via x-enumBy) -->
@@ -299,6 +321,7 @@ function clearUpload(field: FormField): void {
                         label: field.enumLabels?.[String(opt)] ?? String(opt),
                     }))
                 "
+                :disabled="isLocked(field)"
                 @update:model-value="onUpdate(field.key, $event)"
             />
             <!-- Discovery-driven multi-select (for x-optionsFrom fields, e.g. detected languages) -->
@@ -315,7 +338,7 @@ function clearUpload(field: FormField): void {
                     )
                 "
                 :options="optionsFromState(field.optionsFrom)"
-                :disabled="field.readOnly"
+                :disabled="isLocked(field)"
                 @update:model-value="onUpdate(field.key, $event)"
             />
             <!-- Array field -->
@@ -325,13 +348,14 @@ function clearUpload(field: FormField): void {
                 :schema="field.items"
                 :global-config="settings"
                 :global-keys="fields.map((f) => f.key)"
-                :disabled="field.readOnly"
+                :disabled="isLocked(field)"
                 @update:model-value="onUpdate(field.key, $event)"
             />
             <!-- Boolean toggle -->
             <MrToggle
                 v-else-if="field.type === 'boolean'"
                 :model-value="!!settings[field.key]"
+                :disabled="isLocked(field)"
                 @update:model-value="onUpdate(field.key, $event)"
             />
             <!-- Slider for volume/gain controls -->
@@ -343,6 +367,7 @@ function clearUpload(field: FormField): void {
                 :step="field.step"
                 :editable="true"
                 :unit="field.unit ?? '%'"
+                :disabled="isLocked(field)"
                 @update:model-value="onUpdate(field.key, $event)"
             />
             <!-- Image upload widget (file picker + preview + clear) -->
@@ -379,7 +404,8 @@ function clearUpload(field: FormField): void {
                         </span>
                         <button
                             type="button"
-                            class="text-[10px] text-error hover:underline"
+                            class="text-[10px] text-error hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                            :disabled="isLocked(field)"
                             @click="clearUpload(field)"
                         >
                             Remove
@@ -387,7 +413,12 @@ function clearUpload(field: FormField): void {
                     </div>
                 </div>
                 <label
-                    class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md cursor-pointer border border-border bg-surface-alt hover:opacity-80 text-foreground"
+                    class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border bg-surface-alt text-foreground"
+                    :class="
+                        isLocked(field)
+                            ? 'opacity-50 cursor-not-allowed'
+                            : 'cursor-pointer hover:opacity-80'
+                    "
                 >
                     <svg
                         width="14"
@@ -408,6 +439,7 @@ function clearUpload(field: FormField): void {
                         type="file"
                         :accept="uploadAccept"
                         class="hidden"
+                        :disabled="isLocked(field)"
                         @change="onUploadImage(field, $event)"
                     />
                 </label>
@@ -419,6 +451,7 @@ function clearUpload(field: FormField): void {
                 :model-value="settings[field.key] as number"
                 :rule="fieldRule(field, getMax(field))"
                 :unit="UNIT_BESIDE_KEYS.includes(field.key) ? field.unit : undefined"
+                :disabled="isLocked(field)"
                 @update:model-value="onUpdate(field.key, $event)"
             />
             <!-- Text input (default) -->
@@ -427,6 +460,7 @@ function clearUpload(field: FormField): void {
                 type="text"
                 :model-value="settings[field.key] as string"
                 :rule="fieldRule(field, getMax(field))"
+                :disabled="isLocked(field)"
                 @update:model-value="onUpdate(field.key, $event)"
             />
         </template>

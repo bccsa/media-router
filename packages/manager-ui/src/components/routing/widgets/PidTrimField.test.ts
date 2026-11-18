@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { TRUST_DISABLES_OFFSET_REASON } from '@media-router/shared-types';
 import PidTrimField from './PidTrimField.vue';
 import type { FormField } from '@/composables/useModuleSettingsForm';
 
@@ -273,7 +274,7 @@ describe('PidTrimField', () => {
     });
 
     it('disables every trim and shows the reason beside them', async () => {
-        const reason = 'In Trust mode: switch the ingest to Restamp to set an offset';
+        const reason = TRUST_DISABLES_OFFSET_REASON;
         const wrapper = mountField({
             modelValue: { '257': 120, '300': 15 },
             disabledReason: reason,
@@ -291,6 +292,24 @@ describe('PidTrimField', () => {
         await trimInput(wrapper, '256').setValue('30');
         expect(emitted(wrapper)).toEqual([]);
         expect(mountField().find('[data-test="disabled-reason"]').exists()).toBe(false);
+    });
+
+    it('enables every trim with its stored value once the reason is gone (back to Restamp)', async () => {
+        const wrapper = mountBound({
+            modelValue: { '257': 120, '300': 15 },
+            disabledReason: TRUST_DISABLES_OFFSET_REASON,
+        });
+
+        await wrapper.setProps({ disabledReason: undefined });
+
+        expect(wrapper.find('[data-test="disabled-reason"]').exists()).toBe(false);
+        for (const input of wrapper.findAll('input')) {
+            expect(input.attributes('disabled')).toBeUndefined();
+        }
+        expect((trimInput(wrapper, '257').element as HTMLInputElement).value).toBe('120');
+        expect((row(wrapper, '300').find('input').element as HTMLInputElement).value).toBe('15');
+        await trimInput(wrapper, '256').setValue('30');
+        expect(emitted(wrapper)).toEqual([{ '256': 30, '257': 120, '300': 15 }]);
     });
 
     it('treats a stored value that is not a map of numbers as no trims', async () => {

@@ -11,6 +11,7 @@ const props = defineProps<{
     editable?: boolean;
     unit?: string;
     precision?: number;
+    disabled?: boolean;
 }>();
 const emit = defineEmits<{ 'update:modelValue': [value: number] }>();
 
@@ -53,11 +54,13 @@ function onWheel(e: WheelEvent) {
                 :max="max ?? 100"
                 :step="step ?? 1"
                 :value="modelValue"
+                :disabled="disabled"
                 @input="
                     emit('update:modelValue', Number(($event.target as HTMLInputElement).value))
                 "
                 @wheel="onWheel"
-                class="flex-1 h-1 accent-emerald-500 cursor-pointer"
+                class="flex-1 h-1 accent-emerald-500"
+                :class="disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'"
             />
             <div v-if="editable" class="flex items-center gap-0.5 text-xs">
                 <input
@@ -66,12 +69,16 @@ function onWheel(e: WheelEvent) {
                     :max="max ?? 100"
                     :step="step ?? 1"
                     :value="drafts.shown(BOX, modelValue, formatted(modelValue))"
+                    :disabled="disabled"
                     @input="drafts.onInput(BOX, $event)"
                     @change="onBoxCommit"
                     @blur="drafts.onBlur(BOX, $event)"
                     @wheel="onWheel"
                     class="w-12 px-1 py-0.5 text-right tabular-nums rounded bg-input border text-foreground outline-none transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                    :class="reason ? 'border-error' : 'border-border focus:border-emerald-500'"
+                    :class="[
+                        reason ? 'border-error' : 'border-border focus:border-emerald-500',
+                        { 'opacity-50 cursor-not-allowed': disabled },
+                    ]"
                 />
                 <span v-if="unit" class="text-subtle">{{ unit }}</span>
             </div>

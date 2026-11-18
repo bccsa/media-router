@@ -44,8 +44,9 @@ Draft: Phase 5 is being built. Lines are added as its parts land.
   muxed back with its own video): their timing then lines up exactly.
   **Keep Restamp** for a remote feed combined live with local content, or
   when the two boxes' clocks are not synchronised.
-- **In Trust, Ingest Offset and Per-PID Trim are greyed** with the reason;
-  their values are kept and apply again when you switch back to Restamp.
+- **In Trust, Ingest Offset and Per-PID Trim are greyed** and cannot be
+  edited, with the reason under each heading; their values are kept and
+  apply again when you switch back to Restamp.
   Smoothing Cooldown still applies whenever the input is restamping.
 - **The input's new Trust section** shows the mode in effect (Deciding,
   Qualifying, Trust, Converging with the time left, Restamp — fallback,

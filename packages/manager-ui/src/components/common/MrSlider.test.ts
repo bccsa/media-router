@@ -181,4 +181,20 @@ describe('MrSlider', () => {
 
         wrapper.unmount();
     });
+
+    it('disabled greys both inputs, keeps the value shown and emits nothing (WI-P5-12)', async () => {
+        const wrapper = mount(MrSlider, {
+            props: { modelValue: 30, min: 0, max: 100, editable: true, disabled: true },
+        });
+        const range = wrapper.get('input[type="range"]');
+        const num = wrapper.get('input[type="number"]');
+        expect(range.attributes('disabled')).toBeDefined();
+        expect(num.attributes('disabled')).toBeDefined();
+        expect(range.classes()).toContain('cursor-not-allowed');
+        expect((num.element as HTMLInputElement).value).toBe('30');
+
+        await range.setValue('75');
+        await num.setValue('60');
+        expect(wrapper.emitted('update:modelValue')).toBeUndefined();
+    });
 });

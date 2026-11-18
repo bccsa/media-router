@@ -15,7 +15,15 @@ vi.mock('@/composables/usePatch', () => ({
     },
 }));
 
-import { useModuleSettingsForm } from './useModuleSettingsForm';
+import {
+    INGEST_OFFSET_KEY,
+    PID_TRIMS_KEY,
+    TIMING_MODE_KEY,
+    TRUST_DISABLES_OFFSET_REASON,
+    TRUST_TOLERANCE_KEY,
+    withIngestTimingSettings,
+} from '@media-router/shared-types';
+import { matchDisabledWhen, useModuleSettingsForm } from './useModuleSettingsForm';
 
 /** A `graph` prop as a plugin declares it: display-only, no `default`. */
 const GRAPH_PROP = {
@@ -146,5 +154,106 @@ describe('useModuleSettingsForm — display-widget hydration', () => {
             makeupGain: 0,
             channelMap: [{ in: 0, out: 1 }],
         });
+    });
+});
+
+/** An srt-input as the engine and the manager inject its timing settings (WI-P5-11). */
+function trustIngest(settings: Record<string, unknown>): Ref<Record<string, unknown> | undefined> {
+    return ref<Record<string, unknown> | undefined>({
+        configSchema: withIngestTimingSettings(
+            { properties: { latency: { type: 'number', default: 125 } } },
+            { pidTrims: true, pcrLock: true, trust: true },
+        ),
+        settings,
+    });
+}
+
+describe('useModuleSettingsForm — disabled with a reason (WI-P5-12)', () => {
+    beforeEach(() => {
+        mockModuleSetting.mockClear();
+        mockModuleSettings.mockClear();
+    });
+
+    const fieldOf = (form: Api, key: string) => form.formFields.value.find((f) => f.key === key)!;
+
+    it("carries the manifest's x-disabledWhen and x-disabledReason on O and the trims only", () => {
+        const form = mountForm(trustIngest({}));
+
+        for (const key of [INGEST_OFFSET_KEY, PID_TRIMS_KEY]) {
+            expect(fieldOf(form, key).disabledWhen).toBe('timingMode=trust');
+            expect(fieldOf(form, key).disabledReason).toBe(TRUST_DISABLES_OFFSET_REASON);
+        }
+        const others = form.formFields.value.filter(
+            (f) => f.key !== INGEST_OFFSET_KEY && f.key !== PID_TRIMS_KEY,
+        );
+        expect(others.map((f) => f.key)).toContain('smoothingCooldownMin');
+        for (const f of others) expect(f.disabledWhen).toBeUndefined();
+    });
+
+    it('in Trust both are disabled with their stored values kept; in Restamp both are enabled', () => {
+        const form = mountForm(
+            trustIngest({
+                [TIMING_MODE_KEY]: 'trust',
+                ingestOffsetMs: 500,
+                pidTrimsMs: { '257': 120 },
+            }),
+        );
+
+        expect(form.isFieldDisabled(fieldOf(form, INGEST_OFFSET_KEY))).toBe(true);
+        expect(form.isFieldDisabled(fieldOf(form, PID_TRIMS_KEY))).toBe(true);
+        expect(form.isFieldDisabled(fieldOf(form, 'smoothingCooldownMin'))).toBe(false);
+        expect(form.isFieldDisabled(fieldOf(form, TIMING_MODE_KEY))).toBe(false);
+        expect(form.localSettings.value).toMatchObject({
+            ingestOffsetMs: 500,
+            pidTrimsMs: { '257': 120 },
+        });
+
+        form.updateSetting(TIMING_MODE_KEY, 'restamp');
+        expect(form.isFieldDisabled(fieldOf(form, INGEST_OFFSET_KEY))).toBe(false);
+        expect(form.isFieldDisabled(fieldOf(form, PID_TRIMS_KEY))).toBe(false);
+        expect(form.localSettings.value).toMatchObject({
+            ingestOffsetMs: 500,
+            pidTrimsMs: { '257': 120 },
+        });
+
+        form.updateSetting(TIMING_MODE_KEY, 'trust');
+        expect(form.isFieldDisabled(fieldOf(form, INGEST_OFFSET_KEY))).toBe(true);
+    });
+
+    it('a write to a disabled setting changes neither the copy nor the engine', () => {
+        const form = mountForm(trustIngest({ [TIMING_MODE_KEY]: 'trust', ingestOffsetMs: 500 }));
+
+        form.updateSetting(INGEST_OFFSET_KEY, -40);
+        form.updateSetting(PID_TRIMS_KEY, { '256': 30 });
+        form.applyAll();
+
+        expect(form.localSettings.value.ingestOffsetMs).toBe(500);
+        expect(form.localSettings.value.pidTrimsMs).toEqual({});
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect(mockModuleSettings).not.toHaveBeenCalled();
+    });
+
+    it('x-showWhen is unchanged: Trust Tolerance shows in Trust only, and is never disabled', () => {
+        const form = mountForm(trustIngest({}));
+        const tolerance = fieldOf(form, TRUST_TOLERANCE_KEY);
+
+        expect(form.isFieldVisible(tolerance)).toBe(false);
+        expect(form.isFieldVisible(fieldOf(form, INGEST_OFFSET_KEY))).toBe(true);
+        form.updateSetting(TIMING_MODE_KEY, 'trust');
+        expect(form.isFieldVisible(tolerance)).toBe(true);
+        expect(form.isFieldDisabled(tolerance)).toBe(false);
+        // Disabled, not hidden: O stays on screen, greyed.
+        expect(form.isFieldVisible(fieldOf(form, INGEST_OFFSET_KEY))).toBe(true);
+    });
+
+    it("matchDisabledWhen takes x-showWhen's form, and no condition never disables", () => {
+        const resolve = (key: string) => ({ mode: 'b', on: true })[key];
+        expect(matchDisabledWhen({}, resolve)).toBe(false);
+        expect(matchDisabledWhen({ disabledWhen: '' }, resolve)).toBe(false);
+        expect(matchDisabledWhen({ disabledWhen: 'mode=b' }, resolve)).toBe(true);
+        expect(matchDisabledWhen({ disabledWhen: 'mode=a,b' }, resolve)).toBe(true);
+        expect(matchDisabledWhen({ disabledWhen: 'mode=a' }, resolve)).toBe(false);
+        expect(matchDisabledWhen({ disabledWhen: 'on=true' }, resolve)).toBe(true);
+        expect(matchDisabledWhen({ disabledWhen: 'missing=x' }, resolve)).toBe(false);
     });
 });

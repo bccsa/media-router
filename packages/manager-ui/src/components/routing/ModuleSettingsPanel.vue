@@ -50,12 +50,20 @@ function saveName() {
 
 // Form state machinery (schema → fields, throttled live updates) lives in
 // the composable so this file stays focused on layout + lifecycle.
-const { formFields, localSettings, isFieldVisible, getFieldEnum, getFieldMax, updateSetting, applyAll } =
-    useModuleSettingsForm({
-        engineId: toRef(props, 'engineId'),
-        moduleId: toRef(props, 'moduleId'),
-        module,
-    });
+const {
+    formFields,
+    localSettings,
+    isFieldVisible,
+    isFieldDisabled,
+    getFieldEnum,
+    getFieldMax,
+    updateSetting,
+    applyAll,
+} = useModuleSettingsForm({
+    engineId: toRef(props, 'engineId'),
+    moduleId: toRef(props, 'moduleId'),
+    module,
+});
 
 // Device lists come from `useDeviceStore`, filled by the tree; subscribe to
 // the types this module's schema asks for while the panel is open.
@@ -258,6 +266,7 @@ function onApplyAll() {
                 :fields="formFields"
                 :settings="localSettings"
                 :is-visible="isFieldVisible"
+                :is-disabled="isFieldDisabled"
                 :get-enum="getFieldEnum"
                 :get-max="getFieldMax"
                 :device-options="deviceOptions"

@@ -80,7 +80,7 @@ export function withIngestTimingSettings(
         properties[TIMING_MODE_KEY] = {
             type: 'string',
             enum: ['restamp', 'trust'],
-            'x-enumLabels': ['Restamp', 'Trust'],
+            'x-enumLabels': { restamp: 'Restamp', trust: 'Trust' },
             default: 'restamp',
             'x-live': true,
             title: 'Timing Mode',

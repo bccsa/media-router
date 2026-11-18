@@ -55,6 +55,8 @@ interface SchemaProperty {
     'x-maxBy'?: { field: string; map: Record<string, number> };
     'x-readOnly'?: boolean;
     'x-showWhen'?: string;
+    'x-disabledWhen'?: string;
+    'x-disabledReason'?: string;
     'x-unit'?: string;
     'x-debounceMs'?: number;
     items?: { type?: string; properties?: Record<string, unknown> };
@@ -90,8 +92,20 @@ export interface FormField {
     readOnly?: boolean;
     items?: { type?: string; properties?: Record<string, unknown> };
     showWhen?: string;
+    /** `x-disabledWhen`, in `x-showWhen`'s form: the control is greyed, its stored value kept. */
+    disabledWhen?: string;
+    /** `x-disabledReason`: plain text shown while disabled (ADR-0022, at most 120 characters). */
+    disabledReason?: string;
     unit?: string;
     debounceMs?: number;
+}
+
+/** Whether `x-disabledWhen` holds, by the `x-showWhen` matcher; none means never disabled. */
+export function matchDisabledWhen(
+    field: Pick<FormField, 'disabledWhen'>,
+    resolve: (key: string) => unknown,
+): boolean {
+    return !!field.disabledWhen && matchShowWhen(field.disabledWhen, resolve);
 }
 
 export interface ModuleSettingsFormOptions {
@@ -157,6 +171,8 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
             maxBy: prop['x-maxBy'],
             readOnly: !!prop['x-readOnly'],
             showWhen: prop['x-showWhen'],
+            disabledWhen: prop['x-disabledWhen'],
+            disabledReason: prop['x-disabledReason'],
             unit: prop['x-unit'],
             debounceMs: prop['x-debounceMs'],
             items: prop.items as FormField['items'],
@@ -215,6 +231,11 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
         return matchShowWhen(field.showWhen, (key) => localSettings.value[key]);
     }
 
+    /** Disabled rule for `x-disabledWhen`, resolved against the live settings. */
+    function isFieldDisabled(field: FormField): boolean {
+        return matchDisabledWhen(field, (key) => localSettings.value[key]);
+    }
+
     /** Resolve effective enum values — checks x-enumBy first, falls back to plain enum. */
     function getFieldEnum(field: FormField): unknown[] | undefined {
         if (field.enumBy) {
@@ -246,11 +267,13 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
     );
 
     function updateSetting(key: string, value: unknown): void {
+        const field = formFields.value.find((f) => f.key === key);
+        // A disabled setting keeps its stored value: no write reaches the copy or the engine.
+        if (field && isFieldDisabled(field)) return;
         // A controlling field's change brings its dependents within it (codec → bitrate, Volume
         // Range → volume), in the copy Save writes.
         const next = { ...localSettings.value, [key]: value };
         localSettings.value = clampDependents(next, new Set([key]));
-        const field = formFields.value.find((f) => f.key === key);
         if (!field?.liveUpdatable) return;
         const target = { engineId: opts.engineId.value, moduleId: opts.moduleId.value, key };
         const debounceMs = field.debounceMs ?? 0;
@@ -285,6 +308,7 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
         formFields,
         localSettings,
         isFieldVisible,
+        isFieldDisabled,
         getFieldEnum,
         getFieldMax,
         updateSetting,
