@@ -779,13 +779,16 @@ static void asrc_device_tick(GstMrAsrc* self) {
     std::vector<AsrcDeviceEvent> ev;
     bool flush = false;
     gint64 now = 0;
+    guint64 level = 0;   // upstream-queue's, read before `mu`: with no queue before the sink, what waits (c40)
+    if (self->upq) g_object_get(self->upq, "current-level-time", &level, NULL);
     {
         std::lock_guard<std::mutex> g(d->mu);
         if (!d->term.rendering()) return;
         const int64_t dev = asrc_device_time(self->sink);
         gint64 mono = 0;
         now = asrc_running(self, self->timer_clock, &mono);
-        flush = d->term.sample(dev, mono, d->pushed.load(), d->rendered.load(), &ev);
+        const int64_t up = d->rate > 0 ? (int64_t)gst_util_uint64_scale_int(level, d->rate, GST_SECOND) : 0;
+        flush = d->term.sample(dev, mono, d->pushed.load(), d->rendered.load(), &ev, up);
         int64_t late = 0;
         if (d->lateness.at(now, dev, &late)) d->lateness_ns.store(late);
         if (d->term.take_recalibrated()) d->recalibrated.store(true);

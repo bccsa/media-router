@@ -277,8 +277,9 @@ class AsrcDeviceTerm {
     // The element's counts start again from 0 (READY emptied what waited): forget what the flushes discarded.
     void restart_counts();
     // One timer read: the device clock, then house time; the counts or < 0 for none. True: flush downstream now.
+    // upstream: frames waiting before the element (its upstream-queue), counted as waiting, never as discarded.
     bool sample(int64_t dev_ns, int64_t mono_ns, int64_t pushed, int64_t rendered,
-                std::vector<AsrcDeviceEvent>* events);
+                std::vector<AsrcDeviceEvent>* events, int64_t upstream = 0);
     bool rendering() const { return rendering_; }
     bool stalled() const { return stalled_; }
     int64_t device_ppb() const;   // eps_dev in ClockLock's sense; 0 until the lock has a rate
@@ -292,7 +293,7 @@ class AsrcDeviceTerm {
 
   private:
     void clock(int64_t dev, int64_t mono, std::vector<AsrcDeviceEvent>* events);
-    bool render(int64_t mono, int64_t pushed, int64_t taken, std::vector<AsrcDeviceEvent>* events);
+    bool render(int64_t mono, int64_t pushed, int64_t taken, int64_t upstream, std::vector<AsrcDeviceEvent>* events);
     void relock_step(int64_t mono, int64_t step_ns, std::vector<AsrcDeviceEvent>* events);
 
     AsrcDeviceConfig cfg_;

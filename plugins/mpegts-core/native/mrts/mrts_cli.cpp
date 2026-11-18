@@ -1880,7 +1880,7 @@ bool device_op(const Json& o, std::unique_ptr<AsrcDeviceTerm>* term, std::unique
         return true;
     }
     std::vector<AsrcDeviceEvent> events;
-    int64_t dev = 0, mono = 0, in_ppb = 0, pushed = -1, rendered = -1;
+    int64_t dev = 0, mono = 0, in_ppb = 0, pushed = -1, rendered = -1, upstream = 0;
     if (op == "start" || op == "stop") {
         if (!op_i64(o, "mono", &mono, err)) return false;
         if (op == "start") t.start(mono, &events);
@@ -1898,6 +1898,7 @@ bool device_op(const Json& o, std::unique_ptr<AsrcDeviceTerm>* term, std::unique
         if (o.get("in_ppb") && !op_i64(o, "in_ppb", &in_ppb, err)) return false;
         if (o.get("pushed") && (!op_i64(o, "pushed", &pushed, err) || !op_i64(o, "rendered", &rendered, err)))
             return false;
+        if (o.get("upstream") && !op_i64(o, "upstream", &upstream, err)) return false;
     } else if (!op.empty()) {
         return *err = "unknown op \"" + op + "\"", false;
     } else if (o.get("clock_ns")) {
@@ -1919,7 +1920,7 @@ bool device_op(const Json& o, std::unique_ptr<AsrcDeviceTerm>* term, std::unique
         }
         return true;
     }
-    const bool flush = t.sample(dev, mono, pushed, rendered, &events);
+    const bool flush = t.sample(dev, mono, pushed, rendered, &events, upstream);
     print_device_events(events);
     print_recalibrated(&t);
     std::printf("{\"mono\":%lld,\"lock\":\"%s\",\"dev_ppb\":%lld,\"ratio_ppb\":%lld,\"stalled\":%d,\"flush\":%d}\n",

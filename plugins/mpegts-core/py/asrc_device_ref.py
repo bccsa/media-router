@@ -267,20 +267,22 @@ class DeviceTerm:
 
     # --- the render ------------------------------------------------------------------------
 
-    def _render(self, mono, pushed, taken, events):
+    def _render(self, mono, pushed, taken, upstream, events):
         c = self.cfg
         prev, self.taken_prev = self.taken_prev, taken
         pending = pushed - taken - self.discarded
+        # What waits before the element counts as waiting too (c40): with no queue before the sink, its push blocks.
+        waiting = pending + max(0, upstream)
         flush = False
         if not self.stalled:
-            if prev is None or taken > prev or pending <= self.wait_samples:
+            if prev is None or taken > prev or waiting <= self.wait_samples:
                 self.wait_since = None
             elif self.wait_since is None:
                 self.wait_since = mono
             elif mono - self.wait_since >= c.stall_ns:
                 self.stalled = True
                 self.stalls += 1
-                events.append({"event": "device-stalled", "at": mono, "pending": pending})
+                events.append({"event": "device-stalled", "at": mono, "pending": waiting})
                 flush = True
         elif taken - self.taken_at_flush > self.resume_samples:
             self.stalled = False
@@ -299,15 +301,16 @@ class DeviceTerm:
             self.flushes += 1
         return flush
 
-    def sample(self, dev, mono, pushed=None, rendered=None):
-        """One timer tick: (events, flush); flush: send FLUSH_START and FLUSH_STOP downstream now."""
+    def sample(self, dev, mono, pushed=None, rendered=None, upstream=0):
+        """One timer tick: (events, flush); flush: send FLUSH_START and FLUSH_STOP downstream now. upstream: frames
+        waiting before the element (its upstream-queue), counted as waiting, never as discarded."""
         if not self.rendering:
             raise RuntimeError("the device clock is read only between start() and stop()")
         events = []
         self._clock(dev, mono, events)
         flush = False
         if pushed is not None and rendered is not None:
-            flush = self._render(mono, pushed, rendered, events)
+            flush = self._render(mono, pushed, rendered, upstream, events)
         self.lock.tick(mono)
         return events, flush
 
@@ -419,11 +422,11 @@ def replay(lines):
             continue
         if op == "sample":
             dev, mono, in_ppb = o["dev"], o["mono"], o.get("in_ppb", 0)
-            pushed, rendered = o.get("pushed"), o.get("rendered")
+            pushed, rendered, upstream = o.get("pushed"), o.get("rendered"), o.get("upstream", 0)
         elif "clock_ns" in o:
             if o.get("next_sample", -1) < 0:
                 continue    # nothing rendered yet: never read
-            dev, mono, in_ppb, pushed, rendered = o["clock_ns"], o["mono_ns"], 0, None, None
+            dev, mono, in_ppb, pushed, rendered, upstream = o["clock_ns"], o["mono_ns"], 0, None, None, 0
             if not term.rendering:
                 out.extend(_line(e) for e in term.start(mono))
                 _recalibrated(term, out)
@@ -432,7 +435,7 @@ def replay(lines):
                 term.stop(o["mono_ns"])
             continue
         try:
-            events, flush = term.sample(dev, mono, pushed, rendered)
+            events, flush = term.sample(dev, mono, pushed, rendered, upstream)
         except RuntimeError:   # no read before the first rendered buffer
             out.append(_line({"refused": "sample before start"}))
             continue

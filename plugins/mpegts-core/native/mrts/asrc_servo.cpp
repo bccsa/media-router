@@ -671,15 +671,18 @@ void AsrcDeviceTerm::clock(int64_t dev, int64_t mono, std::vector<AsrcDeviceEven
 // Device stall (the owner's Q2, skip and resume live), read on the render: stalled once the sink took nothing
 // for stall_ns while frames waited past waiting_ns; then a flush every probe_ns, and resumed once it took past
 // an empty ring since the last flush, with one more flush. What the flushes discard is dropped.
-bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, std::vector<AsrcDeviceEvent>* events) {
+bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, int64_t upstream,
+                            std::vector<AsrcDeviceEvent>* events) {
     const bool had = have_taken_;
     const int64_t prev = taken_prev_;
     have_taken_ = true;
     taken_prev_ = taken;
     const int64_t pending = pushed - taken - discarded_;
+    // What waits before the element counts as waiting too (c40): with no queue before the sink, its push blocks.
+    const int64_t waiting = pending + std::max<int64_t>(0, upstream);
     bool flush = false;
     if (!stalled_) {
-        if (!had || taken > prev || pending <= wait_frames_) {
+        if (!had || taken > prev || waiting <= wait_frames_) {
             waiting_ = false;
         } else if (!waiting_) {
             waiting_ = true;
@@ -687,7 +690,7 @@ bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, std::ve
         } else if (mono - wait_since_ >= cfg_.stall_ns) {
             stalled_ = true;
             stalls_++;
-            events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_stalled, "", mono, pending});
+            events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_stalled, "", mono, waiting});
             flush = true;
         }
     } else if (taken - taken_at_flush_ > resume_frames_) {
@@ -710,10 +713,10 @@ bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, std::ve
 }
 
 bool AsrcDeviceTerm::sample(int64_t dev_ns, int64_t mono_ns, int64_t pushed, int64_t rendered,
-                            std::vector<AsrcDeviceEvent>* events) {
+                            std::vector<AsrcDeviceEvent>* events, int64_t upstream) {
     if (!rendering_) return false;   // read only between start() and stop()
     clock(dev_ns, mono_ns, events);
-    const bool flush = pushed >= 0 && rendered >= 0 && render(mono_ns, pushed, rendered, events);
+    const bool flush = pushed >= 0 && rendered >= 0 && render(mono_ns, pushed, rendered, upstream, events);
     lock_.tick(mono_ns);
     return flush;
 }

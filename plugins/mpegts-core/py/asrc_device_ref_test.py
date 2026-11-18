@@ -905,10 +905,52 @@ def test_restart_counts():
                   not stalled)
 
 
+def test_upstream_waiting():
+    """17. The Audio Decoder's sink end has no queue between mrasrc and the sink: its push blocks in the sink, so
+    what waits is in the queue before it (upstream-queue, decq). A 2.5 s stall with decq filling to 300 ms is
+    device-stalled on that count (c40, B-249 D2); without it none; an input gap (decq empty) none either."""
+    per = FS // 10
+    for counted in (True, False):
+        for gap in (False, True):
+            t = ad.DeviceTerm()
+            st = {"pushed": 0, "mono": 0, "up": 0}
+            evs, flushes = [], 0
+
+            def read(secs, takes, fills):
+                nonlocal flushes
+                for _ in range(int(secs * 10)):
+                    st["mono"] += 100 * MS
+                    if takes:
+                        st["pushed"] += per   # what the sink took: no queue between, pushed is taken
+                        st["up"] = max(0, st["up"] - per)
+                    elif fills:
+                        st["up"] = min(3 * per, st["up"] + per)
+                    ev, fl = t.sample(st["mono"], 1000 * SEC + st["mono"], st["pushed"], st["pushed"],
+                                      st["up"] if counted else 0)
+                    evs.extend(ev)
+                    flushes += fl
+
+            t.start(0)
+            read(20, True, False)
+            read(2.5, False, not gap)
+            read(10, True, False)
+            names = [e["event"] for e in evs if e["event"].startswith("device-")]
+            stalled = [e for e in evs if e["event"] == "device-stalled"]
+            what = "an input gap (decq empty)" if gap else "a 2.5 s device stall, decq full"
+            if counted and not gap:
+                check("17: %s: device-stalled once, then resumed (%s), %s frames waiting, %d flushes"
+                      % (what, names, [e["pending"] for e in stalled], flushes),
+                      names == ["device-stalled", "device-resumed"] and stalled[0]["pending"] == 3 * per)
+            elif counted:
+                check("17: %s: no device stall (%s)" % (what, names), not names)
+            elif not gap:
+                check("17: ... without the upstream count that stall is never read (%s)" % names, not names)
+
+
 CASES = (test_lock_port, test_ratio, test_jitter, test_fill_1h, test_input_stall, test_device_step,
          test_traces, test_trace_underrun, test_clock_stall_underrun, test_start_and_restart,
          test_device_stall_clock_stopped, test_device_stall_clock_running, test_render_lateness_ring,
-         test_replay_format, test_recalibrated, test_restart_counts)
+         test_replay_format, test_recalibrated, test_restart_counts, test_upstream_waiting)
 
 # (name, the case it must fail, file, [(text, its replacement), ...]). The first four are the brief's.
 MUTANTS = (
@@ -936,8 +978,8 @@ MUTANTS = (
     ("the stall read on the clock alone (the plan's 'clock not advancing')", 12, "asrc_device_ref.py",
      [("        dd, dm = dev - prev[0], mono - prev[1]\n",
        "        dd, dm = dev - prev[0], mono - prev[1]\n        self.clock_moved = dm > 0 and dd * c.flat_den > dm\n"),
-      ("            if prev is None or taken > prev or pending <= self.wait_samples:",
-       "            if prev is None or getattr(self, 'clock_moved', True) or pending <= self.wait_samples:")]),
+      ("            if prev is None or taken > prev or waiting <= self.wait_samples:",
+       "            if prev is None or getattr(self, 'clock_moved', True) or waiting <= self.wait_samples:")]),
     ("no flush at the resume", 11, "asrc_device_ref.py",
      [("            events.append({\"event\": \"device-resumed\", \"at\": mono, \"dropped\": self.dropped + pending})\n"
        "            flush = True",
@@ -961,7 +1003,11 @@ MUTANTS = (
     ("one read past the threshold relocks", 6, "asrc_device_ref.py",
      [("        self.relock_samples = 2 ", "        self.relock_samples = 1 ")]),
     ("a step relock leaves the servo's offset", 15, "asrc_device_ref.py",
-     [("        self.relocks[\"step\"] += 1\n        self.recal = True\n", "        self.relocks[\"step\"] += 1\n")]),)
+     [("        self.relocks[\"step\"] += 1\n        self.recal = True\n", "        self.relocks[\"step\"] += 1\n")]),
+    # c40 (B-249 D2): what waits before the element.
+    ("the upstream queue not counted", 17, "asrc_device_ref.py",
+     [("        waiting = pending + max(0, upstream)\n", "        waiting = pending\n")]),
+)
 
 
 def run_mutants():
