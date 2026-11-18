@@ -1313,6 +1313,10 @@ def resyncs_at(t, into):
     return (t, lambda p, now: into.__setitem__("start", p.get_by_name("sink").get_property("resyncs")))
 
 
+# Three: about 4 % of starts on the gate VM read 3, on c39 and c40 alike (B-249, c40 review 1); none came after.
+START_REALIGNS = 3
+
+
 if not os.path.exists(_TEST_SO):
     print(f"SKIP device mode — {_TEST_SO} not built (make -C plugins/mpegts-core/native/mrtshouse test)")
 else:
@@ -1341,7 +1345,7 @@ else:
           f"the first render ({_f['calibrations']} changes in {_f['renders']} renders), {_r0} realign with the first "
           f"renders and none at the {len(_holes)} lost cycles' DISCONTs ({_f['resyncs'] - _r0}: sync=false writes on), "
           f"no underrun ({_f['underruns']})",
-          not _errors and _f["renders"] > 25000 and _f["calibrations"] == 0 and 0 <= _r0 <= 2
+          not _errors and _f["renders"] > 25000 and _f["calibrations"] == 0 and 0 <= _r0 <= START_REALIGNS
           and _f["resyncs"] == _r0 and _f["underruns"] == 0 and len(_holes) == 10)
     _rel = {k: (_f[f"fill-{k}-ns"] - _f["fill-first-ns"]) / MS for k in ("p05", "p95", "last")}
     check(f"the ring stayed full: 5 s windows' top fills p05 {_rel['p05']:+.3f}, p95 {_rel['p95']:+.3f}, the last "
@@ -1400,7 +1404,7 @@ else:
           f"100 ppm uncorrected drifts 180 ms in 30 min), {len(_late)} posts, no underrun ({_sk['underruns']}), no "
           f"realign after the start ({_sk['resyncs'] - _rs.get('start', -1)}; {_rs.get('start')} with the first renders)",
           not _errors and len(_late) > 500 and _p99 - _p01 < 2 * MS and _hi - _lo < 20 * MS and _sk["underruns"] == 0
-          and 0 <= _rs.get("start", -1) <= 2 and _sk["resyncs"] == _rs["start"])
+          and 0 <= _rs.get("start", -1) <= START_REALIGNS and _sk["resyncs"] == _rs["start"])
     check(f"... the device term locked at {_st.get('device-ppb', 0) / 1000:+.3f} ppm (+100), the ratio its term "
           f"({_st.get('ratio-ppb', 0) / 1000:+.3f} ppm), no relock-device, no stall, the sink never skewed "
           f"({_sk['calibrations']} calibrations)",
@@ -1507,7 +1511,7 @@ else:
           f"{_rs.get('start')} with the first renders)",
           len(_eng) == 1 and abs(_eng[0]["source-ppb"] - 40000) <= 2000 and _st.get("mode") == "decode+device"
           and len(_late) > 10 and abs(_devp + 20000) <= 500 and abs(_ratio + 60000) <= 1000
-          and _sk["calibrations"] == 0 and 0 <= _rs.get("start", -1) <= 2 and _sk["resyncs"] == _rs["start"])
+          and _sk["calibrations"] == 0 and 0 <= _rs.get("start", -1) <= START_REALIGNS and _sk["resyncs"] == _rs["start"])
 
 print("\n--- a device-sink that cannot be followed is an error naming it; no custom slaving left ---")
 for desc, what in (("fakesink name=sink", "not a GstAudioBaseSink"),
