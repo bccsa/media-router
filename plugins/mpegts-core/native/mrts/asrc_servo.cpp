@@ -351,11 +351,11 @@ void AsrcServo::lose(int64_t frames, bool whole, int64_t res_ns) {
     events_.push_back(e);
 }
 
-// Decode modes (B-148): this buffer's PTS against the last one's end past the bound (the phase bound, or an
-// upstream acquire slew's 2000 ppm of the last span), after a buffer that continued its own: up to LOST_MAX_NS
-// lost time, back a break, else 0. A source off its rate past the bound steps every buffer: the lock's.
+// Decode and device modes (B-148; the device term alone too, c40): this buffer's PTS against the last one's end past
+// the bound (the phase bound, or an upstream acquire slew's 2000 ppm of the last span), after a buffer that continued
+// its own: up to LOST_MAX_NS lost time, back a break, else 0. A source off its rate past the bound steps every buffer.
 int64_t AsrcServo::content_step(int64_t pts_ns) {
-    if (!decode_ || last_frames_ == 0) return 0;
+    if (capture_ || last_frames_ == 0) return 0;
     const int64_t span = half_frames_ns(2 * (int64_t)last_frames_, in_hz_);
     const int64_t d = sat_sub(pts_ns, sat_add(last_pts_, span));
     const int64_t bound = std::max(cfg_.bypass_phase_ns, span / 500);
@@ -462,9 +462,9 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
         // B-148: the content time stepped back past the bound, unflagged: a break.
         drain = end_epoch();
         new_epoch(pts_ns, "jump");
-        lock_.feed(sigma, pts_ns);
+        if (has_lock_) lock_.feed(sigma, pts_ns);
         relocked = true;
-    } else if (has_lock_) {
+    } else {
         if (step > 0) {
             // B-148: a hole past the bound, unflagged: lost content time, the output jumping it
             // (DISCONT on resampled output, same epoch), its part under a frame too.
@@ -474,8 +474,8 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
             lose(lost, false, step - span);
             gapped = true;
         }
-        lock_.feed(pos_ns(2 * (n_in_ + lost_)), pts_ns);
-        if (lock_.envelope_step()) {
+        if (has_lock_) lock_.feed(pos_ns(2 * (n_in_ + lost_)), pts_ns);
+        if (has_lock_ && lock_.envelope_step()) {
             // The timeline stepped, the content did not: the lock onto the new floor, the labels
             // re-anchored on it, the resampler kept.
             lock_.step_to_floor();

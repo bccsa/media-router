@@ -95,7 +95,7 @@ class AsrcServo {
         uint64_t in_frames = 0, out_frames = 0;
         uint64_t discont_in = 0;    // DISCONT flags after the first buffer
         uint64_t dropped_frames = 0;   // input frames skipped as relock overlap
-        uint64_t gaps = 0;          // cycle_input, decode modes: gaps the output jumped (lost cycles or time)
+        uint64_t gaps = 0;          // cycle_input, decode and device modes: gaps the output jumped (lost cycles or time)
         int64_t lost_frames = 0;    // ... the input frames they lost (reverted ones taken back)
         Mode mode = Mode::capture;
         int64_t source_ppb = 0;     // the source clock against house (asrc_rate_of); 0 without a lock
@@ -182,7 +182,7 @@ class AsrcServo {
     int64_t delay_ = 0;
     int64_t n_in_ = 0;           // input frames pushed
     int64_t lost_ = 0;           // input frames lost between buffers: counted on the input position
-    int64_t lost_res_ = 0;       // decode modes: lost time's remainder under a frame (ns), on it too (B-148)
+    int64_t lost_res_ = 0;       // decode, device modes: lost time's remainder under a frame (ns), on it too (B-148)
     int64_t drop_left_ = 0;      // of the overlap, frames still to skip
     uint64_t dropped_ = 0;       // frames skipped so far
     uint64_t n_out_ = 0;         // output frames produced
@@ -201,7 +201,7 @@ class AsrcServo {
     bool oob_ = false;           // out-of-bounds raised and not yet back inside
     bool past_ = false;          // decode: the fit past the bound while locked, since oob_since_
     int64_t oob_since_ = 0;
-    bool cont_ = false;          // decode: the last buffer continued its predecessor within the lost-time bound
+    bool cont_ = false;          // decode, device: the last buffer continued its predecessor within the lost-time bound
     // Device mode (B-148): labels minus house time at T0, and that offset at the sink's last calibration.
     int64_t t0_dev_ = 0, cal_off_ = 0;
     bool engaged_ = false;       // decode mode: the decode term commands the ratio

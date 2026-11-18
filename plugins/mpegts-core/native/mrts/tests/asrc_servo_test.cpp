@@ -1791,6 +1791,35 @@ void test_device_only() {
                     d.outputs[starts[0]].label == d.pts[0] && iabs(off - ran) <= US && off > MS);
 }
 
+// py's test_device_only_steps (c40, B-249 D1): the device term alone, a 1.5 s unflagged hole at 40 s and a 21 ms step
+// back at 60 s; the counter's content time (the render-lateness map's) after each buffer less the buffer's end.
+void test_device_only_steps() {
+    std::printf("\n  c40 (B-249 D1): the device term alone, an unflagged hole is lost time, a step back a break\n");
+    Driver d(48000, 48000, 0, true);
+    DeviceClock clock(40000);
+    int64_t n = 0, lo = INT64_MAX, hi = INT64_MIN;
+    for (int64_t k = 0; k < 8000; k++) {
+        n += k == 4000 ? 72000 : k == 6000 ? -1008 : 0;
+        const int64_t t = T0 + n * S / 48000;
+        clock(d, t);
+        d.push(t, 480, k == 0);
+        const int64_t off = d.sv.next_content_pts() - (T0 + (n + 480) * S / 48000);
+        if (k >= 100) lo = std::min(lo, off), hi = std::max(hi, off);
+        n += 480;
+    }
+    const auto g = d.of(AsrcEvent::Kind::gap);
+    const auto rel = d.of(AsrcEvent::Kind::relock);
+    char name[300];
+    std::snprintf(name, sizeof name, "a 1.5 s hole at 40 s: one lost-time gap of 72000 frames (%zu gap(s), %lld frames); "
+                  "a 21 ms step back at 60 s: one relock 'jump' (%zu relock(s))", g.size(),
+                  g.empty() ? 0LL : (long long)g[0].second.lost_frames, rel.size());
+    CHECK(name, g.size() == 1 && !std::strcmp(g[0].second.reason, "lost-time") && g[0].second.lost_frames == 72000 &&
+                    rel.size() == 1 && !std::strcmp(rel[0].second.reason, "jump"));
+    std::snprintf(name, sizeof name, "the counter's content time stays on the input's across both (its offset %+.3f .. "
+                  "%+.3f ms from 1 s; before c40 it kept the hole's -1500 ms)", lo / 1e6, hi / 1e6);
+    CHECK(name, hi - lo <= MS);
+}
+
 // --- B-148: the device timeline across a break, lost time, the decode bound, the engage's rate ----------
 // py/asrc_bypass_ref_test.py's B-148 cases, the same scenarios (its random draws differ: the checks hold either).
 
@@ -3564,6 +3593,7 @@ int main(int argc, char** argv) {
     test_decode_breaks();
     test_decode_composite();
     test_device_only();
+    test_device_only_steps();
     std::printf("\n  CHECKSUM asrc_decode %016llx (compare across machines)\n", (unsigned long long)g_dec.h);
     test_device_continuity();
     test_lost_time();

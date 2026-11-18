@@ -19,7 +19,8 @@ behaviour it keeps bit for bit. Phase 3 adds, by configuration:
     B-166); the output counter is contiguous from the first PTS and stays on the device timeline
     across a break: a new epoch starts at the last content's label end plus the gap at the device
     ratio (B-148), the offset taken afresh at each relock-device.
-  - bypass_ppb = 0 with the device term: the device term alone, no lock (S17).
+  - bypass_ppb = 0 with the device term: the device term alone, no lock (S17); an unflagged PTS hole is
+    lost time and a step back a break there too (c40), so its content time stays the input's.
 
 asrc_bypass_ref_test.py holds the cases tests/asrc_servo_test.cpp ports, and replays this module
 against `mrts_cli asrc` (the C++) on the same call sequences (`replay`).
@@ -346,7 +347,7 @@ class AsrcServo:
         return (2 * clamp(ns, 0, self.LOST_MAX_NS) * self.in_hz + E9) // (2 * E9)
 
     def _lose(self, frames, res=0):
-        """Decode modes, lost time (B-148): the input position moves on by its frames and its part under a
+        """Decode and device modes, lost time (B-148): the input position moves on by its frames and its part under a
         frame (res, ns), so the lock sees no step; the labels jump them, at the device ratio with the device term."""
         self.lost += frames
         self.lost_res += res
@@ -364,10 +365,11 @@ class AsrcServo:
         self.events.append(AsrcEvent(AsrcEvent.GAP, "lost-time", nxt, nxt - frm, lost_frames=frames))
 
     def _content_step(self, pts_ns):
-        """Decode modes (B-148): this buffer's PTS against the last one's end past the bound (1 ms, or an
-        upstream acquire slew's 2000 ppm of the last span), after a buffer that continued its own: up
-        to LOST_MAX_NS lost time, back a break, else 0. A source off its rate steps every buffer."""
-        if not self.decode or self.last_frames == 0:
+        """Decode and device modes (B-148; the device term alone too, c40): this buffer's PTS against the last
+        one's end past the bound (1 ms, or an upstream acquire slew's 2000 ppm of the last span), after a buffer
+        that continued its own: up to LOST_MAX_NS lost time, back a break, else 0. A source off its rate steps
+        every buffer."""
+        if self.capture or self.last_frames == 0:
             return 0
         span = half_frames_ns(2 * self.last_frames, self.in_hz)
         d = sat_sub(pts_ns, sat_add(self.last_pts, span))
@@ -421,9 +423,10 @@ class AsrcServo:
                 # B-148: the content time stepped back past the bound, unflagged: a break.
                 drain = self.end_epoch()
                 self._new_epoch(pts_ns, "jump")
-                self.lock.feed(sigma, pts_ns)
+                if self.has_lock:
+                    self.lock.feed(sigma, pts_ns)
                 relocked = True
-            elif self.has_lock:
+            else:
                 if step > 0:
                     # B-148: a hole past the bound, unflagged: lost content time, the output
                     # jumping it (DISCONT on resampled output, same epoch), its part under a frame too.
@@ -432,8 +435,9 @@ class AsrcServo:
                             - half_frames_ns(2 * (self.n_in + self.lost), self.in_hz))
                     self._lose(lost, step - span)
                     gapped = True
-                self.lock.feed(self._pos_ns(2 * (self.n_in + self.lost)), pts_ns)
-                if self.lock.envelope_step():
+                if self.has_lock:
+                    self.lock.feed(self._pos_ns(2 * (self.n_in + self.lost)), pts_ns)
+                if self.has_lock and self.lock.envelope_step():
                     # The timeline stepped, the content did not: the lock onto the new floor,
                     # the labels re-anchored on it, the resampler kept.
                     self.lock.step_to_floor()

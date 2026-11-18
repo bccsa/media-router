@@ -31,9 +31,10 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     Audio Decoder (what waits past decq, here in appsrc, comes into view only as decq drains; 900 s on a server).
   - flushes (B-249 fix round 4; seeds 7, 8, 9, a 70-90 ms feed): a 3 s device stall past the first window (300 s),
     a flush into the sink (150 s), outq held 0.6 s then READY and back (260 s), and the same with a 1.5 s input gap
-    20 s on (100 s): no hole and no refill after the event's own, the catch-up `watching` after it, the end at the
-    target and not below the feed, the device and the margin (after the flush and the gap reported only: the test
-    device's reading moves there, the flush's at HEAD too), no device stall but the device's own.
+    20 s on (100 s), and the gap alone (c40, 150 s): no hole and no refill after the event's own, the catch-up
+    `watching` after it (not after a gap: it resets nothing), the end at the target and not below the feed, the device
+    and the margin (after the flush reported only: the test device's reading creeps there), after the gap alone at
+    most 20 ms over the reading before it (it kept the gap before c40), no device stall but the device's own.
   - drift: an hour of a device 100 ppm fast, and an hour 100 ppm slow, a tone stamped at house rate: no hole, no
     underrun, no refill after the start, the render lateness's level the same at the end as after 2 min and its
     p1-p99 within 2 ms and max-min within 20 (B-166). `MR_302M_DRIFT_SECS`, `_SPEED` and `_PPM` set the run.
@@ -583,8 +584,9 @@ if "stalls" in PARTS:
 # --- flushes with the catch-up on (B-249 fix round 4; review 4's x_edge.py shapes) --------------------------------
 # devstall: the test device stops 3 s (mrasrc's own flushes); flush: one from outq's src pad; ready: outq held 0.6 s,
 # READY and back (READY empties outq), a 1.5 s input gap. The catch-up must see each (the probe's EVENT_FLUSH).
-FLUSH_SECS = {"devstall": 300, "flush": 150, "ready": 260, "ready-gap": 100}
-_FLUSH_PROFILES = [v for v in os.environ.get("MR_302M_FLUSH_PROFILES", "devstall,flush,ready,ready-gap").split(",")
+# gap (c40, D1): a 1.5 s input gap alone; the reading after it must not keep the gap.
+FLUSH_SECS = {"devstall": 300, "flush": 150, "ready": 260, "ready-gap": 100, "gap": 150}
+_FLUSH_PROFILES = [v for v in os.environ.get("MR_302M_FLUSH_PROFILES", "devstall,flush,ready,ready-gap,gap").split(",")
                    if v]
 _FLUSH_SEEDS = [int(v) for v in os.environ.get("MR_302M_FLUSH_SEEDS", "7,8,9").split(",") if v]
 
@@ -648,6 +650,11 @@ def flush_run(name, seed):
                     return Gst.PadProbeReturn.REMOVE
                 outq.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, once)
                 marks["own"] = at + 3
+            elif name == "gap":
+                pause.set()
+                time.sleep(1.5)
+                pause.clear()
+                marks["own"] = at + 1.5 + 5
             else:
                 pad = outq.get_static_pad("src")
                 pid = pad.add_probe(Gst.PadProbeType.BLOCK | Gst.PadProbeType.BUFFER, lambda *_: Gst.PadProbeReturn.OK)
@@ -681,6 +688,7 @@ def flush_run(name, seed):
     after = [s.get("catch-up-state") for t, s in st if (at + 5 if name == "devstall" else at + 1) <= t <= at + 50]
     before = [s.get("catch-up-state") for t, s in st if at - 6 <= t < at]
     tail = [s.get("render-lateness-ns", 0) / MS for t, s in st if t >= secs - 10 and s.get("render-lateness-ns", 0)]
+    pre = [s.get("render-lateness-ns", 0) / MS for t, s in st if at - 10 <= t < at and s.get("render-lateness-ns", 0)]
     last = st[-1][1] if st else {}
     trace, nxt = [], 0.0
     for t, x in st:
@@ -692,6 +700,7 @@ def flush_run(name, seed):
     return {"name": name, "seed": seed, "at": at, "trace": trace, "late": late, "own": own, "holes": h, "holes_all": sk["holes"],
             "refills_after": (ref[-1] - ref[0]) if ref else -1, "refills": last.get("margin-refills", 0),
             "after": after, "before": before, "end": sum(tail) / len(tail) if tail else None, "err": err,
+            "pre": sum(pre) / len(pre) if pre else None,
             "stalls": last.get("device-stalls", 0), "cu_end": last.get("catch-up-state", "none"),
             "removed": last.get("catch-up-removed-ns", 0) / MS, "held": marks.get("held"), "back": marks.get("back"),
             "gaps": max((b - a for (a, _), (b, _) in zip(st, st[1:])), default=0),
@@ -710,22 +719,26 @@ if "flushes" in PARTS:
             # The target as the catch-up's (the feed, the device, two segments, the margin, a buffer) and the 20 ms
             # under which it does not start; below the feed, the device and the margin the margin was played out.
             _lo, _hi = _r["late"] + 40 + MARGIN_MS, _r["late"] + 40 + 20 + MARGIN_MS + 10 + 20
-            _watch = bool(_r["after"]) and all(a == "watching" for a in _r["after"])
+            # An input gap resets nothing: the catch-up's window goes on across it.
+            _watch = _name == "gap" or (bool(_r["after"]) and all(a == "watching" for a in _r["after"]))
             # Past the first window before the event, so `watching` after it is a reset.
             _past = bool(_r["before"]) and all(b != "watching" for b in _r["before"]) if _name in ("devstall", "flush") \
                 else True
             # A stats post at least every 8 s: the feed never waited out a stale base time.
             _stall_ok = _r["stalls"] == (1 if _name == "devstall" else 0) and _r["gaps"] < 8
-            # Ends reported, not held: after a flush from outq's src pad the test device's render lateness creeps
-            # (at HEAD too); after an input gap it carries the gap (most likely the device clock held in the underrun).
-            _held = _name not in ("flush", "ready-gap")
+            # The flush's end reported, not held: after a flush from outq's src pad the test device's render lateness
+            # creeps. After an input gap the end is held, and at most 20 ms over the reading before it (c40, D1).
+            _held = _name != "flush"
             _at_target = not _held or (_r["end"] is not None and _lo <= _r["end"] <= _hi)
+            if _name == "gap":
+                _at_target = _at_target and _r["pre"] is not None and _r["end"] <= _r["pre"] + 20
             _ok = (not _r["err"] and _r["holes"] == 0 and _r["refills_after"] == 0 and _watch and _past and _stall_ok
                    and _at_target and (not _held or _r["cu_end"] != "catching-up"))
             _ev = {"devstall": "a 3 s device stall", "flush": "a flush into the sink",
                    "ready": f"outq held {_r['held'] or 0:.0f} ms, READY and back (playing again "
                             f"{(_r['back'] or 0) - _r['at']:.1f} s on)",
-                   "ready-gap": f"outq held {_r['held'] or 0:.0f} ms, READY and back, a 1.5 s input gap 20 s on"}[_name]
+                   "ready-gap": f"outq held {_r['held'] or 0:.0f} ms, READY and back, a 1.5 s input gap 20 s on",
+                   "gap": f"a 1.5 s input gap, the reading {(_r['pre'] or 0):.1f} ms before it"}[_name]
             _end = f"{_r['end']:.1f}" if _r["end"] is not None else "none"
             check(f"{_name} seed {_seed} ({_ev} at {_r['at']} s, a {_r['late']:.0f} ms feed, load {_r['load'][0]:.1f}/"
                   f"{_r['load'][1]:.1f}): {_r['holes']} holes and {_r['refills_after']} refills after {_r['own']:.1f} s "
