@@ -199,7 +199,8 @@ struct Run {
     GstClockID clock_id = nullptr;
     GstClock* id_clock = nullptr;   // what clock_id was made on; cleared when the clock changes
     bool sleeping = false;          // the task waits on clock_id...
-    gint64 wake_at = 0;             // ...to this running time
+    gint64 wake_at = 0;             // ...to this running time (aw_enqueue's armed check)
+    gint64 due_at = 0;              // ...first able to end here: wake_at, or the sleep's start if past
     bool cond_waiting = false;      // the task waits on item_added (no clock)
     bool ahead = false;             // the last data out waited for its release
     GstSegment in_segment;
@@ -550,16 +551,17 @@ static void aw_burst(Run& r, gint64 now) {
 }
 
 /* Under the lock, clocked: the task's wake is overdue by more than FREEZE_NS, whichever thread
- * runs first after it: the time since is held, and the group told (p4-20). */
+ * runs first after it: the time since is held, and the group told (p4-20). Overdue counts from
+ * when the wait could first end: a deadline already past at the sleep is no freeze. */
 static void aw_thaw(GstMrAlignWatch* self, gint64 now) {
     Run& r = *self->run;
-    if (!r.sleeping || r.thawed || now - r.wake_at <= FREEZE_NS) return;
+    if (!r.sleeping || r.thawed || now - r.due_at <= FREEZE_NS) return;
     r.thawed = true;
-    if (r.quiet_started) r.held_ns += std::max<gint64>(now - std::max(r.wake_at, r.quiet_from), 0);
+    if (r.quiet_started) r.held_ns += std::max<gint64>(now - std::max(r.due_at, r.quiet_from), 0);
     aw_burst(r, now);
     PaceRegistry::global().thaw(r.member, now);
     GST_INFO_OBJECT(self, "input %s: the task woke %" G_GINT64_FORMAT " ms late, held as delay",
-                    r.input.c_str(), (now - r.wake_at) / GST_MSECOND);
+                    r.input.c_str(), (now - r.due_at) / GST_MSECOND);
 }
 
 /* Under the lock: a burst ends at an arrival due within a pace (caught up), at one later than its
@@ -1788,14 +1790,16 @@ static void aw_sleep(GstMrAlignWatch* self, gint64 deadline) {
         r.id_clock = r.clock;
     }
     GstClockID id = r.clock_id;
+    gint64 now;
     r.sleeping = true;
     r.thawed = false;
     r.wake_at = deadline;
-    if (r.member.asleep) r.member.asleep->store(deadline, std::memory_order_release);
+    /* A deadline past by now (a backlog came in while we posted) ends the wait at once. */
+    r.due_at = aw_now(self, &now) ? std::max(deadline, now) : deadline;
+    if (r.member.asleep) r.member.asleep->store(r.due_at, std::memory_order_release);
     g_mutex_unlock(&self->lock);
     gst_clock_id_wait(id, NULL);
     g_mutex_lock(&self->lock);
-    gint64 now;
     if (aw_now(self, &now)) aw_thaw(self, now);
     if (r.member.asleep) r.member.asleep->store(mrts::PaceGroup::NONE, std::memory_order_release);
     r.sleeping = false;

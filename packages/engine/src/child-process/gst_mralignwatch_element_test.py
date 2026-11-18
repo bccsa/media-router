@@ -34,7 +34,8 @@ an input held behind the pace at its next arrival, not at its old release (the a
 the pace as of the arrival); (19) its own process frozen 2 s or 5 s (a test clock jumped), the chain or
 the task first after it: no absence, nothing stale, the pace unchanged; 800 ms under a long W; a
 300 ms stop a freeze, 200 ms not; (19b) a 500 ms common stall that holds an input of W 100 ms
-while one of W 800 ms is still under its W: the held input's backlog moves no pace (B-243). And the PCM edges toward audiomixer (B-83), to the
+while one of W 800 ms is still under its W: the held input's backlog moves no pace (B-243); (19c) a backlog
+long due queued while the task posts: no freeze, its own or another member's (B-243). And the PCM edges toward audiomixer (B-83), to the
 sample: (F1) an absence fades out, (F2) a rejoin fades in from the horizon, (F3) a forwarded GAP's two edges,
 (F4) a joiner's entry, (F5) the fade before a forwarded EOS, (F7) a hole in the data, (F8) the
 formats and channel counts, (F9) a fade-in over short buffers, (F10) a tail under 1 ms, (F11) no
@@ -1541,10 +1542,11 @@ r = Rig("audiomixer", [{}, {}])
 def _big(i, k0, k1, lag_ms, rise_ms=0):
     def go():
         for k in range(k0, k1):
-            r.sleep_until(r.at(k * BIG + lag_ms + k * rise_ms))
+            # Built before the wait: building 400 ms of samples took 1.5-2.5 ms on the dev Pi.
             frames = RATE * BIG // 1000
             b = Gst.Buffer.new_wrapped(array.array("h", [VAL[i]] * 2 * frames).tobytes())
             b.pts, b.dts, b.duration = r.at(k * BIG), NONE, BIG * MS
+            r.sleep_until(r.at(k * BIG + lag_ms + k * rise_ms))
             r.srcs[i].emit("push-buffer", b)
     return go
 
@@ -2800,6 +2802,130 @@ check(f"common stall 500 ms, W 100 / 800 ms: no absence ({[r.prop(i, 'absences')
       and post <= pre + 2 * MS and r.pes_ok(0, range(900))
       and r.pes_ok(1, list(range(300)) + list(range(350, 900))) and eos and not r.errors)
 r.stop()
+
+# (19c) A backlog long due, queued while the task posts its report: the task's next wait is
+# already past and ends at once, no freeze (p4-20). The test clock holds that wait until cranked,
+# so a second member's arrival in between reads the published sleep as well (PaceGroup::hear).
+def _post_backlog(other, back_ms=1800, late_ms=40, after_s=3):
+    """Input 0's first data, `back_ms` of it at once from the bus handler of its first report
+    after that content, then `late_ms` late. `other`: input 0 on time after it, and input 1 on time
+    until then, `late_ms` late after, its next arrival pushed before the crank. -> props."""
+    clock = GstCheck.TestClock.new_with_start_time(0)
+    n_in = 2 if other else 1
+    # Each into a sink of its own: an aggregator would hold one task in a push to it.
+    pipe = Gst.parse_launch(" ".join(
+        f"mralignwatch name=aw{i} aligner=pst input=in{i} silence-ceiling={3 * S} ! "
+        "fakesink sync=false async=false" for i in range(n_in)))
+    pipe.use_clock(clock)
+    pipe.set_start_time(NONE)
+    pipe.set_base_time(0)
+    aws = [pipe.get_by_name(f"aw{i}") for i in range(n_in)]
+    srcs = []
+    for aw in aws:
+        src = Gst.Pad.new("src", Gst.PadDirection.SRC)
+        src.set_active(True)
+        src.link(aw.get_static_pad("sink"))
+        srcs.append(src)
+    st = {"armed": False, "poke": False, "k": [0, 0]}
+    back_to = 200 * MS + back_ms * MS
+
+    def buf(i, k):
+        b = Gst.Buffer.new_wrapped(payload(i, k))
+        b.pts = b.dts = 200 * MS + k * 10 * MS
+        b.duration = 10 * MS
+        return b
+
+    def due(i, k, now):
+        pts = 200 * MS + k * 10 * MS
+        if other:   # only input 1's lateness after the backlog can set the pace
+            lag = late_ms * MS if i == 1 and pts >= back_to - late_ms * MS else 0
+        else:
+            lag = late_ms * MS
+        return pts + lag <= now
+
+    def push_due(i, now):
+        while due(i, st["k"][i], now):
+            srcs[i].push(buf(i, st["k"][i]))
+            st["k"][i] += 1
+
+    def on_msg(_bus, m):
+        s = m.get_structure()
+        if (st["armed"] and m.type == Gst.MessageType.ELEMENT and s is not None
+                and m.src is aws[0] and s.get_string("reason") == "interval"):
+            st["armed"] = False   # the task is in aw_post_now, its lock dropped
+            for k in range(back_ms // 10):
+                srcs[0].push(buf(0, k))
+            st["k"][0] = back_ms // 10
+            st["poke"] = other
+        return Gst.BusSyncReply.DROP
+    pipe.get_bus().set_sync_handler(on_msg)
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_state(5 * S)
+    for i, src in enumerate(srcs):
+        src.push_event(Gst.Event.new_stream_start(f"pst{i}"))
+        src.push_event(Gst.Event.new_caps(Gst.Caps.from_string(CAPS["mpegtsmux"])))
+        seg = Gst.Segment()
+        seg.init(Gst.Format.TIME)
+        src.push_event(Gst.Event.new_segment(seg))
+    started = False
+
+    def release(now):
+        while True:
+            give_up = time.monotonic() + 2
+            while clock.peek_id_count() < n_in:
+                if time.monotonic() > give_up:
+                    return
+                time.sleep(0.0002)
+            if st["poke"]:   # input 0's task waits on its past deadline: input 1 arrives now
+                st["poke"] = False
+                push_due(1, now)
+            t = clock.get_next_entry_time()
+            if t == NONE or t > now:
+                return
+            clock.crank()
+    try:
+        for now in range(10 * MS, back_to + after_s * S, 10 * MS):
+            clock.set_time(now)
+            if now >= back_to and not started:
+                st["armed"], started = True, True
+            if not st["armed"] and started:
+                push_due(0, now)
+            release(now)
+            if other and not st["armed"]:   # armed: its next arrival waits for the poke
+                push_due(1, now)
+        return {"pace": aws[0].get_property("pace"),
+                "absences": sum(aw.get_property("absences") for aw in aws),
+                "stale": sum(aw.get_property("stale-buffers") for aw in aws)}
+    finally:
+        for src in srcs:
+            src.set_active(False)
+        pipe.set_state(Gst.State.NULL)
+
+
+if GstCheck is not None:
+    woke = []
+
+    def _on_woke(_cat, _level, _file, _fn, _line, _obj, msg, *_a):
+        if "held as delay" in msg.get():
+            woke.append(msg.get())
+    Gst.debug_remove_log_function(Gst.debug_log_default)
+    Gst.debug_set_threshold_for_name("mrtshouse", Gst.DebugLevel.INFO)
+    Gst.debug_add_log_function(_on_woke, None)
+    pb = {}
+    for other in (False, True):
+        woke.clear()
+        pb[other] = (_post_backlog(other), list(woke))
+    Gst.debug_remove_log_function(_on_woke)
+    Gst.debug_set_threshold_for_name("mrtshouse", Gst.DebugLevel.NONE)
+    Gst.debug_add_log_function(Gst.debug_log_default, None)
+    f, w = pb[False]
+    check(f"backlog while posting: no freeze ({w[:1]}), the 40 ms after it sets the pace "
+          f"(got {in_ms(f['pace'])} ms), no absence, 0 stale",
+          not w and abs(f["pace"] - 40 * MS) <= 2 * MS and f["absences"] == 0 and f["stale"] == 0)
+    f, w = pb[True]
+    check(f"backlog while posting, another input arriving during that wait: no freeze ({w[:1]}), "
+          f"its 40 ms sets the pace (got {in_ms(f['pace'])} ms), no absence, 0 stale",
+          not w and abs(f["pace"] - 40 * MS) <= 2 * MS and f["absences"] == 0 and f["stale"] == 0)
 
 print()
 if _failures:

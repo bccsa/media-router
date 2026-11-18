@@ -575,6 +575,13 @@ class Knobs:
                 t = b
         return t
 
+    def held(self, rel_ready_ns):
+        """Whether a hold moves this buffer's delivery to its end (part of the backlog it releases)."""
+        t = rel_ready_ns + self.transit_ns + self.delay_ns
+        if self.burst_ns:
+            t = -(-t // self.burst_ns) * self.burst_ns
+        return any(mode == "hold" and a <= t < b for a, b, mode in self.silence)
+
 
 class Producer:
     """One bus producer: 302M content (`Content`, through avenc_s302m ! mpegtsmux as every 302M
@@ -595,6 +602,7 @@ class Producer:
         self.late_ns = 0                # the worst delivery behind its schedule (the harness's own)
         self.late = []                  # (when, how late) of every push over 5 ms behind
         self.schedule = []              # (deliver at, seq, bytes)
+        self.held = set()               # the seqs a hold delivers at its end
         self._stop = threading.Event()
         self._thread = None
         tee = " ".join(f"t. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=0"
@@ -624,6 +632,7 @@ class Producer:
                     bufs.append((data, ready))
         self.schedule = sorted((t0 + self.knobs.delivery(ready - t0), i, data)
                                for i, (data, ready) in enumerate(bufs))
+        self.held = {i for i, (_data, ready) in enumerate(bufs) if self.knobs.held(ready - t0)}
 
     def _encode(self):
         """The content's 10 ms blocks through avenc_s302m ! mpegtsmux, as fast as it goes:
@@ -682,7 +691,8 @@ class Producer:
 
     def _run(self):
         src = self.out.get_by_name("src")
-        for at, _i, data in self.schedule:
+        first, free_at = True, 0
+        for at, i, data in self.schedule:
             while not self._stop.is_set():
                 wait = at - now_ns()
                 if wait <= 0:
@@ -691,12 +701,19 @@ class Producer:
             if self._stop.is_set():
                 return
             sent = now_ns()
-            self._lag(sent, sent - at)
+            # A hold's backlog, all due at its end: only its first push counts, and what follows from
+            # when its last push was out, so the feeder's own pushes of it are no lateness.
+            held = i in self.held
+            if first or not held:
+                self._lag(sent, sent - max(at, free_at))
+            first = not held
             st = self.stamper.stamp(data, sent)
             b = Gst.Buffer.new_wrapped(data)
             b.pts = b.dts = st
             src.emit("push-buffer", b)
             self.delivered.append((sent, st, data))
+            if held:
+                free_at = now_ns()
 
 
 def prepare(producers, lead_ms=3000):
