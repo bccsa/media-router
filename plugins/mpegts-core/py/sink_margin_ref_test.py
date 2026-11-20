@@ -534,9 +534,10 @@ def simulate_stall(stalls_ms, quantum=1024, outage_ms=0, full=None, queued=None,
     behind R. At 20 s and each 20 s after, for each of `stalls_ms` the server takes nothing that long (R still),
     while libpulse's clock runs on in house time from its last timing update (1.5 s apart, none in a stall),
     never backwards. outage_ms: at 10 s the feed stops that long (outq runs dry, a real hole). The writer's push
-    is read from its gaps (`queued`: queued_push or a mutant, its time on or waiting for a CPU `busy_ns`), the stream's
-    fullness by `full` (stream_full or a mutant). Returns frames fed and sounded, refills and silence after
-    the start, gaps with no refill."""
+    is read from its gaps (`queued`: queued_push or a mutant); busy_ns: after every tenth push the writer is that
+    long on or waiting for a CPU before its next write (the Audio Decoder's thread resamples its next buffer there).
+    The stream's fullness by `full` (stream_full or a mutant). Returns frames fed and sounded, refills and silence
+    after the start, gaps with no refill."""
     full = full or sm.stream_full
     queued = queued or sm.queued_push
     rng = random.Random(seed)
@@ -574,7 +575,7 @@ def simulate_stall(stalls_ms, quantum=1024, outage_ms=0, full=None, queued=None,
 
     guard = sm.SinkGuard(sm.server_latency_frames(TLENGTH, SPS), 500 * FS // 1000)
     kept, refills, silence = [], 0, 0
-    nxt, t, t_probe = -1, 0, None
+    nxt, t, t_probe, cpu = -1, 0, None, 0
     block_ns, block_end = 0, -(1 << 40)          # the last push that blocked, as the element keeps it
     backlog = 600 * FS // 1000
     out_at, out_len = 10 * FS, outage_ms * FS // 1000
@@ -587,7 +588,7 @@ def simulate_stall(stalls_ms, quantum=1024, outage_ms=0, full=None, queued=None,
         sd = segdone(t)
         guard.segdone_seen(sd, SPS, play)
         gap = ns(t - t_probe) if t_probe is not None else 0
-        push, since = queued(gap, ns(t - arrive), busy_ns)
+        push, since = queued(gap, ns(t - arrive), cpu)
         if push >= sm.BLOCKED_NS:
             block_ns, block_end = push, t - since * FS // 10**9
         since = ns(t - block_end)
@@ -606,6 +607,8 @@ def simulate_stall(stalls_ms, quantum=1024, outage_ms=0, full=None, queued=None,
         if end > r:
             kept.append((max(start, r), end))
         nxt = end
+        cpu = busy_ns if busy_ns and i % 10 == 9 else 0
+        t += cpu * FS // 10**9
     sounded = sum(e - s for s, e in kept)
     gaps = sum(1 for (s0, e0), (s1, e1) in zip(kept, kept[1:]) if s1 > e0)
     return {"fed": n * BUF, "sounded": sounded, "refills": refills, "silence_ms": silence * 1000 // FS,
@@ -631,9 +634,15 @@ def case_stall(full=None, queued=None, verbose=True):
               f"nothing lost ({lost} frames)",
               all(r["refills"] == 1 for r in rows) and all(r["no_refill"] == 0 for r in rows)
               and all(v == 0 for v in lost))
+        rows = [simulate_stall([300, 350, 300], quantum, full=full, queued=queued, busy_ns=13 * 10**6, seed=s)
+                for s in range(7, 12)]
+        lost = [r["fed"] - r["sounded"] for r in rows]
+        check(f"quantum {quantum}, three stalls, the writer 13 ms on or waiting for a CPU after every tenth push (the "
+              f"Audio Decoder's thread at load): no refill ({[r['refills'] for r in rows]}), nothing lost ({lost})",
+              all(r["refills"] == 0 for r in rows) and all(v == 0 for v in lost))
         rows = [simulate_stall([300], quantum, full=full, queued=queued, busy_ns=40 * 10**6, seed=s)
                 for s in range(7, 12)]
-        check(f"quantum {quantum}, a stall with the writer 40 ms on or waiting for a CPU at each write: the clock read "
+        check(f"quantum {quantum}, a stall, the writer 40 ms on or waiting for a CPU after every tenth push: the clock read "
               f"again ({[r['refills'] for r in rows]} refills)", all(r["refills"] > 0 for r in rows))
     if full is None and queued is None:
         rows = [simulate_stall([300, 350, 300], 1024, full=_full_never, seed=s) for s in range(7, 12)]
@@ -706,6 +715,11 @@ MUTANTS = {"no-cap": _m_no_cap, "guard-zero": _m_guard_zero, "start-no-guard": _
            "from-next": _m_from_next}
 
 
+def _f_one_seg(push_ns, since_push_ns, seg_ns):
+    """982c3bb8's window, one segment: a writer 10-15 ms from its push reads the clock."""
+    return push_ns >= sm.BLOCKED_NS and since_push_ns < seg_ns
+
+
 def _f_unaged(push_ns, since_push_ns, seg_ns):
     """A blocked push counted however long before this write: the write after an outage held to segdone."""
     return push_ns >= sm.BLOCKED_NS
@@ -722,7 +736,7 @@ def _q_no_busy(gap_ns, residence_ns, busy_ns):
 
 
 GATE_MUTANTS = {"push-unaged": _g_unaged}
-FULL_MUTANTS = {"full-never": _full_never, "full-unaged": _f_unaged}
+FULL_MUTANTS = {"full-never": _full_never, "full-unaged": _f_unaged, "full-one-seg": _f_one_seg}
 QUEUED_MUTANTS = {"queued-no-residence": _q_no_residence, "queued-no-busy": _q_no_busy}
 
 

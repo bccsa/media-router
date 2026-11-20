@@ -3573,9 +3573,9 @@ static void test_sink_margin() {
     CHECK("... a push that blocked a segment or more before this write says nothing of it: the guard holds",
           asrc_sink_guard_applies(0, 2000000, SEG, SEG) && asrc_sink_guard_applies(0, 80000000, 5 * SEG, SEG) &&
               !asrc_sink_guard_applies(SEG, 80000000, 5 * SEG, SEG));
-    CHECK("a write is held to segdone alone right after a push that blocked, not a segment or more after it (c41)",
-          asrc_sink_stream_full(2000000, 0, SEG) && asrc_sink_stream_full(330000000, SEG - 1, SEG) &&
-              !asrc_sink_stream_full(1999999, 0, SEG) && !asrc_sink_stream_full(330000000, SEG, SEG));
+    CHECK("a write is held to segdone alone within two segments of a push that blocked, not after (c41)",
+          asrc_sink_stream_full(2000000, 0, SEG) && asrc_sink_stream_full(330000000, 2 * SEG - 1, SEG) &&
+              !asrc_sink_stream_full(1999999, 0, SEG) && !asrc_sink_stream_full(330000000, 2 * SEG, SEG));
     int64_t qp = -1, qs = -1;
     asrc_sink_queued_push(330000000, 912000000, 1000000, &qp, &qs);
     CHECK("a queue thread's gap the write's buffer waited through: that push, less its time on or waiting for a CPU, "

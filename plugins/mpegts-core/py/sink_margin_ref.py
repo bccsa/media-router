@@ -72,7 +72,9 @@ libpulse's clock runs on at house rate, so the next write reads 196-245 ms behin
 passed the read index (segdone at the next update: 268 ms short of it), and every write after it
 reads behind again until a timing update (1.5 s apart) corrects the clock: a refill each write, the
 heard storm, seconds of delay. A write right after a push that blocked (stream_full) is held to
-segdone, the server's own read index, alone. The push before a write from a queue's thread (the
+segdone, the server's own read index, alone: within two segments of it, since a full stream holds
+tlength, two minreq past the server's configured latency (the Audio Decoder's thread resamples
+and pushes its next buffer 10-15 ms after its push at load; one segment read the clock there). The push before a write from a queue's thread (the
 302M's outq) is read from that thread's gaps (queued_push): when the write's buffer waited through
 the whole gap since the thread's last write, the time the thread slept in that gap (the gap less its
 time on and waiting for a CPU) was the push, blocked in the sink; a writer held up on the CPU while
@@ -150,13 +152,16 @@ def guard_applies(residence_ns, push_ns, since_push_ns, seg_ns):
     """The guard holds a write unless the stream was full at the write before: its buffer waited a
     segment or more in the queue before the sink, or the push before it blocked in the sink and
     ended less than a segment before this write."""
-    return residence_ns < seg_ns and not stream_full(push_ns, since_push_ns, seg_ns)
+    return residence_ns < seg_ns and not (push_ns >= BLOCKED_NS and since_push_ns < seg_ns)
+
+
+FULL_SEGS = 2                 # a full stream holds tlength: two minreq past the server's configured latency
 
 
 def stream_full(push_ns, since_push_ns, seg_ns):
-    """The push before this write blocked in the sink and ended less than a segment before it: the server holds
-    what it was given, so the write is not behind its read index whatever the clock reads (c41)."""
-    return push_ns >= BLOCKED_NS and since_push_ns < seg_ns
+    """The push before this write blocked in the sink and ended less than FULL_SEGS segments before it: the server
+    holds what it was given, so the write is not behind its read index whatever the clock reads (c41)."""
+    return push_ns >= BLOCKED_NS and since_push_ns < FULL_SEGS * seg_ns
 
 
 def queued_push(gap_ns, residence_ns, busy_ns):

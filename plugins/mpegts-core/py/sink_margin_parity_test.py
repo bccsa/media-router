@@ -95,7 +95,7 @@ def applies_cases(seed=17):
 
 def full_cases(seed=19):
     seg, out = 10_000_000, []
-    edges = (0, 1, sm.BLOCKED_NS - 1, sm.BLOCKED_NS, seg - 1, seg, seg + 1, 330_000_000)
+    edges = (0, 1, sm.BLOCKED_NS - 1, sm.BLOCKED_NS, seg - 1, seg, seg + 1, 2 * seg - 1, 2 * seg, 330_000_000)
     for push in edges:
         for since in edges:
             out.append({"push": push, "since": since, "segns": seg})
@@ -103,7 +103,7 @@ def full_cases(seed=19):
     for _ in range(3000):
         segns = r.choice((seg, 20_000_000, 7_000_000))
         out.append({"push": r.choice((0, r.randrange(4 * sm.BLOCKED_NS), r.randrange(10**9))),
-                    "since": r.choice((r.randrange(2 * segns), r.randrange(10**10))), "segns": segns})
+                    "since": r.choice((r.randrange(3 * segns), r.randrange(10**10))), "segns": segns})
     return out
 
 

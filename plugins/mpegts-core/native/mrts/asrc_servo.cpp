@@ -819,11 +819,11 @@ void AsrcSinkGuard::segdone_seen(int64_t segdone, int64_t sps, int64_t play_pos)
 }
 
 bool asrc_sink_guard_applies(int64_t residence_ns, int64_t push_ns, int64_t since_push_ns, int64_t seg_ns) {
-    return residence_ns < seg_ns && !asrc_sink_stream_full(push_ns, since_push_ns, seg_ns);
+    return residence_ns < seg_ns && !(push_ns >= ASRC_SINK_BLOCKED_NS && since_push_ns < seg_ns);
 }
 
 bool asrc_sink_stream_full(int64_t push_ns, int64_t since_push_ns, int64_t seg_ns) {
-    return push_ns >= ASRC_SINK_BLOCKED_NS && since_push_ns < seg_ns;
+    return push_ns >= ASRC_SINK_BLOCKED_NS && since_push_ns < ASRC_SINK_FULL_SEGS * seg_ns;
 }
 
 void asrc_sink_queued_push(int64_t gap_ns, int64_t residence_ns, int64_t busy_ns, int64_t* push_ns,
