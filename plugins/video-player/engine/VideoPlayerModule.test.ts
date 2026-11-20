@@ -75,6 +75,7 @@ import {
     selectDecoder,
 } from './helpers/decoderSelection.js';
 import { DEFAULT_DEMOTION_TTL_MS, DEMOTION_TTL_ENV_VAR } from './helpers/decoderDemotions.js';
+import { CAPS_REFUSED_CLEAR_MS, decoderCapsRefusedNote } from './helpers/capsRefusal.js';
 
 const probeUnixSocketMock = probeUnixSocket as unknown as ReturnType<typeof vi.fn>;
 const existsSyncMock = fs.existsSync as unknown as ReturnType<typeof vi.fn>;
@@ -1941,6 +1942,94 @@ describe('VideoPlayerModule helpers', () => {
                 (module as any).detectedCodec = 'h264';
                 build(module);
                 expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
+            });
+
+            describe('hardware decoder refuses the caps, bus blames the source (#867)', () => {
+                const NOTE = decoderCapsRefusedNote('v4l2h264dec');
+                const REFUSAL = {
+                    message: 'Internal data stream error.',
+                    element: 'unixfdsrc0',
+                    debug: '../libs/gst/base/gstbasesrc.c(3187): gst_base_src_loop (): streaming stopped, reason not-negotiated (-4)',
+                };
+
+                afterEach(() => {
+                    vi.useRealTimers();
+                });
+
+                it('names the cause, keeps the hardware rung and lets the replay run', () => {
+                    const module = makeModule();
+                    (module as any).detectedCodec = 'h264';
+                    expect(build(module).pipeline).toContain('v4l2h264dec');
+                    const restart = vi
+                        .spyOn(module as any, 'restartPipeline')
+                        .mockResolvedValue(undefined);
+                    errorHandlerFor(module)(REFUSAL);
+
+                    expect((module as any).setHealth).toHaveBeenLastCalledWith('error', NOTE);
+                    expect([...VideoPlayerModule.getDemotedDecoders()]).toEqual([]);
+                    expect(restart).not.toHaveBeenCalled();
+                    expect(build(module).pipeline).toContain('h264parse ! v4l2h264dec');
+                });
+
+                it('logs loudly once, quietly on each replay', () => {
+                    const module = makeModule();
+                    (module as any).detectedCodec = 'h264';
+                    build(module);
+                    const onError = errorHandlerFor(module);
+                    onError(REFUSAL);
+                    onError(REFUSAL);
+                    onError(REFUSAL);
+                    expect((module as any).log.warn).toHaveBeenCalledTimes(1);
+                    expect((module as any).log.warn).toHaveBeenCalledWith(
+                        expect.objectContaining({ decoder: 'v4l2h264dec', element: 'unixfdsrc0' }),
+                        NOTE,
+                    );
+                    expect((module as any).log.debug).toHaveBeenCalledTimes(2);
+                });
+
+                it('holds the note over a replay’s PLAYING edge and clears it after a clean run', () => {
+                    vi.useFakeTimers();
+                    const module = makeModule();
+                    (module as any).detectedCodec = 'h264';
+                    build(module);
+                    errorHandlerFor(module)(REFUSAL);
+                    (module as any).health = 'error';
+                    (module as any).error = NOTE;
+
+                    (module as any).onPipelinePlaying();
+                    expect((module as any).setHealth).toHaveBeenLastCalledWith('error', NOTE);
+
+                    vi.advanceTimersByTime(CAPS_REFUSED_CLEAR_MS);
+                    expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
+                    // Latch gone: the next PLAYING edge leaves health alone.
+                    (module as any).setHealth.mockClear();
+                    (module as any).onPipelinePlaying();
+                    expect((module as any).setHealth).not.toHaveBeenCalled();
+                });
+
+                it('a not-negotiated on the software rung keeps today’s message', () => {
+                    const module = makeModule();
+                    VideoPlayerModule.setDecoderAvailability({ ...all, v4l2h264dec: false });
+                    (module as any).detectedCodec = 'h264';
+                    expect(build(module).pipeline).toContain('avdec_h264');
+                    errorHandlerFor(module)(REFUSAL);
+                    expect((module as any).setHealth).not.toHaveBeenCalledWith(
+                        'error',
+                        expect.anything(),
+                    );
+                    expect((module as any).log.warn).not.toHaveBeenCalled();
+                });
+
+                it('stop drops the latch', () => {
+                    const module = makeModule();
+                    (module as any).detectedCodec = 'h264';
+                    build(module);
+                    errorHandlerFor(module)(REFUSAL);
+                    (module as any).capsRefusal.reset();
+                    (module as any).setHealth.mockClear();
+                    (module as any).onPipelinePlaying();
+                    expect((module as any).setHealth).not.toHaveBeenCalled();
+                });
             });
 
             it('walks the whole ladder down to decodebin3 across repeated failures', () => {

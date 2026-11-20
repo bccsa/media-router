@@ -70,6 +70,7 @@ import { cogNeedingRestack } from './helpers/cogRestack.js';
 import { resolveOutputRefreshHz } from './helpers/outputRefresh.js';
 import { pollResumeSignal } from './helpers/busResume.js';
 import { classifyDecoderFailure, planCodecReport } from './helpers/decoderRuntime.js';
+import { CapsRefusalLatch, decoderCapsRefusedNote } from './helpers/capsRefusal.js';
 import {
     describeRenderLag,
     RENDER_CHAIN_TREND_MS_PER_MIN,
@@ -87,9 +88,11 @@ export type { SinkAvailability };
  * message's own source element INSTANCE (`v4l2slh265dec0`, `h265parse0`,
  * `waylandsink0`), forwarded verbatim by gst-pipeline-runner.py → GstRunner →
  * GstChildProcess; it is what makes decoder demotion attributable. Absent on
- * synthesised errors (spawn failure, max restarts, PLAYING watchdog).
+ * synthesised errors (spawn failure, max restarts, PLAYING watchdog). `debug`
+ * is the bus error's GStreamer debug text — how a caps refusal that the bus
+ * blames on the source is told apart (`caps-refused`, #867).
  */
-type RunnerErrorEvent = { kind?: string; message?: string; element?: string };
+type RunnerErrorEvent = { kind?: string; message?: string; element?: string; debug?: string };
 
 /**
  * Video Player plugin.
@@ -246,6 +249,9 @@ export class VideoPlayerModule extends GstPluginBase {
      * `armDemotionRetry`.
      */
     private demotionRetryTimer: NodeJS.Timeout | null = null;
+
+    /** Holds the "hardware decoder refused the stream" error across replays. */
+    private readonly capsRefusal = new CapsRefusalLatch();
 
     /**
      * Latched while the runner's renderWatch reports the pipeline lagging
@@ -573,6 +579,7 @@ export class VideoPlayerModule extends GstPluginBase {
         // already being rebuilt. The next live build re-arms it from the
         // demotion's own timestamp, so nothing is lost by dropping it here.
         this.clearDemotionRetry();
+        this.capsRefusal.reset();
         // A rebuilt pipeline gets a fresh runner-side monitor that re-measures
         // from scratch — a stale lag latch must not suppress or fake events.
         // Clear the warning the latch owns too: the fresh monitor starts
@@ -720,6 +727,7 @@ export class VideoPlayerModule extends GstPluginBase {
         const action = classifyDecoderFailure({
             errorKind: data?.kind,
             element: data?.element,
+            debug: data?.debug,
             liveDecoder: this.liveDecoder,
             restartInProgress: this.pipelineRestartInProgress,
             detectedCodec: this.detectedCodec,
@@ -751,6 +759,22 @@ export class VideoPlayerModule extends GstPluginBase {
                     ? `Pipeline error from ${action.element} — not the decoder, keeping ${this.liveDecoder?.id}`
                     : `Pipeline error with no source element — keeping ${this.liveDecoder?.id}`,
             );
+            return;
+        }
+        if (action.kind === 'caps-refused') {
+            // Same replay as rebuild-same (no demotion: software decode drops
+            // frames on a Pi 4), but with the cause named. Overrides the base
+            // class's generic "Internal data stream error." set just before.
+            const note = decoderCapsRefusedNote(action.failed.id);
+            const fields = {
+                element: action.element,
+                decoder: action.failed.id,
+                err: data?.message,
+                debug: data?.debug,
+            };
+            if (this.capsRefusal.refused(note)) this.log.warn(fields, note);
+            else this.log.debug(fields, 'Hardware decoder refused the stream format again');
+            this.setHealth('error', note);
             return;
         }
         VideoPlayerModule.demotions.demote(action.failed.id, Date.now());
@@ -876,6 +900,17 @@ export class VideoPlayerModule extends GstPluginBase {
      * observations are still required, they just start one tick earlier.
      */
     protected onPipelinePlaying(): void {
+        // A replay after a caps refusal: keep the cause on the card instead of
+        // the PLAYING edge's "ok" until a run stays clean (see capsRefusal.ts).
+        const refused = this.capsRefusal.playing(() => {
+            if (this.health !== 'error' || this.error !== refused) return;
+            this.log.info(
+                { decoder: this.liveDecoder?.id },
+                'Hardware decoder accepts the stream again',
+            );
+            this.setHealth('ok');
+        });
+        if (refused) this.setHealth('error', refused);
         if (!this.busStallDetected || !this.resumeTapActive) return;
         void this.readBusSinkBytes(RESUME_SINK_NAME)
             .then((bytes) => {

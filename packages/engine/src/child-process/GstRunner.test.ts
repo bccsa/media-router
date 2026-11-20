@@ -148,6 +148,20 @@ describe('GstRunner — Python event routing', () => {
         expect((errEvent?.data as { message: string }).message).toMatch(/internal data stream/);
     });
 
+    it('forwards the bus error’s element and GStreamer debug text', () => {
+        // The video player names a hardware decoder's caps refusal from the
+        // flow return in `debug` — the bus blames the source element (#867).
+        emit({
+            event: 'error',
+            message: 'Internal data stream error.',
+            element: 'unixfdsrc0',
+            debug: 'gst_base_src_loop (): streaming stopped, reason not-negotiated (-4)',
+        });
+        const data = lastByType('event', 'error')?.data as { element: string; debug: string };
+        expect(data.element).toBe('unixfdsrc0');
+        expect(data.debug).toMatch(/not-negotiated/);
+    });
+
     it('forwards the `kind` discriminator on pipeline error events', () => {
         // udpsrc timeout, GstUDPSrcTimeout-derived events, etc. are tagged
         // `kind` in the Python runner so plugins can distinguish recoverable

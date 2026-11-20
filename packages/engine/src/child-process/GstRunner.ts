@@ -555,6 +555,10 @@ export class GstRunner {
                     // Source element name (from the gst bus message) — error
                     // attribution for diagnostics and per-element policies.
                     element: eventJson.element,
+                    // GStreamer's debug text (`… reason not-negotiated (-4)`): the
+                    // only place a flow return reaches the module — the video
+                    // player names a hardware decoder's caps refusal from it.
+                    debug: eventJson.debug,
                     // `timing_plugin` (a demux with no stand-in): the specifics of the alarm.
                     detail: eventJson.detail,
                 });

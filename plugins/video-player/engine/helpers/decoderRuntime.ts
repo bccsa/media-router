@@ -69,7 +69,15 @@ export type DecoderFailureAction =
           element?: string;
       }
     /** Strike this decoder off for the session and rebuild one rung down. */
-    | { kind: 'demote'; failed: DecoderSelection };
+    | { kind: 'demote'; failed: DecoderSelection }
+    /**
+     * The live HARDWARE decoder refused the stream's caps (see
+     * `isCapsRefusal`). Not demoted — software decode drops frames on a
+     * Pi 4 — and the runner's replay still runs, so the picture comes back by
+     * itself once the source is fixed. The module only owes the operator a
+     * message that names the cause.
+     */
+    | { kind: 'caps-refused'; failed: DecoderSelection; element?: string };
 
 /**
  * Error kinds SYNTHESISED by the runner layers rather than posted by the
@@ -101,6 +109,8 @@ export interface DecoderFailureInput {
      * restarts, PLAYING watchdog) name no element.
      */
     element?: string;
+    /** The bus error's GStreamer debug text (`… reason not-negotiated (-4)`). */
+    debug?: string;
     liveDecoder?: DecoderSelection;
     /** An internal restart cycle currently owns the pipeline. */
     restartInProgress: boolean;
@@ -130,6 +140,22 @@ function isDecoderElement(element: string, decoderId: string): boolean {
 }
 
 /**
+ * A caps refusal by the live hardware decoder, reported against the SOURCE.
+ *
+ * When a decoder's sink pad refuses a mid-stream CAPS event, the flow return
+ * `not-negotiated` travels back upstream and the bus error is posted by the
+ * element whose streaming thread stopped — `unixfdsrc0`, never `vpdec`. So
+ * element attribution alone calls it "not the decoder". Field case (#867):
+ * GStreamer 1.28's `v4l2h264dec` offers a fixed list of whole colorimetries,
+ * and an H.264 stream whose VUI names only the matrix (`0:4:0:0`, written by
+ * an MJPEG → x264 encoder) was refused about 1 s in, on every replay, with
+ * nothing but "Internal data stream error" to show for it.
+ */
+function isCapsRefusal(input: DecoderFailureInput, decoder: DecoderSelection): boolean {
+    return decoder.hardware && /\bnot-negotiated\b/.test(input.debug ?? '');
+}
+
+/**
  * Runtime demotion. A live pipeline built with an EXPLICIT decoder that the
  * DECODER ITSELF fails gets that decoder struck off for the rest of the engine
  * session and is rebuilt one rung down — hardware → software → decodebin3.
@@ -145,6 +171,7 @@ function isDecoderElement(element: string, decoderId: string): boolean {
  *   codec changed since the build                         → codec-changed
  *   runner-synthesised kind (no element was involved)     → rebuild-same
  *   error names the active decoder's element              → demote
+ *   hardware rung, debug says not-negotiated              → caps-refused
  *   error names ANY other element                         → rebuild-same
  *   error names nothing at all                            → rebuild-same
  *
@@ -194,6 +221,14 @@ export function classifyDecoderFailure(input: DecoderFailureInput): DecoderFailu
     // The one rule that costs a decoder its rung.
     const element = input.element;
     if (element && isDecoderElement(element, failed.id)) return { kind: 'demote', failed };
+
+    // The hardware decoder refused the caps, but the bus blames the source:
+    // keep the rung and the replay, and name the cause (#867).
+    if (isCapsRefusal(input, failed)) {
+        return element
+            ? { kind: 'caps-refused', failed, element }
+            : { kind: 'caps-refused', failed };
+    }
 
     // A parser, sink, queue, demux or bus source failed — or nothing named
     // itself at all. Either way it is not the decoder's verdict: replay the
