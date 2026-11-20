@@ -98,6 +98,63 @@ describe('classifyDecoderFailure', () => {
         expect(classifyDecoderFailure(base)).toEqual({ kind: 'demote', failed: live });
     });
 
+    describe('caps refused by the hardware decoder, blamed on the source (#867)', () => {
+        const NOT_NEGOTIATED =
+            'gst_base_src_loop (): streaming stopped, reason not-negotiated (-4)';
+        const refusal = { ...base, element: 'unixfdsrc0', debug: NOT_NEGOTIATED };
+
+        it('is caps-refused, not rebuild-same and not a demotion', () => {
+            expect(classifyDecoderFailure(refusal)).toEqual({
+                kind: 'caps-refused',
+                failed: live,
+                element: 'unixfdsrc0',
+            });
+        });
+
+        it('keeps the element-less form', () => {
+            expect(classifyDecoderFailure({ ...refusal, element: undefined })).toEqual({
+                kind: 'caps-refused',
+                failed: live,
+            });
+        });
+
+        it('only on a hardware rung — a software decoder keeps rebuild-same', () => {
+            const sw = rung('avdec_h265');
+            expect(classifyDecoderFailure({ ...refusal, liveDecoder: sw })).toEqual({
+                kind: 'rebuild-same',
+                element: 'unixfdsrc0',
+            });
+        });
+
+        it('only for not-negotiated — other source errors keep rebuild-same', () => {
+            const other = { ...refusal, debug: 'streaming stopped, reason error (-5)' };
+            expect(classifyDecoderFailure(other)).toEqual({
+                kind: 'rebuild-same',
+                element: 'unixfdsrc0',
+            });
+            expect(classifyDecoderFailure({ ...refusal, debug: undefined })).toEqual({
+                kind: 'rebuild-same',
+                element: 'unixfdsrc0',
+            });
+        });
+
+        it('the decoder naming itself still demotes, debug text or not', () => {
+            expect(classifyDecoderFailure({ ...base, debug: NOT_NEGOTIATED })).toEqual({
+                kind: 'demote',
+                failed: live,
+            });
+        });
+
+        it('synthesised kinds and codec changes win over the debug text', () => {
+            expect(classifyDecoderFailure({ ...refusal, errorKind: 'runner_exit' })).toEqual({
+                kind: 'rebuild-same',
+            });
+            expect(classifyDecoderFailure({ ...refusal, detectedCodec: 'h264' })).toEqual({
+                kind: 'codec-changed',
+            });
+        });
+    });
+
     it('ignores a source-side timeout — not a decode failure', () => {
         expect(classifyDecoderFailure({ ...base, errorKind: 'udp_timeout' })).toEqual({
             kind: 'ignore',
