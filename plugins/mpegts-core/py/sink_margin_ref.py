@@ -74,12 +74,15 @@ reads behind again until a timing update (1.5 s apart) corrects the clock: a ref
 heard storm, seconds of delay. A write right after a push that blocked (stream_full) is held to
 segdone, the server's own read index, alone: within two segments of it, since a full stream holds
 tlength, two minreq past the server's configured latency (the Audio Decoder's thread resamples
-and pushes its next buffer 10-15 ms after its push at load; one segment read the clock there). The push before a write from a queue's thread (the
-302M's outq) is read from that thread's gaps (queued_push): when the write's buffer waited through
-the whole gap since the thread's last write, the time the thread slept in that gap (the gap less its
-time on and waiting for a CPU) was the push, blocked in the sink; a writer held up on the CPU while
-the stream ran dry is not a full stream. A writer asleep anywhere else with its buffer waiting would
-read as a full sink: the device check's writer-stall stand-in spins for that reason.
+and pushes its next buffer 10-15 ms after its push at load; one segment read the clock there).
+The push before a write from a queue's thread (the 302M's outq) is read from that thread's gaps
+(queued_push): when the write's buffer waited through the whole gap since the thread's last
+write, the time the thread slept in that gap (the gap less its time on and waiting for a CPU)
+was the push, blocked in the sink; a writer held up on the CPU while the stream ran dry is not a
+full stream. A writer asleep anywhere else with its buffer waiting (a page fault; a wait on
+libpulse's mainloop lock while its thread is off the CPU) reads as a full sink: it loses about
+the sleep less the stream's 45 ms, once, as c38 would (sink_margin_ref_test.py), and the device
+check's writer-stall stand-in spins for that reason.
 
 API:
     m = SinkMargin(margin_frames, cap_frames)    cap: REFILL_MAX_MS in frames (0: none)

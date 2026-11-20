@@ -528,7 +528,8 @@ def case_cap(rule=None):
 
 # --- the 302M's sink end at load: the server takes nothing for a while, the clock runs on (c41, D4) ----------
 
-def simulate_stall(stalls_ms, quantum=1024, outage_ms=0, full=None, queued=None, busy_ns=0, seed=7):
+def simulate_stall(stalls_ms, quantum=1024, outage_ms=0, full=None, queued=None, busy_ns=0, seed=7, sleep_ns=0,
+                   sleep_every=500):
     """The 302M's sink end into pulsesink on a server, its queue's thread writing a backlog (outq holds 0.6 s) as
     the stream takes it: the server reads `quantum` frames a cycle (read index R), holds TLENGTH, drops a write
     behind R. At 20 s and each 20 s after, for each of `stalls_ms` the server takes nothing that long (R still),
@@ -536,6 +537,7 @@ def simulate_stall(stalls_ms, quantum=1024, outage_ms=0, full=None, queued=None,
     never backwards. outage_ms: at 10 s the feed stops that long (outq runs dry, a real hole). The writer's push
     is read from its gaps (`queued`: queued_push or a mutant); busy_ns: after every tenth push the writer is that
     long on or waiting for a CPU before its next write (the Audio Decoder's thread resamples its next buffer there).
+    sleep_ns: after every `sleep_every`th push the writer sleeps that long outside the sink, its buffer waiting (c41b).
     The stream's fullness by `full` (stream_full or a mutant). Returns frames fed and sounded, refills and silence
     after the start, gaps with no refill."""
     full = full or sm.stream_full
@@ -609,6 +611,8 @@ def simulate_stall(stalls_ms, quantum=1024, outage_ms=0, full=None, queued=None,
         nxt = end
         cpu = busy_ns if busy_ns and i % 10 == 9 else 0
         t += cpu * FS // 10**9
+        if sleep_ns and i % sleep_every == sleep_every - 1:
+            t += sleep_ns * FS // 10**9
     sounded = sum(e - s for s, e in kept)
     gaps = sum(1 for (s0, e0), (s1, e1) in zip(kept, kept[1:]) if s1 > e0)
     return {"fed": n * BUF, "sounded": sounded, "refills": refills, "silence_ms": silence * 1000 // FS,
@@ -644,6 +648,17 @@ def case_stall(full=None, queued=None, verbose=True):
                 for s in range(7, 12)]
         check(f"quantum {quantum}, a stall, the writer 40 ms on or waiting for a CPU after every tenth push: the clock read "
               f"again ({[r['refills'] for r in rows]} refills)", all(r["refills"] > 0 for r in rows))
+        # The rule's known cost (c41b, Limits): a writer asleep outside the sink with its buffer waiting (a page
+        # fault; a wait on libpulse's mainloop lock while its thread is off the CPU) reads as a blocked push.
+        for sl in (60, 120, 200):
+            rows = [simulate_stall([], quantum, full=full, queued=queued, sleep_ns=sl * 10**6, seed=s)
+                    for s in range(7, 12)]
+            per = [(r["fed"] - r["sounded"]) * 1000 / FS / 5 for r in rows]
+            check(f"quantum {quantum}, no server stall, the writer asleep {sl} ms outside the sink every 5 s (5 times): "
+                  f"read as a full stream, no storm ({[r['refills'] for r in rows]} refills, at most one a run); a "
+                  f"sleep loses about itself less the stream's 45 ms, once, as c38 would (less where one lands as a "
+                  f"refill: {[round(v) for v in per]} ms a sleep, {sl - 90}-{sl - 30} expected)",
+                  all(r["refills"] <= 1 for r in rows) and all(sl - 90 <= v <= sl - 30 for v in per))
     if full is None and queued is None:
         rows = [simulate_stall([300, 350, 300], 1024, full=_full_never, seed=s) for s in range(7, 12)]
         if verbose:
