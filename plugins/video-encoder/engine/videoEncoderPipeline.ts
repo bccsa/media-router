@@ -18,6 +18,22 @@ function softwareScaleStage(width: number, height: number): string {
 export { pickCaptureMode, type CaptureMode } from './captureModes.js';
 
 /**
+ * Whole colorimetry for the encoder input on the MJPG rung. `jpegdec` labels
+ * its frames with only what a JPEG states — full range and the BT.601 matrix,
+ * transfer and primaries UNKNOWN (`1:4:0:0`) — and x264enc writes that partial
+ * description straight into the SPS VUI. GStreamer 1.28's `v4l2h264dec` (the
+ * Pi 4 hardware decoder) offers a fixed list of whole colorimetries on its
+ * sink pad, so when `h264parse` reads that VUI about a second into the stream
+ * the decoder refuses the caps and the player stops "not-negotiated", on every
+ * retry. Pinned after the software `videoconvert`, the convert does the real
+ * range/matrix conversion (not a relabel). GStreamer's own default by height:
+ * BT.709 above SD, BT.601 at SD.
+ */
+export function encoderInputColorimetry(height: number): 'bt709' | 'bt601' {
+    return height > 576 ? 'bt709' : 'bt601';
+}
+
+/**
  * Whether the encoder element accepts bitrate changes at runtime *cleanly*.
  *
  * - v4l2h264enc/v4l2h265enc on RPi kernels with gst-plugins-good ≥ 1.22 honour
@@ -161,7 +177,13 @@ export function buildV4l2SourceForModes(
         // WirePlumber's V4L2 monitor disabled and audio off it STILL wedged
         // (2026-09-02). A seam that probed it and ignored the answer was
         // removed; re-add one only together with the kernel-level fix.
-        return `${src} ! image/jpeg,width=${mode.width},height=${mode.height},framerate=${captureFps}/1${preDrop} ! ${queue} ! jpegparse ! jpegdec ! ${tail}`;
+        // Colorimetry pin only behind the software stage: a hardware stage's
+        // caps must touch the encoder (vapostproc's VA memory).
+        const colorimetry =
+            stage === softwareScaleStage(width, height)
+                ? ` ! video/x-raw,colorimetry=${encoderInputColorimetry(height)}`
+                : '';
+        return `${src} ! image/jpeg,width=${mode.width},height=${mode.height},framerate=${captureFps}/1${preDrop} ! ${queue} ! jpegparse ! jpegdec ! ${tail}${colorimetry}`;
     }
     return `${src} ! video/x-raw,format=${gstVideoFormat(mode.pixelFormat)},width=${mode.width},height=${mode.height},framerate=${captureFps}/1 ! ${queue} ! ${tail}`;
 }
