@@ -2501,8 +2501,9 @@ and no pace rise after a 7 s pause.
   Discarded on rejoin (ms; the watch's `stale-time`, which also counts a late
   joiner's trim); a dark input keeps its row without a lateness. In
   `timing`: Pace (ms), the largest added latency of any aligner over its
-  fastest present member, and Waiting for, every absent input or else the
-  slowest present member of the aligner that adds the most. When Waiting for
+  fastest present member, and Waiting for, the slowest present member of
+  the aligner that adds the most (since B-245 no absent input: it is gapped,
+  not waited for). When Waiting for
   is shown, Phase 0's Slowest input is not. A watch whose `input` is a bus
   connection id joins that edge's tap row; `GstPluginBase.alignerInputOf()`
   is the hook for any other label.
@@ -2523,7 +2524,7 @@ and no pace rise after a 7 s pause.
   number. A watch whose edge left the router's list keeps its row while
   the edge stands in the module's stored graph (`MediaRouter.hasStoredEdge`,
   ADR-0021's oracle): a producer stopped while wired shows State absent,
-  with the warning and in Waiting for; gone from the stored graph, the
+  with the warning (in Waiting for until B-245); gone from the stored graph, the
   operator removed it and the row goes. An input tap that reported this run
   and went stale under watches that report on makes its row absent too
   (the quiet tap: a dark muxer pin, whose routes end at EOS and stay
@@ -3892,7 +3893,8 @@ Phase 3 ships as v2.0.0.102).
   a QoS event, gst-libav's hurry-up skips non-reference frames whatever the
   decoder's `qos` says, so no QoS event may reach an avdec.
 - **The queue watch** (B-182's shed count grown, E29): every GstQueue whose
-  `leaky` is not 0, and those named `vp_esq`, `ad_esq` and `prefill`, counts
+  `leaky` is not 0 but the Video Player's probe tap `vp_probeq` (B-248), and
+  those named `vp_esq`, `ad_esq` and `prefill`, counts
   its `overrun`s into episodes (1 s quiet ends one; reported once open at
   10 s, at its end and at a stop), one `queue_overrun` an episode naming the
   bus input upstream (the first `unixfdsrc` through sink and ghost pads), its
@@ -3945,16 +3947,31 @@ Phase 3 ships as v2.0.0.102).
   plus a stand-in. **Device latency** = Render lateness − λ(`lat_render`). The
   Presentation delay row is gone (there is no D).
 - **Rows**: Video Player's Rate match ("50.00 fps → 50.00 Hz measured, 0
-  drops/min"), Late releases and Pace hold; the audio outputs' Device relocks
-  and Device stalls beside Phase 3's Device clock (S9); a Lateness trend on
+  drops/min"; on waylandsink "…; replaced 0/min (0 total), discarded 0/min
+  (0 total)", 0008's `display-stats` read by the engine every 10 s over
+  `get_property`, B-242), Late releases and Pace hold; the audio outputs'
+  Device relocks and Device stalls beside Phase 3's Device clock (S9); a Lateness trend on
   every output that renders (the slope over 180 s, "measuring" until 3 min
-  ran with no gap), with no alarm and no setting: OQ-34's `capacity` alarm and
-  its setting are not built.
+  ran since a reset), with no alarm and no setting: OQ-34's `capacity` alarm and
+  its setting are not built. A collapsed hole or a gap (on audio a source
+  relock) starts a segment and the slope is one line through the segments,
+  each at its own level; only a new element, a display or device outage or
+  another source empties the window; "— falling behind under load" when an
+  underrun under load was counted in the window (B-241).
 - **Warnings, which only warn**: `queue-full` (two texts by `leaky`, S15),
   `display-not-presenting` ("Display not presenting (output off?)", from the
   pace's `display-presenting`, S31) and `device-stalled` ("Audio device
   stalled — nothing plays until it takes audio again, then it plays live"),
   which takes the place of the 302M output's late "Plays nothing" (T24).
+- **A runner that stops answering** (B-246, F-6): while a module's pipeline
+  plays, the engine asks its runner `get_throughput` every 5 s with a 3 s
+  budget, at once again after a miss; two misses in a row are the owned
+  warning `not-answering`, "Pipeline not answering for <n> s (stalled or
+  frozen)" (6 s after the first unanswered ask, 6–11 s after a freeze),
+  and the next answer withdraws it and puts back the module's own warning it
+  stood over. Not asked before PLAYING, during a relaunch, or after a stop.
+  The module's throughput rates are taken over its own reads in
+  `GstChildProcess`, so the ask does not shorten their window.
 
 ### The output conformance harness (WI-P4-14 with WI-P4-9's scenario, B-174)
 
@@ -3984,7 +4001,7 @@ Phase 3 ships as v2.0.0.102).
   decoder's prefill full after an input stall until the drain (B-179) plays
   the backlog down, about 200 s a second of stall past its 1 s, its text now
   "nothing lost" (F1, fixed); the player's probe tap overrunning once after a
-  gap and reading as content lost (F2, open); B-175's cap set live never
+  gap and reading as content lost (F2, fixed: B-248); B-175's cap set live never
   measured (F4, open, the owner's with DEV-P4c2); a 0.2 % slow display's
   first drop 18 s after the measurement (F5); a consumer holding a 5 s backlog
   silencing its edge's tap (F6); the 302M device term engaging 45–50 s in,
@@ -4019,10 +4036,22 @@ Phase 3 ships as v2.0.0.102).
   after a window clear, nor while an audio starvation runs or for 30 s after.
 - **The learned margin.** It starts at its floor (audio 20 ms, video 1
   frame), ceiling 500 ms. An audio starvation (the sink's own underflow, or
-  the slack under −30 ms on two ticks) of at most 250 ms raises it whatever
-  the drain did; longer is an outage, counted, no raise. A late video release
-  raises it only while δ > 0 or within 30 s after; a release under a quarter
-  frame late is jitter, one more than 250 ms late an outage. A raise sets L =
+  the slack under −30 ms on two ticks) of at most 250 ms is judged 10 s after
+  its end and raises it only on a steady stream with the margin the limit
+  (B-240, the owner's decision of 2026-11-13): the servo warm at its start
+  (window full, no starvation hold), δ = 0 from 30 s before it to the
+  judgement, no epoch break, outage or window clear in that span, the render
+  lateness then no more than its start's plus the episode's length plus 20
+  ms, and the trough 1–2 s before it within the margin ± 20 ms. Any other is
+  counted by its first failed test (drain, after-drain, warm-up, input, load,
+  not-margin); longer is an outage, counted, no raise. A late video release
+  never raises it (B-256): it is counted as drain (δ ≠ 0), after-drain (within
+  30 s after δ last was ≠ 0) or video, and the video margin stays at its
+  1-frame floor for the drain alone; a release under a quarter frame late is
+  jitter, one more than 250 ms late an outage. On a looped source each join
+  gives at most one late release on a healthy host, and in the reference
+  model of a stream-loop join the drain takes its lateness step back out of
+  `vp_esq`'s level (the trough as Phase 4 built it, unchanged). A raise sets L =
   the margin that underran and m = min(500 ms, max(2L, L + 20 ms)); m falls 5
   ms every 10 min without a raise, never under the floor or L + 10 ms, and L
   falls 5 ms an hour to floor − 10 ms: a raise costs about 2 h, and a need
@@ -4046,20 +4075,28 @@ Phase 3 ships as v2.0.0.102).
   P = the largest goes to every member as `group-target-ns`: a member above
   drains to it, one below plays up to 0.5 % slower to rise to it, clamped
   continuously at 1 s above its own target, so every member ends within 45 ms.
+  The members' render lateness goes with their names, and a member's row says
+  "in sync with" only while it is within 45 ms of each; otherwise how far it
+  plays behind or ahead of the furthest and why (B-241).
   P may be below 0 (outputs fed from a network input with no Ingest Offset
   play early); −1 h, the property's minimum and default, says alone (B-177).
 - **Bounds.** While the box cannot keep up nothing is early, nothing drains
   and lateness grows until the path's non-leaky queues fill; the leaky bus
   ingress then loses at capacity with `queue-full` (the queue table above).
 - **Seen**: Latency target ("95 ms (measured), now 2.41 s · draining at 0.50 %
-  (about 8 min) · in sync with Video Player"), Drained, Buffer underruns,
+  (about 8 min) · in sync with Video Player"; apart, "4.50 s ahead of Video
+  Player (held 1 s above its own target)", "rising to Video Player's latency
+  at 0.20 %", B-241), Drained, Buffer underruns
+  ("15, 1 raised the target, 12 while catching up, 2 under load", B-240),
   Rate match's drain drops, the trend's "— draining to its target"; INFO lines
   at a drain's start and end.
 - **Engineering choices for the owner's veto** (E21–E23 and the design's
-  owner-level items): any short audio dropout raises the margin, which decays
-  5 ms/h (a source with a recurring short dip gets one re-probe dropout about
-  every 2 h; 5 ms per 4 h would make it 8 h); a late video frame raises the
-  margin only while draining or within 30 s after; grouping by common origin,
+  owner-level items): a short audio dropout on a steady stream at its margin
+  raises the margin (B-240 replaced "any"), which decays 5 ms/h (a source with
+  a recurring short dip gets one re-probe dropout about every 2 h; 5 ms per
+  4 h would make it 8 h); a late video frame never raises the margin (B-256,
+  E-F2: a player whose decoded slack is short of its jitter repeats a refresh
+  at it instead of carrying more latency); grouping by common origin,
   audio-only outputs not grouped; the 1 s rise cap; a member of two programmes
   joins neither; a restarted output rises to its group's latency on purpose
   (a member below the target plays up to 0.5 % slower: audio pitch down by up
@@ -4072,6 +4109,97 @@ Phase 3 ships as v2.0.0.102).
   origin left out; the design (its r3 review carry) had it form its own
   group. Neither chains two groups; as built, that player is held to gate A's
   latency. The owner has been asked.
+
+### A whole-programme stall is a delay through a muxer (p4-20, B-243; V-P4-2, Q-A)
+
+DEV-P4cd stopped a muxer's runner for 2 s and the outputs read +1.24 to
++1.66 s, the muxer's pace then holding about +0.9 s for 3 minutes. The rig's
+ledger of the 2 s (B-243) found nothing lost on the bus path at 2 s (the
+producer's edge queue, the muxer's ingress queue and its demux) and three
+faults in `mralignwatch` (B-80, B-82, B-204 left them): (a) its own freeze read
+as the inputs' silence, so an input whose task ran first after the stop went
+absent and its backlog was discarded; (b) the one stretch between the last
+arrival before the stop and the first after it, 2 s long and rising, carried
+the member's 1 s median to about +0.9 s, which B-82 kept for `fall-after`;
+(c) a stop upstream of the muxer made every input absent at W and its backlog
+stale. The owner answered Q-A on 2026-11-15, "carry it", and as built:
+
+- **A freeze is held.** A task whose wake is overdue by more than
+  `FREEZE_NS` (250 ms) adds the overdue time to the input's held time, with
+  no 4 s bound (a freeze is carried however long, for the owner's veto); each
+  member's task publishes its wake time lock-free to its pace group, so an
+  arrival of any member that finds a task overdue, or a thaw since its last
+  arrival, knows the process stood still.
+- **A common stall is a hold.** An input silent past W is absent only if
+  another member that counts (present, not sparse) arrived more than W/2
+  after its last arrival and has flowed for a whole W since its run began
+  (`PaceGroup::quiet`); with every member quiet it is held, no absence and no
+  gap, up to `PACE_CEILING_NS` (4 s), then absent and gapped as before. An
+  input that has not arrived since it joined or since it was absent stalled
+  nothing and is absent at W as before.
+- **The burst moves no pace.** After a freeze or a common stall (every
+  member that counts silent past its own W until an arrival), arrivals are
+  observed `held` (B-204) until one is due within twice the pace, or one is
+  later than the silence explains (its own lateness, for B-205), or 4 s have
+  passed; the first is no gap of the rhythm.
+
+So a stall of every input together, up to 4 s, reaches the outputs as delay
+with nothing lost and the pace unchanged, and the outputs drain it (B-179;
+a stop of the common source reads 2 s less what the running muxer still held,
+its interleave wait, 60 to 80 ms in the rig);
+one input silent while the others flow is absent at W and gapped (B-80); a
+single-input muxer, or a mixer whose inputs all stop, waits up to 4 s before
+its gaps (for the owner's veto: a dead source now costs 4 s, not W, there).
+
+### A muxer's silence limit counts deliveries (p4-21, B-244; F-3)
+
+After DEV-P4cd's source restarted, the muxer marked its audio absent about
+every 0.4 s until the engine restart that reconnected the source. The
+sender's AAC comes in 362 ms PES of 17 frames, and the muxer's parser hands
+each on as 17 buffers at one instant: W (3 x the p95 of the last 200 gaps,
+B-80's rhythm) saw 16 zero gaps and one of 362 ms, just over the 5 % its rank
+reads. Deliveries of two PES after the restart put the long gaps under 5 %:
+W fell to its 100 ms floor and every gap between deliveries was an absence.
+As built, `ArrivalRhythm` counts deliveries: a buffer within `TOGETHER_NS`
+(5 ms) of its delivery's first joins it, no gap taken; the next gap runs from
+its last buffer, a resume after a hold upstream joins the same way, and
+MIN_ARRIVALS counts deliveries. 5 ms is under every rhythm the aligners carry
+(10 ms 302M blocks); leaving gaps out only raises the p95, so in steady
+state no W is lower than before. The 200-gap window now spans 200 deliveries,
+so after a rhythm change W follows more slowly, within the floor and ceiling.
+The brief's lead (a rejoin's burst, the epoch change) set
+nothing here, and the demux delivered every PES.
+
+### A muxer input with no stream does not hold the output (p4-22, B-245; F-4)
+
+When DEV-P4cd's source went from HEVC with AAC to H.264 alone, its muxer
+sent nothing until restarted. Not the aligner's gaps (an input absent before
+any horizon is gapped from now less the pace): the TS Splitter's video output
+changed its stream type, so the muxer's demux planned a new program, a new
+video pad beside the old one, and the routing hook sank it as a "second video
+stream", the class being routed already. As built, `mux_routing` (native and
+python) hands a class's route to a pad of another generation (the demux's
+program count in the pad name): the old branch is stopped and removed, its
+request pad released, and the new pad links to the same request pad (same
+PID, a new stream in the PMT; the old program's last items in the old branch,
+under one pace, are dropped). An old program's EOS is held back from the mux
+by an event probe on each routed pad (with the hold below in place, its job
+is the route of a class that has left: shown absent, with its warning, not
+an ended route that stays "present"): a class the new program lacks keeps
+its route, silent, absent and gapped, until it comes back; releasing it would change the output's PMT for every consumer
+downstream. A mux with no sink pad at all ends too (mpegtsmux reads zero
+pads as every pad ended), so a takeover of its only route first requests a
+hold, a request pad that never gets caps on a free PID from the top down,
+and releases it once the new pad is linked. As a consequence, a source that
+really ends no longer ends the muxer once a class has left: its kept route
+never gets an EOS (harmless for live bus inputs).
+An input that sends nothing from the start (a PMT that lists AAC and carries
+none) still holds the muxer's start for its W, the 2 s ceiling: a bound of
+500 ms was built and taken out again, since it broke Phase 2's tested start
+rule (an input up to 2 s late at the start sets the pace, never absent on its
+first buffers). The engine's "Waiting for" names the slowest present input
+only: an absent input is gapped, and its row and warning say so (B-93's
+"waited for" amended).
 
 ### The gap rule (OQ-32)
 
@@ -4118,6 +4246,53 @@ sections above give the reasons, the register rows the details.
   stale-PES arm waiting on the owner's p3-23 veto (B-174).
 - **p4-18** (WI-P4-18): margins from their floors; the starvation as the
   sink's own; the two-origin Video Player rule (B-179).
+- **p4-19** (fix batch FB1): S6 reads the trough 1–2 s before the
+  starvation, not at it (the fill's own fall is in the window by then); the
+  video half (a late frame never raises) withheld on part B's finding, B4
+  kept for video (B-240); landed by p4-19v (B-256).
+- **p4-23** (fix batch FB1): "behind" a member means playing later than it,
+  "ahead of" earlier, and B-179's "1 s behind its group: held there" reads
+  "held 1 s above its own target"; the load label before the drain-cap
+  label; no segment of two readings reads "measuring"; known limits: no
+  hysteresis at 45 ms, a lateness step one report after its mark reads as
+  growth, and the label trails a member by up to a group tick (B-241).
+- **p4-27** (fix batch FB1): the display's counts read by the engine over
+  `get_property` (no new element field), only where the plan names
+  waylandsink, only beside the pace's Rate match row, per minute and in
+  all, dropped after three missed reads (B-242).
+- **p4-20** (V-P4-2, Q-A): the freeze told through the pace group as well
+  as by the input's own task; the burst ended at twice the pace or past its
+  silence; a never-heard input absent at W; a freeze held with no 4 s
+  bound; a one-input muxer or an all-quiet mixer silent up to 4 s; the
+  boxes' shortfall at the outputs beyond the rig's test sinks left to
+  DEV-P4fx (B-243).
+- **p4-21** (F-3): the cause in the rhythm, not the rejoin or the demux;
+  "W back within 20 %" read against the restarted source's own deliveries;
+  no TS Splitter in the rig's restart; the decoder's underruns left to
+  DEV-P4fx (B-244).
+- **p4-22** (F-4): the cause in the routing hook, not the aligner; an old
+  program's EOS held back from the mux, a hold pad through a takeover of
+  the mux's only route, a vanished class's route kept,
+  absent and gapped; the start hold of a stream that never comes left at its
+  2 s W; "Waiting for" no longer names absent inputs (B-245).
+- **p4-24** (fix batch FB3): the second ask goes at once after a miss, so
+  the warning comes 6–11 s after a freeze, not within 10 s in every phase;
+  it stands over the module's own transient warnings and gives them back;
+  the throughput rate per module read, since every `get_throughput`
+  restarts the runners' rate window (B-246).
+- **p4-25** (fix batch FB3): on an automatic display kmssink is given the
+  first real screen's `connector-id` (Writeback-* skipped) and the Display
+  panel names that screen; the compositor gate stays, so V-P4-6's kmssink arm
+  runs only on hosts without waylandsink: a CI case on our images (B-247).
+- **p4-26** (fix batch FB3): the Video Player's probe tap queue is named
+  `vp_probeq` and both runners' queue watch leaves it out, so B-174's F2 is
+  closed; Teletext Subtitles' and MPEG-TS IP Input's probe taps are still
+  watched (B-248).
+- **p4-19v** (fix batch FB3): a Video Player's late release never raises its
+  margin, on the trough as Phase 4 built it (p4-19 part B's trough change not
+  built: FB1's diagnosis showed the drain removes only real queue level); the
+  looped-source bound is at most one late release per seam, any reason, since
+  a seam's drain ends inside Q of the next at a 40 s loop (B-256).
 
 ### What this phase supersedes
 

@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -3918,6 +3919,49 @@ def test_ingest_queue_sheds():
             r.kill()
 
 
+def test_probe_tap_unwatched():
+    """PQ (B-248), both runners: the player's probe tap (vp_probeq, leaky) in front of an appsink that
+    never pulls, for over 10 s, gives no queue_overrun, while a leaky tap of another name beside it
+    and the ingress queue upstream still do. The tap still drops: it holds its 64 buffers."""
+    src = "audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,rate=48000,channels=2"
+    held = "max-buffers=1 drop=false sync=false emit-signals=false"
+    pipe = (f"{src} ! queue name=ingestq leaky=2 max-size-time=0 max-size-buffers=0 max-size-bytes=19200"
+            f" ! identity name=stall ! tee name=vp_ts ! fakesink sync=false async=false"
+            f" vp_ts. ! queue name=vp_probeq leaky=downstream max-size-buffers=64 ! appsink name=tsprobe {held}"
+            f" vp_ts. ! queue name=othertap leaky=downstream max-size-buffers=64 ! appsink name=nopull {held}")
+    for tag, argv in (("native", None), ("py", _PY_ENV_RUNNER)):
+        r = RunnerProc(argv)
+        try:
+            r.send({"cmd": "start", "pipeline": pipe, "eosDrain": False})
+            check(f"PQ {tag} reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
+            # The ingress queue's episode: 500 ms a buffer for 1.5 s, as IQ.
+            time.sleep(1.0)
+            r.send({"cmd": "set_property", "id": "pqs1", "element": "stall", "property": "sleep-time",
+                    "value": 500000})
+            time.sleep(1.5)
+            r.send({"cmd": "set_property", "id": "pqs0", "element": "stall", "property": "sleep-time", "value": 0})
+            ing = r.wait_event(lambda e: e.get("channel") == "queue_overrun"
+                               and e["payload"].get("element") == "ingestq", timeout=4.0)
+            check(f"PQ {tag} the ingress queue's overrun still reported ({ing and ing['payload']})",
+                  ing is not None and ing["payload"].get("overruns", 0) > 0)
+            # The other tap has been full since about 0.7 s: its 10 s report as it stands.
+            other = r.wait_event(lambda e: e.get("channel") == "queue_overrun"
+                                 and e["payload"].get("element") == "othertap" and e["payload"].get("ongoing"),
+                                 timeout=13.0)
+            check(f"PQ {tag} a leaky tap of another name is watched (its 10 s report: {other and other['payload']})",
+                  other is not None and other["payload"].get("leaky") == 2 and other["payload"].get("overruns", 0) > 500)
+            level = _runner_prop(r, "vp_probeq", "current-level-buffers", f"pql{tag}")
+            check(f"PQ {tag} the probe tap still drops: full at its 64 buffers ({level})", level == 64)
+            code = r.stop_and_wait()
+            probe = _overruns(r, "vp_probeq")
+            check(f"PQ {tag} no queue_overrun from the probe tap, the stop's reports included ({probe}; "
+                  f"{sorted({x.get('element') for x in _overruns(r)})})",
+                  code == 0 and probe == [] and {x.get("element") for x in _overruns(r)} == {"ingestq", "othertap"})
+            check(f"PQ {tag} no error event", not r.has_event(ev_is("error")))
+        finally:
+            r.kill()
+
+
 def test_queue_label_jump():
     """IJ (B-177), both runners: the outputs' prefill (a 40 ms delay line, bound 1 s) fed over a bus
     input whose labels jump 2 s (an outage's return): the one buffer that meets it full behind the
@@ -4624,6 +4668,91 @@ def test_drain_rpc():
         check("DR: both runners forward the same fields", seen["native"] == seen["python"])
 
 
+# --------------------------------------------------------------------------- LV: a frozen runner (B-246)
+def _asked(r, rid, timeout):
+    """Seconds to a get_throughput answer, None for none within `timeout`."""
+    t0 = time.monotonic()
+    r.send({"cmd": "get_throughput", "id": rid})
+    ev = r.wait_event(lambda e: e.get("id") == rid, timeout=timeout)
+    return None if ev is None else time.monotonic() - t0
+
+
+def test_frozen_runner():
+    """What the engine's liveness ask relies on, both runners: get_throughput is answered at once
+    from PLAYING on, never while the process is stopped, and every ask held over a 12 s SIGSTOP
+    is answered within 5 s of SIGCONT, the pipeline still playing (GstPluginBase, B-246)."""
+    for tag, argv in (("native", None), ("python", _PY_RUNNER)):
+        r = RunnerProc(argv)
+        try:
+            r.wait_event(ev_is("ready"), timeout=10)
+            r.send({"cmd": "start", "useStdioForData": False, "linkOnPadAdded": [],
+                    "decoderThreadType": "auto",
+                    "pipeline": "audiotestsrc is-live=true wave=sine ! audioconvert"
+                                " ! fakesink name=sink sync=true"})
+            playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+            live = [_asked(r, f"lv{tag}{i}", 3.0) for i in range(6)]
+            os.kill(r.proc.pid, signal.SIGSTOP)
+            try:
+                frozen = _asked(r, f"lvf{tag}0", 3.0)
+                late = _asked(r, f"lvf{tag}1", 3.0)
+                time.sleep(max(0.0, 12.0 - 6.0))
+            finally:
+                os.kill(r.proc.pid, signal.SIGCONT)
+            t0 = time.monotonic()
+            back = [r.wait_event(lambda e, i=i: e.get("id") == f"lvf{tag}{i}", timeout=5.0) for i in (0, 1)]
+            back_s = time.monotonic() - t0
+            after = _asked(r, f"lva{tag}", 3.0)
+            errors = [e for e in r.events if e.get("event") == "error"]
+            code = r.stop_and_wait()
+        finally:
+            r.kill()
+        check(f"LV {tag}: from PLAYING every ask answered within 3 s "
+              f"({[None if x is None else round(x, 3) for x in live]})",
+              playing and all(x is not None and x < 3.0 for x in live))
+        check(f"LV {tag}: a stopped runner answers no ask ({frozen}, {late})",
+              frozen is None and late is None)
+        check(f"LV {tag}: both held asks answered {back_s:.2f} s after SIGCONT, the next at once ({after})",
+              all(b is not None and b.get("event") == "throughput" for b in back) and back_s < 5.0
+              and after is not None and after < 3.0)
+        check(f"LV {tag}: the pipeline played on, no error, exit 0 ({errors}, {code})",
+              not errors and code == 0)
+
+
+def test_display_stats_rpc():
+    """DS (B-242), both runners: `get_property` of a structure-valued property, 0008's `display-stats` on
+    `mrtestvideosink`, comes back as an object with integer `replaced` and `discarded` (the engine's Rate match
+    row reads them every 10 s); a sink without the property answers command_error (the row reads nothing)."""
+    if not os.path.exists(os.path.join(_TEST_VIDEO_DIR, "libgstmrtestvideo.so")):
+        print("SKIP DS — mrtshouse/tests/mrtestvideo not built (make native-test)")
+        return
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    pipe = ("videotestsrc is-live=true ! video/x-raw,width=64,height=48,framerate=50/1 ! tee name=t "
+            "t. ! queue ! mrtestvideosink name=sink period-ns=20000000 t. ! queue ! fakesink name=fsink sync=false")
+    seen = {}
+    for tag, argv in (("native", None), ("python", _PY_RUNNER)):
+        r = RunnerProc(argv, env=_test_video_env(tmp))
+        try:
+            r.wait_event(ev_is("ready"), timeout=10)
+            r.send({"cmd": "start", "pipeline": pipe, "useStdioForData": False, "linkOnPadAdded": [],
+                    "decoderThreadType": "auto"})
+            playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+            time.sleep(1.0)
+            ds = _runner_prop(r, "sink", "display-stats", f"ds{tag}")
+            r.send({"cmd": "get_property", "id": f"dn{tag}", "element": "fsink", "property": "display-stats"})
+            none = r.wait_event(lambda e: e.get("id") == f"dn{tag}" and e.get("event") in ("property", "command_error"))
+            code = r.stop_and_wait()
+        finally:
+            r.kill()
+        counts = isinstance(ds, dict) and all(type(ds.get(k)) is int for k in ("replaced", "discarded", "presented"))
+        check(f"DS {tag}: display-stats over the RPC is an object with integer replaced and discarded "
+              f"({ds}), the display presenting", playing and code == 0 and counts and ds["presented"] > 0)
+        check(f"DS {tag}: a sink without display-stats answers command_error ({none})",
+              none is not None and none.get("event") == "command_error")
+        seen[tag] = sorted(ds) if isinstance(ds, dict) else None
+    shutil.rmtree(tmp, ignore_errors=True)
+    if len(seen) == 2:
+        check(f"DS: both runners give the same fields ({seen['native']})", seen["native"] == seen["python"])
+
 test_runner_gone()
 test_plain_pipeline()
 test_identity_egress()
@@ -4661,12 +4790,15 @@ test_render_watch_pace()
 test_mrasrc_device()
 test_mrasrc_device_hole()
 test_drain_rpc()
+test_display_stats_rpc()
+test_frozen_runner()
 test_decoder_hole()
 test_subtitle_overlay_formula()
 test_ttx_formula()
 test_burnin_formula()
 test_transcode_formula()
 test_ingest_queue_sheds()
+test_probe_tap_unwatched()
 test_queue_label_jump()
 test_no_late_drop()
 test_transcode_rate()

@@ -338,6 +338,16 @@ describe('planLivePipeline', () => {
         ).toBeUndefined();
     });
 
+    it("marks waylandsink's display-stats for the Rate match row, not kmssink's (B-242)", () => {
+        const wayland = 'waylandsink name=sink sync=true present-every-frame=true fullscreen=true';
+        expect(planLivePipeline({ ...base, sinkElement: wayland }).timingSink).toEqual({
+            element: 'sink',
+            kind: 'video',
+            displayStats: true,
+        });
+        expect(planLivePipeline(base).timingSink).not.toHaveProperty('displayStats');
+    });
+
     it('carries the output mode refresh to the timing sink, and to the pace as its prior', () => {
         const desc = planLivePipeline({ ...base, refreshHz: 50 });
         expect(desc.timingSink).toEqual({ element: 'sink', kind: 'video', refreshHz: 50 });

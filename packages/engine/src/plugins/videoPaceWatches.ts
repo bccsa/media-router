@@ -1,9 +1,11 @@
 // The video outputs' `mrvideopace` messages (house-clock WI-P4-12): the presented frame's
 // lateness, the rate match and its drops, late releases, the pace's hold, and whether the
 // display presents at all (S31). They warn; nothing drops. And the drain back to the latency
-// target (WI-P4-18): its fields and its drops per minute.
-import type { RateMatch } from '@media-router/shared-types';
+// target (WI-P4-18): its fields and its drops per minute. And waylandsink's replaced and
+// discarded frames (B-242).
+import type { DisplayFrames, RateMatch } from '@media-router/shared-types';
 import { drainFieldsOf, type DrainFields } from './asrcWatches.js';
+import type { GapMark } from './latenessTrend.js';
 
 /** The structure name; the runners forward it as `mrvideopace:<element>`. */
 export const VIDEO_PACE_EVENT = 'mrvideopace';
@@ -35,8 +37,8 @@ export interface VideoPaceWatch {
     drainDropsPerMin?: number;
     /** No display rate known: nothing drains. */
     rateKnown: boolean;
-    /** Changes at every gap the pace collapsed, a display outage and a new element. */
-    gapMark: string;
+    /** Resets at a new element or a display outage; steps at a gap the pace collapsed (B-241). */
+    gapMark: GapMark;
 }
 
 interface Sample {
@@ -115,7 +117,11 @@ export class VideoPaceWatches {
                 meanHoldMs: num(p, 'mean-hold-ns') / NS_PER_MS,
                 presenting,
                 rateKnown: p['drain-rate-known'] !== false,
-                gapMark: `${e.generation}/${num(p, 'gaps-collapsed')}/${presenting}`,
+                // A collapsed hole steps the trend; a new element or a display outage resets it.
+                gapMark: {
+                    reset: `${e.generation}/${presenting}`,
+                    step: `${num(p, 'gaps-collapsed')}`,
+                },
             };
             const drain = drainFieldsOf(p);
             if (drain) {
@@ -134,8 +140,61 @@ export class VideoPaceWatches {
     }
 }
 
-/** `50.00 fps → 50.00 Hz measured, 0 drops/min`; with the drain's (B-179) `, 15 drain drops/min`. */
-export function rateMatchText(r: RateMatch, drainDropsPerMin?: number): string {
+interface StatsSample {
+    at: number;
+    replaced: number;
+    discarded: number;
+}
+
+/** A reading older than this (three missed 10 s reads) is dropped. */
+const DISPLAY_STATS_STALE_MS = 30_000;
+
+/** waylandsink's `display-stats` (Yocto 0008) as the engine reads it every 10 s (B-242): its
+ *  `replaced` and `discarded` counters, per minute over the last minute. */
+export class DisplayStatsWatch {
+    private samples: StatsSample[] = [];
+
+    /** One read; anything without both counters as numbers reads nothing. A count below the last is a new
+     *  sink: its counts start again. */
+    take(stats: unknown, now: number): void {
+        const p = (stats ?? {}) as Payload;
+        const { replaced, discarded } = p;
+        // Integers only: a null, string or boolean counter must not read as 0 or 1.
+        if (typeof replaced !== 'number' || !Number.isFinite(replaced)) return;
+        if (typeof discarded !== 'number' || !Number.isFinite(discarded)) return;
+        const last = this.samples[this.samples.length - 1];
+        const again = !!last && (replaced < last.replaced || discarded < last.discarded);
+        const kept = again ? [] : this.samples.filter((x) => now - x.at <= RATE_WINDOW_MS);
+        this.samples = [...kept, { at: now, replaced, discarded }];
+    }
+
+    reading(now: number): DisplayFrames | undefined {
+        const b = this.samples[this.samples.length - 1];
+        if (!b || now - b.at > DISPLAY_STATS_STALE_MS) return undefined;
+        const a = this.samples[0];
+        const span = b.at - a.at;
+        const rate = (k: 'replaced' | 'discarded'): number =>
+            span > 0 ? ((b[k] - a[k]) * 60_000) / span : 0;
+        return {
+            replaced: b.replaced,
+            discarded: b.discarded,
+            replacedPerMin: rate('replaced'),
+            discardedPerMin: rate('discarded'),
+        };
+    }
+
+    clear(): void {
+        this.samples = [];
+    }
+}
+
+/** `50.00 fps → 50.00 Hz measured, 0 drops/min`; with the drain's (B-179) `, 15 drain drops/min`;
+ *  with waylandsink's counts (B-242) `; replaced 0/min (3 total), discarded 0/min (0 total)`. */
+export function rateMatchText(
+    r: RateMatch,
+    drainDropsPerMin?: number,
+    display?: DisplayFrames,
+): string {
     const fps = r.contentFps > 0 ? `${r.contentFps.toFixed(2)} fps` : 'content rate unknown';
     const hz =
         r.displayHz > 0
@@ -143,5 +202,9 @@ export function rateMatchText(r: RateMatch, drainDropsPerMin?: number): string {
             : 'display rate unknown';
     const drain =
         drainDropsPerMin === undefined ? '' : `, ${Math.round(drainDropsPerMin)} drain drops/min`;
-    return `${fps} → ${hz}, ${Math.round(r.dropsPerMin)} drops/min${drain}`;
+    const shown = display
+        ? `; replaced ${Math.round(display.replacedPerMin)}/min (${display.replaced} total), ` +
+          `discarded ${Math.round(display.discardedPerMin)}/min (${display.discarded} total)`
+        : '';
+    return `${fps} → ${hz}, ${Math.round(r.dropsPerMin)} drops/min${drain}${shown}`;
 }

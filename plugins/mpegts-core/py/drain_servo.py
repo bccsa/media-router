@@ -25,11 +25,19 @@ window clear (a relock, a stall's flush, caps, a flush, PAUSED), nor while an ep
 0: the slack is what was early.
 
 The margin. Audio starts at its 20 ms floor (the live fill sits at the prefill's delay line: no
-ring margin to keep), video at its floor, 1 frame; ceiling 500 ms. An
-audio starvation of at most 250 ms raises it at its end, whatever the drain did (B3); a longer one
-is an outage, counted apart. A video late release raises it only while delta > 0 or within 30 s
-after delta last was (B4); other late releases are counted, and one more than 250 ms late is an
-outage. Late frames within 1 s of the last are one episode. A raise: L = m_u (the margin that underran), m = min(500 ms, max(2 m_u, m_u + 20 ms)).
+ring margin to keep), video at its floor, 1 frame; ceiling 500 ms. Only a steady audio starvation
+the margin limited raises it (B-240, owner decision 2026-11-13): one of at most 250 ms is judged
+10 s after its end (t_c) and raises there only if (S1) the servo was warm at its start (window
+full, no starvation hold), (S2) delta was 0 from 30 s before its start to t_c, (S3) no epoch
+break, outage or window clear from 30 s before its start to t_c, (S4) the render lateness at t_c
+is at most its start's + the episode's length + 20 ms, and (S6) the trough 1-2 s before its start
+(the fill's own fall into it left out) was within the margin +- 20 ms; a longer one is an outage,
+counted apart. Each that does not raise counts under
+its first failed test: drain (delta != 0 in it), after-drain (within 30 s after), warm-up, input,
+load, not-margin. A video late release never raises it (B-256): it counts as drain (delta != 0),
+after-drain (within 30 s after delta last was) or video. Late frames within 1 s of the last are one
+episode; one more than 250 ms late is an outage. A raise: L = m_u (the margin
+that underran), m = min(500 ms, max(2 m_u, m_u + 20 ms)).
 Every 10 min without a raise m falls 5 ms, never below the floor nor L + 10 ms (L once it exists);
 every hour L falls 5 ms, down to floor - 10 ms.
 
@@ -48,7 +56,10 @@ one JSON object per line: {"op":"config","video":0|1,"start":ns,"floor":ns} star
 {"event":kind,"at":ns,"value":ns} (drain-start: the command; drain-done: drained so far;
 underrun: the episode's length; raise: the new margin; outage: its length) and
 {"ppb":n,"excess":ns,"margin":ns,"learned":ns,"trough":ns,"target":ns,"drained":ns,"raises":n,
-"underruns":n,"outages":n,"state":s,"capped":0|1} (learned -1 before any raise).
+"underruns":n,"outages":n,"state":s,"capped":0|1,"reasons":[n,...]} (learned -1 before any raise;
+reasons: the counts in REASONS' order). An underrun event carries its "reason" (raised, or the
+first failed test), judged at t_c for audio; a raise its evidence: "from" (m_u), "length",
+"trough" (at the episode's start) and "steady" (ns since delta, a break or a clear last moved).
 """
 import json
 import sys
@@ -77,6 +88,12 @@ RISE_CAP_NS = SEC
 GROUP_ALONE_NS = -3600 * SEC          # the group target that means alone; any other, even <= 0, groups
 AUDIO_START_NS = 20 * MS
 AUDIO_FLOOR_NS = 20 * MS
+CONFIRM_NS = 10 * SEC                 # C: an audio starvation is judged this long after its end (B-240)
+QUIET_NS = WINDOW_NS                  # Q: delta 0 this long before it (the window still holds the drain's fill)
+LIMIT_BAND_NS = ENGAGE_NS             # S6: its start trough within the margin +- this, both edges in
+KEEP_UP_NS = 20 * MS                  # S4: render lateness may grow by the episode's length + this
+SETTLE_NS = SEC                       # S6 reads the trough 1-2 s before the start: not the fill's own descent
+REASONS = ("drain", "after-drain", "video", "warm-up", "input", "load", "not-margin")
 
 
 def tdiv(a, b):
@@ -135,7 +152,6 @@ class DrainServo:
         self.brk = False
         self.episode_at = None      # audio: the episode's first starving tick
         self.late_at = None         # video: the last late frame of the episode
-        self.positive_at = None     # when delta last was > 0
         self.hold_until = None      # no drain before: a starvation's zeros are in the window
         self.group = GROUP_ALONE_NS
         self.group_at = 0
@@ -148,6 +164,15 @@ class DrainServo:
         self.drained = self.drained_rem = 0
         self.raises = self.underruns = self.outages = 0
         self.events = []
+        self.reasons = dict.fromkeys(REASONS, 0)
+        self.nonzero_at = None      # the last instant delta was != 0
+        self.broken_at = None       # the last epoch break, outage or window clear
+        self.pending = []           # audio episodes awaiting t_c
+        self.render = 0             # the last update's render lateness
+        self.episode = None         # audio: what the running episode's start saw
+        self.settled = None         # the trough 1-2 s ago (S6), and the newer one waiting its turn
+        self.next_trough = None
+        self.next_at = None
 
     def _touch(self, now):
         if self.started:
@@ -179,14 +204,26 @@ class DrainServo:
             else:
                 return
 
-    def _raise(self, now):
+    def _raise(self, now, length, trough, steady):
         mu = self.margin
         self.learned = mu
         self.margin = min(CEILING_NS, max(2 * mu, mu + RAISE_MIN_NS))
         self.raises += 1
         self.m_at = now + M_EVERY_NS
         self.l_at = now + L_EVERY_NS
-        self.events.append(("raise", now, self.margin))
+        self.events.append(("raise", now, self.margin, (mu, length, trough, steady)))
+
+    def _trough(self, now):
+        """The window's trough: the slack's, plus the queue's level where both are fed."""
+        trough = self.slack.min(now)
+        q = self.queue.min(now)
+        if trough is not None and q is not None:
+            trough += q
+        return trough
+
+    def _count(self, now, reason, length):
+        self.reasons[reason] += 1
+        self.events.append(("underrun", now, length, reason))
 
     def sample(self, now, slack_ns):
         self._touch(now)
@@ -202,6 +239,7 @@ class DrainServo:
     def _outage(self, now, length):
         self.outages += 1
         self.hold_until = now + WINDOW_NS
+        self.broken_at = now
         self.events.append(("outage", now, length))
 
     def starve(self, now, on):
@@ -209,19 +247,55 @@ class DrainServo:
         self._touch(now)
         if on and self.episode_at is None:
             self.episode_at = now
+            # S1 as the window and the hold judge it, not the lock: the starvation itself can stop the
+            # render lateness reading (`can`) on the tick before it is detected.
+            warm = (self.sampled and now - self.warm_from >= WINDOW_NS
+                    and (self.hold_until is None or now >= self.hold_until))
+            self.episode = {"start": now, "render": self.render, "trough": self.settled,
+                            "margin": self.margin, "warm": warm, "drain": self.ppb != 0,
+                            "quiet": self.nonzero_at}
         elif not on and self.episode_at is not None:
             length = now - self.episode_at
             self.episode_at = None
             if length <= SHORT_NS:
                 self.hold_until = now + WINDOW_NS
                 self.underruns += 1
-                self.events.append(("underrun", now, length))
-                self._raise(now)
+                ep = dict(self.episode, length=length, tc=now + CONFIRM_NS)
+                ep["drain"] = ep["drain"] or self.ppb != 0
+                self.pending.append(ep)
             else:
                 self._outage(now, length)
+            self.episode = None
+
+    @staticmethod
+    def _first_reason(ep):
+        """The first of drain, after-drain and warm-up (S2, Q, S1) that applies to `ep`, else None."""
+        if ep["drain"]:
+            return "drain"
+        if ep["quiet"] is not None and ep["quiet"] >= ep["start"] - QUIET_NS:
+            return "after-drain"
+        return None if ep["warm"] else "warm-up"
+
+    def _judge(self, now, ep, render_ns):
+        """S1-S4, S6 at t_c (B-240): raise, or count under the first test that fails."""
+        start = ep["start"]
+        reason = self._first_reason(ep)
+        if reason is None and self.broken_at is not None and self.broken_at >= start - WINDOW_NS:
+            reason = "input"
+        if reason is None and render_ns > ep["render"] + ep["length"] + KEEP_UP_NS:
+            reason = "load"
+        if reason is None and (ep["trough"] is None or abs(ep["trough"] - ep["margin"]) > LIMIT_BAND_NS):
+            reason = "not-margin"
+        if reason is None:
+            since = max(t for t in (self.nonzero_at, self.broken_at, self.warm_from) if t is not None)
+            self.events.append(("underrun", now, ep["length"], "raised"))
+            self._raise(now, ep["length"], ep["trough"], start - since)
+            return
+        self._count(now, reason, ep["length"])
 
     def late(self, now, by_ns):
-        """Video: a release `by_ns` later than its drained slot, neither collapsed nor sink-late."""
+        """Video: a release `by_ns` later than its drained slot, neither collapsed nor sink-late. Never a
+        raise (B-256): counted drain, after-drain (within Q of delta != 0) or video."""
         self._touch(now)
         joins = self.late_at is not None and now - self.late_at <= JOIN_NS
         self.late_at = now
@@ -231,10 +305,12 @@ class DrainServo:
         if joins:
             return
         self.underruns += 1
-        self.events.append(("underrun", now, 0))
-        recent = self.positive_at is not None and now - self.positive_at <= WINDOW_NS
-        if self.ppb > 0 or recent:
-            self._raise(now)
+        if self.ppb != 0:
+            self._count(now, "drain", 0)
+        elif self.nonzero_at is not None and now - self.nonzero_at <= QUIET_NS:
+            self._count(now, "after-drain", 0)
+        else:
+            self._count(now, "video", 0)
 
     def clear(self, now):
         """A window clear: warm-up again, delta 0; the margin and L stay."""
@@ -249,8 +325,14 @@ class DrainServo:
             self.events.append(("drain-done", now, self.drained))
         self.draining = False
         self.episode_at = None
+        self.episode = None
         self.late_at = None
         self.hold_until = None
+        self.broken_at = now
+        self.settled = self.next_trough = self.next_at = None
+        for ep in self.pending:     # judged at once: S3's, unless an earlier test fails first
+            self._count(now, self._first_reason(ep) or "input", ep["length"])
+        self.pending = []
 
     def epoch_break(self):
         self.brk = True
@@ -269,10 +351,19 @@ class DrainServo:
             acc = self.ppb * dt + self.drained_rem
             self.drained += acc // SEC
             self.drained_rem = acc % SEC
-        trough = self.slack.min(now)
-        q = self.queue.min(now)
-        if trough is not None and q is not None:
-            trough += q
+        if self.ppb != 0:           # delta held its value until now
+            self.nonzero_at = now
+            if self.episode is not None:
+                self.episode["drain"] = True
+            for ep in self.pending:
+                ep["drain"] = True
+        if self.brk:
+            self.broken_at = now
+        while self.pending and self.pending[0]["tc"] <= now:
+            self._judge(now, self.pending.pop(0), render_ns)
+        trough = self._trough(now)
+        if self.next_at is None or now - self.next_at >= SETTLE_NS:
+            self.settled, self.next_trough, self.next_at = self.next_trough, trough, now
         warm = (bool(can) and trough is not None and now - self.warm_from >= WINDOW_NS
                 and (self.hold_until is None or now >= self.hold_until))
         self.trough = trough if trough is not None else 0
@@ -313,8 +404,9 @@ class DrainServo:
         else:
             step = dt // SLEW_DEN
             self.ppb = clamp(want, self.ppb - step, self.ppb + step)
-        if self.ppb > 0:
-            self.positive_at = now
+        if self.ppb != 0:
+            self.nonzero_at = now
+        self.render = render_ns
         self.state = ("warm-up" if not warm else "draining" if self.ppb > 0
                       else "rising" if self.ppb < 0 else "idle")
         return self.ppb
@@ -328,12 +420,22 @@ def line(obj):
     return json.dumps(obj, separators=(",", ":"))
 
 
+def event_line(ev):
+    kind, at, value = ev[:3]
+    d = {"event": kind, "at": at, "value": value}
+    if kind == "underrun":
+        d["reason"] = ev[3]
+    elif kind == "raise":
+        d["from"], d["length"], d["trough"], d["steady"] = ev[3]
+    return line(d)
+
+
 def state_line(s):
     return line({"ppb": s.ppb, "excess": s.excess, "margin": s.margin,
                  "learned": -1 if s.learned is None else s.learned, "trough": s.trough,
                  "target": s.target, "drained": s.drained, "raises": s.raises,
                  "underruns": s.underruns, "outages": s.outages, "state": s.state,
-                 "capped": int(s.capped)})
+                 "capped": int(s.capped), "reasons": [s.reasons[r] for r in REASONS]})
 
 
 def replay(lines, out):
@@ -363,8 +465,8 @@ def replay(lines, out):
             s.set_group(op["now"], op["target"])
         elif k == "update":
             s.update(op["now"], op["render"], bool(op["can"]))
-            for kind, at, value in s.take_events():
-                out.write(line({"event": kind, "at": at, "value": value}) + "\n")
+            for ev in s.take_events():
+                out.write(event_line(ev) + "\n")
             out.write(state_line(s) + "\n")
         else:
             raise ValueError("unknown op %r" % k)

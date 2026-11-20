@@ -2423,16 +2423,29 @@ bool drain_op(const Json& op, DrainServo* s, std::string* err) {
         if (!op_i64(op, "now", &now, err) || !op_i64(op, "render", &v, err) || !op_flag(op, "can", &flag, err))
             return false;
         s->update(now, v, flag);
-        for (const DrainEvent& e : s->take_events())
-            std::printf("{\"event\":\"%s\",\"at\":%lld,\"value\":%lld}\n", drain_event_name(e.kind), (long long)e.at,
+        for (const DrainEvent& e : s->take_events()) {
+            std::printf("{\"event\":\"%s\",\"at\":%lld,\"value\":%lld", drain_event_name(e.kind), (long long)e.at,
                         (long long)e.value);
+            if (e.kind == DrainEvent::Kind::underrun) {
+                std::printf(",\"reason\":\"%s\"", underrun_reason_name(e.reason));
+            } else if (e.kind == DrainEvent::Kind::raise) {
+                std::printf(",\"from\":%lld,\"length\":%lld,\"trough\":", (long long)e.from, (long long)e.length);
+                if (e.have_trough) std::printf("%lld", (long long)e.trough);
+                else std::printf("null");
+                std::printf(",\"steady\":%lld", (long long)e.steady);
+            }
+            std::printf("}\n");
+        }
         std::printf("{\"ppb\":%lld,\"excess\":%lld,\"margin\":%lld,\"learned\":%lld,\"trough\":%lld,\"target\":%lld,"
                     "\"drained\":%lld,\"raises\":%llu,\"underruns\":%llu,\"outages\":%llu,\"state\":\"%s\","
-                    "\"capped\":%d}\n",
+                    "\"capped\":%d,\"reasons\":[",
                     (long long)s->ppb(), (long long)s->excess(), (long long)s->margin(),
                     (long long)(s->has_learned() ? s->learned() : -1), (long long)s->trough(), (long long)s->target(),
                     (long long)s->drained(), (unsigned long long)s->raises(), (unsigned long long)s->underruns(),
                     (unsigned long long)s->outages(), drain_state_name(s->state()), s->capped() ? 1 : 0);
+        for (int r = 0; r < UNDERRUN_REASONS; r++)
+            std::printf("%s%llu", r ? "," : "", (unsigned long long)s->reason_count((UnderrunReason)r));
+        std::printf("]}\n");
     } else {
         return *err = "unknown op \"" + k + "\"", false;
     }

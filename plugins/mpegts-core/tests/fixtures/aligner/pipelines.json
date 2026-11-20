@@ -222,6 +222,121 @@
     },
     "env": {}
   },
+  "muxOne": {
+    "start": {
+      "pipeline": "mpegtsmux name=mux latency=0 alignment=7 prog-map=\"program_map,sink_256=(int)1,PCR_1=sink_256\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41032 reference=running-time ! tee name=busout_41032 allow-not-linked=true unixfdsrc name=busin_0 socket-path=@SOCK@/one0.sock ! mrlateness name=lat_busin_0 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! mrtsdemux name=demux_0",
+      "useStdioForData": false,
+      "linkOnPadAdded": [],
+      "readKlvNames": false,
+      "liveCaptureClock": false,
+      "decoderThreadType": "auto",
+      "busReports": [],
+      "runnerHooks": [
+        {
+          "module": "mux_routing",
+          "config": {
+            "inputs": [
+              {
+                "demux": "demux_0",
+                "linkTo": "mux",
+                "pid": 256,
+                "routes": {
+                  "video": {
+                    "branch": "mralignwatch name=aw_demux_0_video aligner=mux input=demux_0_video max-size-bytes=40000000"
+                  },
+                  "audio": {
+                    "branch": "mralignwatch name=aw_demux_0_audio aligner=mux input=demux_0_audio max-size-bytes=40000000"
+                  },
+                  "klv": {
+                    "branch": "mralignwatch name=aw_demux_0_klv aligner=mux input=demux_0_klv max-size-bytes=40000000 sparse=true"
+                  },
+                  "subtitle": {
+                    "branch": "mralignwatch name=aw_demux_0_subtitle aligner=mux input=demux_0_subtitle max-size-bytes=40000000 sparse=true"
+                  }
+                },
+                "ignorePids": [
+                  496
+                ],
+                "pcr": {
+                  "program": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "env": {}
+  },
+  "muxLegacy": {
+    "start": {
+      "pipeline": "mpegtsmux name=mux latency=0 alignment=7 prog-map=\"program_map,sink_320=(int)1,sink_384=(int)1,sink_416=(int)1,sink_256=(int)1,sink_385=(int)1,sink_417=(int)1,PCR_1=sink_256\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41033 reference=running-time ! tee name=busout_41033 allow-not-linked=true unixfdsrc name=busin_0 socket-path=@SOCK@/la0.sock ! mrlateness name=lat_busin_0 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! mrtsdemux name=demux_0 unixfdsrc name=busin_1 socket-path=@SOCK@/lv0.sock ! mrlateness name=lat_busin_1 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! mrtsdemux name=demux_1",
+      "useStdioForData": false,
+      "linkOnPadAdded": [],
+      "readKlvNames": false,
+      "liveCaptureClock": false,
+      "decoderThreadType": "auto",
+      "busReports": [],
+      "runnerHooks": [
+        {
+          "module": "mux_routing",
+          "config": {
+            "inputs": [
+              {
+                "demux": "demux_0",
+                "linkTo": "mux",
+                "routes": {
+                  "audio": {
+                    "padName": "sink_320",
+                    "branch": "mralignwatch name=aw_320 aligner=mux input=320 max-size-bytes=40000000"
+                  },
+                  "klv": {
+                    "padName": "sink_384",
+                    "branch": "mralignwatch name=aw_384 aligner=mux input=384 max-size-bytes=40000000 sparse=true"
+                  },
+                  "subtitle": {
+                    "padName": "sink_416",
+                    "branch": "mralignwatch name=aw_416 aligner=mux input=416 max-size-bytes=40000000 sparse=true"
+                  }
+                },
+                "ignorePids": [
+                  496
+                ],
+                "pcr": {
+                  "program": 1
+                }
+              },
+              {
+                "demux": "demux_1",
+                "linkTo": "mux",
+                "routes": {
+                  "video": {
+                    "padName": "sink_256",
+                    "branch": "mralignwatch name=aw_256 aligner=mux input=256 max-size-bytes=40000000"
+                  },
+                  "klv": {
+                    "padName": "sink_385",
+                    "branch": "mralignwatch name=aw_385 aligner=mux input=385 max-size-bytes=40000000 sparse=true"
+                  },
+                  "subtitle": {
+                    "padName": "sink_417",
+                    "branch": "mralignwatch name=aw_417 aligner=mux input=417 max-size-bytes=40000000 sparse=true"
+                  }
+                },
+                "ignorePids": [
+                  496
+                ],
+                "pcr": {
+                  "program": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "env": {}
+  },
   "splitter": {
     "argv": [
       "--input",

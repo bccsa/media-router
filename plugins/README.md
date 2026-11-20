@@ -975,7 +975,7 @@ return {
 };
 ```
 
-**Routing every stream of a source (the mpegts-muxer).** The two contracts above filter pads by kind and leave everything else unlinked — fine while one demuxer feeds one branch, fatal when a source carries only streams the rule does not match: a demuxer (`tsdemux`, `mrtsdemux` alike) combines its pads' flow returns, so a TS whose ONLY pad is unlinked returns NOT_LINKED and the source errors out in a restart loop (a KLV-only subtitle TS on an audio rule, 2026-09-15). A plugin that needs more than the positional contract does NOT extend the runner: it ships the pad-added logic as a **runner hook** (next section). The mpegts-muxer is the reference — `plugins/mpegts-muxer/py/mux_routing.py` classifies every pad its demux exposes (`mrtsdemux` since house-clock Phase 3, with tsdemux's pad names and caps: video / audio / klv / subtitle / data), routes the first pad of each class to its `sink_<pid>` request pad on the mux with the right codec parser injected, sinks the rest into a `fakesink` and pins `prog-map`'s `PCR_1` on the first video pad it links; each route's `mralignwatch` (`sparse=true` on a cue route) gaps it at the mux's pace, so the aggregator never waits on it. Its TypeScript side (`engine/muxPids.ts`) only describes the routes; `py/mux_routing_test.py` runs a real TS through tsdemux → hook → mpegtsmux. Nothing of this lives in the engine (ADR-0017).
+**Routing every stream of a source (the mpegts-muxer).** The two contracts above filter pads by kind and leave everything else unlinked — fine while one demuxer feeds one branch, fatal when a source carries only streams the rule does not match: a demuxer (`tsdemux`, `mrtsdemux` alike) combines its pads' flow returns, so a TS whose ONLY pad is unlinked returns NOT_LINKED and the source errors out in a restart loop (a KLV-only subtitle TS on an audio rule, 2026-09-15). A plugin that needs more than the positional contract does NOT extend the runner: it ships the pad-added logic as a **runner hook** (next section). The mpegts-muxer is the reference — `plugins/mpegts-muxer/py/mux_routing.py` classifies every pad its demux exposes (`mrtsdemux` since house-clock Phase 3, with tsdemux's pad names and caps: video / audio / klv / subtitle / data), routes the first pad of each class to its `sink_<pid>` request pad on the mux with the right codec parser injected (a new program's pad of that class, after a codec or stream change, takes the route over: B-245), sinks the rest into a `fakesink` and pins `prog-map`'s `PCR_1` on the first video pad it links; each route's `mralignwatch` (`sparse=true` on a cue route) gaps it at the mux's pace, so the aggregator never waits on it. Its TypeScript side (`engine/muxPids.ts`) only describes the routes; `py/mux_routing_test.py` runs a real TS through tsdemux → hook → mpegtsmux. Nothing of this lives in the engine (ADR-0017).
 
 #### In-band metadata carousel (`appsrc` + `setKlvPayload` / `readKlvNames`) — no current consumer
 
@@ -2238,16 +2238,24 @@ the aligners' `input-absent` and `aligner-full` warnings
   kept one plus a period), `Rate match` (`50.00 fps → 50.00 Hz measured, 0
   drops/min`: the content's rate, the display's as the pace sees it,
   `achieved`, else the mode's `measured` or `nominal` refresh, and its rate
-  drops, those made as the display fell behind included, per minute over the last minute),
+  drops, those made as the display fell behind included, per minute over the last minute;
+  on waylandsink also `; replaced 0/min (0 total), discarded 0/min (0 total)`,
+  0008's `display-stats` counters read every 10 s over `get_property` where the
+  plan's `timingSink` says `displayStats`, B-242),
   `Late releases` (/min) and `Pace hold` (its mean hold, ms). From an ASRC
   with a device term: Render lateness = `render-lateness-ns` once known (0:
   not yet), and `Device relocks` and `Device stalls` beside Device clock (no
   second clock row). `Lateness trend` on every output that renders: the
   least-squares slope of Render lateness over the last 3 min, `+12 ms/min —
-  decode or device slower than real time` when it rises, `measuring` until
-  3 min ran with no gap; a gap is a reading missing for 6 s, a gap the pace
-  collapsed, a relock, a device relock or stall, a display outage, a new
-  element or a change of where the reading comes from. Three warnings join
+  decode or device slower than real time` when it rises (`— falling behind
+  under load` when its drain counted a `load` underrun in the window),
+  `measuring` until 3 min ran since a reset. The watches' `gapMark` has two
+  parts (B-241): a reset (a reading missing for 6 s, a device relock or
+  stall, a display outage, a new element or a change of where the reading
+  comes from) empties the window; a step (a gap the pace collapsed, a source
+  relock or gap) starts a segment, and the slope is one line through the
+  segments of two or more readings, each at its own level, so a step is no
+  growth. Three warnings join
   the module's timing warnings (one health text it owns, ADR-0010 rule 2);
   they warn, nothing drops: `display-not-presenting` (`Display not
   presenting (output off?)`, while the pace reads `display-presenting`
@@ -2262,7 +2270,9 @@ the aligners' `input-absent` and `aligner-full` warnings
   is open and 30 s after it closed (dropped if its pipeline stops or fails);
   each episode is also one WARN line with that text and its counts. A
   non-leaky queue met full once and below its bounds by the episode's end is
-  no episode: a label jump after an outage (B-177).
+  no episode: a label jump after an outage (B-177). The Video Player's
+  probe tap queue, `vp_probeq`, is never watched: a report-only tap drops by
+  design and loses no content (`PROBE_QUEUE_NAMES`, B-248).
 - **Outputs drain their built-up latency** (house-clock WI-P4-18, B-179,
   issue #862), in the device elements, with no code of yours beyond naming
   them: `drainElementNames()` on your `GstPluginBase` subclass returns the
@@ -2271,7 +2281,12 @@ the aligners' `input-absent` and `aligner-full` warnings
   answers `isLatencyGroupAnchor()` true), and a Video Player's pace takes
   `backlog-queue=<its ES queue>`. Each plays what it holds up to 0.5 % faster
   (`mrts::DrainServo`: the 30 s minimum of what was ready early, less a
-  measured margin) until it is back at its target. The engine groups the
+  measured margin) until it is back at its target. An audio output's margin
+  rises only at a short starvation on a steady stream with its buffer at the
+  margin, judged 10 s after it; one while catching up, under load, while
+  settling or after an input break raises nothing and is counted by reason
+  (B-240); a Video Player's late frame never raises it, and is counted the
+  same way (B-256). The engine groups the
   running outputs of one bus origin (`plugins/drainGroups.ts`: Video Players
   anchor, audio outputs join, one touching two programmes joins neither) and
   every 2 s calls `applyLatencyGroupTarget(ns)`, which sets `group-target-ns`
@@ -2280,10 +2295,16 @@ the aligners' `input-absent` and `aligner-full` warnings
   to 0.5 % slower to reach it, at most 1 s above its own; `DRAIN_GROUP_ALONE_NS`
   (−1 h, the property's minimum and default) says alone (B-177). Rows:
   `Latency target` (`95 ms (measured), now 2.41 s · draining at 0.50 %
-  (about 8 min) · in sync with Video Player`; `not measured (no display
-  rate)` without one), `Drained`, `Buffer underruns` (`3, 3 raised the
-  target`), Rate match's `… N drain drops/min`, and the trend's `— draining
-  to its target` and `— growing faster than it can drain (0.5 %)`. No
+  (about 8 min) · in sync with Video Player`, the last part only while its
+  Render lateness is within 45 ms of each member's, which the engine hands
+  over as `withRenderMs`; otherwise `4.50 s ahead of Video Player (held 1 s
+  above its own target)`, `rising to Video Player's latency at 0.20 %` or
+  `2.10 s behind Audio Decoder`, and `grouped with …` while one is unknown,
+  B-241; `not measured (no display rate)` without one), `Drained`,
+  `Buffer underruns` (`15, 1 raised the target, 12 while catching up, 2
+  under load`), Rate match's `… N drain drops/min`, and the trend's
+  `— draining to its target` and `— growing faster than it can drain
+  (0.5 %)`. No
   setting declares any of it (`removedTimingSettings.test.ts` holds that).
 - **Inputs whose taps are named per branch** (a source given its own name in
   `buildBusSrc({ name })` gets a tap named after it — `lat_busin_<i>` in
@@ -2683,7 +2704,7 @@ input behind the gaps (a joiner, a rejoin) eases up at half a millisecond a
 millisecond, so the output slows and never stops (B-80); once every input has
 stayed 10 ms or more under it for `fall-after` it falls, at most 1 s at a time
 (B-82), and it falls when an input leaves (its pad released). An input silent
-for W (3 × the p95 of its gaps between arrivals, 100 ms to 2 s) is absent: it
+for W (3 × the p95 of its gaps between deliveries, 100 ms to 2 s) is absent: it
 is gapped at the pace and the aggregator goes on without it; when it comes
 back, what it sends that ends before the gaps' horizon is discarded as stale
 and counted, and it rejoins at the current position. An input added to a
@@ -2739,7 +2760,8 @@ blocks upstream when full and never drops. Rules:
   does not start).
 
 What the operator sees: `timing` gains Pace (the aligner's added latency over
-its fastest input) and Waiting for (the absent inputs, else the slowest);
+its fastest input) and Waiting for (the slowest present input; an absent
+input is shown on its row and warning, B-245);
 each `timing-in-<n>` gains State, Silence limit, Absences and Discarded on
 rejoin; the module warns `Input <label> silent for <W> ms — continuing
 without it` and `Input <label> queue full — upstream held`. The element's
@@ -3210,7 +3232,7 @@ worth copying:
 
 The live pipeline starts on `decodebin3` and upgrades itself once it knows the codec. Worth copying if your plugin decodes an unknown-codec stream.
 
-- **Detection.** The live pipeline tees its ingress into `appsink name=tsprobe` and sets `tsProbe: { appsink: 'tsprobe' }`, so the runner's report-only probe emits `tsprobe:videoinfo` to `onPluginEvent`. The tap is the last thing before `mrtsdemux` (the probe wants the *muxed* TS — it does its own PSI discovery) and therefore downstream of the stall watchdog, so it can't disturb `bus_stall`. It needs 188-aligned buffers — `ts_psi.iter_packets` strides a fixed 188 and never resyncs on `0x47` — and gets them from the bus itself: `unixfd` carries producer buffer boundaries across the socket untouched and every bus producer emits whole-packet buffers (ADR-0011). No `tsparse` sits in the chain on either sink (WI-P3-18); the demux re-frames any other split itself.
+- **Detection.** The live pipeline tees its ingress into `appsink name=tsprobe` and sets `tsProbe: { appsink: 'tsprobe' }`, so the runner's report-only probe emits `tsprobe:videoinfo` to `onPluginEvent`. The tap is the last thing before `mrtsdemux` (the probe wants the *muxed* TS — it does its own PSI discovery) and therefore downstream of the stall watchdog, so it can't disturb `bus_stall`. It needs 188-aligned buffers — `ts_psi.iter_packets` strides a fixed 188 and never resyncs on `0x47` — and gets them from the bus itself: `unixfd` carries producer buffer boundaries across the socket untouched and every bus producer emits whole-packet buffers (ADR-0011). No `tsparse` sits in the chain on either sink (WI-P3-18); the demux re-frames any other split itself. The tap's leaky queue is `queue name=vp_probeq`, which the runners' queue watch leaves out: a probe that falls behind drops there and loses no content (B-248).
 - **Ladder** (`engine/helpers/decoderSelection.ts`, pure — availability and demotions are passed in, no I/O): h265 → `h265parse ! v4l2slh265dec` → `h265parse ! avdec_h265` → `decodebin3`; h264 → `h264parse ! v4l2h264dec` → `h264parse ! avdec_h264` → `decodebin3`; any other codec (mpeg2, unknown, none detected yet) stays on `decodebin3`. Element availability is probed once per engine process in `initManifest` via `probeGstElement`. `cpuDecodeThreading` (`'auto'`, the default, or `'single'`) inlines `thread-type=frame max-threads=3` on the `avdec_*` rungs — a bare `avdec_*` decodes on one core however idle the box is, which lagged a 1080p50 H.264 feed on a Pi 5 (no H.264 hardware decoder) at 62% idle. `'single'` is the opt-out back to one core. Hardware rungs stay bare (those are ffmpeg properties). The same value maps onto the runner's `decoderThreadType` for the `decodebin3` rung, where GStreamer plugs the decoder itself — note the vocabularies differ: the setting's `'auto'` means multi-core, the runner's means "don't force a thread-type", so `resolveDecoderThreadType` maps everything but `'single'` to `'frame'`.
 - **Video only (Q18).** The demux is `mrtsdemux name=vpdemux media=video` on every rung, `decodebin3` included: an audio or data PID gets no pad and is never reassembled, so the ES queue's ANY sink pad can never take one, and an input without video says so ("Input <name> carries no video stream"). Its `mrtsdemux:vpdemux` reports land on the video input's row (`demuxInputOf`). No branch alignment: each frame is at its PES PTS − 1 h.
 - **Plays as soon as it can (B-169).** After the demux a non-leaky `queue name=vp_esq` holds up to 5 s (byte-capped), then the decoder, the convert stage, the subtitle overlay when wired, `mrvideopace name=vp_pace` (each frame on the content's cadence, never before it arrives; a display slower than the content drops frames to keep up, B-162, B-175; `refresh-mhz` from `resolveOutputRefreshHz` only its prior), the render lateness tap and a sink that never waits: `sync=false qos=false`, waylandsink `present-every-frame=true` (Yocto 0008, B-163). No setting times it (Sync, Buffer and Lip-Sync Trim are gone, OQ-29). `renderWatch: { sink: 'sink', pace: 'vp_pace' }`: the pace's rate drops count as kept up. A failing pipeline is rebuilt at 1 s backing off to 30 s (`restartBackoffMs`); on KMS a DRM driver kmssink's own pick never opens (the Pi 5 box's `drm-rp1-dsi`) is named (`helpers/kmsDriver.ts`).

@@ -1,5 +1,6 @@
-// The queue watch (B-170, B-182's shed count grown): every leaky queue and the outputs' named ones
-// count each buffer that meets them full (`overrun`); each episode is one `queue_overrun` event.
+// The queue watch (B-170, B-182's shed count grown): every leaky queue but a probe tap's (B-248)
+// and the outputs' named ones count each buffer that meets them full (`overrun`); each episode is
+// one `queue_overrun` event.
 // Twin: gst-pipeline-runner.py `_start_queue_watch`.
 #pragma once
 
@@ -11,6 +12,8 @@ namespace mr::queue_watch {
 constexpr const char* EVENT = "queue_overrun";
 /** queueOverrun.ts WATCHED_QUEUE_NAMES: watched though not leaky. */
 constexpr const char* NAMES[] = {"vp_esq", "ad_esq", "prefill"};
+/** queueOverrun.ts PROBE_QUEUE_NAMES: a report-only tap's leaky queue, never watched. */
+constexpr const char* PROBE_NAMES[] = {"vp_probeq"};
 /** An episode ends after this long without an overrun (a non-leaky queue's one overrun, below
  *  its bounds by then, is no episode: a label jump's, B-177). */
 constexpr int QUIET_MS = 1000;

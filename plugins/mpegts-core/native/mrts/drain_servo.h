@@ -25,6 +25,11 @@ class DrainWindow {
     int n_ = 1;
 };
 
+// Why an underrun did not raise (B-240): its first failed test; `raised` when it did.
+enum class UnderrunReason { drain, after_drain, video, warm_up, input, load, not_margin, raised };
+constexpr int UNDERRUN_REASONS = 7;   // the counted ones, `raised` apart (the raises count it)
+const char* underrun_reason_name(UnderrunReason r);
+
 struct DrainEvent {
     enum class Kind { drain_start, drain_done, underrun, raise, outage };
     Kind kind;
@@ -32,6 +37,10 @@ struct DrainEvent {
     // drain_start: the command (ns); drain_done: drained so far; underrun, outage: the episode's length (a
     // video underrun 0); raise: the new margin.
     int64_t value;
+    UnderrunReason reason = UnderrunReason::raised;   // underrun
+    // raise: the margin that underran, the episode's length, its start trough, how long it was steady.
+    int64_t from = 0, length = 0, trough = 0, steady = 0;
+    bool have_trough = false;
 };
 
 const char* drain_event_name(DrainEvent::Kind k);
@@ -52,6 +61,10 @@ class DrainServo {
     static constexpr int64_t GROUP_STALE_NS = 10 * SEC, RISE_CAP_NS = SEC;
     static constexpr int64_t GROUP_ALONE_NS = -3600 * SEC;   // alone; any other target, even <= 0, groups
     static constexpr int64_t AUDIO_START_NS = 20 * MS, AUDIO_FLOOR_NS = 20 * MS;
+    // B-240: an audio starvation judged C after its end; Q quiet before it; S6's band; S4's allowance; S6 reads the
+    // trough 1-2 s before the start.
+    static constexpr int64_t CONFIRM_NS = 10 * SEC, QUIET_NS = WINDOW_NS, LIMIT_BAND_NS = ENGAGE_NS;
+    static constexpr int64_t KEEP_UP_NS = 20 * MS, SETTLE_NS = SEC;
 
     enum class State { warm_up, idle, draining, rising };
 
@@ -64,7 +77,7 @@ class DrainServo {
     // Audio, each tick: whether the device starved since the last one.
     void starve(int64_t now, bool on);
     bool starving() const { return in_episode_; }
-    // Video: a release by_ns past its drained slot, neither collapsed nor sink-late.
+    // Video: a release by_ns past its drained slot, neither collapsed nor sink-late. Never a raise (B-256).
     void late(int64_t now, int64_t by_ns);
     // A window clear (a relock, a stall's flush, caps, a flush, PAUSED): warm-up again, delta 0.
     void clear(int64_t now);
@@ -88,17 +101,27 @@ class DrainServo {
     uint64_t raises() const { return raises_; }
     uint64_t underruns() const { return underruns_; }
     uint64_t outages() const { return outages_; }
+    uint64_t reason_count(UnderrunReason r) const { return r == UnderrunReason::raised ? raises_ : reasons_[(int)r]; }
     State state() const { return state_; }
     bool capped() const { return capped_; }
     bool started() const { return started_; }
     int64_t group() const { return group_; }
 
   private:
+    // What an audio episode's start saw, and its end (B-240).
+    struct Episode {
+        int64_t start = 0, render = 0, trough = 0, margin = 0, quiet = 0, length = 0, tc = 0;
+        bool have_trough = false, warm = false, drain = false, have_quiet = false;
+    };
     void touch(int64_t now);
     int64_t bound() const;
     void decay(int64_t now);
-    void raise(int64_t now);
+    void raise(int64_t now, const Episode& ep, int64_t steady);
     void outage(int64_t now, int64_t length);
+    bool trough_at(int64_t now, int64_t* out);
+    void count(int64_t now, UnderrunReason r, int64_t length);
+    static bool first_reason(const Episode& ep, UnderrunReason* r);
+    void judge(int64_t now, const Episode& ep, int64_t render_ns);
 
     bool video_;
     int64_t floor_, margin_;
@@ -110,8 +133,8 @@ class DrainServo {
     int64_t warm_from_ = 0, last_ = 0, m_at_ = 0, l_at_ = 0;
     int64_t ppb_ = 0;
     bool engaged_ = false, draining_ = false, brk_ = false;
-    bool in_episode_ = false, have_late_ = false, have_positive_ = false, have_hold_ = false;
-    int64_t episode_at_ = 0, late_at_ = 0, positive_at_ = 0, hold_until_ = 0;
+    bool in_episode_ = false, have_late_ = false, have_hold_ = false;
+    int64_t episode_at_ = 0, late_at_ = 0, hold_until_ = 0;
     int64_t group_ = GROUP_ALONE_NS, group_at_ = 0;
     int64_t held_ = 0, target_ = 0, excess_ = 0, trough_ = 0;
     bool capped_ = false;
@@ -119,6 +142,14 @@ class DrainServo {
     int64_t drained_ = 0, drained_rem_ = 0;
     uint64_t raises_ = 0, underruns_ = 0, outages_ = 0;
     std::vector<DrainEvent> events_;
+    uint64_t reasons_[UNDERRUN_REASONS] = {};
+    bool have_nonzero_ = false, have_broken_ = false;
+    int64_t nonzero_at_ = 0, broken_at_ = 0;   // the last instant delta != 0; the last break, outage or clear
+    std::vector<Episode> pending_;             // audio episodes awaiting t_c
+    Episode episode_;                          // the running one
+    int64_t render_ = 0;                       // the last update's render lateness
+    bool have_settled_ = false, have_next_ = false, have_next_at_ = false;
+    int64_t settled_ = 0, next_trough_ = 0, next_at_ = 0;   // S6's trough 1-2 s ago, and the newer
 };
 
 const char* drain_state_name(DrainServo::State s);

@@ -226,6 +226,9 @@ export interface TimingSink {
     kind: 'audio' | 'video';
     /** Video: the output mode's refresh. Absent when unknown: 60 Hz stands in, and says so. */
     refreshHz?: number;
+    /** Video: the sink is waylandsink, whose `display-stats` (Yocto 0008) the Rate match row
+     *  reads every 10 s (B-242). */
+    displayStats?: true;
 }
 
 /** One input of a module's `timing` sections: the bus tap measuring it, its fixed number

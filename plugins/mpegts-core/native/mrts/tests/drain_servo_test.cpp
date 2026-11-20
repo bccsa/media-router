@@ -11,6 +11,7 @@
 
 using mrts::DrainEvent;
 using mrts::DrainServo;
+using mrts::UnderrunReason;
 
 namespace {
 
@@ -213,17 +214,18 @@ void case_starve() {
     const uint64_t raises[] = {1, 0};
     for (int i = 0; i < 2; i++) {
         Source src = steady(20 * MS);
-        src.stalls = {{20 * SEC, lens[i]}};
+        src.stalls = {{40 * SEC, lens[i]}};
         Link l(DrainServo(), src, 30 * MS);
         Run r{{&l}};
-        r.until(25 * SEC);
-        bool at_end = true;
+        r.until(55 * SEC);
+        bool at_tc = true;
+        const int64_t tc = 40 * SEC + lens[i] + DrainServo::CONFIRM_NS;
         for (const auto& e : events(l, DrainEvent::Kind::raise))
-            if (e.first < 20 * SEC + lens[i] || e.first > 20 * SEC + lens[i] + 2 * TICK) at_end = false;
+            if (e.first < tc || e.first > tc + 2 * TICK) at_tc = false;
         int64_t top = 0;
         for (const Row& row : l.log) top = std::max(top, iabs64(row.ppb));
-        CHECK(i ? "starve 2000 ms: 0 raise(s), at its end" : "starve 200 ms: 1 raise(s), at its end",
-              l.s.raises() == raises[i] && at_end && top == 0);
+        CHECK(i ? "starve 2000 ms: 0 raise(s), at its end + 10 s" : "starve 200 ms: 1 raise(s), at its end + 10 s",
+              l.s.raises() == raises[i] && at_tc && top == 0);
     }
 }
 
@@ -349,7 +351,8 @@ void case_group() {
     r.until(32 * MIN, each);
     int64_t spread2 = 0;
     for (Link* l : links) spread2 = std::max(spread2, iabs64(l->render() - g.p));
-    CHECK("group: a's raise", a.s.raises() == 1);
+    CHECK("group: a's starvation, grouped above its margin, does not raise (not-margin)",
+          a.s.raises() == 0 && a.s.reason_count(UnderrunReason::not_margin) == 1);
     CHECK("group: all within 20 ms of P after the stall", spread <= 20 * MS);
     CHECK("group: a low member rose, at <= 0.5 %", -DrainServo::DMAX_PPB <= rose && rose < 0 && r.cap_ok);
     CHECK("group: a rising member's published T held", held_ok);
@@ -396,7 +399,8 @@ void case_video_late() {
         }
     });
     CHECK("late: drain idle, no raise and P steady",
-          l.s.raises() == 0 && l.s.underruns() >= 10 && hi - lo <= 40 * MS);
+          l.s.raises() == 0 && l.s.underruns() >= 10 && hi - lo <= 40 * MS &&
+              l.s.reason_count(UnderrunReason::video) == l.s.underruns());
     Link l2(DrainServo(true, 40 * MS, 20 * MS), steady(40 * MS), 400 * MS, 100 * MS);
     Run r2{{&l2}};
     while (events(l2, DrainEvent::Kind::drain_done).empty() && r2.t < 6 * MIN) r2.until(r2.t + TICK);
@@ -404,7 +408,15 @@ void case_video_late() {
     r2.until(r2.t + 10 * SEC);
     l2.s.late(r2.t, 80 * MS);
     r2.until(r2.t + 2 * SEC);
-    CHECK("late: 10 s after a drain let go, one raise", done && l2.s.raises() == 1);
+    Link l3(DrainServo(true, 40 * MS, 20 * MS), steady(40 * MS), 400 * MS, 100 * MS);
+    Run r3{{&l3}};
+    while (l3.s.ppb() <= 0 && r3.t < 6 * MIN) r3.until(r3.t + TICK);
+    l3.s.late(r3.t, 80 * MS);
+    r3.until(r3.t + 2 * SEC);
+    CHECK("late: 10 s after a drain let go, no raise (after-drain)",
+          done && l2.s.raises() == 0 && l2.s.reason_count(UnderrunReason::after_drain) == 1);
+    CHECK("late: while it drains, no raise (drain)",
+          l3.s.ppb() > 0 && l3.s.raises() == 0 && l3.s.reason_count(UnderrunReason::drain) == 1);
 }
 
 void case_hysteresis() {
@@ -494,6 +506,370 @@ void case_window() {
     CHECK("window: empty 30 s after the last", !w.min(60 * SEC, &m));
 }
 
+// --- B-240: the raise rule (owner decision 2026-11-13) -------------------------------------------------------
+
+// The reference's Drive: the servo alone on 100 ms ticks; a starvation of a tick or more feeds slack 0 while it
+// runs, a shorter one is the sink's own skip; `hold`: a group target at its render lateness.
+struct Drive {
+    DrainServo& s;
+    std::function<int64_t(int64_t)> slack, render;
+    std::vector<Stall> eps;
+    bool hold = false;
+    int64_t t = 0;
+    std::vector<DrainEvent> ev;
+    Drive(DrainServo& servo, std::function<int64_t(int64_t)> sl,
+          std::function<int64_t(int64_t)> rd = [](int64_t) { return 100 * MS; }, std::vector<Stall> e = {},
+          bool h = false)
+        : s(servo), slack(sl), render(rd), eps(e), hold(h) {}
+    void until(int64_t end, const std::function<void(int64_t)>& each = nullptr) {
+        while (t < end) {
+            t += TICK;
+            bool on = false;
+            for (const Stall& e : eps)
+                if (e.len >= TICK && e.at <= t && t < e.at + e.len) on = true;
+            s.starve(t, on);
+            for (const Stall& e : eps)
+                if (e.len < TICK && t - TICK < e.at + e.len && e.at + e.len <= t) {
+                    s.starve(t - e.len, true);
+                    s.starve(t, false);
+                }
+            s.sample(t, on ? 0 : slack(t));
+            if (hold) s.set_group(t, render(t));
+            s.update(t, render(t), true);
+            for (const DrainEvent& e : s.take_events()) ev.push_back(e);
+            if (each) each(t);
+        }
+    }
+    std::vector<UnderrunReason> reasons() const {
+        std::vector<UnderrunReason> out;
+        for (const DrainEvent& e : ev)
+            if (e.kind == DrainEvent::Kind::underrun) out.push_back(e.reason);
+        return out;
+    }
+    std::vector<DrainEvent> of(DrainEvent::Kind k) const {
+        std::vector<DrainEvent> out;
+        for (const DrainEvent& e : ev)
+            if (e.kind == k) out.push_back(e);
+        return out;
+    }
+};
+
+using R = UnderrunReason;
+
+void case_f1_pin() {
+    DrainServo s(true, 260 * MS, 20 * MS);
+    std::vector<int64_t> seams;
+    for (int k = 1; k < 30; k++) seams.push_back(k * 40020 * MS);
+    uint64_t lates = 0;
+    Drive d(s, [](int64_t) { return 0; }, [&](int64_t t) {
+        int64_t r = 120 * MS;
+        for (size_t k = 0; k < seams.size(); k++)
+            if (seams[k] <= t) r += 26 * MS + (int64_t)(k % 13) * MS;
+        return r;
+    });
+    d.until(20 * MIN, [&](int64_t t) {
+        s.queue_level(t, 100 * MS);
+        for (int64_t at : seams)
+            if (t - TICK < at && at <= t) {
+                s.late(t, 30 * MS);
+                lates++;
+            }
+    });
+    CHECK("f1 pin: no raise", s.raises() == 0);
+    CHECK("f1 pin: every late release counted `video`",
+          s.reason_count(R::video) == lates && lates == s.underruns());
+    CHECK("f1 pin: it never drains", d.of(DrainEvent::Kind::drain_start).empty());
+}
+
+void case_cpu() {
+    Source src = steady(20 * MS);
+    for (int k = 0; k < 20; k++) src.stalls.push_back({60 * SEC + k * 3 * SEC, 100 * MS * (k + 1) + 20 * MS});
+    Link l(DrainServo(), src, 30 * MS);
+    Run r{{&l}};
+    r.until(15 * MIN);
+    const auto st = events(l, DrainEvent::Kind::drain_start);
+    const int64_t near = st.empty() ? -1 : near_at(l, st[0].first);
+    const double pred = st.empty() ? 0 : predicted_ns(st[0].second);
+    const double took = near < 0 ? -1e18 : (double)(near - st[0].first);
+    DrainServo v(true, 20 * MS, 20 * MS);
+    Drive d(v, [](int64_t) { return 20 * MS; });
+    d.until(3 * MIN, [&](int64_t t) {
+        if (t >= 60 * SEC && t < 120 * SEC && t % (1500 * MS) == 0) v.late(t, 30 * MS);
+    });
+    CHECK("cpu: audio, no raise during or after the load", l.s.raises() == 0 && l.s.margin() == 20 * MS);
+    CHECK("cpu: audio, every underrun under `load` or `warm-up`",
+          l.s.underruns() >= 10 && l.s.reason_count(R::load) >= 1 &&
+              l.s.reason_count(R::load) + l.s.reason_count(R::warm_up) == l.s.underruns());
+    CHECK("cpu: audio, back to its target in part 5's time +-10 %", std::fabs(took - pred) <= pred / 10);
+    CHECK("cpu: video, the drain idle, no raise", v.raises() == 0 && v.underruns() == v.reason_count(R::video) && v.underruns() >= 30);
+}
+
+void case_stall_arm() {
+    Source src = steady(20 * MS);
+    src.stalls = {{60 * SEC, 2 * SEC}};
+    Link l(DrainServo(), src, 30 * MS);
+    Run r{{&l}};
+    r.until(12 * MIN, [&](int64_t t) {
+        if (t == 62 * SEC) l.s.epoch_break();
+    });
+    const auto st = events(l, DrainEvent::Kind::drain_start);
+    const int64_t near = st.empty() ? -1 : near_at(l, st[0].first);
+    const double pred = st.empty() ? 0 : predicted_ns(st[0].second);
+    const double took = near < 0 ? -1e18 : (double)(near - st[0].first);
+    CHECK("stall arm: an outage, no raise", l.s.raises() == 0 && l.s.outages() == 1 && l.s.margin() == 20 * MS);
+    CHECK("stall arm: back on time", std::fabs(took - pred) <= pred / 10);
+}
+
+int64_t drain_slack(int64_t t) { return t < 60 * SEC ? 200 * MS : 20 * MS; }
+
+void case_drain_timing() {
+    {
+        DrainServo s;
+        Drive d(s, drain_slack, [](int64_t) { return 100 * MS; }, {{45 * SEC, 200 * MS}});
+        d.until(80 * SEC);
+        CHECK("drain timing: inside a drain, no raise (drain)",
+              s.raises() == 0 && d.reasons() == std::vector<R>{R::drain});
+    }
+    const int64_t whens[] = {20 * SEC, 40 * SEC};
+    const R want[] = {R::after_drain, R::raised};
+    for (int i = 0; i < 2; i++) {
+        DrainServo s;
+        Drive d(s, drain_slack);
+        d.until(60 * SEC);
+        while (s.ppb()) d.until(d.t + TICK);
+        const int64_t quiet = d.t;
+        d.eps = {{quiet + whens[i], 200 * MS}};
+        d.until(quiet + whens[i] + 15 * SEC);
+        const int64_t tc = quiet + whens[i] + 200 * MS + DrainServo::CONFIRM_NS;
+        bool at = true;
+        for (const DrainEvent& e : d.of(DrainEvent::Kind::raise))
+            if (e.at < tc || e.at > tc + TICK) at = false;
+        CHECK(i ? "drain timing: 40 s after its end, 1 raise (raised)"
+                : "drain timing: 20 s after its end, 0 raise (after-drain)",
+              s.raises() == (uint64_t)i && d.reasons() == std::vector<R>{want[i]} && at);
+    }
+}
+
+void case_keep_up() {
+    const int64_t extras[] = {19 * MS, 21 * MS};
+    for (int i = 0; i < 2; i++) {
+        DrainServo s;
+        const int64_t at = 60 * SEC, n = 200 * MS, x = extras[i];
+        Drive d(s, [](int64_t) { return 20 * MS; },
+                [=](int64_t t) { return 100 * MS + (t >= at + n + 2 * SEC ? n + x : 0); }, {{at, n}});
+        d.until(80 * SEC);
+        CHECK(i ? "keep up: + 21 ms, 0 raise" : "keep up: + 19 ms, 1 raise",
+              s.raises() == (uint64_t)(1 - i) && d.reasons() == std::vector<R>{i ? R::load : R::raised});
+    }
+}
+
+void case_spacing() {
+    const int64_t gaps[] = {20 * SEC, 31 * SEC};
+    for (int i = 0; i < 2; i++) {
+        DrainServo s;
+        Drive d(s, [](int64_t) { return 20 * MS; }, [](int64_t) { return 100 * MS; },
+                {{65 * SEC, 30 * MS}, {65 * SEC + gaps[i], 30 * MS}});
+        d.until(65 * SEC + gaps[i] + 15 * SEC);
+        CHECK(i ? "spacing: 31 s apart, both raise" : "spacing: 20 s apart, the second warm-up",
+              d.reasons() == (i ? std::vector<R>{R::raised, R::raised} : std::vector<R>{R::raised, R::warm_up}));
+    }
+}
+
+void case_band() {
+    struct Arm {
+        int64_t start, slack;
+        bool raises;
+        const char* name;
+    };
+    const Arm arms[] = {{20 * MS, 40 * MS, true, "band: trough at margin +20 ms, 1 raise"},
+                        {40 * MS, 20 * MS, true, "band: trough at margin -20 ms, 1 raise"},
+                        {20 * MS, 41 * MS, false, "band: trough at margin +21 ms, 0 raise"},
+                        {41 * MS, 20 * MS, false, "band: trough at margin -21 ms, 0 raise"},
+                        {20 * MS, 45 * MS, false, "band: trough at margin +25 ms, 0 raise"},
+                        {260 * MS, 100 * MS, false, "band: trough at margin -160 ms, 0 raise"}};
+    for (const Arm& a : arms) {
+        DrainServo s(false, a.start, 20 * MS);
+        const int64_t v = a.slack;
+        Drive d(s, [v](int64_t) { return v; }, [](int64_t) { return 100 * MS; }, {{60 * SEC, 30 * MS}}, true);
+        d.until(75 * SEC);
+        CHECK(a.name, s.raises() == (a.raises ? 1u : 0u) &&
+                          d.reasons() == std::vector<R>{a.raises ? R::raised : R::not_margin});
+    }
+}
+
+void case_hold_state() {
+    const int64_t gaps[] = {25 * SEC, 31 * SEC};
+    for (int i = 0; i < 2; i++) {
+        DrainServo s;
+        Drive d(s, [](int64_t) { return 20 * MS; }, [](int64_t) { return 100 * MS; },
+                {{62 * SEC, 30 * MS}, {62 * SEC + gaps[i], 30 * MS}});
+        d.until(62 * SEC + gaps[i] + 15 * SEC);
+        const auto rs = d.reasons();
+        CHECK(i ? "hold state: 31 s after another, raised" : "hold state: 25 s after another, warm-up",
+              rs.size() == 2 && rs[1] == (i ? R::raised : R::warm_up));
+    }
+}
+
+void case_dip_drain() {
+    DrainServo s;
+    Drive d(s, drain_slack, [](int64_t) { return 100 * MS; }, {{45 * SEC, 200 * MS}, {150 * SEC, 200 * MS}});
+    d.until(3 * MIN);
+    CHECK("dip+drain: the dip in the drain raises nothing, the first steady one raises",
+          d.reasons() == (std::vector<R>{R::drain, R::raised}) && s.raises() == 1);
+}
+
+// A steady stream at its margin, one 200 ms starvation at 60 s, to 80 s; `each` after every tick.
+Drive steady_at(DrainServo& s, const std::function<void(int64_t)>& each = nullptr,
+                std::function<int64_t(int64_t)> slack = [](int64_t) { return 20 * MS; }) {
+    Drive d(s, slack, [](int64_t) { return 100 * MS; }, {{60 * SEC, 200 * MS}});
+    d.until(80 * SEC, each);
+    return d;
+}
+
+uint64_t counted(const DrainServo& s) {
+    uint64_t n = 0;
+    for (int r = 0; r < mrts::UNDERRUN_REASONS; r++) n += s.reason_count((R)r);
+    return n;
+}
+
+// 19. S3, and a clear with episodes pending (a drain after the end, unreachable through the API while the hold
+// keeps delta at 0, is the reference's forced case).
+void case_input() {
+    const int64_t end = 60 * SEC + 200 * MS;
+    struct Arm {
+        int64_t when;
+        R want;
+        const char* name;
+    };
+    const Arm arms[] = {{50 * SEC, R::input, "input: a break 10 s before, input"},
+                        {25 * SEC, R::raised, "input: a break 35 s before, raised"},
+                        {end + 5 * SEC, R::input, "input: a break 5 s after the end, input"}};
+    for (const Arm& a : arms) {
+        DrainServo s;
+        const int64_t w = a.when;
+        Drive d = steady_at(s, [&](int64_t t) {
+            if (t == w) s.epoch_break();
+        });
+        CHECK(a.name, d.reasons() == std::vector<R>{a.want});
+    }
+    {
+        DrainServo s;
+        Drive d = steady_at(s, [&](int64_t t) {
+            if (t == end + 5 * SEC) s.clear(t);
+        });
+        const auto ev = d.of(DrainEvent::Kind::underrun);
+        CHECK("input: a clear 5 s after the end counts it then, `input`",
+              ev.size() == 1 && ev[0].reason == R::input && ev[0].at == end + 5 * SEC && s.raises() == 0 &&
+                  counted(s) == 1 && s.underruns() == 1);
+    }
+    {
+        DrainServo s;
+        const int64_t e45 = 45 * SEC + 200 * MS;
+        Drive d(s, drain_slack, [](int64_t) { return 100 * MS; }, {{45 * SEC, 200 * MS}});
+        d.until(e45 + 5 * SEC, [&](int64_t t) {
+            if (t == e45 + 3 * SEC) s.clear(t);
+        });
+        CHECK("input: a clear meeting a drain's episode counts `drain`",
+              d.reasons() == std::vector<R>{R::drain} && counted(s) == 1 && s.underruns() == 1);
+    }
+}
+
+// 20. S6 reads the trough 1-2 s before the start: margin 40 ms, the fill falling from it to empty over the 0.5 s
+// before a steady starvation still raises.
+void case_fall() {
+    DrainServo s(false, 40 * MS, 20 * MS);
+    const int64_t at = 60 * SEC;
+    Drive d = steady_at(s, nullptr, [at](int64_t t) {
+        return t <= at - 500 * MS ? 40 * MS : 40 * MS - (t - at + 500 * MS) * 80 / 1000;
+    });
+    CHECK("fall: a fill falling into the starvation, it raises",
+          d.reasons() == std::vector<R>{R::raised} && s.raises() == 1);
+}
+
+// B-256: a 50p Video Player's chain, pull-through as FB1's seam diagnostic found it (the reference's PullChain).
+struct PullChain {
+    static constexpr int64_t P = 20 * MS;
+    DrainServo& s;
+    int64_t n;
+    std::vector<int64_t> seams;   // frame numbers
+    std::vector<std::pair<int64_t, int64_t>> renders;
+    PullChain(DrainServo& servo, int64_t seam_ns = 40020 * MS, int64_t minutes = 60)
+        : s(servo), n(minutes * MIN / P) {
+        for (int64_t k = 1; k <= minutes * MIN / seam_ns; k++) seams.push_back(k * seam_ns / P);
+    }
+    static int64_t arrival(int64_t k) { return k * P + (k % 2 == 0 ? 20 * MS : 0) - 100 * MS; }
+    void run() {
+        bool have_prev = false, have_read = false;
+        int64_t prev = 0, last_read = 0, j = 1;
+        size_t next_seam = 0;
+        for (int64_t k = 0; k < n; k++) {
+            const int64_t start = have_prev ? std::max(prev, arrival(k)) : arrival(k);
+            const bool seam = next_seam < seams.size() && seams[next_seam] == k;
+            if (seam) next_seam++;
+            const int64_t at = start + 3 * MS + (seam ? 30 * MS : 0);
+            const int64_t slot =
+                have_prev ? prev + (2 * P * SEC + SEC + s.ppb()) / (2 * (SEC + s.ppb())) : at;
+            if (at > slot) {
+                if (4 * (at - slot) >= P) s.late(at, at - slot);
+            } else {
+                s.sample(at, slot - at);
+            }
+            if (!have_read || at - last_read >= TICK) {
+                j = std::max(j, k + 1);
+                while (arrival(j) <= at) j++;
+                s.queue_level(at, (j - k - 1) * P);
+                last_read = at;
+                have_read = true;
+            }
+            const int64_t rel = std::max(slot, at);
+            s.update(at, rel - k * P, true);
+            s.take_events();
+            prev = rel;
+            have_prev = true;
+            renders.push_back({at, rel - k * P});
+        }
+    }
+};
+
+void case_seam_floor() {
+    DrainServo s(true, 20 * MS, 20 * MS);
+    PullChain c(s);
+    c.run();
+    int64_t first = 0;
+    for (const auto& r : c.renders)
+        if (r.first > 40 * SEC) {
+            first = r.second;
+            break;
+        }
+    int64_t worst = 0;
+    for (const auto& r : c.renders)
+        if (r.first > 30 * MIN) worst = std::max(worst, iabs64(r.second - first));
+    CHECK("seam: no raise, the margin at the floor", s.raises() == 0 && s.margin() == 20 * MS);
+    CHECK("seam: at most one late release per seam",
+          s.underruns() > 0 && s.underruns() <= c.seams.size() && s.outages() == 0 &&
+              s.reason_count(R::drain) + s.reason_count(R::after_drain) + s.reason_count(R::video) == s.underruns());
+    CHECK("seam: no step accumulates",
+          worst <= 60 * MS && iabs64(c.renders.back().second - first) <= 40 * MS);
+    CHECK("seam: the drain took the steps back", s.drained() >= 500 * MS);
+}
+
+void case_video_never() {
+    DrainServo s(true, 20 * MS, 20 * MS);
+    Drive d(s, drain_slack);
+    d.until(45 * SEC);
+    s.late(d.t, 30 * MS);
+    d.until(60 * SEC);
+    while (s.ppb()) d.until(d.t + TICK);
+    d.until(d.t + 10 * SEC);
+    s.late(d.t, 30 * MS);
+    d.until(d.t + 40 * SEC);
+    s.late(d.t, 30 * MS);
+    d.until(d.t + 15 * SEC);
+    CHECK("video never: no raise", s.raises() == 0 && s.margin() == 20 * MS);
+    CHECK("video never: drain, after-drain, video",
+          s.reason_count(R::drain) == 1 && s.reason_count(R::after_drain) == 1 && s.reason_count(R::video) == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -515,5 +891,18 @@ int main() {
     case_live();
     case_hole();
     case_group_early();
+    case_dip_drain();
+    case_f1_pin();
+    case_cpu();
+    case_stall_arm();
+    case_drain_timing();
+    case_keep_up();
+    case_spacing();
+    case_band();
+    case_hold_state();
+    case_input();
+    case_fall();
+    case_seam_floor();
+    case_video_never();
     return test_summary("drain_servo");
 }

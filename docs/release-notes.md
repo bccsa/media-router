@@ -170,6 +170,11 @@ there is no in-app switch, and the stored values of the removed settings
   backing off to every 30 s, where it was every 5 s. Each restart opens the
   video decoder again, and in testing rapid reopening stopped a Pi 4's
   hardware H.264 decoder until a reboot.
+- **Display "automatic" names a real screen.** With the compositor (Weston)
+  stopped, the Display panel showed "Writeback-1", a virtual output nobody
+  can see; it now names the screen the player would use, for example DSI-2.
+  The player still waits for the compositor, as before, and plays as soon as
+  it is back.
 
 **Video Transcoder keeps every frame it decodes**
 
@@ -193,14 +198,24 @@ there is no in-app switch, and the stored values of the removed settings
   50.00 Hz measured, 0 drops/min": the stream's frame rate, the rate the
   display takes, and the frames dropped each minute to match it. **Late
   releases** counts frames a minute shown after their slot, and **Pace hold**
-  how long a frame waits for its slot.
+  how long a frame waits for its slot. On a Wayland display the row also
+  shows the frames the display itself lost, for example "replaced 0/min
+  (0 total), discarded 0/min (0 total)": **replaced** frames were dropped by
+  Video Player's display before they reached the screen, **discarded** ones
+  were sent but the compositor showed a newer frame in their place. Both
+  should stay at 0; they are read every 10 s. A display driven directly
+  (no Wayland) does not show them.
 - **The audio outputs' Timing section adds Device relocks and Device
   stalls** under Device clock: how often the card's clock was taken afresh,
   and how often the card stopped taking sound.
 - **Lateness trend, on every output that renders:** how fast its lateness
   grows over the last 3 minutes, for example "+12 ms/min — decode or device
-  slower than real time". It reads "measuring" for 3 minutes after a start
-  or a gap. It is a number to read, with no alarm and no setting.
+  slower than real time", or "+40 ms/min — falling behind under load" when
+  the output also ran short under load in that time. It reads "measuring" for
+  3 minutes after a start, a restart, a display or audio device going off, or
+  another source; a short hole in the stream, such as the join of a looped
+  file, no longer starts it again, and the jump at the hole does not count as
+  growth. It is a number to read, with no alarm and no setting.
 - **New warnings, which only warn: nothing is dropped.** "Display not
   presenting (output off?)" while Video Player's display shows nothing (a
   monitor off or unplugged); "Audio device stalled — nothing plays until it
@@ -210,6 +225,12 @@ there is no in-app switch, and the stored values of the removed settings
   drops, "<queue> holding <n> ms at capacity — nothing lost, the queues before
   it fill next",
   until 30 s after the queue drained.
+- **A module whose pipeline stops answering shows a warning within about
+  10 s:** "Pipeline not answering for <n> s (stalled or frozen)", where
+  <n> counts from its last answer. Until now a frozen pipeline stayed "ok"
+  with a blank Timing section, because the pipeline is what reports them.
+  The warning goes by itself within a few seconds of the pipeline answering
+  again; a start, a restart or a stop of the module never shows it.
 
 **Outputs catch up by themselves**
 
@@ -225,11 +246,46 @@ there is no in-app switch, and the stored values of the removed settings
   source, 10 to 11 s elsewhere); past that the input queue loses content and
   the queue-full warning says so. Once the box keeps up, the delay comes back
   down: 1 s of it in about 4 minutes, 2 s in about 7.
-- **It probes for the smallest delay that plays clean.** A dropout of up to a
-  quarter of a second raises that output's margin at once; the margin comes
-  back down over about 2 hours, so a source with a recurring short dip gives
-  one dropout about every 2 hours, not one per dip. A late video frame raises
-  nothing unless the output was catching up.
+- **When everything feeding a muxer is held up for a moment** (up to 4 s: a
+  busy box, a stalled source), the muxer passes what was held up late instead
+  of skipping it, and does not hold its outputs back for minutes after: the
+  outputs play about 2 s late after a 2 s stall, then catch up as above. One
+  input that stops while the others carry on is still skipped, so it never
+  stops the programme; a source stopped for longer than 4 s is skipped too.
+  If the muxer itself stands still (the box frozen), what it held up is
+  passed late however long the stop. A muxer with one input, or an audio
+  mixer whose inputs all stop, now waits up to 4 s before it fills the gap
+  with silence, where it waited a fraction of a second to 2 s.
+- **After a source restarts, a muxer no longer keeps dropping its audio
+  until it is restarted.** A source that sends its audio a third of a second
+  or more at a time (a file or encoder sender's AAC) could make the muxer mark
+  that audio missing between deliveries, about twice a second, and the Audio
+  Decoder behind it drop out. The muxer now waits for the next delivery.
+- **A muxer whose source loses its audio keeps sending the video.** When a
+  source changed from video and audio to video only, or to another video
+  codec, the muxer stopped sending anything (0 kbps) until it was restarted.
+  It now carries the new stream within about a second, and audio that comes
+  back later is muxed again, without a restart. On every module that lines
+  up its inputs (Audio Mixer, N-1 mixer, Audio Processing, Audio Output 302M
+  and the muxer), a missing input is shown on its row and in the warning, and
+  "Waiting for" no longer names it, as the module does not wait for it.
+- **It probes for the smallest delay that plays clean.** An audio dropout of
+  up to a quarter of a second on a steady stream raises that output's margin,
+  10 s after it; the margin comes back down over about 2 hours, so a source
+  with a recurring short dip gives one dropout about every 2 hours, not one
+  per dip.
+- **An audio output no longer raises its buffer while it is catching up or
+  while the box is overloaded,** so its latency no longer creeps up after a
+  stall or a busy minute. The Buffer underruns row says why each one did not
+  raise, for example "15, 1 raised the target, 12 while catching up, 2 under
+  load".
+- **A Video Player's latency no longer creeps up after late frames.** A frame
+  shown late, while catching up, just after or on a steady stream, never
+  raises its margin: the player stays at one frame of margin and catches the
+  delay back up instead. Late frames are still counted in the Buffer
+  underruns row with why, for example "12, 0 raised the target, 9 while
+  catching up, 3 on a steady stream". On a looped test file expect about one
+  late frame at each join of the loop.
 - **The Timing section shows it:** **Latency target**, for example "95 ms
   (measured), now 2.41 s · draining at 0.50 % (about 8 min) · in sync with
   Video Player"; **Drained**, the delay taken off so far; **Buffer
@@ -243,11 +299,15 @@ there is no in-app switch, and the stored values of the removed settings
   2.30 s".
 - **A member of a programme waits for the slowest, at most 1 s:** an output
   of the programme that is ahead of the others plays up to 0.5 % slower until
-  it is level with them, and stays at most 1 s behind its own target for it
-  ("1 s behind its group: held there"). An audio output fed from two
-  programmes' sources keeps its own delay ("in sync with neither (two
-  programmes)"). Outputs on different boxes, and outputs whose path crosses
-  PipeWire, are not matched. (#862)
+  it is level with them, and goes at most 1 s above its own target for it.
+  The Latency target says "in sync with Video Player" only while the two
+  play within 45 ms of each other; otherwise it says how far apart and why,
+  for example "4.50 s ahead of Video Player (held 1 s above its own
+  target)", "rising to Video Player's latency at 0.20 %" or "2.10 s behind
+  Audio Decoder". An audio output fed from two programmes' sources keeps
+  its own delay ("in sync with neither (two programmes)"). Outputs on
+  different boxes, and outputs whose path crosses PipeWire, are not
+  matched. (#862)
 - **Lip sync between a Video Player and an audio output fed straight from the
   same input** (no muxer between) is not there at the start: each plays on
   arrival, so the video can lead by up to the source's own lead (often 0.3 to

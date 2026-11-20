@@ -467,7 +467,8 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
             'Input enc-a (audio-in) silent for 100 ms — continuing without it; ' +
                 'Input enc-c (audio-in) silent for 2000 ms — continuing without it',
         );
-        expect(r.summary(0).waitingFor).toBe('enc-a (audio-in), enc-c (audio-in)');
+        // Gapped, not waited for (B-245): the one present input waits for nobody.
+        expect(r.summary(0).waitingFor).toBeUndefined();
         r.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'present'), 10);
         expect(r.alignerWarnings(10).absent).toBe(
             'Input enc-c (audio-in) silent for 2000 ms — continuing without it',
@@ -476,16 +477,16 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         expect(r.alignerWarnings(20).absent).toBeNull();
     });
 
-    it('waiting for: the absent input, else the slowest input of the aligner that adds most', () => {
+    it('waiting for: the slowest present input of the aligner that adds most, never an absent one', () => {
         const r = fanIn();
         r.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'present', { latenessMs: 20, paceMs: 140 }));
         r.onEvent('mralignwatch:mixin_aw_2', aw('c2', 'present', { latenessMs: 140, paceMs: 140 }));
         r.onEvent('mralignwatch:mixin_aw_3', aw('c3', 'present', { latenessMs: 65, paceMs: 140 }));
         let s = r.summary();
         expect(s.waitingFor).toBe('enc-b (audio-in)');
-        r.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'absent', { latenessMs: 20, paceMs: 140 }));
+        r.onEvent('mralignwatch:mixin_aw_2', aw('c2', 'absent', { latenessMs: 140, paceMs: 140 }));
         s = r.summary();
-        expect(s.waitingFor).toBe('enc-a (audio-in)');
+        expect(s.waitingFor).toBe('enc-c (audio-in)');
         // One present input is waited for by nobody.
         const one = fanIn();
         one.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'present', { latenessMs: 20 }));

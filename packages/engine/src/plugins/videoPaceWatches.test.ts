@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
     DISPLAY_NOT_PRESENTING_TEXT,
+    DisplayStatsWatch,
     VideoPaceWatches,
     rateMatchText,
 } from './videoPaceWatches.js';
@@ -78,7 +79,7 @@ describe('VideoPaceWatches', () => {
         const before = one(w).gapMark;
         w.take('p', pace({ released: 10, 'rate-drops': 0 }), 2_000);
         expect(one(w).rateMatch.dropsPerMin).toBe(0);
-        expect(one(w).gapMark).not.toBe(before);
+        expect(one(w).gapMark.reset).not.toBe(before.reset);
     });
 
     it('display not presenting: a change when it stops and when it presents again', () => {
@@ -88,11 +89,15 @@ describe('VideoPaceWatches', () => {
         expect(w.take('p', pace({ 'display-presenting': false }), 2_000).changed).toBe(true);
         expect(one(w).presenting).toBe(false);
         expect(w.take('p', pace({ 'display-presenting': false }), 4_000).changed).toBe(false);
+        // Not presenting resets the trend (B-241).
+        expect(one(w).gapMark.reset).not.toBe(mark.reset);
         expect(w.take('p', pace(), 6_000).changed).toBe(true);
         expect(one(w).presenting).toBe(true);
-        expect(one(w).gapMark).toBe(mark);
+        expect(one(w).gapMark).toEqual(mark);
+        // A collapsed hole steps it, no reset.
         w.take('p', pace({ 'gaps-collapsed': 1 }), 8_000);
-        expect(one(w).gapMark).not.toBe(mark);
+        expect(one(w).gapMark.reset).toBe(mark.reset);
+        expect(one(w).gapMark.step).not.toBe(mark.step);
         expect(DISPLAY_NOT_PRESENTING_TEXT).toBe('Display not presenting (output off?)');
     });
 
@@ -135,5 +140,87 @@ describe('VideoPaceWatches', () => {
             rateMatch: { contentFps: 50, displayHz: 50, displaySource: 'measured' },
             presenting: true,
         });
+    });
+});
+
+// 0008's `display-stats` as waylandsink returns it (the counters the engine reads), every 10 s.
+const stats = (replaced: number, discarded: number) => ({
+    presented: 1000,
+    'presented-seq': 900,
+    discarded,
+    replaced,
+    'present-timeouts': 0,
+    'not-presented': 0,
+    'refresh-ns': 20_000_000,
+    'clock-monotonic': true,
+});
+
+describe('DisplayStatsWatch (B-242)', () => {
+    it('totals as read, per minute over the last minute', () => {
+        const w = new DisplayStatsWatch();
+        w.take(stats(0, 0), 0);
+        expect(w.reading(0)).toEqual({
+            replaced: 0,
+            discarded: 0,
+            replacedPerMin: 0,
+            discardedPerMin: 0,
+        });
+        for (let t = 10_000; t <= 60_000; t += 10_000) w.take(stats(t / 10_000, 0), t);
+        expect(w.reading(60_000)).toMatchObject({ replaced: 6, replacedPerMin: 6 });
+        // Older reads leave the window: two more in the next 20 s, over the 60 s kept.
+        w.take(stats(7, 2), 70_000);
+        w.take(stats(8, 2), 80_000);
+        expect(w.reading(80_000)).toEqual({
+            replaced: 8,
+            discarded: 2,
+            replacedPerMin: 6,
+            discardedPerMin: 2,
+        });
+    });
+
+    it('a count below the last is a new sink: its counts start again', () => {
+        const w = new DisplayStatsWatch();
+        w.take(stats(50, 9), 0);
+        w.take(stats(1, 0), 10_000);
+        expect(w.reading(10_000)).toEqual({
+            replaced: 1,
+            discarded: 0,
+            replacedPerMin: 0,
+            discardedPerMin: 0,
+        });
+    });
+
+    it('a missing property, an error or a structure without numeric counters reads nothing', () => {
+        const w = new DisplayStatsWatch();
+        w.take(undefined, 0);
+        w.take(null, 0);
+        w.take('get_property failed', 0);
+        w.take({ presented: 5 }, 0);
+        // Not a number: null, an empty string or a boolean must not read as 0 or 1.
+        w.take({ replaced: null, discarded: null }, 0);
+        w.take({ replaced: '', discarded: 0 }, 0);
+        w.take({ replaced: 0, discarded: true }, 0);
+        expect(w.reading(0)).toBeUndefined();
+        w.take(stats(1, 1), 0);
+        expect(w.reading(30_000)).toBeDefined();
+        expect(w.reading(30_001)).toBeUndefined(); // three reads missed
+        w.clear();
+        expect(w.reading(0)).toBeUndefined();
+    });
+
+    it("the row text adds them after the drain's drops", () => {
+        const r = {
+            contentFps: 50,
+            displayHz: 60,
+            displaySource: 'achieved' as const,
+            dropsPerMin: 0,
+        };
+        const d = { replaced: 3, discarded: 0, replacedPerMin: 0.4, discardedPerMin: 0 };
+        expect(rateMatchText(r, 15, d)).toBe(
+            '50.00 fps → 60.00 Hz achieved, 0 drops/min, 15 drain drops/min; replaced 0/min (3 total), discarded 0/min (0 total)',
+        );
+        expect(rateMatchText(r, undefined, d)).toBe(
+            '50.00 fps → 60.00 Hz achieved, 0 drops/min; replaced 0/min (3 total), discarded 0/min (0 total)',
+        );
     });
 });

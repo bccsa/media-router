@@ -1,0 +1,13 @@
+{
+  "scenario": "scn-out-drain-dip",
+  "graph": "generated 720p50 H.264 + AAC -> the audio decoder (mrtestaudiosink) alone; its input held 150 ms at 100 s (steady, at its margin: its drain is warm about 85 s in) and at 115 s (inside that one's hold, if it starves at all): one raise, 10 s after the 100 s dip, 20 -> 40 ms; any other underrun counted by reason (B-240, B3's rhythm compressed)",
+  "kind": "h264-aac-720p50",
+  "seconds": 130,
+  "dips": [
+    100,
+    115
+  ],
+  "expect": {
+    "hold_ms": 150
+  }
+}

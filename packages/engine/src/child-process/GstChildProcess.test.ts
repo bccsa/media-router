@@ -354,3 +354,75 @@ describe('fork backend (MR_GST_RUNNER_FORK=1)', () => {
         }
     }, 15_000);
 });
+
+describe('ping: does the runner answer (B-246)', () => {
+    function wired() {
+        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
+        const handlers = new Map<string, (d: unknown) => void>();
+        child.wireRunnerEvents({ on: (n: string, h: (d: unknown) => void) => handlers.set(n, h) });
+        const sendRequest = vi.fn(
+            async (..._args: unknown[]): Promise<unknown> => ({ event: 'throughput', data: {} }),
+        );
+        child.ipc = { sendRequest, destroy: vi.fn() };
+        child.running = true;
+        return { child, sendRequest, fire: (n: string, d: unknown) => handlers.get(n)?.(d) };
+    }
+
+    it('asks getThroughput with its timeout; any reply is an answer, an error reply too', async () => {
+        const { child, sendRequest } = wired();
+        expect(await child.ping(3000)).toBe(true);
+        expect(sendRequest).toHaveBeenCalledWith('getThroughput', {}, 3000);
+        sendRequest.mockResolvedValueOnce({ error: 'No pipeline running' });
+        expect(await child.ping(3000)).toBe(true);
+    });
+
+    it('no reply in time is false; down or relaunching it is not asked (null)', async () => {
+        const { child, sendRequest, fire } = wired();
+        sendRequest.mockRejectedValueOnce(new Error('request timeout: getThroughput (3000ms)'));
+        expect(await child.ping(3000)).toBe(false);
+        fire('pipelineStarting', {});
+        sendRequest.mockClear();
+        expect(await child.ping(3000)).toBeNull();
+        expect(sendRequest).not.toHaveBeenCalled();
+        fire('stateChange', { state: 'playing' });
+        expect(await child.ping(3000)).toBe(true);
+        child.running = false;
+        expect(await child.ping(3000)).toBeNull();
+    });
+
+    it('a relaunch that begins while an ask is out turns its miss into not asked', async () => {
+        const { child, sendRequest, fire } = wired();
+        sendRequest.mockImplementationOnce(async () => {
+            fire('pipelineStarting', {});
+            throw new Error('request timeout');
+        });
+        expect(await child.ping(3000)).toBeNull();
+    });
+
+    it("the module's rates span its own reads, whatever asked in between", async () => {
+        vi.useFakeTimers();
+        try {
+            const { child, sendRequest } = wired();
+            const reply = (bytes: number, kbps: number) => ({
+                event: 'throughput',
+                data: {
+                    out: { total_bytes: bytes, bitrate_kbps: kbps, bitrate_mbps: kbps / 1000 },
+                },
+            });
+            sendRequest.mockResolvedValueOnce(reply(1000, 8)); // first read: the runner's rate
+            expect((await child.getThroughput()).out.bitrate_kbps).toBe(8);
+            vi.advanceTimersByTime(2000);
+            sendRequest.mockResolvedValueOnce(reply(26_000, 9999)); // a ping just reset the runner's window
+            expect((await child.getThroughput()).out).toEqual({
+                total_bytes: 26_000,
+                bitrate_kbps: 100,
+                bitrate_mbps: 0.1,
+            });
+            vi.advanceTimersByTime(1000);
+            sendRequest.mockResolvedValueOnce(reply(500, 4)); // a relaunch: counters from 0
+            expect((await child.getThroughput()).out.bitrate_kbps).toBe(4);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+});

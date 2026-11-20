@@ -75,8 +75,28 @@ export interface RateMatch {
     dropsPerMin: number;
 }
 
+/** waylandsink's (Yocto 0008) `display-stats`, read every 10 s (B-242): frames the sink replaced
+ *  before committing them, and presentation feedback the compositor discarded. Totals since the
+ *  sink started; per minute over the last minute. */
+export interface DisplayFrames {
+    replaced: number;
+    discarded: number;
+    replacedPerMin: number;
+    discardedPerMin: number;
+}
+
 /** An output's drain back to its latency target (house-clock WI-P4-18, B-179): `mrasrc`'s or
  *  `mrvideopace`'s servo. No setting, no alarm. */
+/** Why an underrun did not raise the margin (B-240): the first test it failed. */
+export type UnderrunReason =
+    | 'drain'
+    | 'after-drain'
+    | 'video'
+    | 'warm-up'
+    | 'input'
+    | 'load'
+    | 'not-margin';
+
 export interface DrainSummary {
     /** What it holds to: its own target, or its group's while it follows one (ms). */
     targetMs: number;
@@ -92,6 +112,8 @@ export interface DrainSummary {
     /** Short starvations (audio) or late frames (video) counted, and those that raised the margin. */
     underruns: number;
     raises: number;
+    /** Those that did not raise, by reason (B-240); absent from an element that has none. */
+    underrunReasons?: Partial<Record<UnderrunReason, number>>;
     state: 'warm-up' | 'idle' | 'draining' | 'rising';
     /** The target it publishes to its group (ms); absent: none (a device stalled, a display off). */
     publishedMs?: number;
@@ -101,6 +123,10 @@ export interface DrainSummary {
     capped?: true;
     /** The other modules of its A/V group. */
     groupWith?: string[];
+    /** The member furthest from it in render lateness, past 45 ms (ms, positive: it plays later). */
+    groupApart?: { name: string; ms: number };
+    /** A member's render lateness unknown: the group's sync not judged (B-241). */
+    groupUnjudged?: true;
     /** Its origins touch two groups: it drains alone (two programmes). */
     neither?: true;
     /** Video: frames the drain skipped, per minute. */
@@ -141,8 +167,8 @@ export interface ModuleTimingSummary {
     /** Aligner modules: what the aligner's pace adds to its fastest present input (ms); with
      *  several aligners, the largest. */
     paceMs?: number;
-    /** Aligner modules: the absent inputs, else the slowest input of the aligner whose pace
-     *  adds the most. Replaces `slowest` on the display. */
+    /** Aligner modules: the slowest present input of the aligner whose pace adds the most (an
+     *  absent input is gapped, not waited for: B-245). Replaces `slowest` on the display. */
     waitingFor?: string;
     /** Outputs that render: λ(render) − λ(input). */
     decodeMs?: number;
@@ -156,13 +182,16 @@ export interface ModuleTimingSummary {
     renderMs?: number;
     /** Video outputs: the content's rate against the rate the display takes (`mrvideopace`). */
     rateMatch?: RateMatch;
+    /** Video outputs on waylandsink: the display's replaced and discarded frames (B-242). */
+    displayFrames?: DisplayFrames;
     /** Video outputs: frames the pace released after their slot, per minute. */
     lateReleasesPerMin?: number;
     /** Video outputs: the pace's mean hold of a frame before its slot (ms). */
     paceHoldMs?: number;
-    /** Outputs that render: the slope of render lateness over 3 min with no gap; no msPerMin
-     *  while it measures (no alarm, OQ-34). */
-    latenessTrend?: { msPerMin?: number };
+    /** Outputs that render: the slope of render lateness over 3 min, across collapsed holes and
+     *  gaps (B-241); no msPerMin while it measures (no alarm, OQ-34); `underLoad`: an underrun
+     *  under load (B-240) in the window. */
+    latenessTrend?: { msPerMin?: number; underLoad?: true };
     /** PipeWire-graph modules carry no PTS; they show the graph's latency. */
     pipeWireLatencyMs?: number;
     /** What the module's processing delays its content by that its PTS do not carry (a

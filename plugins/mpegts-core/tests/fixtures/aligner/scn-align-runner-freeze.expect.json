@@ -1,0 +1,18 @@
+{
+  "scenario": "scn-align-runner-freeze",
+  "graph": "the muxer's runner stopped 2 s (SIGSTOP) at 12 s: one input carrying Opus alone, then one carrying H.264 + AAC -> mpegts-muxer (one input): carried as delay, every PES out, the pace unchanged (p4-20, V-P4-2)",
+  "seconds": 44,
+  "stall": [12, 2],
+  "arms": [
+    {"name": "audio", "pipelines": "muxOne", "freeze": true,
+     "inputs": {"one0": {"generator": "opus-32k"}}, "routes": ["demux_0_audio"]},
+    {"name": "av", "pipelines": "muxOne", "freeze": true,
+     "inputs": {"one0": {"generator": "h264-aac"}}, "routes": ["demux_0_video", "demux_0_audio"]}
+  ],
+  "expect": {
+    "fall_after_s": 10,
+    "pace_rise_ms": 30,
+    "fell_ms_max": 50,
+    "dts_steps_max": 3
+  }
+}

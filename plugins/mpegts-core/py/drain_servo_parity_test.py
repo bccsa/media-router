@@ -8,8 +8,9 @@ drain_servo.py's, line for line, on
     frames 0 to 400 ms late, clears, breaks, group targets (fresh, stale, below 0 or alone) and updates with
     and without a lock, over 5 to 40 min with gaps in the ticks.
 
-Then each of the reference's servo mutants replays the same sequences, and parity must tell it from
-mrts_cli. Skips (exit 0) without the built mrts_cli (make native).
+Every underrun event carries its reason, every raise its evidence, every state line the counts by
+reason (B-240). Then each of the reference's servo mutants replays the same sequences, and parity must
+tell it from mrts_cli. Skips (exit 0) without the built mrts_cli (make native).
 
 Run:  python3 drain_servo_parity_test.py
 """
@@ -158,7 +159,9 @@ def run_ref(text):
     return out.getvalue()
 
 
-SERVO_MUTANTS = [m for m in dt.MUTANTS if m[0] not in ("P as the min",)]
+# A drain after an episode's end cannot happen through the servo's inputs (the hold keeps delta at 0 to t_c):
+# only the reference's forced case tells that mutant.
+SERVO_MUTANTS = [m for m in dt.MUTANTS if m[0] not in ("P as the min", "a drain between the end and t_c ignored")]
 
 
 def main():

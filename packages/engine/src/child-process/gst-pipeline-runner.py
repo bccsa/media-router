@@ -941,11 +941,12 @@ def _install_no_late_drop(pipe):
 
 
 # --------------------------------------------------------------------------- queue watch (B-170)
-# Every queue that drops at capacity (leaky) or holds an output's backlog (named below) counts
-# each buffer that meets it full (`overrun`); each episode is one `queue_overrun` plugin event
-# (B-182's rule). Twin: mr-gst-runner queue_watch.cpp.
+# Every queue that drops at capacity (leaky; a probe tap's apart, B-248) or holds an output's backlog
+# (named below) counts each buffer that meets it full (`overrun`); each episode is one
+# `queue_overrun` plugin event (B-182's rule). Twin: mr-gst-runner queue_watch.cpp.
 QUEUE_OVERRUN_EVENT = "queue_overrun"          # queueOverrun.ts QUEUE_OVERRUN_EVENT
 WATCHED_QUEUE_NAMES = ("vp_esq", "ad_esq", "prefill")   # queueOverrun.ts: watched though not leaky
+PROBE_QUEUE_NAMES = ("vp_probeq",)   # queueOverrun.ts: a report-only tap's leaky queue, never watched
 _QUEUE_QUIET_MS = 1000     # an episode ends after this long without an overrun
 _QUEUE_LONG_MS = 10000     # one still open this long is reported as it stands, then at its end
 _QUEUE_TICK_MS = 250
@@ -1083,9 +1084,10 @@ def _queue_watch_tick():
 
 
 def _queue_watched(element):
-    """The queue's `leaky` when the watch takes it (leaky, or one of the names), else None."""
+    """The queue's `leaky` when the watch takes it (leaky, or one of the names; never a probe
+    tap's), else None."""
     factory = element.get_factory()
-    if factory is None or factory.get_name() != "queue":
+    if factory is None or factory.get_name() != "queue" or element.get_name() in PROBE_QUEUE_NAMES:
         return None
     leaky = int(element.get_property("leaky"))
     return leaky if leaky != 0 or element.get_name() in WATCHED_QUEUE_NAMES else None

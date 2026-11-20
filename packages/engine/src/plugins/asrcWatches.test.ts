@@ -358,7 +358,7 @@ describe('the device term (WI-P4-12)', () => {
         expect(device(r, 'devasrc').stalled).toBe(false);
     });
 
-    it('its gap mark moves at a relock, a gap, a device relock or stall and a new element', () => {
+    it('its gap mark steps at a relock and a gap, resets at a device relock or stall and a new element', () => {
         const w = watches();
         const marks = [
             dev(),
@@ -371,14 +371,17 @@ describe('the device term (WI-P4-12)', () => {
             w.take('mrasrc-stats', 'devasrc', p, i);
             return device(w, 'devasrc').gapMark;
         });
-        expect(new Set(marks).size).toBe(marks.length);
+        expect(new Set(marks.map((m) => JSON.stringify(m))).size).toBe(marks.length);
+        // B-241: a relock and a gap step the trend, the device's relock and stall and a new element reset it.
+        const resets = marks.map((m, i) => i > 0 && m.reset !== marks[i - 1].reset);
+        expect(resets).toEqual([false, false, false, true, true, true]);
         w.take(
             'mrasrc-stats',
             'devasrc',
             dev({ relocks: 1, gaps: 1, 'device-relocks': 2, 'device-stalls': 1, 'in-frames': 9 }),
             9,
         );
-        expect(device(w, 'devasrc').gapMark).toBe(marks[marks.length - 1]);
+        expect(device(w, 'devasrc').gapMark).toEqual(marks[marks.length - 1]);
     });
 });
 
@@ -402,6 +405,7 @@ describe('the drain (WI-P4-18, B-179)', () => {
             drainedMs: 41.25,
             raises: 0,
             underruns: 0,
+            reasons: {},
             outages: 0,
             groupTargetMs: 0,
             state: 'draining',
@@ -420,6 +424,13 @@ describe('the drain (WI-P4-18, B-179)', () => {
         expect(f.publishedMs).toBeUndefined();
         expect(f.learnedMs).toBe(60);
         expect(drainFieldsOf({ mode: 'device' })).toBeUndefined();
+        // B-240: the underruns that did not raise, by reason; none from an element without the fields.
+        const r = drainFieldsOf({ ...p, 'underruns-load': 3, 'underruns-after-drain': 1 })!;
+        expect(r.reasons).toEqual({ load: 3, 'after-drain': 1 });
+        const old = Object.fromEntries(
+            Object.entries(fixture['mrasrc-stats']).filter(([k]) => !k.startsWith('underruns-')),
+        );
+        expect(drainFieldsOf(old)!.reasons).toBeUndefined();
     });
 
     it('logs its events: drain-start, drain-done and underrun pass through as events', () => {

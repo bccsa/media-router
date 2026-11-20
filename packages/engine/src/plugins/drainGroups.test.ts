@@ -196,6 +196,21 @@ describe('DrainGroupLoop', () => {
         expect(dec.applied).toEqual([[-110e6, { with: ['VP'] }]]);
     });
 
+    it("each member gets the others' render lateness in their order, null where unknown (B-241)", () => {
+        const vp = member('vp', true, 180);
+        const dec = member('dec', false, 120);
+        const out = member('out', false);
+        vp.m.renderMs = 4800;
+        dec.m.renderMs = 300;
+        new DrainGroupLoop({
+            members: () => [vp.m, dec.m, out.m],
+            edges: () => edges,
+            log: vi.fn(),
+        }).tick();
+        expect(vp.applied[0][1]).toEqual({ with: ['DEC', 'OUT'], withRenderMs: [300, null] });
+        expect(out.applied[0][1]).toEqual({ with: ['VP', 'DEC'], withRenderMs: [4800, 300] });
+    });
+
     it('a group none of whose members publishes yet is sent alone, not a target of 0', () => {
         const vp = member('vp', true);
         const dec = member('dec', false);

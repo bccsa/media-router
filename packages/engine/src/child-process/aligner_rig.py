@@ -336,7 +336,8 @@ def generated(kind, seconds):
     """Relative-time TS from GStreamer, cached per process: [bytes] of 7-packet buffers.
     `h264-aac`, `opus-32k`: the conformance scenarios' (WI-P2-14); `h264-1080p50`: the video player's
     `video-leg-pace` case (B-169), 1080p50 H.264 alone with a keyframe each second; `h264-aac-720p50`,
-    `-720p60`, `-1080p50` and `hevc-720p50`: the output harness's (WI-P4-14)."""
+    `-720p60`, `-1080p50` and `hevc-720p50`: the output harness's (WI-P4-14); `h264-aac-pes362`:
+    ffmpeg's own mux, its AAC in 362 ms PES of 17 frames as the field's sender sends (p4-21)."""
     key = (kind, seconds)
     if key not in _GENERATED:
         if kind == "h264-aac":
@@ -367,6 +368,12 @@ def generated(kind, seconds):
         elif kind == "hevc-720p50":
             _GENERATED[key] = _ffmpeg_hevc(seconds)
             return _GENERATED[key]
+        elif kind == "h264-aac-pes362":
+            _GENERATED[key] = _ffmpeg_aac_pes362(seconds)
+            return _GENERATED[key]
+        elif kind in _FF_KINDS:
+            _GENERATED[key] = _ffmpeg_ts(seconds, *_FF_KINDS[kind])
+            return _GENERATED[key]
         else:
             raise ValueError(kind)
         _GENERATED[key] = [d for _pts, d in generate_ts(desc, timeout=300.0)]
@@ -386,6 +393,98 @@ def _ffmpeg_hevc(seconds):
                           "-preset", "ultrafast", "-x265-params", "keyint=50:min-keyint=50:bframes=0:log-level=error",
                           "-b:v", "2M", "-f", "mpegts", "-"], capture_output=True, check=True, timeout=600).stdout
     return [out[i:i + 1316] for i in range(0, len(out) - len(out) % 188, 1316)]
+
+
+def _ffmpeg_aac_pes362(seconds):
+    """320x180 H.264 at 25 fps + 128 kbit/s AAC from ffmpeg's mpegts mux, the AAC PES flushed by its
+    0.35 s audio delay only: 17 frames a PES, one every 362 ms (DEV-P4cd's fab-hevc50.ts sender)."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error",
+                          "-f", "lavfi", "-i", f"testsrc=size=320x180:rate=25:duration={seconds}",
+                          "-f", "lavfi", "-i", f"sine=frequency=1000:sample_rate=48000:duration={seconds}",
+                          "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-g", "50",
+                          "-b:v", "600k", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-pes_payload_size", "65536",
+                          "-f", "mpegts", "-"], capture_output=True, check=True, timeout=600).stdout
+    return [out[i:i + 1316] for i in range(0, len(out) - len(out) % 188, 1316)]
+
+
+# A source's streams from ffmpeg's mux, video PID 0x100 and AAC on 0x101 (p4-22): video codec, AAC
+# packets, AAC in the PMT. `-pmt`: an AAC stream listed that never carries a packet.
+_FF_KINDS = {"ff-hevc-aac": ("hevc", True, True), "ff-h264": ("h264", False, False),
+             "ff-h264-aac": ("h264", True, True), "ff-h264-aac-pmt": ("h264", False, True)}
+
+
+def _ffmpeg_ts(seconds, video, audio, listed):
+    """320x180 at 25 fps from ffmpeg's mpegts mux, a keyframe a second, with 128 kbit/s AAC one PES a
+    frame when `listed` (its packets dropped unless `audio`), as 7-packet buffers."""
+    enc = (["-c:v", "libx265", "-preset", "ultrafast", "-x265-params",
+            "keyint=25:min-keyint=25:bframes=0:log-level=error"] if video == "hevc" else
+           ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-g", "25"])
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+           f"testsrc=size=320x180:rate=25:duration={seconds}"]
+    if listed:
+        cmd += ["-f", "lavfi", "-i", f"sine=frequency=1000:sample_rate=48000:duration={seconds}",
+                "-c:a", "aac", "-b:a", "128k", "-ac", "2"]
+    cmd += enc + ["-b:v", "600k", "-pes_payload_size", "0", "-max_delay", "100000", "-f", "mpegts", "-"]
+    out = subprocess.run(cmd, capture_output=True, check=True, timeout=600).stdout
+    pkts = [out[i:i + 188] for i in range(0, len(out) - len(out) % 188, 188)]
+    if listed and not audio:
+        pkts = [p for p in pkts if ts_psi.ts_pid(p) != 0x101]
+    return [b"".join(pkts[i:i + 7]) for i in range(0, len(pkts), 7)]
+
+
+def spliced(segments, t0):
+    """[(bytes, ready)] of a source that switches streams: each of `segments` [(kind, from_s, to_s)]
+    rebased so its content starts at t0 + from_s and cut at to_s, as a new connection would come."""
+    out = []
+    for kind, a, b in segments:
+        rel = generated(kind, b - a + 2)
+        p0 = next(ts_psi.read_pcr(pkt) // 300 for d in rel for pkt in ts_psi.iter_packets(d)
+                  if ts_psi.read_pcr(pkt) is not None)
+        shift = ((t0 + int(a * 1e9)) * 9 // 100000 + MUX_BASE - p0) % WRAP
+        out += [(d, r) for d, r in ready_by_pcr([rebase_ts(d, shift) for d in rel], t0)
+                if r < t0 + int(b * 1e9)]
+    return out
+
+
+def split(timed, pids):
+    """{pid: [(bytes, ready)]}: `timed` through the splitter's core (ts_split, the reference of
+    mr-tssplit's), one single-PID TS per pid, each batch ready with the input buffer it came in."""
+    import ts_split
+    core = ts_split.SplitterCore(1, [(p, None) for p in pids])
+    out = {p: [] for p in pids}
+    for data, ready in timed:
+        for pid_, batch in core.feed(data).items():
+            out[pid_].append((bytes(batch), ready))
+    return out
+
+
+def hold_pes(timed, pid, every, from_ns):
+    """`timed` [(bytes, ready)] with every `every`-th PES of `pid` whose start is ready from
+    `from_ns` on held to the next one's start: two PES in one delivery, as F-3's sender after its
+    restart (absences of 263 and 625 ms, 2:1). Packets regrouped into buffers of up to 7."""
+    pkts = [(d[i:i + 188], r) for d, r in timed for i in range(0, len(d) - 187, 188)]
+    idx, starts, k = [], [], -1
+    for pkt, r in pkts:
+        if ts_psi.ts_pid(pkt) == pid:
+            if pkt[1] & 0x40:
+                k += 1
+                starts.append(r)
+            idx.append(k)
+        else:
+            idx.append(None)
+    out = []
+    for (pkt, r), k in zip(pkts, idx):
+        if k is not None and k >= 0 and k + 1 < len(starts) and starts[k] >= from_ns and k % every == every - 1:
+            r = starts[k + 1]
+        out.append((r, len(out), pkt))
+    out.sort()
+    bufs = []
+    for r, _i, pkt in out:
+        if bufs and bufs[-1][1] == r and len(bufs[-1][0]) < 7 * 188:
+            bufs[-1][0].extend(pkt)
+        else:
+            bufs.append([bytearray(pkt), r])
+    return [(bytes(b), r) for b, r in bufs]
 
 
 def _shift_ts_field(b, at, shift):
@@ -476,6 +575,13 @@ class Knobs:
                 t = b
         return t
 
+    def held(self, rel_ready_ns):
+        """Whether a hold moves this buffer's delivery to its end (part of the backlog it releases)."""
+        t = rel_ready_ns + self.transit_ns + self.delay_ns
+        if self.burst_ns:
+            t = -(-t // self.burst_ns) * self.burst_ns
+        return any(mode == "hold" and a <= t < b for a, b, mode in self.silence)
+
 
 class Producer:
     """One bus producer: 302M content (`Content`, through avenc_s302m ! mpegtsmux as every 302M
@@ -496,6 +602,7 @@ class Producer:
         self.late_ns = 0                # the worst delivery behind its schedule (the harness's own)
         self.late = []                  # (when, how late) of every push over 5 ms behind
         self.schedule = []              # (deliver at, seq, bytes)
+        self.held = set()               # the seqs a hold delivers at its end
         self._stop = threading.Event()
         self._thread = None
         tee = " ".join(f"t. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=0"
@@ -525,6 +632,7 @@ class Producer:
                     bufs.append((data, ready))
         self.schedule = sorted((t0 + self.knobs.delivery(ready - t0), i, data)
                                for i, (data, ready) in enumerate(bufs))
+        self.held = {i for i, (_data, ready) in enumerate(bufs) if self.knobs.held(ready - t0)}
 
     def _encode(self):
         """The content's 10 ms blocks through avenc_s302m ! mpegtsmux, as fast as it goes:
@@ -583,7 +691,8 @@ class Producer:
 
     def _run(self):
         src = self.out.get_by_name("src")
-        for at, _i, data in self.schedule:
+        first, free_at = True, 0
+        for at, i, data in self.schedule:
             while not self._stop.is_set():
                 wait = at - now_ns()
                 if wait <= 0:
@@ -592,12 +701,19 @@ class Producer:
             if self._stop.is_set():
                 return
             sent = now_ns()
-            self._lag(sent, sent - at)
+            # A hold's backlog, all due at its end: only its first push counts, and what follows from
+            # when its last push was out, so the feeder's own pushes of it are no lateness.
+            held = i in self.held
+            if first or not held:
+                self._lag(sent, sent - max(at, free_at))
+            first = not held
             st = self.stamper.stamp(data, sent)
             b = Gst.Buffer.new_wrapped(data)
             b.pts = b.dts = st
             src.emit("push-buffer", b)
             self.delivered.append((sent, st, data))
+            if held:
+                free_at = now_ns()
 
 
 def prepare(producers, lead_ms=3000):

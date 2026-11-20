@@ -17,7 +17,7 @@ vi.mock('@media-router/engine', async (importOriginal) => ({
 import * as engine from '../index.js';
 import { liveInputLaunchText } from './liveInputBranches.js';
 import { LAT_IN_PREFIX } from './latenessTap.js';
-import { WATCHED_QUEUE_NAMES } from './queueOverrun.js';
+import { PROBE_QUEUE_NAMES, WATCHED_QUEUE_NAMES } from './queueOverrun.js';
 import { BUS_WATCHDOG_PREFIX } from './busHelpers.js';
 import { INGEST_QUEUE_NAME } from './tsHelpers.js';
 import { tsQueueByteCap } from './queueBounds.js';
@@ -200,6 +200,7 @@ function lint(s: Subject, fates?: Map<string, Set<string>>): Finding[] {
         }
         const watched =
             el.factory === 'queue' &&
+            !PROBE_QUEUE_NAMES.includes(p.get('name') ?? '') &&
             ((leaky !== undefined && leaky !== '0' && leaky !== 'no') ||
                 WATCHED_QUEUE_NAMES.includes(p.get('name') ?? ''));
         if (watched && p.get('silent') === 'true') fail(el, 'silent=true on a watched queue');
@@ -617,7 +618,7 @@ describe('the no-late-drop lint (WI-P4-13, B-173)', () => {
         );
         expect(rules(plant(live, 'appsink name=tsprobe', 'appsink name=frames drop=true'))).toEqual(
             [
-                'queue: leaky=downstream outside the whitelist',
+                'queue vp_probeq: leaky=downstream outside the whitelist',
                 'appsink frames: drop=true on an appsink carrying content',
             ],
         );

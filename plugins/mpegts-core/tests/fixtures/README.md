@@ -32,9 +32,12 @@ tai_utc_offset_s << 24`}; a PMT without `MRHT` after one with it writes `decl` w
 every reader takes 1 and 2, and the 14 committed traces are version 1 (no declarations). The output harness's runner commands are
 `output/pipelines.json`, made by the real modules (`testing/outputConformance.test.ts`, `vitest -u`), with
 one `scn-*.expect.json` per scenario of `output_conformance_test.py` (ch. 8 WI-P4-14, B-174; the
-drain's `scn-out-drain-burst`, 120 s, and `scn-out-drain-group`, 170 s, B-179); its streams are
-generated at test time or are the recordings here, none committed for it. The suite runs about 39
-min in both runners on the 4-core dev Pi. An expectation's `cadenceWarning` means
+drain's `scn-out-drain-burst`, 120 s, and `scn-out-drain-group`, 170 s, B-179; the raise rule's
+`scn-out-drain-cpu`, 175 s, and `scn-out-drain-dip`, 130 s, B-240; the video rule's `scn-out-drain-seam`,
+60 s, native runner only, and `scn-out-drain-group-jitter`, 50 s, python runner only (an expectation's
+`runner`), B-256); its streams are
+generated at test time or are the recordings here, none committed for it. The suite runs about 55
+min in both runners on the 4-core dev Pi, and one retry of a long drain scenario adds about 4 min. An expectation's `cadenceWarning` means
 a PCR interval ran late against the PCR's own cadence (twice it, at least 500 ms, at most 4 s)
 at some point of the replay; `pcrCadenceMs` is the cadence learned at the end (B-86). A trace
 recorded before 2026-10-22 (B-84) gives a PES record the restamp's own `discontinuity_indicator`

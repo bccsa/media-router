@@ -42,11 +42,12 @@ import {
 } from './asrcWatches.js';
 import {
     DISPLAY_NOT_PRESENTING_TEXT,
+    DisplayStatsWatch,
     VIDEO_PACE_EVENT,
     VideoPaceWatches,
     type VideoPaceWatch,
 } from './videoPaceWatches.js';
-import { LatenessTrend } from './latenessTrend.js';
+import { LatenessTrend, type GapMark } from './latenessTrend.js';
 import { launchElements } from './launchElements.js';
 import type { DrainGroupView } from './drainGroups.js';
 import { drainSummary } from './drainSummary.js';
@@ -135,15 +136,17 @@ const STREAM_CHANNELS = [DEMUX_EVENT, ASRC_STATS, ASRC_EVENT, VIDEO_PACE_EVENT].
 /** The presentation's own render lateness (the largest of several), and its gap mark. */
 interface RenderReading {
     ms: number;
-    mark: string;
+    mark: GapMark;
 }
 
 function renderReading(paces: VideoPaceWatch[], asrcs: AsrcWatch[]): RenderReading | undefined {
-    const from = (xs: Array<{ ms?: number; mark: string }>, kind: string) => {
-        const known = xs.filter((x): x is { ms: number; mark: string } => x.ms !== undefined);
+    const from = (xs: Array<{ ms?: number; mark: GapMark }>, kind: string) => {
+        const known = xs.filter((x): x is { ms: number; mark: GapMark } => x.ms !== undefined);
         if (!known.length) return undefined;
         const ms = Math.max(...known.map((x) => x.ms));
-        return { ms, mark: `${kind}:${known.map((x) => x.mark).join(',')}` };
+        // Another source (kind or element set) is a reset.
+        const reset = `${kind}:${known.map((x) => x.mark.reset).join(',')}`;
+        return { ms, mark: { reset, step: known.map((x) => x.mark.step).join(',') } };
     };
     return (
         from(
@@ -256,6 +259,7 @@ export class LatenessReporter {
     private readonly demuxes = new DemuxWatches();
     private readonly asrcs = new AsrcWatches();
     private readonly paces = new VideoPaceWatches();
+    private readonly display = new DisplayStatsWatch();
     private readonly trend: LatenessTrend;
     /** Each demux's `media` as the description builds it, for the no-stream text. */
     private demuxMedia = new Map<string, string>();
@@ -396,6 +400,11 @@ export class LatenessReporter {
         this.processingLatencyMs = ms;
     }
 
+    /** A read of the sink's `display-stats` (waylandsink, B-242): shown in the Rate match row. */
+    takeDisplayStats(stats: unknown, now = Date.now()): void {
+        this.display.take(stats, now);
+    }
+
     setInstrument(present: boolean): void {
         this.instrument = present;
     }
@@ -414,6 +423,7 @@ export class LatenessReporter {
         this.demuxes.clear();
         this.asrcs.clear();
         this.paces.clear();
+        this.display.clear();
         this.trend.gap();
         this.configure(undefined);
         this.deviceLatencyMs = this.pipeWireLatencyMs = undefined;
@@ -555,8 +565,9 @@ export class LatenessReporter {
     }
 
     /** The pace's added latency (the most any aligner adds to its fastest present member) and
-     *  what the module waits for: the absent inputs, else the slowest present member of the
-     *  aligner that adds the most, among two or more. Internal stages are never named. */
+     *  what the module waits for: the slowest present member of the aligner that adds the most,
+     *  among two or more. An absent input is gapped, never waited for: its row and warning say
+     *  so (B-245). Internal stages are never named. */
     private alignerPace(rows: InputRow[], internal: AlignerWatch[]): Partial<ModuleTimingSummary> {
         const groups = new Map<string, Array<{ w: AlignerWatch; label?: string }>>();
         const join = (w: AlignerWatch, label?: string): void => {
@@ -582,8 +593,7 @@ export class LatenessReporter {
             );
             if (!held || addedMs > held.addedMs) held = { addedMs, label: slowest.label! };
         }
-        const absent = rows.filter((r) => r.state === 'absent').map((r) => r.label);
-        const waitingFor = absent.length ? absent.join(', ') : held?.label;
+        const waitingFor = held?.label;
         return {
             ...(paceMs !== undefined ? { paceMs } : {}),
             ...(waitingFor !== undefined ? { waitingFor } : {}),
@@ -710,6 +720,8 @@ export class LatenessReporter {
         const pace = paces[0];
         if (pace) {
             out.rateMatch = pace.rateMatch;
+            const display = this.display.reading(now);
+            if (display) out.displayFrames = display;
             out.lateReleasesPerMin = pace.lateReleasesPerMin;
             out.paceHoldMs = pace.meanHoldMs;
         }
@@ -729,7 +741,8 @@ export class LatenessReporter {
             );
         }
         if (out.renderMs !== undefined) {
-            this.trend.add(now, out.renderMs, reading?.mark ?? 'tap');
+            const load = out.drain?.underrunReasons?.load ?? 0;
+            this.trend.add(now, out.renderMs, reading?.mark ?? { reset: 'tap', step: '' }, load);
             const trend = this.trend.slope();
             if (trend) out.latenessTrend = trend;
         }

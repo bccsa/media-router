@@ -8,6 +8,7 @@ import * as path from 'path';
 // probe verdict without touching real unix sockets.
 vi.mock('@media-router/engine', async (importOriginal) => {
     const actual = await importOriginal<Record<string, unknown>>();
+    const NO_DRM_DIR = '/nonexistent/mr-test-no-drm';
     return {
         ...actual,
         probeUnixSocket: vi.fn(async () => false),
@@ -18,6 +19,20 @@ vi.mock('@media-router/engine', async (importOriginal) => {
         // states; on dev machines the real ones read /sys/class/drm → [].
         listDrmConnectors: vi.fn(actual.listDrmConnectors as (...a: unknown[]) => unknown),
         firstConnectedDisplay: vi.fn(actual.firstConnectedDisplay as (...a: unknown[]) => unknown),
+        // These two read /sys/class/drm through the engine's own binding, past the spies above:
+        // pin them to a host with no DRM, so a screen on the test machine changes nothing.
+        pickActiveDisplay: vi.fn((name: string, dir?: string) =>
+            (actual.pickActiveDisplay as (n: string, d: string) => unknown)(
+                name,
+                dir ?? NO_DRM_DIR,
+            ),
+        ),
+        resolveConnectorMode: vi.fn((name: string, dir?: string) =>
+            (actual.resolveConnectorMode as (n: string, d: string) => unknown)(
+                name,
+                dir ?? NO_DRM_DIR,
+            ),
+        ),
         // initManifest's sink and decoder probes: no gst-inspect from these tests.
         probeGstElement: vi.fn(async () => false),
     };
@@ -504,7 +519,7 @@ describe('VideoPlayerModule helpers', () => {
                 const s = buildLivePipeline(KMS, busSource);
                 expect(s).toContain('! tee name=vp_ts ! mrtsdemux');
                 expect(s).toContain(
-                    'vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe',
+                    'vp_ts. ! queue name=vp_probeq leaky=downstream max-size-buffers=64 ! appsink name=tsprobe',
                 );
                 expect(s.indexOf('watchdog')).toBeLessThan(s.indexOf('tee name=vp_ts'));
             });

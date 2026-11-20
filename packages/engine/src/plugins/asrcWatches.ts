@@ -3,8 +3,9 @@
 // for the log; a device term's render lateness, relocks and stalls (WI-P4-12), and its drain back
 // to its latency target (WI-P4-18). A capture ASRC (an ingest's: neither term) is its ingest
 // card's alone.
-import type { ClockCorrection } from '@media-router/shared-types';
+import type { ClockCorrection, UnderrunReason } from '@media-router/shared-types';
 import { DRAIN_GROUP_ALONE_NS } from './drainSummary.js';
+import type { GapMark } from './latenessTrend.js';
 import { ASRC_EVENT, ASRC_STATS } from './ingestTiming.js';
 import { launchElements } from './launchElements.js';
 
@@ -53,8 +54,8 @@ export interface AsrcWatch {
     stalled?: boolean;
     /** A device term: its drain (B-179). */
     drain?: DrainFields;
-    /** Changes at every relock, gap and stall the element counts, and at a new element. */
-    gapMark: string;
+    /** Resets at a new element, a device relock or stall; steps at a relock or a gap (B-241). */
+    gapMark: GapMark;
 }
 
 /** The drain's stats fields (`mrasrc-stats`, `mrvideopace`), in ms and ppm. */
@@ -67,6 +68,8 @@ export interface DrainFields {
     drainedMs: number;
     raises: number;
     underruns: number;
+    /** Those that did not raise, by reason (B-240); absent from an element that has none. */
+    reasons?: Partial<Record<UnderrunReason, number>>;
     outages: number;
     /** The target it publishes (ms); absent while it publishes none (`drain-member` false). */
     publishedMs?: number;
@@ -77,6 +80,17 @@ export interface DrainFields {
 }
 
 const DRAIN_STATES: ReadonlySet<string> = new Set(['warm-up', 'idle', 'draining', 'rising']);
+
+/** The reasons an underrun did not raise, as the elements name their `underruns-<reason>` fields. */
+export const UNDERRUN_REASONS: readonly UnderrunReason[] = [
+    'drain',
+    'after-drain',
+    'video',
+    'warm-up',
+    'input',
+    'load',
+    'not-margin',
+];
 
 /** The drain's fields of a stats payload; undefined where the element has none (an older one). */
 export function drainFieldsOf(p: Record<string, unknown>): DrainFields | undefined {
@@ -101,6 +115,10 @@ export function drainFieldsOf(p: Record<string, unknown>): DrainFields | undefin
     if ('group-target-ns' in p && n('group-target-ns') > DRAIN_GROUP_ALONE_NS)
         f.groupTargetMs = n('group-target-ns') / 1e6;
     if (n('drain-learned-ns') >= 0) f.learnedMs = n('drain-learned-ns') / 1e6;
+    if (UNDERRUN_REASONS.some((r) => `underruns-${r}` in p)) {
+        f.reasons = {};
+        for (const r of UNDERRUN_REASONS) if (n(`underruns-${r}`)) f.reasons[r] = n(`underruns-${r}`);
+    }
     if (p['drain-member'] === true) f.publishedMs = n('drain-target-lateness-ns') / 1e6;
     return f;
 }
@@ -253,8 +271,13 @@ export class AsrcWatches {
     list(): AsrcWatch[] {
         const out: AsrcWatch[] = [];
         for (const [name, e] of this.entries) {
-            const mark = [e.generation, e.relocks, e.gaps, e.deviceRelocks, e.deviceStalls];
-            const w: AsrcWatch = { name, gapMark: mark.join('/') };
+            const w: AsrcWatch = {
+                name,
+                gapMark: {
+                    reset: [e.generation, e.deviceRelocks, e.deviceStalls].join('/'),
+                    step: [e.relocks, e.gaps].join('/'),
+                },
+            };
             const engaged = e.mode === 'decode' || e.mode === 'decode+device';
             // `device` from a decode + device element: its source still passes at house rate.
             const decode =

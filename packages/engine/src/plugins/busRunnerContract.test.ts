@@ -11,7 +11,7 @@ import {
     latOutName,
 } from './busHelpers.js';
 import { INGEST_QUEUE_NAME, buildIngestQueue } from './tsHelpers.js';
-import { QUEUE_OVERRUN_EVENT, WATCHED_QUEUE_NAMES } from './queueOverrun.js';
+import { PROBE_QUEUE_NAMES, QUEUE_OVERRUN_EVENT, WATCHED_QUEUE_NAMES } from './queueOverrun.js';
 import { OUTPUT_PREFILL_NAME } from './outputSink.js';
 import { EGRESS_ELEMENT, buildEgressWriter, egressBusReports } from './egressTiming.js';
 
@@ -466,6 +466,11 @@ describe('the no-late-drop hook and the queue watch, in both runners (B-170)', (
         const quoted = WATCHED_QUEUE_NAMES.map((n) => `"${n}"`).join(', ');
         expect(watchH).toContain(`NAMES[] = {${quoted}};`);
         expect(runnerSource).toContain(`WATCHED_QUEUE_NAMES = (${quoted})`);
+        const probes = PROBE_QUEUE_NAMES.map((n) => `"${n}"`).join(', ');
+        expect(watchH).toContain(`PROBE_NAMES[] = {${probes}};`);
+        expect(runnerSource).toContain(`PROBE_QUEUE_NAMES = (${probes},)`);
+        expect(watchCpp).toContain('for (const char* n : PROBE_NAMES)');
+        expect(runnerSource).toContain('element.get_name() in PROBE_QUEUE_NAMES');
         for (const [cpp, py] of [
             ['QUIET_MS = 1000;', '_QUEUE_QUIET_MS = 1000'],
             ['LONG_MS = 10000;', '_QUEUE_LONG_MS = 10000'],
@@ -511,6 +516,9 @@ describe('the no-late-drop hook and the queue watch, in both runners (B-170)', (
             'utf8',
         );
         expect(player).toContain("const VP_ES_QUEUE_NAME = 'vp_esq';");
+        expect(player).toContain("const VP_PROBE_QUEUE_NAME = 'vp_probeq';");
+        expect(player).toContain('queue name=${VP_PROBE_QUEUE_NAME} leaky=downstream');
+        expect(PROBE_QUEUE_NAMES).toEqual(['vp_probeq']);
         const decoder = readFileSync(
             join(repo, 'plugins', 'audio-decoder', 'engine', 'AudioDecoderModule.ts'),
             'utf8',

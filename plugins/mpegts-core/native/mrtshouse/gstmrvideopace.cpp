@@ -98,6 +98,7 @@ struct Snapshot {
     gint64 drain_ppb = 0, excess = 0, margin = 0, learned = -1, trough = 0, drained = 0, target = 0,
            group = mrts::DrainServo::GROUP_ALONE_NS;
     guint64 raises = 0, underruns = 0, outages = 0, drain_drops = 0;
+    uint64_t reasons[mrts::UNDERRUN_REASONS] = {};   // B-240
     const char* drain_state = "warm-up";
     bool capped = false, member = false, rate_known = false;
 };
@@ -458,6 +459,7 @@ static void vp_publish(GstMrVideoPace* self, gint64 base) {
     s.raises = dr.raises;
     s.underruns = dr.underruns;
     s.outages = dr.outages;
+    std::copy(dr.reasons, dr.reasons + mrts::UNDERRUN_REASONS, s.reasons);
     s.drain_state = dr.drain_state;
     s.capped = dr.capped;
     s.member = dr.member;
@@ -503,6 +505,7 @@ static GstStructure* vp_structure(const Snapshot& s) {
                       s.drain_state, "drain-capped", G_TYPE_BOOLEAN, (gboolean)s.capped, "drain-member",
                       G_TYPE_BOOLEAN, (gboolean)s.member, "drain-rate-known", G_TYPE_BOOLEAN,
                       (gboolean)s.rate_known, "drain-drops", G_TYPE_UINT64, s.drain_drops, NULL);
+    mrtshouse_set_underrun_reasons(st, s.reasons);
     return st;
 }
 
@@ -582,6 +585,8 @@ static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 running
         else if (e.kind == mrts::DrainEvent::Kind::drain_done)
             GST_INFO_OBJECT(self, "back at its latency target: drained %" G_GINT64_FORMAT " ms in all",
                             (gint64)e.value / GST_MSECOND);
+        else if (e.kind == mrts::DrainEvent::Kind::underrun)   // a video late release never raises (B-256)
+            GST_DEBUG_OBJECT(self, "late release, no raise: %s", mrts::underrun_reason_name(e.reason));
     }
     Snapshot& t = *self->dsnap;
     t.drain_ppb = self->pace->drain();
@@ -595,6 +600,7 @@ static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 running
     t.raises = s.raises();
     t.underruns = s.underruns();
     t.outages = s.outages();
+    for (int r = 0; r < mrts::UNDERRUN_REASONS; r++) t.reasons[r] = s.reason_count((mrts::UnderrunReason)r);
     t.drain_state = mrts::drain_state_name(s.state());
     t.capped = s.capped();
     t.member = presenting;

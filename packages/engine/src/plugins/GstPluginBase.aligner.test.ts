@@ -18,6 +18,10 @@ const h = vi.hoisted(() => {
         emit(event: string, data?: unknown): void {
             for (const fn of this.handlers.get(event) ?? []) fn(data);
         }
+        /** The runner answers (B-246). */
+        async ping(): Promise<boolean> {
+            return true;
+        }
         async start(): Promise<void> {
             this.isRunning = true;
         }
@@ -127,7 +131,8 @@ describe('GstPluginBase aligner warnings', () => {
         send(child, 'mixin_aw_b', report(CONN_B, 'absent'));
         expect(m.getState()).toMatchObject({ health: 'warning', error: ABSENT_B });
         expect(m.getState().statusData!['timing-in-2']).toMatchObject({ state: 'absent' });
-        expect(m.getState().statusData!.timing).toMatchObject({ waitingFor: 'enc-b (audio-in)' });
+        // Gapped, not waited for (B-245): the row and the warning name it.
+        expect(m.getState().statusData!.timing).not.toHaveProperty('waitingFor');
         send(child, 'mixin_aw_b', report(CONN_B, 'present'));
         expect(m.getState()).toMatchObject({ health: 'ok', error: null });
         expect(m.seen).toEqual([]);

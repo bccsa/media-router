@@ -218,11 +218,13 @@ gboolean tick_cb(gpointer) {
 
 bool watched(GstElement* el, int* leaky) {
     if (factory_name(el) != "queue") return false;
+    const gchar* name = GST_OBJECT_NAME(el);
+    for (const char* n : PROBE_NAMES)
+        if (name && std::strcmp(name, n) == 0) return false;
     gint value = 0;
     g_object_get(el, "leaky", &value, nullptr);
     *leaky = value;
     if (value != 0) return true;
-    const gchar* name = GST_OBJECT_NAME(el);
     for (const char* n : NAMES)
         if (name && std::strcmp(name, n) == 0) return true;
     return false;

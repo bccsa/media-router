@@ -22,6 +22,10 @@ const h = vi.hoisted(() => {
         emit(event: string, data?: unknown): void {
             for (const fn of this.handlers.get(event) ?? []) fn(data);
         }
+        /** The runner answers (B-246). */
+        async ping(): Promise<boolean> {
+            return true;
+        }
         async start(): Promise<void> {
             this.isRunning = true;
         }

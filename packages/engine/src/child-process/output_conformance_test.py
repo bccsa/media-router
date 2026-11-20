@@ -9,6 +9,7 @@ import os
 import pickle
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -186,27 +187,18 @@ def last(series):
     return series[-1][1] if series else {}
 
 
-def overruns(o, skip_tap=True):
-    """Its queue_overrun episodes: (element, leaky, levelTimeMs, overruns), the ts-probe tap's apart."""
-    tap = probe_tap(o)
+def overruns(o):
+    """Its queue_overrun episodes: (element, leaky, levelTimeMs, overruns). The player's ts-probe tap
+    (vp_probeq) is never watched (B-248), so any episode here is a content queue's."""
     return [(p.get("element"), p.get("leaky"), p.get("levelTimeMs"), p.get("overruns"))
-            for _t, p in o.overruns() if not (skip_tap and p.get("element") == tap)]
+            for _t, p in o.overruns()]
 
 
 def episodes(o, t0):
     """Its queue_overrun episodes at their first overrun (a report comes a second after its last, `ms`
-    after its first): (s, element, leaky, levelTimeMs, overruns), the ts-probe tap's apart."""
-    tap = probe_tap(o)
+    after its first): (s, element, leaky, levelTimeMs, overruns)."""
     return [(round((t - t0) / S - 1 - (p.get("ms") or 0) / 1000, 1), p.get("element"), p.get("leaky"),
-             p.get("levelTimeMs"), p.get("overruns")) for t, p in o.overruns() if p.get("element") != tap]
-
-
-def probe_tap(o):
-    """The player's ts-probe tap queue's name: unnamed queues are numbered in the string's order."""
-    s = o.start_cmd["pipeline"]
-    at = s.find("! appsink name=tsprobe")
-    n = len(re.findall(r"! queue (?!name=)", s[:at])) if at >= 0 else 0
-    return f"queue{n - 1}" if n else None
+             p.get("levelTimeMs"), p.get("overruns")) for t, p in o.overruns()]
 
 
 def demux_last(o):
@@ -348,10 +340,6 @@ def scn_out_gap_recovers(tag, argv, exp):
               and ps.get("gaps-collapsed") == want_gaps and ps.get("rate-drops") == 0
               and dm.get("gaps") == want_gaps and dm.get("markers") == arm.get("markers", 0)
               and not overruns(pl))
-        tap = [e for e in overruns(pl, skip_tap=False) if e[0] == probe_tap(pl)]
-        if tap:
-            print(f"    {label} player: its ts-probe tap ({probe_tap(pl)}, leaky) met full {tap} "
-                  "(a diagnostic tap; B-174 Found)")
         rb, ra = renders(dec, t0, 2, at), renders(dec, t0, at + length + 2, exp["seconds"] + 1)
         st, dd = last(dec.asrc_stats()), demux_last(dec)
         evs = [p.get("kind") + ":" + str(p.get("reason")) for _t, p in dec.asrc_events()]
@@ -899,41 +887,81 @@ def falling(series, key, t0, lo, hi):
     return round(sum((x - mx) * (y - my) for x, y in pts) / sxx, 2) if sxx else None
 
 
-def scn_out_drain_burst(tag, argv, exp):
-    """V-P4-12 at CI length: a 2 s stall's backlog plays behind, +2 s read within 30 s of the resume (V-P4-2),
-    then drains back to its target at 0.5 % once 30 s are sampled (the audio's after its device term locked):
-    the lateness falls 5 ms/s, nothing lost, no underrun, drain drops within 1 in 200 on the 50 Hz display."""
-    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+def burst_through_mux(argv, exp, arm):
+    """The player and the audio decoder on the muxer's bus tee (one input, the real string), the feed
+    held 2 s at the source or the muxer's runner stopped 2 s (`freeze`): p4-20's whole-programme stall."""
     at, length = exp["stall"]
-    run = av_run(argv, exp, knobs=rig.Knobs(silence=[(at, length, "hold")]))
-    run.on_time(label)
-    run.clean(label)
-    pl, dec, t0 = run.outputs["player"], run.outputs["decoder"], run.t0
-    b, a = paces(pl, t0, 2, at), paces(pl, t0, at + length + 2, at + length + 25)
-    step = round(min(a) - min(b), 1) if a and b else None
-    check(f"{label} player: +2 s read within 30 s of the resume (base {b and round(min(b), 1)} -> "
-          f"{a and round(min(a), 1)} ms, +{step}; want {x['video_step_ms']})",
-          step is not None and x["video_step_ms"][0] <= step <= x["video_step_ms"][1])
-    vp = pl.paces()
-    slope = falling(vp, "present-lateness-ns", t0, at + length, exp["seconds"])
-    ps = last(vp)
-    frames = sum(1 for t, p in vp if p.get("drain-ppm", 0) > 0) * 100   # 2 s posts at 50 fps
-    check(f"{label} player: drains at 0.5 % ({slope} ms/s, want {x['slope_ms_s']}), drain drops "
-          f"{ps.get('drain-drops')} (<= 1 in 200 of about {frames} frames while draining), rate drops "
-          f"{ps.get('rate-drops')}; margin raises {ps.get('drain-raises')} (a frame its software decode left late "
-          f"while draining raises, by design; Found F2 in B-179)",
-          slope is not None and x["slope_ms_s"][0] <= slope <= x["slope_ms_s"][1]
-          and (ps.get("drain-drops") or 0) <= frames / 200 + 1 and ps.get("rate-drops") == 0)
-    ds = device_stats(dec)
-    st = last(ds)
-    aslope = falling(ds, "render-lateness-ns", t0, at + length, exp["seconds"])
-    starts = [p for _t, p in dec.asrc_events() if p.get("kind") == "drain-start"]
-    check(f"{label} decoder: drains at 0.5 % once its device term locked and 30 s were sampled ({aslope} ms/s, "
-          f"want {x['slope_ms_s']}; {len(starts)} drain-start), nothing lost (dropped {st.get('dropped-frames')}, "
-          f"lost {st.get('lost-frames')}, stalls {st.get('device-stalls')}), no underrun ({st.get('underruns')})",
-          aslope is not None and x["slope_ms_s"][0] <= aslope <= x["slope_ms_s"][1] and len(starts) == 1
-          and st.get("dropped-frames") == 0 and st.get("lost-frames") == 0 and st.get("device-stalls") == 0
-          and st.get("underruns") == 0)
+    run = Run(argv)
+    rel = rig.generated(exp["kind"], exp["seconds"] + 2)
+    run.rel, run.pids = rel, orig.stream_pids(rel)
+    hold = None if arm.get("freeze") else [(at, length, "hold")]
+    run.producer("feed", ["mx0"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"],
+                 knobs=rig.Knobs(silence=hold))
+    run.output("mux", "mux1")
+    run.output("player", "player50", video=orig.display())
+    run.output("decoder", "decoder", audio=orig.card())
+    acts = []
+    if arm.get("freeze"):
+        pid = lambda: run.outputs["mux"].runner.proc.pid  # noqa: E731
+        acts = [(at, lambda: os.kill(pid(), signal.SIGSTOP)), (at + length, lambda: os.kill(pid(), signal.SIGCONT))]
+    run.ok = run.go(exp["seconds"] + 1.0, acts, [("player", "vp_pace", "stats")], lead_ms=5000, before=["mux"])
+    return run
+
+
+def scn_out_drain_burst(tag, argv, exp):
+    """V-P4-2 and V-P4-12 at CI length through the muxer (p4-20): a 2 s stall of the source or of the muxer's
+    runner plays behind, +2 s read within 30 s of the resume at both outputs, the muxer's pace unchanged, then
+    each drains back to its target at 0.5 % once 30 s are sampled (the audio's after its device term locked):
+    the lateness falls 5 ms/s, nothing lost, no underrun, drain drops within 1 in 200 on the 50 Hz display."""
+    at, length = exp["stall"]
+    for arm in exp["arms"]:
+        # An arm's own bands: a stop of the source reads +2 s less what the running muxer still held.
+        x = dict(exp["expect"], **arm.get("expect", {}))
+        label = f"{exp['scenario']} {arm['name']} {tag}"
+        run = burst_through_mux(argv, exp, arm)
+        run.on_time(label)
+        run.clean(label)
+        pl, dec, mux, t0 = run.outputs["player"], run.outputs["decoder"], run.outputs["mux"], run.t0
+        b, a = paces(pl, t0, 2, at), paces(pl, t0, at + length + 2, at + length + 25)
+        step = round(min(a) - min(b), 1) if a and b else None
+        rb, ra = renders(dec, t0, 2, at), renders(dec, t0, at + length + 2, at + length + 25)
+        astep = round(orig.mid(ra) - orig.mid(rb), 1) if ra and rb else None
+        mp = {r: [p.get("pace") for _t, p in mux.runner.plugin(f"mralignwatch:aw_demux_0_{r}")
+                  if isinstance(p.get("pace"), int)] for r in ("video", "audio")}
+        top = max((max(v) for v in mp.values() if v), default=None)
+        fells = [(sec(t, t0), (p.get("fell") or 0) // MS) for t, p in mux.runner.plugin("mralignwatch:")
+                 if p.get("reason") == "pace-fell"]
+        check(f"{label}: +2 s read within 30 s of the resume at both outputs (player base {b and round(min(b), 1)} -> "
+              f"{a and round(min(a), 1)} ms, +{step}; decoder {orig.mid(rb)} -> {orig.mid(ra)} ms, +{astep}; want "
+              f"{x['video_step_ms']}, {x['audio_step_ms']}); the muxer's pace at most {x['mux_pace_ms']} ms (max "
+              f"{top and top // MS} ms), none fell ({fells[:3]})",
+              step is not None and x["video_step_ms"][0] <= step <= x["video_step_ms"][1]
+              and astep is not None and x["audio_step_ms"][0] <= astep <= x["audio_step_ms"][1]
+              and top is not None and top <= x["mux_pace_ms"] * MS and not fells)
+        vp = pl.paces()
+        slope = falling(vp, "present-lateness-ns", t0, at + length, exp["seconds"])
+        ps = last(vp)
+        frames = sum(1 for t, p in vp if p.get("drain-ppm", 0) > 0) * 100   # 2 s posts at 50 fps
+        check(f"{label} player: drains at 0.5 % ({slope} ms/s, want {x['slope_ms_s']}), drain drops "
+              f"{ps.get('drain-drops')} (<= 1 in 200 of about {frames} frames while draining), rate drops "
+              f"{ps.get('rate-drops')}; no margin raise ({ps.get('drain-raises')}: a frame its software decode left late "
+              f"while draining is counted, never a raise, B-256; reasons {late_reasons(ps)})",
+              slope is not None and x["slope_ms_s"][0] <= slope <= x["slope_ms_s"][1]
+              and (ps.get("drain-drops") or 0) <= frames / 200 + 1 and ps.get("rate-drops") == 0
+              and ps.get("drain-raises") == 0)
+        ds = device_stats(dec)
+        st = last(ds)
+        aslope = falling(ds, "render-lateness-ns", t0, at + length, exp["seconds"])
+        starts = [p for _t, p in dec.asrc_events() if p.get("kind") == "drain-start"]
+        check(f"{label} decoder: drains at 0.5 % once its device term locked and 30 s were sampled ({aslope} ms/s, "
+              f"want {x['slope_ms_s']}; {len(starts)} drain-start), nothing lost (dropped {st.get('dropped-frames')}, "
+              f"lost {st.get('lost-frames')}, stalls {st.get('device-stalls')}), no underrun ({st.get('underruns')})",
+              aslope is not None and x["slope_ms_s"][0] <= aslope <= x["slope_ms_s"][1] and len(starts) == 1
+              and st.get("dropped-frames") == 0 and st.get("lost-frames") == 0 and st.get("device-stalls") == 0
+              and st.get("underruns") == 0)
+        dm = demux_last(dec)
+        check(f"{label} decoder: its demux lost nothing behind the muxer (gaps {dm.get('gaps')}, cc-lost "
+              f"{dm.get('cc-lost')})", dm.get("gaps") == 0 and dm.get("cc-lost") == 0)
 
 
 class GroupRole:
@@ -985,8 +1013,8 @@ def scn_out_drain_group(tag, argv, exp):
     """-group (design part 12 item 7): a Video Player and an Audio Decoder of one muxed source and an Audio Output
     302M on the same house timeline, the rig playing the engine (P = the max every 2 s). The clean link first: no
     underrun, nobody above the group's early level. Then a shared 200 ms stall (the 302M feed's 0.1 s later, the
-    same length, so the rig's two feeds never push a burst at once): the 302M side's one underrun raises its margin,
-    and every two members end within 45 ms. MR_DRAIN_MUTANT=ignore: the group target never set; the check fails."""
+    same length, so the rig's two feeds never push a burst at once): the 302M side's one underrun, counted by its reason
+    and no raise (B-240), and every two members end within 45 ms. MR_DRAIN_MUTANT=ignore: the group target never set; the check fails."""
     label, x = f"{exp['scenario']} {tag}", exp["expect"]
     at, length = exp["stall"]
     run = Run(argv)
@@ -1025,7 +1053,7 @@ def scn_out_drain_group(tag, argv, exp):
     ptop = max([p / 1e6 for t, p in role.p if t0 + (lo + 8) * S <= t < t0 + at * S] or [0])
     before = {k: [(t, p) for t, p in series[k] if t < t0 + at * S] for k in keys}
     # An underrun counted on the clean link must be the test device's own (the shared host can starve a ring that
-    # holds no margin); a video late release is the cadence's, not an underrun (B4).
+    # holds no margin); a video late release is the cadence's and never raises (B-256).
     under = {k: last(before[k]).get("underruns") or 0 for k in ("decoder", "aout")}
     own = {k: (dev.get(("at", k)) - dev.get(("lo", k))) if dev.get(("at", k)) is not None
            and dev.get(("lo", k)) is not None else 0 for k in under}
@@ -1042,10 +1070,15 @@ def scn_out_drain_group(tag, argv, exp):
           and all(raised[k] <= under[k] for k in under)
           and all(v <= early + x["rise_ms"] for v in tops.values()) and ptop <= early + x["rise_ms"])
     ao = last(series["aout"])
-    check(f"{label}: the 302M side took its underrun and raised its margin ({ao.get('underruns')} underrun, "
-          f"{ao.get('drain-raises')} raise, {ao.get('drain-outages')} outage, margin "
-          f"{ao.get('drain-margin-ns', 0) / 1e6} ms)",
-          ao.get("underruns") == 1 and ao.get("drain-raises") == 1 and ao.get("drain-outages") == 0)
+    why = {k[10:]: v for k, v in ao.items() if k.startswith("underruns-") and v}
+    # The stall's own underrun: any the clean link allowed above come before it.
+    stall_own = (ao.get("underruns") or 0) - under["aout"]
+    check(f"{label}: the 302M side took its underrun and did not raise its margin: the shared stall's starvation is "
+          f"no steady one at its margin (B-240: seen as warm-up on both runners; {ao.get('underruns')} underrun, "
+          f"{stall_own} of them the stall's, {ao.get('drain-raises')} raise, reasons {why}, "
+          f"{ao.get('drain-outages')} outage, margin {ao.get('drain-margin-ns', 0) / 1e6} ms)",
+          stall_own == 1 and ao.get("drain-raises") == 0 and ao.get("drain-outages") == 0
+          and sum(why.values()) == ao.get("underruns"))
     tail = group_spread(run, keys, t0, end - 8, end)
     ends = {k: orig.mid([ms for t, ms in renders_of(run.outputs[k], k) if t >= t0 + (end - 8) * S]) for k in keys}
     pubs = {k: round(role.latest(k).get("drain-target-lateness-ns", 0) / 1e6, 1) for k in keys}
@@ -1057,9 +1090,185 @@ def scn_out_drain_group(tag, argv, exp):
         behind = st.get("display-behind", 0) or 0
         check(f"{label} {k}: drained within the cap (drain-ppm {st.get('drain-ppm')}), nothing dropped "
               f"(dropped {st.get('dropped-frames', 0)}, rate drops {st.get('rate-drops', 0)}, of them display-behind "
-              f"{behind})",
+              f"{behind}){'; no raise (' + str(st.get('drain-raises')) + ', B-256)' if k == 'player' else ''}",
               abs(st.get("drain-ppm") or 0) <= 5000 and not st.get("dropped-frames")
-              and (st.get("rate-drops") or 0) <= behind)
+              and (st.get("rate-drops") or 0) <= behind and (k != "player" or st.get("drain-raises") == 0))
+
+def late_reasons(ps):
+    """A pace's underruns by reason, the zero ones left out."""
+    return {k[10:]: v for k, v in ps.items() if k.startswith("underruns-") and v}
+
+
+class LoadWatch:
+    """The host's 1 min load every 2 s of a run (an action)."""
+
+    def __init__(self):
+        self.load = []
+
+    def __call__(self):
+        self.load.append(os.getloadavg()[0])
+
+
+def late_at(pl, t0):
+    """(s, new late releases) at each pace message that counted some."""
+    out, prev = [], 0
+    for t, p in pl.paces():
+        n = p.get("underruns") or 0
+        if n > prev:
+            out.append((round((t - t0) / S, 1), n - prev))
+        prev = n
+    return out
+
+
+def starved(run, watch, ps, off=()):
+    """What shows the host starved this run, empty if nothing: the load at 2 or more, a `drain` late release
+    (these runs never engage the drain on a healthy host), a feed over 10 ms behind, late releases off the seams."""
+    why = []
+    if watch.load and max(watch.load) >= 2.0:
+        why.append(f"load up to {max(watch.load):.1f}")
+    if ps.get("underruns-drain"):
+        why.append(f"{ps['underruns-drain']} drain late releases")
+    lag = max((p.late_ns for p in run.producers), default=0) / 1e6
+    if lag > 10:
+        why.append(f"the feed {lag:.0f} ms behind")
+    if off:
+        why.append(f"late releases off the seams at {list(off)[:6]} s")
+    return why
+
+
+def floor_ok(ps, kinds=("drain", "after-drain", "video")):
+    """The rule's invariants, unconditional: no raise, the margin at its floor, every late release under a
+    reason, no outage."""
+    why = late_reasons(ps)
+    return (ps.get("drain-raises") == 0 and ps.get("drain-margin-ns") == 20 * MS and not ps.get("drain-outages")
+            and sum(why.values()) == (ps.get("underruns") or 0) and set(why) <= set(kinds))
+
+
+def scn_out_drain_seam(tag, argv, exp):
+    """-seam (B-256): a Video Player on a looped file, each lap `gap_ms` after the last (a seam's step), at its
+    1-frame floor: the invariants always; at most one late release per seam and the end's lateness within
+    `drift_ms` of the first reading on a healthy host, a starved run tried again (three in a row fail)."""
+    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+    rel = rig.generated(exp["kind"], exp["lap_s"])
+    pid = orig.stream_pids(rel)["video"]
+    data, _laps, lap = loop_of(b"".join(rel), pid, exp["lap_s"])
+    period = (lap + exp["gap_ms"] * 90) / 90000
+    laps = int(exp["seconds"] // period) + 2
+    whole = orig.chunked(orig.looped(data, laps, lap + exp["gap_ms"] * 90))
+    seams = int(exp["seconds"] // period)
+    run, watch = Run(argv), LoadWatch()
+    run.producer("feed", ["vp"], ts=lambda t0: orig.at_house(whole, t0), stop_s=exp["seconds"])
+    run.output("player", "player50", video=orig.display())
+    run.go(exp["seconds"] + 1.0, [(s, watch) for s in range(2, exp["seconds"], 2)])
+    run.on_time(label)
+    pl, t0 = run.outputs["player"], run.t0
+    ps = last(pl.paces())
+    why = late_reasons(ps)
+    under = ps.get("underruns") or 0
+    # A seam's late release shows in the next 2 s message; one before the first seam is the start's.
+    off = [s for s, _n in late_at(pl, t0)
+           if s > period - 0.5 and not any(-0.5 <= s - k * period <= 2.5 for k in range(1, seams + 1))]
+    # Present lateness reads whole refreshes and flips between two of them: each window's lower one.
+    first = paces(pl, t0, x["warm_s"], x["warm_s"] + 10)
+    end = paces(pl, t0, exp["seconds"] - 10, exp["seconds"] + 1)
+    step = round(min(end) - min(first), 1) if first and end else None
+    bounded = under <= seams and step is not None and abs(step) <= x["drift_ms"]
+    host = starved(run, watch, ps, off)
+    if floor_ok(ps) and not bounded and host:
+        raise Retry(f"{label}: {under} late releases for {seams} seams ({why}), lateness step {step} ms, "
+                    f"on a starved host ({'; '.join(host)})")
+    run.clean(label)
+    check(f"{label} player: no raise, the margin at its floor ({ps.get('drain-raises')} raises, margin "
+          f"{(ps.get('drain-margin-ns') or 0) / 1e6} ms), at most one late release per seam ({under} for {seams} "
+          f"seams; {why}; off the seams {off}), no outage ({ps.get('drain-outages')})",
+          floor_ok(ps) and under <= seams)
+    check(f"{label} player: render lateness at the end within {x['drift_ms']} ms of its first reading after "
+          f"{x['warm_s']} s (lower refresh of each 10 s: {first and round(min(first), 1)} -> "
+          f"{end and round(min(end), 1)} ms, {step})",
+          step is not None and abs(step) <= x["drift_ms"])
+
+
+def scn_out_drain_group_jitter(tag, argv, exp):
+    """-group-jitter (B-256): the Video Player and the Audio Decoder of one source grouped (the rig plays the
+    engine, P = the max every 2 s), the video fed in `burst_ms` bursts: the video's invariants always; P at the
+    end within `rise_ms` of P after the warm-up on a healthy host, a starved run tried again."""
+    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+    run, watch = Run(argv), LoadWatch()
+    rel = rig.generated(exp["kind"], exp["seconds"] + 2)
+    run.rel, run.pids = rel, orig.stream_pids(rel)
+    run.producer("vfeed", ["vp"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"],
+                 knobs=rig.Knobs(burst_ms=exp["burst_ms"]))
+    run.producer("afeed", ["ad"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"])
+    run.output("player", "player50", video=orig.display())
+    run.output("decoder", "decoder", audio=orig.card())
+    members = [("player", "vp_pace"), ("decoder", "asrc")]
+    role = GroupRole(run, members)
+    run.go(exp["seconds"] + 1, [(s, role) for s in range(2, exp["seconds"], 2)]
+           + [(s + 1, watch) for s in range(2, exp["seconds"], 2)], [])
+    run.on_time(label)
+    t0 = run.t0
+    ps = last(run.outputs["player"].paces())
+    why = late_reasons(ps)
+    early = [p / 1e6 for t, p in role.p if t0 + x["warm_s"] * S <= t < t0 + (x["warm_s"] + 8) * S]
+    tail = [p / 1e6 for t, p in role.p if t >= t0 + (exp["seconds"] - 8) * S]
+    rise = round(orig.mid(tail) - orig.mid(early), 1) if early and tail else None
+    dec = last(device_stats(run.outputs["decoder"]))
+    dec_ok = (dec.get("drain-raises") or 0) <= (dec.get("underruns") or 0)
+    host = starved(run, watch, ps)
+    if floor_ok(ps) and dec_ok and not (rise is not None and rise <= x["rise_ms"]) and host:
+        raise Retry(f"{label}: P rose {rise} ms ({ps.get('underruns')} late releases, {why}) on a starved host "
+                    f"({'; '.join(host)})")
+    run.clean(label)
+    check(f"{label} player: no raise, the margin at its floor ({ps.get('drain-raises')} raises, margin "
+          f"{(ps.get('drain-margin-ns') or 0) / 1e6} ms), its late releases counted ({ps.get('underruns')}; {why})",
+          floor_ok(ps))
+    check(f"{label}: P at the end within {x['rise_ms']} ms of P after {x['warm_s']} s "
+          f"({early and round(orig.mid(early), 1)} -> {tail and round(orig.mid(tail), 1)} ms, {rise}); the decoder's "
+          f"raises {dec.get('drain-raises')} for {dec.get('underruns')} underruns",
+          rise is not None and rise <= x["rise_ms"] and dec_ok)
+
+
+def decoder_drain(tag, argv, exp, holds):
+    """The audio decoder alone on a generated feed, its input held at `holds` [(s, length)] (the content waits,
+    none lost): its device stats at the end, the raise events it posted."""
+    run = av_run(argv, dict(exp, seconds=exp["seconds"]), knobs=rig.Knobs(silence=[(a, n, "hold") for a, n in holds]),
+                 keys=("decoder",))
+    run.on_time(f"{exp['scenario']} {tag}")
+    run.clean(f"{exp['scenario']} {tag}")
+    dec = run.outputs["decoder"]
+    st = last(device_stats(dec))
+    raised = [(round((t - run.t0) / S, 1), p.get("length-ns", 0) // MS, p.get("from-ns", 0) // MS,
+               p.get("margin-ns", 0) // MS) for t, p in dec.asrc_events() if p.get("kind") == "underrun"]
+    return st, raised, {k[10:]: v for k, v in st.items() if k.startswith("underruns-") and v}
+
+
+def scn_out_drain_cpu(tag, argv, exp):
+    """B-240, V-P4-12's CPU arm at CI length: a 60 s load on the audio decoder (its input held at each of 20 stalls
+    3 s apart, none lost: it falls further behind each time) raises nothing, the margin unchanged; each underrun
+    under `load` or `warm-up`."""
+    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+    at, n = exp["load"]
+    holds = [(at + 3 * k, x["hold_ms"][0] / 1000 + k * x["hold_ms"][1] / 1000) for k in range(n)]
+    st, raised, why = decoder_drain(tag, argv, exp, holds)
+    check(f"{label} decoder: {st.get('underruns')} underruns ({st.get('drain-outages')} outages), no raise "
+          f"({st.get('drain-raises')}, posted {raised}), margin {st.get('drain-margin-ns', 0) // MS} ms, the reasons "
+          f"{why} only load and warm-up",
+          (st.get("underruns") or 0) >= x["underruns_min"] and st.get("drain-raises") == 0 and not raised
+          and st.get("drain-margin-ns") == 20 * MS and why.get("load", 0) >= 1 and set(why) <= {"load", "warm-up"})
+
+
+def scn_out_drain_dip(tag, argv, exp):
+    """B-240, B3's rhythm compressed: the decoder's input held briefly twice; the first dip on a steady stream at its
+    margin raises it (once, 10 s after it, its evidence posted), the next inside that one's hold does not; any
+    other underrun (the shared host's) is counted by its reason."""
+    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+    st, raised, why = decoder_drain(tag, argv, exp, [(a, x["hold_ms"] / 1000) for a in exp["dips"]])
+    first = exp["dips"][0]
+    check(f"{label} decoder: underruns {st.get('underruns')}, one raise ({st.get('drain-raises')}; posted {raised}: s, "
+          f"length, margin from, to) about 10 s after the dip at {first} s; the others {why}",
+          st.get("drain-raises") == 1 and len(raised) == 1 and first + 10 <= raised[0][0] <= first + 13
+          and raised[0][2] == 20 and raised[0][3] == 40 and (st.get("underruns") or 0) == 1 + sum(why.values()))
+
 
 SCENARIOS = {
     "scn-out-stall": scn_out_stall,
@@ -1077,6 +1286,10 @@ SCENARIOS = {
     "scn-burnin-late-cues": scn_burnin_late_cues,
     "scn-out-drain-burst": scn_out_drain_burst,
     "scn-out-drain-group": scn_out_drain_group,
+    "scn-out-drain-cpu": scn_out_drain_cpu,
+    "scn-out-drain-dip": scn_out_drain_dip,
+    "scn-out-drain-seam": scn_out_drain_seam,
+    "scn-out-drain-group-jitter": scn_out_drain_group_jitter,
 }
 _NEEDS = ("unixfdsrc", "unixfdsink", "mpegtsmux", "x264enc", "avdec_h264", "h264parse", "avenc_aac", "avdec_aac",
           "aacparse", "avdec_s302m", "textoverlay")
@@ -1121,6 +1334,10 @@ def main():
         for tag, argv in kinds:
             if exp.get("python_only") and tag != "py":
                 print(f"SKIP {name} {tag} — the module runs on the python runner (its bridge)")
+                continue
+            if exp.get("runner") and tag != exp["runner"]:
+                # The element is the same on both runners; one run keeps the suite near the gate's cap.
+                print(f"SKIP {name} {tag} — the scenario runs on the {exp['runner']} runner only")
                 continue
             for attempt in range(3):
                 while not args.in_time_ns and os.getloadavg()[0] >= 3.0:

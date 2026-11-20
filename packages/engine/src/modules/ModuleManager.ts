@@ -160,6 +160,7 @@ export class ModuleManager extends EventEmitter {
                 name: this.mediaRouter?.moduleName(id) ?? id,
                 anchor: plugin.isLatencyGroupAnchor?.() ?? false,
                 ...(drain?.publishedMs !== undefined ? { publishedMs: drain.publishedMs } : {}),
+                ...(drain?.nowMs !== undefined ? { renderMs: drain.nowMs } : {}),
                 apply: (ns, view) => {
                     plugin
                         .applyLatencyGroupTarget?.(ns, view)

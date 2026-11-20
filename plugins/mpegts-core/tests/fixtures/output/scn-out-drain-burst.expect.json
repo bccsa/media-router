@@ -1,17 +1,26 @@
 {
   "scenario": "scn-out-drain-burst",
-  "graph": "generated 720p50 H.264 + AAC, a 2 s input stall at 8 s (hold) -> player50 (mrtestvideosink 50 Hz) and the audio decoder (mrtestaudiosink): +2 s, then drained back at 0.5 % (V-P4-12 at CI length, B-179)",
+  "graph": "generated 720p50 H.264 + AAC -> the muxer (one input) -> player50 (mrtestvideosink 50 Hz) and the audio decoder (mrtestaudiosink) on its bus tee; a 2 s stall at 8 s, of the source (hold) or of the muxer's runner (SIGSTOP): +2 s at both outputs, the muxer's pace unchanged, then drained back at 0.5 % (V-P4-2, V-P4-12 at CI length; B-179, p4-20)",
   "kind": "h264-aac-720p50",
   "seconds": 120,
   "stall": [
     8,
     2
   ],
+  "arms": [
+    {"name": "source", "note": "the muxer keeps running: what it held when its source stopped (its interleave wait, 60-80 ms here) plays out first, nothing lost", "expect": {"video_step_ms": [1880, 2041], "audio_step_ms": [1870, 2041]}},
+    {"name": "muxer", "freeze": true}
+  ],
   "expect": {
     "video_step_ms": [
       1939,
       2041
     ],
+    "audio_step_ms": [
+      1949,
+      2041
+    ],
+    "mux_pace_ms": 100,
     "slope_ms_s": [
       -5.5,
       -4.5

@@ -1,9 +1,9 @@
 // ArrivalRhythm, PaceGroup, PaceRegistry and GapPlanner (plan ch. 6 WI-P2-6): W on synthetic
-// rhythms, the pace's rules (seeds, the window, recomputed on leave, a lateness over wall time
-// that a backlog's drain does not move, as the sort before a1b found it), the pace read lock-free
-// (B-79), the slew (B-80), stale arrivals (B-81), the fall (B-82), the ceiling and held arrivals
-// (B-204), the re-anchor (B-205), a join into a running group and the gap stretches or pieces an
-// absent input gets.
+// rhythms and deliveries (B-244), the pace's rules (seeds, the window, recomputed on leave, a
+// lateness over wall time that a backlog's drain does not move, as the sort before a1b found it),
+// the pace read lock-free (B-79), the slew (B-80), stale arrivals (B-81), the fall (B-82), the
+// ceiling and held arrivals (B-204), the re-anchor (B-205), a freeze's burst and the common stall
+// (p4-20), a join into a running group and the gap stretches or pieces an absent input gets.
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -120,6 +120,74 @@ void test_rhythm_window_and_rank() {
     r.reset();
     CHECK("reset: back to the ceiling, no arrivals",
           r.arrivals() == 0 && r.limit_ns(defaults()) == 2 * S);
+}
+
+// A delivery of `n` frames from one PES, 50 us apart (a parser's push loop) from `t`.
+void deliver(ArrivalRhythm& r, int64_t t, int n) {
+    for (int k = 0; k < n; k++) r.arrive(t + k * 50000);
+}
+
+void test_rhythm_deliveries() {
+    // F-3 (B-244): AAC in 362 ms PES of 17 frames, which aacparse hands on together.
+    const ArrivalRhythm::Config c = defaults();
+    ArrivalRhythm r;
+    deliver(r, 0, 17);
+    CHECK("one delivery of 17 frames is one arrival: still the ceiling, not the floor",
+          r.arrivals() == 1 && r.limit_ns(c) == 2 * S);
+    int64_t t = 0;
+    for (int i = 1; i < 60; i++) deliver(r, t += 362 * MS, 17);
+    const int64_t w1 = r.limit_ns(c);
+    CHECK("17 frames every 362 ms: W 3 x the gap between deliveries (about 1086 ms)",
+          w1 > 1080 * MS && w1 < 1090 * MS);
+    // The restarted source: one delivery in three carries two PES (the journal's 263 / 625 ms).
+    bool floor_seen = false;
+    for (int i = 0; i < 90; i++) {
+        t += (i % 3 == 2 ? 724 : 362) * MS;
+        deliver(r, t, i % 3 == 2 ? 34 : 17);
+        floor_seen = floor_seen || r.limit_ns(c) <= c.floor_ns;
+    }
+    CHECK("... deliveries of one or two PES: W never at the floor, 3 x 724 ms capped at 2 s",
+          !floor_seen && r.limit_ns(c) == 2 * S);
+
+    ArrivalRhythm b;
+    t = 0;
+    for (int i = 0; i < 60; i++) deliver(b, t += 362 * MS, 17);
+    const int64_t wb = b.limit_ns(c);
+    b.arrive(t += 3 * S);   // back after an absence...
+    for (int k = 1; k < 120; k++) b.arrive(t + k * 20000);   // ...with a catch-up burst
+    CHECK("a burst after a rejoin does not lower W", b.limit_ns(c) >= wb);
+    floor_seen = false;
+    for (int i = 0; i < 40; i++) {   // the new run after the source's restart
+        deliver(b, t += 362 * MS, 17);
+        floor_seen = floor_seen || b.limit_ns(c) <= c.floor_ns;
+    }
+    CHECK("... nor does the new run drop it to the floor", !floor_seen && b.limit_ns(c) >= wb);
+
+    ArrivalRhythm e;
+    e.arrive(0);
+    e.arrive(ArrivalRhythm::TOGETHER_NS - 1);
+    CHECK("an arrival under 5 ms after a delivery's first joins it", e.arrivals() == 1);
+    e.arrive(ArrivalRhythm::TOGETHER_NS);
+    CHECK("one at 5 ms is the next delivery, its gap from the last buffer (1 ns)",
+          e.arrivals() == 2 && e.p95_ns() == 1);
+    ArrivalRhythm f;
+    for (int i = 0; i < 40; i++) f.arrive(i * 4 * MS);
+    CHECK("a 4 ms rhythm keeps every other buffer's gap: W the floor, as before",
+          f.arrivals() == 20 && f.p95_ns() == 4 * MS && f.limit_ns(c) == 100 * MS);
+    f.resume(f.last_ns() + 1 * MS);
+    f.arrive(f.last_ns() + 1 * MS);
+    CHECK("a resume opens a delivery: the next buffer 1 ms on joins it, no gap taken",
+          f.arrivals() == 21 && f.p95_ns() == 4 * MS);
+
+    // A fresh input's first delivery while its aligner holds upstream: every frame a resume.
+    ArrivalRhythm h;
+    for (int k = 0; k < 17; k++) h.resume(k * 50000);
+    CHECK("a held first delivery of 17 frames is one arrival: still the ceiling",
+          h.arrivals() == 1 && h.limit_ns(c) == 2 * S);
+    h.arrive(4 * MS);
+    h.resume(5 * MS);
+    CHECK("... an arrival or a resume under 5 ms after its first joins it; at 5 ms one opens",
+          h.arrivals() == 2 && h.p95_ns() == 0 && h.last_ns() == 5 * MS);
 }
 
 // --- the pace ------------------------------------------------------------------------------
@@ -1584,6 +1652,149 @@ void test_held() {
     CHECK("held: the hold over, its lateness counts again (40 ms)", g.pace() == 40 * MS);
 }
 
+// --- whole-programme stalls (p4-20) ----------------------------------------------------------
+
+// A 2 s freeze of one member's arrivals: its burst after it, from 2 s late down to on time.
+// `held`: as the element marks it (p4-20); the peaks and the pace either stay or take the stall.
+void freeze_burst(PaceGroup& g, bool held) {
+    for (int i = 0; i < 300; i++) g.observe(1, i * 10 * MS, -40 * MS);   // 3 s at -40 ms
+    const int64_t resume = 5 * S;
+    for (int k = 0; k <= 200; k++) {   // 2 s of content in 200 ms, lateness 1.96 s down to -40 ms
+        const int64_t now = resume + k * MS;
+        g.observe(1, now, now - (3 * S + k * 10 * MS), false, false, nullptr, held);
+    }
+    for (int i = 0; i < 300; i++)   // then on time again for 3 s
+        g.observe(1, resume + 210 * MS + i * 10 * MS, -40 * MS);
+}
+
+void test_freeze_burst() {
+    PaceGroup g;
+    g.join(1, -1);
+    g.start();
+    freeze_burst(g, true);
+    int64_t p = 0;
+    CHECK("freeze: the burst observed held moves neither the pace (0) nor the window's peaks",
+          g.pace() == 0 && g.target() == 0 && (!g.peak(1, &p) || p <= 0));
+    PaceGroup u;
+    u.join(1, -1);
+    u.start();
+    freeze_burst(u, false);
+    CHECK("freeze: ... not held (the old rule), the one 2 s stretch over the stall lifts it to 1 s",
+          u.pace() >= 800 * MS && u.peak(1, &p) && p >= 800 * MS);
+}
+
+// Members heard every 10 ms from 0 to `until`, W 100 ms; `stop` [m] silent from then on.
+PaceGroup& heard_until(PaceGroup& g, const std::map<uint64_t, int64_t>& stop, int64_t until) {
+    for (int64_t t = 0; t <= until; t += 10 * MS)
+        for (const auto& [m, at] : stop)
+            if (t <= at) g.hear(m, t, 100 * MS);
+    return g;
+}
+
+void test_common_stall() {
+    using Q = PaceGroup::Quiet;
+    const int64_t W = 100 * MS, last = S;
+    {
+        PaceGroup g;
+        for (uint64_t m : {1, 2}) g.join(m, -1);
+        heard_until(g, {{1, last}, {2, last}}, 4 * S);
+        CHECK("common: both silent from 1 s, under W: no",
+              g.quiet(1, last, W, last + 50 * MS) == Q::no);
+        CHECK("common: both silent 2 s: held, no absence",
+              g.quiet(1, last, W, last + 2 * S) == Q::held &&
+                  g.quiet(2, last, W, last + 2 * S) == Q::held);
+        CHECK("common: both silent 5 s, past the 4 s ceiling: absent",
+              g.quiet(1, last, W, last + 5 * S) == Q::absent);
+        CHECK("common: at the ceiling exactly: absent",
+              g.quiet(1, last, W, last + 4 * S) == Q::absent);
+    }
+    {
+        PaceGroup g;
+        for (uint64_t m : {1, 2}) g.join(m, -1);
+        heard_until(g, {{1, last}, {2, 3 * S}}, 3 * S);
+        CHECK("one input: member 1 silent while member 2 flows: absent at W",
+              g.quiet(1, last, W, last + W) == Q::absent);
+    }
+    {
+        // Every member, not any: 1 and 2 silent together, 3 flows: 1 is absent.
+        PaceGroup g;
+        for (uint64_t m : {1, 2, 3}) g.join(m, -1);
+        heard_until(g, {{1, last}, {2, last}, {3, 3 * S}}, 3 * S);
+        CHECK("every member: 1 and 2 silent, 3 flowing: 1 absent at W (not any member)",
+              g.quiet(1, last, W, last + W) == Q::absent);
+    }
+    {
+        // A group's resume: member 2 back at 3 s, member 1 not yet: 1 gets its W from 2's return.
+        PaceGroup g;
+        for (uint64_t m : {1, 2}) g.join(m, -1);
+        heard_until(g, {{1, last}, {2, last}}, 3 * S);
+        for (int64_t t = 3 * S; t <= 3 * S + 200 * MS; t += 10 * MS) g.hear(2, t, W);
+        CHECK("resume: member 2 back at 3 s; member 1 still held 50 ms later",
+              g.quiet(1, last, W, 3 * S + 50 * MS) == Q::held);
+        CHECK("resume: ... absent once 2 flowed a W without it",
+              g.quiet(1, last, W, 3 * S + W) == Q::absent);
+    }
+    {
+        // A member that stopped counting (absent, muted) holds nothing: a lone member is held.
+        PaceGroup g;
+        for (uint64_t m : {1, 2}) g.join(m, -1);
+        heard_until(g, {{1, last}, {2, 3 * S}}, 3 * S);
+        g.mute(2);
+        CHECK("muted: member 2 muted, member 1 alone silent 2 s: held",
+              g.quiet(1, last, W, last + 2 * S) == Q::held);
+        g.mute(1);
+        CHECK("muted: ... member 1 muted itself (absent before): absent at W",
+              g.quiet(1, last, W, last + W) == Q::absent);
+        PaceGroup n;
+        n.join(1, -1);
+        CHECK("never heard: an input dark since it joined stalled nothing: absent at W, alone too",
+              n.quiet(1, 0, 2 * S, 2 * S) == Q::absent);
+    }
+    {
+        // hear() tells a member its arrival ends a stall: every member silent past its W until now,
+        // a task overdue past FREEZE_NS, or a thaw since its last arrival.
+        PaceGroup g;
+        for (uint64_t m : {1, 2}) g.join(m, -1);
+        heard_until(g, {{1, last}, {2, last}}, last);
+        CHECK("hear: after 2 s of common silence member 1's arrival is a burst",
+              g.hear(1, 3 * S, W));
+        CHECK("hear: ... and member 2's after it too", g.hear(2, 3 * S + 5 * MS, W));
+        CHECK("hear: then not again",
+              !g.hear(1, 3 * S + 10 * MS, W) && !g.hear(2, 3 * S + 15 * MS, W));
+        PaceGroup f;
+        for (uint64_t m : {1, 2}) f.join(m, -1);
+        heard_until(f, {{1, 4 * S}, {2, 4 * S}}, 4 * S);
+        // Member 2's data still coming in, its task asleep to 4.01 s.
+        for (int64_t t = 4 * S; t <= 4 * S + 250 * MS; t += 10 * MS) f.hear(2, t, W);
+        f.sleeper(2)->store(4 * S + 10 * MS);
+        CHECK("hear: a task overdue by FREEZE_NS or less is no freeze",
+              !f.hear(1, 4 * S + 260 * MS, W));
+        CHECK("hear: overdue past FREEZE_NS (a stopped process): a burst",
+              f.hear(1, 4 * S + 270 * MS, W));
+        f.sleeper(2)->store(PaceGroup::NONE);
+        CHECK("hear: the thaw holds for the other member's next arrival",
+              f.hear(2, 4 * S + 280 * MS, W));
+        PaceGroup b;
+        for (uint64_t m : {1, 2}) b.join(m, -1);
+        heard_until(b, {{1, last}, {2, 3 * S}}, 3 * S);
+        CHECK("hear: member 1 back while member 2 flowed: no burst (a rejoin, B-80)",
+              !b.hear(1, 3 * S + 5 * MS, W));
+    }
+    {
+        // Half a W: the other member's last arrival a few ms after this one's stopped with it.
+        PaceGroup g;
+        for (uint64_t m : {1, 2}) g.join(m, -1);
+        heard_until(g, {{1, last}, {2, last + 10 * MS}}, last + 10 * MS);
+        CHECK("half W: member 2 last heard 10 ms after member 1: 1 held",
+              g.quiet(1, last, W, last + 2 * S) == Q::held);
+        PaceGroup h;
+        for (uint64_t m : {1, 2}) h.join(m, -1);
+        heard_until(h, {{1, last}, {2, last + 60 * MS}}, last + 60 * MS);
+        CHECK("half W: member 2 last heard 60 ms (over W/2) after member 1: 1 absent",
+              h.quiet(1, last, W, last + 2 * S) == Q::absent);
+    }
+}
+
 // --- gaps ----------------------------------------------------------------------------------
 
 void test_gaps() {
@@ -1663,6 +1874,7 @@ int main() {
     test_rhythm_cbr();
     test_rhythm_bursts();
     test_rhythm_window_and_rank();
+    test_rhythm_deliveries();
     test_pace_window();
     test_pace_leave();
     test_pace_seeds();
@@ -1678,6 +1890,8 @@ int main() {
     test_ceiling();
     test_anchor();
     test_held();
+    test_freeze_burst();
+    test_common_stall();
     test_gaps();
     test_pieces();
     return test_summary("align_watch");

@@ -1,0 +1,16 @@
+{
+  "scenario": "scn-align-common-stall",
+  "graph": "the producer of both a muxer's inputs (H.264 + AAC on one input) held 2 s at 12 s, its backlog sent at the end -> mpegts-muxer (one input): carried as delay, every PES out, the pace unchanged (p4-20, Q-A 'carry it')",
+  "seconds": 44,
+  "stall": [12, 2],
+  "arms": [
+    {"name": "av", "pipelines": "muxOne",
+     "inputs": {"one0": {"generator": "h264-aac", "held": true}}, "routes": ["demux_0_video", "demux_0_audio"]}
+  ],
+  "expect": {
+    "fall_after_s": 10,
+    "pace_rise_ms": 30,
+    "fell_ms_max": 50,
+    "dts_steps_max": 3
+  }
+}

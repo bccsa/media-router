@@ -524,7 +524,7 @@ lands `λ_monitor + reaction` after the content it answers.
      silence limit W is treated as absent, with an alarm, and the aligner
      continues with its other inputs. W is a few hundred ms, set from the
      input's normal arrival rhythm, for example three times its usual gap
-     between arrivals and at least 100 ms. W measures silence, not lateness: a
+     between deliveries and at least 100 ms. W measures silence, not lateness: a
      late input that is still delivering is waited for. W is short because
      every millisecond an aligner waits for a dead input becomes latency at
      every output downstream (S10).

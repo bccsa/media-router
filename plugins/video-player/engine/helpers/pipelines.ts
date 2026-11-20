@@ -93,7 +93,7 @@ const SINK_TIMING = 'sync=false qos=false';
  *   2. KMS direct, targeting a specific connector by numeric id, on its DRM
  *      driver by name when kmssink's own pick cannot reach it (`kmsDriverFor`).
  *   3. KMS direct, auto-pick connector (used when the user picked a name we
- *      can't resolve to an id, or didn't pick at all).
+ *      can't resolve to an id; on auto `resolveRenderTarget` names the first real screen, B-247).
  *   4. autovideosink (dev machines without DRM, last resort).
  *
  * Every sink shows each frame as it comes (B-169): `sync=false`, never waiting or dropping late;
@@ -259,6 +259,10 @@ export const TS_PROBE_SINK_NAME = 'tsprobe';
 /** Name of the tee that feeds the demux branch and the video-info tap. */
 const PROBE_TEE_NAME = 'vp_ts';
 
+/** The probe tap's leaky queue: its drops are by design, so the runners' queue watch leaves it
+ *  out (queueOverrun.ts PROBE_QUEUE_NAMES, B-248). */
+export const VP_PROBE_QUEUE_NAME = 'vp_probeq';
+
 /**
  * `name=` of the live pipeline's `mrtsdemux`: its `mrtsdemux:vpdemux` reports
  * (counters, unknown streams, off house time, no video) land on the video input.
@@ -400,7 +404,7 @@ export function buildLivePipeline(
     // (runner sets max-buffers/drop), so a stalled tap can never back-pressure
     // the render path through the tee.
     const probeTap =
-        ` ${PROBE_TEE_NAME}. ! queue leaky=downstream max-size-buffers=64` +
+        ` ${PROBE_TEE_NAME}. ! queue name=${VP_PROBE_QUEUE_NAME} leaky=downstream max-size-buffers=64` +
         ` ! appsink name=${TS_PROBE_SINK_NAME}`;
     // The pace after the convert stage and the overlay, right before the render lateness tap
     // and the sink: each frame leaves on the content's cadence, never before it arrives, and a
