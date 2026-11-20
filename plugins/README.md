@@ -2619,9 +2619,15 @@ read index) that frame is the clock plus a guard: the server's configured
 latency (tlength less two minreq, 40 ms at buffer-time 100 ms), plus the
 sink's latency learned from the segment count where it moves; held only while
 the stream may have run dry (its buffer did not wait a segment in a queue
-before the sink, and no push from `mrasrc`'s own chain blocked 2 ms in the
-sink less than a segment before). A refill is at most 3 s; a longer gap is
-crossed by the writes after it. `mrasrc-stats` adds `margin-refills`,
+before the sink, and no push into the sink blocked 2 ms less than a segment
+before). A write within two segments of such a push (the stream was full,
+and a full stream holds tlength, two minreq past that latency) is held to the
+segment count alone: a clock that ran on while the server took nothing does
+not read it as behind (c41). A push from `mrasrc`'s own chain is timed there;
+one from a queue's thread (the 302M's `outq`) is the time that thread slept
+while the write's buffer waited for it (`/proc/thread-self/schedstat`: its
+time on and waiting for a CPU taken off). A refill is at most 3 s; a longer
+gap is crossed by the writes after it. `mrasrc-stats` adds `margin-refills`,
 `margin-silence-ns` and `margin-guard-ns`. With `catch-up-ppm` (the outputs'
 `OUTPUT_CATCH_UP_PPM` 5000, the owner's 0.5 %, at most that) audio held past
 the margin is played back down to it: at each input buffer `mrasrc` reads what
