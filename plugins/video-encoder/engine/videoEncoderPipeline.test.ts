@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildV4l2SourceForModes } from './videoEncoderPipeline.js';
+import { buildV4l2SourceForModes, encoderInputColorimetry } from './videoEncoderPipeline.js';
 import {
     gstVideoFormat,
     pickCaptureMode,
@@ -71,7 +71,7 @@ describe('buildV4l2SourceForModes', () => {
         ]);
         expect(s).toBe(
             `v4l2src device=/dev/video0 do-timestamp=true ! image/jpeg,width=1920,height=1080,framerate=60/1 ! videorate drop-only=true skip-to-first=true ! image/jpeg,framerate=30/1;image/jpeg,framerate=[1/1,30/1] ! ${QUEUE} ! jpegparse ! jpegdec ! ` +
-                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=30/1;video/x-raw,framerate=[1/1,30/1] ! videoscale n-threads=2 ! video/x-raw,width=1920,height=1080 ! videoconvert n-threads=2',
+                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=30/1;video/x-raw,framerate=[1/1,30/1] ! videoscale n-threads=2 ! video/x-raw,width=1920,height=1080 ! videoconvert n-threads=2 ! video/x-raw,colorimetry=bt709',
         );
     });
 
@@ -99,7 +99,7 @@ describe('buildV4l2SourceForModes', () => {
         expect(s).toContain('video/x-raw,framerate=25/1');
         expect(s).toBe(
             `v4l2src device=/dev/video0 do-timestamp=true ! image/jpeg,width=1920,height=1080,framerate=50/1 ! videorate drop-only=true skip-to-first=true ! image/jpeg,framerate=25/1;image/jpeg,framerate=[1/1,25/1] ! ${QUEUE} ! jpegparse ! jpegdec ! ` +
-                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=25/1;video/x-raw,framerate=[1/1,25/1] ! videoscale n-threads=2 ! video/x-raw,width=1280,height=720 ! videoconvert n-threads=2',
+                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=25/1;video/x-raw,framerate=[1/1,25/1] ! videoscale n-threads=2 ! video/x-raw,width=1280,height=720 ! videoconvert n-threads=2 ! video/x-raw,colorimetry=bt709',
         );
     });
 
@@ -125,6 +125,27 @@ describe('buildV4l2SourceForModes', () => {
         expect(s).toContain(
             'videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=30/1;video/x-raw,framerate=[1/1,30/1] ! ',
         );
+    });
+
+    it('MJPG pins a whole colorimetry after the software convert — jpegdec labels only range + matrix', () => {
+        // jpegdec's 1:4:0:0 went into the SPS VUI and the Pi 4 v4l2h264dec
+        // refused the stream "not-negotiated"; videoconvert must convert to a
+        // standard colorimetry before x264enc.
+        const hd = buildV4l2SourceForModes('/dev/video0', 1280, 720, 25, [mode('MJPG', 1920, 1080, [25])]);
+        expect(hd.endsWith('videoconvert n-threads=2 ! video/x-raw,colorimetry=bt709')).toBe(true);
+        const sd = buildV4l2SourceForModes('/dev/video0', 640, 360, 25, [mode('MJPG', 640, 360, [25])]);
+        expect(sd.endsWith('videoconvert n-threads=2 ! video/x-raw,colorimetry=bt601')).toBe(true);
+        expect(encoderInputColorimetry(1080)).toBe('bt709');
+        expect(encoderInputColorimetry(576)).toBe('bt601');
+    });
+
+    it('no colorimetry pin on raw modes or behind a hardware scale stage', () => {
+        const raw = buildV4l2SourceForModes('/dev/video0', 1280, 720, 25, [mode('NV12', 1280, 720, [25])]);
+        expect(raw).not.toContain('colorimetry');
+        const va = 'vapostproc ! video/x-raw(memory:VAMemory),width=1280,height=720';
+        const hw = buildV4l2SourceForModes('/dev/video0', 1280, 720, 25, [mode('MJPG', 1920, 1080, [25])], va);
+        expect(hw.endsWith(va)).toBe(true);
+        expect(hw).not.toContain('colorimetry');
     });
 
     it('keeps the requested framerate when the mode reports none', () => {
