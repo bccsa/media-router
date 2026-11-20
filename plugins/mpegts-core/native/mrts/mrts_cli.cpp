@@ -2012,12 +2012,27 @@ int sink_margin_main(int argc, char** argv) {
                             (long long)asrc_sink_silence(next, segdone, sps, margin, play_given, play, g, cap));
                 continue;
             }
+        } else if (ok && o.get("gap")) {   // the push before a write from a queue's thread (c41)
+            int64_t gap = 0, res = 0, busy = 0, push = 0, since = 0;
+            ok = op_i64(o, "gap", &gap, &err) && op_i64(o, "res", &res, &err) && op_i64(o, "busy", &busy, &err);
+            if (ok) {
+                asrc_sink_queued_push(gap, res, busy, &push, &since);
+                std::printf("{\"push\":%lld,\"since\":%lld}\n", (long long)push, (long long)since);
+                continue;
+            }
         } else if (ok && o.get("res")) {   // whether the guard holds a write
             int64_t res = 0, push = 0, since = 0, segns = 0;
             ok = op_i64(o, "res", &res, &err) && op_i64(o, "push", &push, &err) && op_i64(o, "since", &since, &err) &&
                  op_i64(o, "segns", &segns, &err);
             if (ok) {
                 std::printf("{\"applies\":%d}\n", asrc_sink_guard_applies(res, push, since, segns) ? 1 : 0);
+                continue;
+            }
+        } else if (ok && o.get("push")) {   // whether a write is held to segdone alone (c41)
+            int64_t push = 0, since = 0, segns = 0;
+            ok = op_i64(o, "push", &push, &err) && op_i64(o, "since", &since, &err) && op_i64(o, "segns", &segns, &err);
+            if (ok) {
+                std::printf("{\"full\":%d}\n", asrc_sink_stream_full(push, since, segns) ? 1 : 0);
                 continue;
             }
         } else if (ok) {   // a guard event

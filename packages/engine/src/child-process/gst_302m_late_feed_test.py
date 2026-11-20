@@ -24,11 +24,12 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     runs, plays holes for good; v2.0.0.101's (sync=true, ts-offset 0: a budget of the ~110 ms its sink
     declares, most of it the ring's own) cuts the field walk into holes, as on TECH01, and the rising walk.
   - writer stalls (B-249 fix round 3; seeds 7, 8, 9, 420 s): the thread that writes into the sink (302M: `outq`'s;
-    the Audio Decoder's sink end: the one into `asrc`) sleeps 80-120 ms at content 10, 15, 20, 25, 55 and 150 s, the
-    feed 30 ms late: each stall a hole at most (each with its refill), nothing lost, each adding at most its length
-    plus the margin, 40 ms and two segments to the delay, which is back at the target at the end, within a window and
-    what was in hand at 0.5 % (+20 %) of the last stall, and a window more for each of decq's 300 ms of it on the
-    Audio Decoder (what waits past decq, here in appsrc, comes into view only as decq drains; 900 s on a server).
+    the Audio Decoder's sink end: the one into `asrc`) is held (it spins) 80-120 ms at content 10, 15, 20, 25, 55
+    and 150 s, the feed 30 ms late: each stall a hole at most (each with its refill), nothing lost, each adding at
+    most its length plus the margin, 40 ms and two segments to the delay, which is back at the target at the end,
+    within a window and what was in hand at 0.5 % (+20 %) of the last stall, and a window more for each of decq's
+    300 ms of it on the Audio Decoder (what waits past decq, here in appsrc, comes into view only as decq drains;
+    900 s on a server).
   - flushes (B-249 fix round 4; seeds 7, 8, 9, a 70-90 ms feed): a 3 s device stall past the first window (300 s),
     a flush into the sink (150 s), outq held 0.6 s then READY and back (260 s), and the same with a 1.5 s input gap
     20 s on (100 s), the gap alone (c40, 150 s), and outq held 0.6 s then a flush into the sink below it (c40,
@@ -467,7 +468,7 @@ if "catch" in PARTS:
                 extra = f"; holes only on the rise (last by {_r['last_hole']:.0f} s), caught up from a window after the fall"
             check(f"{_name} seed {_seed}: {describe_cu(_r, rec)}{extra}; target at most {TARGET_MAX} ms", ok)
 
-# --- writer stalls (B-249 fix round 3): the thread into the sink sleeps 80-120 ms at each STALL_AT_S ---------------
+# --- writer stalls (B-249 fix round 3): the thread into the sink is held 80-120 ms at each STALL_AT_S ---------------
 # (302M: outq's; the Audio Decoder: the one into `asrc`), a 30 ms feed: 5 s apart, then 30 s (inside the catch-up's
 # window), then 95 s (while it runs). Each hole stays as delay until the catch-up plays it out.
 STALL_AT_S = (10, 15, 20, 25, 55, 150)
@@ -481,7 +482,8 @@ def stall_plan(seed):
 
 
 def stall_probe(p, dec, plan, fired, now):
-    """Sleep the writer thread at each (content s, ms) of plan, timed on its buffers' PTS; now() at each into fired."""
+    """Hold the writer thread at each (content s, ms) of plan, timed on its buffers' PTS; now() at each into fired.
+    It spins: a writer asleep with its buffer waiting reads as one blocked in the sink (c41's full stream)."""
     pad = p.get_by_name("asrc").get_static_pad("sink") if dec else p.get_by_name("outq").get_static_pad("src")
     st = {"k": 0, "t0": None}
 
@@ -494,7 +496,9 @@ def stall_probe(p, dec, plan, fired, now):
         k = st["k"]
         if k < len(plan) and b.pts - st["t0"] >= plan[k][0] * S:
             fired.append(now())
-            time.sleep(plan[k][1] / 1000.0)
+            until = time.monotonic() + plan[k][1] / 1000.0
+            while time.monotonic() < until:
+                pass
             st["k"] += 1
         # No Python on the writer thread once the plan is done (the GIL would be a stall of the harness's own).
         return Gst.PadProbeReturn.REMOVE if st["k"] >= len(plan) else Gst.PadProbeReturn.OK

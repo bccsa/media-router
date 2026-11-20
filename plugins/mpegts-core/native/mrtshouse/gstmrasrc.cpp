@@ -4,9 +4,12 @@
 #include <gst/audio/gstaudiobasesink.h>
 #include <gst/audio/gstaudioclock.h>
 #include <gst/base/gstbasetransform.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -104,6 +107,7 @@ struct AsrcDevice {
     std::atomic<GThread*> probe_thread{nullptr};
     std::atomic<int64_t> probe_ns{0};              // when the probe last let a buffer on into the sink
     std::atomic<int64_t> block_ns{0}, block_end_ns{0};
+    int64_t busy_ns = -1;   // the writing thread's CPU time, run and waiting, at its last write (c41; -1: unknown)
     // The catch-up (catch-up-ppm): the sink's write end after the probe's last buffer (-1: none since a start or a
     // flush), the frames a flush took from between mrasrc and the sink, and the stats' copy of its state.
     guint catch_up_ppm = 0;
@@ -525,6 +529,19 @@ static GstElement* asrc_find_downstream(GstMrAsrc* self, const gchar* name) {
     return found;
 }
 
+/* This thread's time on and waiting for a CPU, ns (schedstat's first two fields); -1 where unreadable. */
+static int64_t asrc_thread_busy_ns() {
+    char buf[96];
+    const int fd = open("/proc/thread-self/schedstat", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    const ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return -1;
+    buf[n] = 0;
+    unsigned long long run = 0, wait = 0;
+    return std::sscanf(buf, "%llu %llu", &run, &wait) == 2 ? (int64_t)(run + wait) : -1;
+}
+
 /* The device sink's own time (gst_audio_clock_get_time: no calibration, no offset; pulsesink's stream time, the
  * clock DEV-P4a recorded): the sample at the device, in the frame of the base sink's write positions. */
 static int64_t asrc_device_time(GstAudioBaseSink* sink) {
@@ -673,6 +690,7 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
         const int64_t dev = have_play ? asrc_device_time(sink) : -1;
         const int64_t play = dev > 0 ? (int64_t)gst_util_uint64_scale_int((guint64)dev, d->rate, GST_SECOND) : 0;
         int64_t guard = 0;
+        bool full = false;
         if (!d->own_ring) {   // a server's stream: the guard, held while the stream may have run dry
             const int64_t sps = rb->samples_per_seg;
             d->guard.set_base(mrts::asrc_server_latency((int64_t)rb->spec.segtotal * sps, sps));
@@ -685,11 +703,26 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
                 if (c.offset == off) residence = g_get_monotonic_time() * 1000 - c.pushed;
                 break;
             }
+            // A queue's thread writing (the 302M's outq): the push before this write, read from its gaps (c41).
+            const int64_t t = g_get_monotonic_time() * 1000, busy = asrc_thread_busy_ns();
+            if (d->probe_thread.load() == g_thread_self()) {
+                int64_t push = 0, gone = 0;
+                mrts::asrc_sink_queued_push(t - d->probe_ns.load(), residence,
+                                            busy >= 0 && d->busy_ns >= 0 ? busy - d->busy_ns : -1, &push, &gone);
+                if (push >= mrts::ASRC_SINK_BLOCKED_NS) {
+                    d->block_ns.store(push);
+                    d->block_end_ns.store(t - gone);
+                }
+            }
+            d->busy_ns = busy;
             const int64_t seg_ns = (int64_t)gst_util_uint64_scale_int((guint64)sps, GST_SECOND, d->rate);
-            const int64_t since = g_get_monotonic_time() * 1000 - d->block_end_ns.load();
+            const int64_t since = t - d->block_end_ns.load();
             if (next >= 0 && !mrts::asrc_sink_guard_applies(residence, d->block_ns.load(), since, seg_ns)) guard = 0;
+            // Right after a push that blocked the server holds this write: segdone, not a clock that ran on (c41).
+            full = next >= 0 && mrts::asrc_sink_stream_full(d->block_ns.load(), since, seg_ns);
         }
-        const int64_t n = d->margin.silence(next, segdone, rb->samples_per_seg, have_play && dev > 0, play, guard);
+        const int64_t n =
+            d->margin.silence(next, segdone, rb->samples_per_seg, have_play && dev > 0 && !full, play, guard);
         if (n <= 0) return NULL;
         // Capped (ASRC_SINK_REFILL_MAX_MS); a refill that cannot be allocated is none, and says so.
         GstBuffer* sil = gst_buffer_new_allocate(NULL, (gsize)n * (gsize)d->bpf, NULL);

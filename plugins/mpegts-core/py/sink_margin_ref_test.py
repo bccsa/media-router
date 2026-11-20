@@ -24,7 +24,12 @@ each profile of gst_302m_late_feed_test.py, five seeds each:
     guard, held unless the push before blocked and ended less than a segment before, loses nothing;
     the blocked push counted however long ago (21eade5e, fix round 2's blocking 1) loses frames;
   - a refill is capped (REFILL_MAX_MS): a flush on a pulsesink whose segdone is still (1.22) after a
-    long run is crossed by capped writes, none past the cap, the stream back with the margin.
+    long run is crossed by capped writes, none past the cap, the stream back with the margin;
+  - the 302M's sink end at load (c41, D4): outq holds a backlog, the server takes nothing for 0.3 s
+    while the clock runs on, no timing update until the next 1.5 s one: a write after a push that
+    blocked is held to segdone, so no refill and nothing lost; a 1 s feed outage (outq runs dry) still
+    gets its refill and loses nothing; the clock read for every write (4630f8d2) refills each write
+    until the update, seconds of silence put in.
 
 Then each mutant below must fail a case. Run:  python3 sink_margin_ref_test.py [--mutants]
 """
@@ -385,7 +390,7 @@ def case_pulse(rule=None, verbose=True, gate=None):
 
 # --- the Audio Decoder's sink end on a server: a blocked push, then an outage ---------------------------
 
-def simulate_decoder(steps_ms, quantum, rule=None, gate=None, seed=7, burst=10, hold_s=1.0, last_push=False):
+def simulate_decoder(steps_ms, quantum, rule=None, gate=None, seed=7, burst=10, hold_s=1.0, last_push=False, full=None):
     """The Audio Decoder's sink end into pulsesink on a server (simulate_pulse's: read index R, the clock
     rebased each 1.5 s, writes behind R dropped, 60 ms held), with no queue: the push into the sink waits while
     the stream is full, in the thread the guard times. The feed comes 30 ms late; before each step `burst`
@@ -393,7 +398,7 @@ def simulate_decoder(steps_ms, quantum, rule=None, gate=None, seed=7, burst=10, 
     of the next write (x the step), then on. The guard sees the last push that waited 2 ms or more and how
     long before this write it ended (`last_push`: the last push, whatever it waited, as 21eade5e timed it).
     Returns frames fed and sounded, refills, gaps with no refill."""
-    rule, gate = rule or sm.silence_frames, gate or sm.guard_applies
+    rule, gate, full = rule or sm.silence_frames, gate or sm.guard_applies, full or sm.stream_full
     rng = random.Random(seed)
     phase, upd_phase = rng.randrange(quantum), rng.randrange(UPDATE)
     t0 = 0
@@ -431,8 +436,9 @@ def simulate_decoder(steps_ms, quantum, rule=None, gate=None, seed=7, burst=10, 
         if k >= len(steps_ms):
             break
         t = max(t, arrive)
-        play = clock(t) if i else None
-        g = guard if gate(0, block_ns, (t - block_end) * 10**9 // FS, seg_ns) else 0
+        since = (t - block_end) * 10**9 // FS
+        play = clock(t) if i and not (nxt >= 0 and full(block_ns, since, seg_ns)) else None
+        g = guard if gate(0, block_ns, since, seg_ns) else 0
         sil = rule(nxt, 0, SPS, margin, play, g, CAP)
         refills += 1 if sil else 0
         start = sm.base_write_pos(nxt, 0, SPS) + sil
@@ -455,15 +461,15 @@ def simulate_decoder(steps_ms, quantum, rule=None, gate=None, seed=7, burst=10, 
     return {"fed": fed, "sounded": sounded, "refills": refills, "no_refill": max(0, gaps - (refills - 1))}
 
 
-def case_decoder(rule=None, gate=None, verbose=True):
+def case_decoder(rule=None, gate=None, verbose=True, full=None):
     print("\n--- the Audio Decoder's sink end on a server (no queue): a burst, a blocked push, then an outage ---")
     for quantum in (512, 1024, 2048):
         rows, rows_u = [], []
         for seed in range(7, 12):
             steps = [2, 4, 6, 8, 10, 12, 14, 16, 20, 30] * 2
             random.Random(seed).shuffle(steps)
-            rows.append(simulate_decoder(steps, quantum, rule=rule, gate=gate, seed=seed))
-            if rule is None and gate is None:
+            rows.append(simulate_decoder(steps, quantum, rule=rule, gate=gate, seed=seed, full=full))
+            if rule is None and gate is None and full is None:
                 rows_u.append(simulate_decoder(steps, quantum, gate=_g_unaged, seed=seed, last_push=True))
         lost = [r["fed"] - r["sounded"] for r in rows]
         check(f"decoder, quantum {quantum}: nothing lost ({lost} frames), every gap a refill's "
@@ -518,6 +524,124 @@ def case_cap(rule=None):
               f"(cap {sm.REFILL_MAX_MS}), {r['behind']} writes dropped behind the read index before one sounds "
               f"(at most {need}), {r['after']} refills after",
               r["landed"] and r["sils"] and max(r["sils"]) <= CAP and r["behind"] <= need and r["after"] == 0)
+
+
+# --- the 302M's sink end at load: the server takes nothing for a while, the clock runs on (c41, D4) ----------
+
+def simulate_stall(stalls_ms, quantum=1024, outage_ms=0, full=None, queued=None, busy_ns=0, seed=7):
+    """The 302M's sink end into pulsesink on a server, its queue's thread writing a backlog (outq holds 0.6 s) as
+    the stream takes it: the server reads `quantum` frames a cycle (read index R), holds TLENGTH, drops a write
+    behind R. At 20 s and each 20 s after, for each of `stalls_ms` the server takes nothing that long (R still),
+    while libpulse's clock runs on in house time from its last timing update (1.5 s apart, none in a stall),
+    never backwards. outage_ms: at 10 s the feed stops that long (outq runs dry, a real hole). The writer's push
+    is read from its gaps (`queued`: queued_push or a mutant, its time on or waiting for a CPU `busy_ns`), the stream's
+    fullness by `full` (stream_full or a mutant). Returns frames fed and sounded, refills and silence after
+    the start, gaps with no refill."""
+    full = full or sm.stream_full
+    queued = queued or sm.queued_push
+    rng = random.Random(seed)
+    phase, upd_phase = rng.randrange(quantum), rng.randrange(UPDATE)
+    seg_ns = SPS * 10**9 // FS
+    ns = lambda f: f * 10**9 // FS
+    stalls = [(int((20 + 20 * k) * FS), s * FS // 1000) for k, s in enumerate(stalls_ms)]
+    n = int((20 + 20 * len(stalls_ms) + 10) * 100)
+
+    def held(t):   # server time lost to stalls before t
+        return sum(min(max(0, t - a), d) for a, d in stalls)
+
+    def read_index(t):
+        s = t - held(t)
+        return max(0, (s + phase) // quantum * quantum + quantum - phase)
+
+    def in_stall(t):
+        return any(a <= t < a + d for a, d in stalls)
+
+    last = {"c": 0, "tu": None, "base": 0}
+
+    def clock(t):
+        tu = max(0, (t - upd_phase) // UPDATE * UPDATE + upd_phase)
+        while tu > 0 and in_stall(tu):
+            tu -= UPDATE
+        if tu != last["tu"]:
+            last["tu"], last["base"] = tu, read_index(tu) - random.Random(seed * 7919 + tu).randrange(quantum)
+        c = max(last["c"], last["base"] + (t - tu))
+        last["c"] = c
+        return c
+
+    def segdone(t):
+        tu = last["tu"] if last["tu"] is not None else 0
+        return -(-read_index(tu) // SPS)
+
+    guard = sm.SinkGuard(sm.server_latency_frames(TLENGTH, SPS), 500 * FS // 1000)
+    kept, refills, silence = [], 0, 0
+    nxt, t, t_probe = -1, 0, None
+    block_ns, block_end = 0, -(1 << 40)          # the last push that blocked, as the element keeps it
+    backlog = 600 * FS // 1000
+    out_at, out_len = 10 * FS, outage_ms * FS // 1000
+    for i in range(n):
+        arrive = i * BUF - backlog + (out_len if i * BUF - backlog >= out_at else 0)
+        if out_at <= i * BUF - backlog < out_at + out_len:
+            arrive = out_at + out_len
+        t = max(t, arrive)
+        play = clock(t)
+        sd = segdone(t)
+        guard.segdone_seen(sd, SPS, play)
+        gap = ns(t - t_probe) if t_probe is not None else 0
+        push, since = queued(gap, ns(t - arrive), busy_ns)
+        if push >= sm.BLOCKED_NS:
+            block_ns, block_end = push, t - since * FS // 10**9
+        since = ns(t - block_end)
+        is_full = nxt >= 0 and full(block_ns, since, seg_ns)
+        g = guard.frames() if sm.guard_applies(ns(t - arrive), block_ns, since, seg_ns) else 0
+        sil = sm.silence_frames(nxt, sd, SPS, MARGIN, None if is_full else play, g, CAP)
+        if sil and i:
+            refills += 1
+            silence += sil
+        start = sm.base_write_pos(nxt, sd, SPS) + sil
+        end = start + BUF
+        t_probe = t
+        while end - read_index(t) > TLENGTH:
+            t += quantum
+        r = read_index(t)
+        if end > r:
+            kept.append((max(start, r), end))
+        nxt = end
+    sounded = sum(e - s for s, e in kept)
+    gaps = sum(1 for (s0, e0), (s1, e1) in zip(kept, kept[1:]) if s1 > e0)
+    return {"fed": n * BUF, "sounded": sounded, "refills": refills, "silence_ms": silence * 1000 // FS,
+            "no_refill": max(0, gaps - refills)}
+
+
+def _full_never(push_ns, since_push_ns, seg_ns):
+    """4630f8d2: the clock read for every write."""
+    return False
+
+
+def case_stall(full=None, queued=None, verbose=True):
+    print("\n--- the 302M at load: the server takes nothing for 0.3 s while the clock runs on (c41, D4) ---")
+    for quantum in (512, 1024):
+        rows = [simulate_stall([300, 350, 300], quantum, full=full, queued=queued, seed=s) for s in range(7, 12)]
+        lost = [r["fed"] - r["sounded"] for r in rows]
+        check(f"quantum {quantum}, three 0.3 s stalls: no refill ({[r['refills'] for r in rows]}), nothing lost "
+              f"({lost} frames)", all(r["refills"] == 0 for r in rows) and all(v == 0 for v in lost))
+        rows = [simulate_stall([300], quantum, outage_ms=1000, full=full, queued=queued, seed=s) for s in range(7, 12)]
+        lost = [r["fed"] - r["sounded"] for r in rows]
+        check(f"quantum {quantum}, a 1 s feed outage (outq's 0.6 s runs dry) and a stall: the outage's one refill "
+              f"({[r['refills'] for r in rows]}), every gap a refill's ({[r['no_refill'] for r in rows]} without), "
+              f"nothing lost ({lost} frames)",
+              all(r["refills"] == 1 for r in rows) and all(r["no_refill"] == 0 for r in rows)
+              and all(v == 0 for v in lost))
+        rows = [simulate_stall([300], quantum, full=full, queued=queued, busy_ns=40 * 10**6, seed=s)
+                for s in range(7, 12)]
+        check(f"quantum {quantum}, a stall with the writer 40 ms on or waiting for a CPU at each write: the clock read "
+              f"again ({[r['refills'] for r in rows]} refills)", all(r["refills"] > 0 for r in rows))
+    if full is None and queued is None:
+        rows = [simulate_stall([300, 350, 300], 1024, full=_full_never, seed=s) for s in range(7, 12)]
+        if verbose:
+            print(f"  the clock read for every write (4630f8d2): refills {[r['refills'] for r in rows]}, silence "
+                  f"{[r['silence_ms'] for r in rows]} ms")
+        check(f"the clock read for every write (4630f8d2) refills each stall more than once "
+              f"({[r['refills'] for r in rows]} for 3)", all(r["refills"] > 3 for r in rows))
 
 
 # --- mutants: each must fail a case ----------------------------------------------------------------
@@ -582,17 +706,37 @@ MUTANTS = {"no-cap": _m_no_cap, "guard-zero": _m_guard_zero, "start-no-guard": _
            "from-next": _m_from_next}
 
 
+def _f_unaged(push_ns, since_push_ns, seg_ns):
+    """A blocked push counted however long before this write: the write after an outage held to segdone."""
+    return push_ns >= sm.BLOCKED_NS
+
+
+def _q_no_residence(gap_ns, residence_ns, busy_ns):
+    """The writer's whole gap read as its push, whether or not the buffer waited through it (an outage)."""
+    return max(0, gap_ns - max(0, busy_ns)), max(0, busy_ns)
+
+
+def _q_no_busy(gap_ns, residence_ns, busy_ns):
+    """The CPU time not taken off: a writer held up on the CPU read as a full stream."""
+    return sm.queued_push(gap_ns, residence_ns, 0)
+
+
 GATE_MUTANTS = {"push-unaged": _g_unaged}
+FULL_MUTANTS = {"full-never": _full_never, "full-unaged": _f_unaged}
+QUEUED_MUTANTS = {"queued-no-residence": _q_no_residence, "queued-no-busy": _q_no_busy}
 
 
-def run_suite(rule=None, gate=None):
+def run_suite(rule=None, gate=None, full=None, queued=None):
     global _failures
     _failures = 0
-    case_rule(rule)
-    case_profiles(rule, verbose=rule is None)
-    case_pulse(rule, verbose=rule is None and gate is None, gate=gate)
-    case_decoder(rule, gate, verbose=rule is None and gate is None)
-    case_cap(rule)
+    if full is None and queued is None:
+        case_rule(rule)
+        case_profiles(rule, verbose=rule is None)
+        case_pulse(rule, verbose=rule is None and gate is None, gate=gate)
+        case_cap(rule)
+    case_decoder(rule, gate, verbose=rule is None and gate is None, full=full)
+    if rule is None and gate is None:
+        case_stall(full, queued, verbose=full is None and queued is None)
     return _failures
 
 
@@ -605,6 +749,14 @@ def main(argv):
             ok = ok and fails > 0
         for name, fn in GATE_MUTANTS.items():
             fails = run_suite(gate=fn)
+            print(f"MUTANT {name}: {'caught' if fails else 'NOT CAUGHT'} ({fails} failures)")
+            ok = ok and fails > 0
+        for name, fn in FULL_MUTANTS.items():
+            fails = run_suite(full=fn)
+            print(f"MUTANT {name}: {'caught' if fails else 'NOT CAUGHT'} ({fails} failures)")
+            ok = ok and fails > 0
+        for name, fn in QUEUED_MUTANTS.items():
+            fails = run_suite(queued=fn)
             print(f"MUTANT {name}: {'caught' if fails else 'NOT CAUGHT'} ({fails} failures)")
             ok = ok and fails > 0
         print("ALL MUTANTS CAUGHT" if ok else "A MUTANT SURVIVED")

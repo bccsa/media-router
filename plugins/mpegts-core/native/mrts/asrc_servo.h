@@ -380,6 +380,13 @@ class AsrcSinkGuard {
 // a segment before this write: push_ns that push's wait, since_push_ns since it ended).
 constexpr int64_t ASRC_SINK_BLOCKED_NS = 2000000;
 bool asrc_sink_guard_applies(int64_t residence_ns, int64_t push_ns, int64_t since_push_ns, int64_t seg_ns);
+// Whether a write is held to segdone alone, never the clock (sink_margin_ref.stream_full, c41): the push before it
+// blocked and ended less than a segment before it, so the server holds it, whatever a clock that ran on reads.
+bool asrc_sink_stream_full(int64_t push_ns, int64_t since_push_ns, int64_t seg_ns);
+// The push before a write from a queue's thread (sink_margin_ref.queued_push): from the gap since that thread's last
+// write, the write's time in the queue and the thread's time on or waiting for a CPU over the gap (< 0: unknown).
+void asrc_sink_queued_push(int64_t gap_ns, int64_t residence_ns, int64_t busy_ns, int64_t* push_ns,
+                           int64_t* since_push_ns);
 
 class AsrcSinkMargin {
   public:

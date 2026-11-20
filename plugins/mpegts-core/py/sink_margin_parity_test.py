@@ -11,7 +11,10 @@ sink_margin_ref.py's line format, and its silence must equal the reference's, li
   - the guard (mrts::AsrcSinkGuard against SinkGuard): 300 seeded runs of 60 events (a new guard, then
     segdone seen against the clock), the guard after each;
   - whether the guard holds a write (asrc_sink_guard_applies against guard_applies): every residence, push
-    and since around a segment and the 2 ms block, and 3,000 random ones.
+    and since around a segment and the 2 ms block, and 3,000 random ones;
+  - whether a write is held to segdone alone (asrc_sink_stream_full against stream_full) and the push before a
+    write from a queue's thread (asrc_sink_queued_push against queued_push), c41: every value around their
+    edges, and 3,000 random ones each.
 
 Then each of the reference suite's mutants (sink_margin_ref_test.MUTANTS) must differ from mrts_cli on
 these cases. Skips (exit 0) without mrts_cli (make native).
@@ -87,6 +90,35 @@ def applies_cases(seed=17):
         segns = r.choice((seg, 20_000_000, 7_000_000))
         out.append({"res": r.randrange(3 * segns), "push": r.choice((0, r.randrange(4 * sm.BLOCKED_NS), r.randrange(10**8))),
                     "since": r.choice((r.randrange(2 * segns), r.randrange(10**10))), "segns": segns})
+    return out
+
+
+def full_cases(seed=19):
+    seg, out = 10_000_000, []
+    edges = (0, 1, sm.BLOCKED_NS - 1, sm.BLOCKED_NS, seg - 1, seg, seg + 1, 330_000_000)
+    for push in edges:
+        for since in edges:
+            out.append({"push": push, "since": since, "segns": seg})
+    r = random.Random(seed)
+    for _ in range(3000):
+        segns = r.choice((seg, 20_000_000, 7_000_000))
+        out.append({"push": r.choice((0, r.randrange(4 * sm.BLOCKED_NS), r.randrange(10**9))),
+                    "since": r.choice((r.randrange(2 * segns), r.randrange(10**10))), "segns": segns})
+    return out
+
+
+def queued_cases(seed=23):
+    out = []
+    edges = (-1, 0, 1, 9_999_999, 10_000_000, 330_000_000, 912_000_000)
+    for gap in edges:
+        for res in edges:
+            for wait in edges:
+                out.append({"gap": gap, "res": res, "busy": wait})
+    r = random.Random(seed)
+    for _ in range(3000):
+        gap = r.choice((0, r.randrange(30_000_000), r.randrange(10**9)))
+        out.append({"gap": gap, "res": r.choice((r.randrange(gap + 1) if gap else 0, gap + r.randrange(10**9))),
+                    "busy": r.choice((-1, 0, r.randrange(gap + 1) if gap else 0, r.randrange(10**8)))})
     return out
 
 
@@ -166,6 +198,32 @@ def main():
               not diff and 0 < sum(gw) < len(gw))
         for name, fn in st.GATE_MUTANTS.items():
             n = sum(1 for c, a in zip(ac, ga) if int(fn(c["res"], c["push"], c["since"], c["segns"])) != a)
+            check(f"mutant {name}: told from mrts_cli ({n} cases differ)", n > 0)
+    fc = full_cases()
+    gf, wf = cli(fc, "full"), [int(sm.stream_full(c["push"], c["since"], c["segns"])) for c in fc]
+    check(f"mrts_cli sink-margin ran {len(fc)} full-stream tests", gf is not None and len(gf) == len(fc))
+    if gf is not None:
+        diff = [i for i, (a, b) in enumerate(zip(gf, wf)) if a != b]
+        check(f"... every answer equals the reference's ({len(diff)} differ"
+              f"{'' if not diff else ', first: ' + json.dumps(fc[diff[0]])}), {sum(wf)} full, {len(wf) - sum(wf)} not",
+              not diff and 0 < sum(wf) < len(wf))
+        for name, fn in st.FULL_MUTANTS.items():
+            n = sum(1 for c, a in zip(fc, gf) if int(fn(c["push"], c["since"], c["segns"])) != a)
+            check(f"mutant {name}: told from mrts_cli ({n} cases differ)", n > 0)
+    qc = queued_cases()
+    text = "".join(json.dumps(c, separators=(",", ":")) + "\n" for c in qc)
+    rq = subprocess.run([CLI, "sink-margin", "-"], input=text, capture_output=True, text=True, check=False)
+    gq = [tuple(json.loads(l)[k] for k in ("push", "since")) for l in rq.stdout.splitlines() if l.strip()] \
+        if rq.returncode == 0 else None
+    wq = [sm.queued_push(c["gap"], c["res"], c["busy"]) for c in qc]
+    check(f"mrts_cli sink-margin ran {len(qc)} queued-push reads", gq is not None and len(gq) == len(qc))
+    if gq is not None:
+        diff = [i for i, (a, b) in enumerate(zip(gq, wq)) if tuple(a) != tuple(b)]
+        check(f"... every (push, since) equals the reference's ({len(diff)} differ"
+              f"{'' if not diff else ', first: ' + json.dumps(qc[diff[0]]) + f' cli {gq[diff[0]]} ref {wq[diff[0]]}'})"
+              f", {sum(1 for p, _ in wq if p >= sm.BLOCKED_NS)} a blocked push", not diff and any(p for p, _ in wq))
+        for name, fn in st.QUEUED_MUTANTS.items():
+            n = sum(1 for c, a in zip(qc, gq) if tuple(fn(c["gap"], c["res"], c["busy"])) != tuple(a))
             check(f"mutant {name}: told from mrts_cli ({n} cases differ)", n > 0)
     r = subprocess.run([CLI, "sink-margin", "-"], input='{"seg":3}\n', capture_output=True, text=True, check=False)
     check(f"a malformed event is refused (exit {r.returncode}: {r.stderr.strip()})", r.returncode == 1 and "sps" in r.stderr)

@@ -66,6 +66,19 @@ the Audio Decoder). The push is the sink's own time on it, measured in the threa
 the sink; a push that blocked before an outage says nothing about the write after it (fix round 2:
 counted however long ago, it dropped that write's head on the Audio Decoder).
 
+The clock is not read for a write the stream was full at (c41, B-249's D4 and MR-059). On the Pi 4
+at load the server at times takes nothing for about 0.3 s (313-368 ms measured): the push blocks while
+libpulse's clock runs on at house rate, so the next write reads 196-245 ms behind a clock that has
+passed the read index (segdone at the next update: 268 ms short of it), and every write after it
+reads behind again until a timing update (1.5 s apart) corrects the clock: a refill each write, the
+heard storm, seconds of delay. A write right after a push that blocked (stream_full) is held to
+segdone, the server's own read index, alone. The push before a write from a queue's thread (the
+302M's outq) is read from that thread's gaps (queued_push): when the write's buffer waited through
+the whole gap since the thread's last write, the time the thread slept in that gap (the gap less its
+time on and waiting for a CPU) was the push, blocked in the sink; a writer held up on the CPU while
+the stream ran dry is not a full stream. A writer asleep anywhere else with its buffer waiting would
+read as a full sink: the device check's writer-stall stand-in spins for that reason.
+
 API:
     m = SinkMargin(margin_frames, cap_frames)    cap: REFILL_MAX_MS in frames (0: none)
     m.silence(next_sample, segdone, sps, play_pos=None, guard=0) -> frames of silence to put first
@@ -77,10 +90,13 @@ API:
     g = SinkGuard(base_frames, cap_frames)    base: server_latency_frames(buffer, sps)
     g.segdone_seen(segdone, sps, play_pos); g.frames() -> the guard
     guard_applies(residence_ns, push_ns, since_push_ns, seg_ns) -> whether the guard holds this write
+    stream_full(push_ns, since_push_ns, seg_ns) -> whether the write is held to segdone alone (play_pos None)
+    queued_push(gap_ns, residence_ns, busy_ns) -> (push_ns, since_push_ns) from a queue thread's gaps
 Run as a script it reads one JSON object per line and prints one per line, the format `mrts_cli
 sink-margin` reads: {"next", "segdone", "sps", "play"?, "margin", "guard"?, "cap"?} -> {"silence": n},
 the guard's events {"base", "cap"} (a new guard), {"seg", "sps", "play"} -> {"guard": n}, and
-{"res", "push", "since", "segns"} -> {"applies": 0|1}:
+{"res", "push", "since", "segns"} -> {"applies": 0|1}, {"push", "since", "segns"} -> {"full": 0|1} and
+{"gap", "res", "busy"} -> {"push", "since"}:
     sink_margin_ref.py cases.jsonl|-
 """
 import json
@@ -134,7 +150,23 @@ def guard_applies(residence_ns, push_ns, since_push_ns, seg_ns):
     """The guard holds a write unless the stream was full at the write before: its buffer waited a
     segment or more in the queue before the sink, or the push before it blocked in the sink and
     ended less than a segment before this write."""
-    return residence_ns < seg_ns and not (push_ns >= BLOCKED_NS and since_push_ns < seg_ns)
+    return residence_ns < seg_ns and not stream_full(push_ns, since_push_ns, seg_ns)
+
+
+def stream_full(push_ns, since_push_ns, seg_ns):
+    """The push before this write blocked in the sink and ended less than a segment before it: the server holds
+    what it was given, so the write is not behind its read index whatever the clock reads (c41)."""
+    return push_ns >= BLOCKED_NS and since_push_ns < seg_ns
+
+
+def queued_push(gap_ns, residence_ns, busy_ns):
+    """The push before a write from a queue's thread, from that thread's gap since its last write: when the
+    write's buffer waited in the queue through the whole gap, the thread slept only in the sink, so the gap less
+    its time on and waiting for a CPU (busy) was that push, and it ended at most `busy` ago. Else (the thread
+    waited for data, or busy is unknown: < 0) nothing: (0, gap)."""
+    if gap_ns <= 0 or residence_ns < gap_ns or busy_ns < 0:
+        return 0, max(0, gap_ns)
+    return max(0, gap_ns - busy_ns), busy_ns
 
 
 class SinkGuard:
@@ -188,9 +220,16 @@ def main(argv):
                                c.get("cap", 0))
             print(json.dumps({"silence": n}, separators=(",", ":")))
             continue
+        if "gap" in c:
+            push, since = queued_push(c["gap"], c["res"], c["busy"])
+            print(json.dumps({"push": push, "since": since}, separators=(",", ":")))
+            continue
         if "res" in c:
             a = guard_applies(c["res"], c["push"], c["since"], c["segns"])
             print(json.dumps({"applies": int(a)}, separators=(",", ":")))
+            continue
+        if "push" in c:
+            print(json.dumps({"full": int(stream_full(c["push"], c["since"], c["segns"]))}, separators=(",", ":")))
             continue
         if "base" in c:
             g = SinkGuard(c["base"], c["cap"])

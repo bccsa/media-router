@@ -3573,6 +3573,20 @@ static void test_sink_margin() {
     CHECK("... a push that blocked a segment or more before this write says nothing of it: the guard holds",
           asrc_sink_guard_applies(0, 2000000, SEG, SEG) && asrc_sink_guard_applies(0, 80000000, 5 * SEG, SEG) &&
               !asrc_sink_guard_applies(SEG, 80000000, 5 * SEG, SEG));
+    CHECK("a write is held to segdone alone right after a push that blocked, not a segment or more after it (c41)",
+          asrc_sink_stream_full(2000000, 0, SEG) && asrc_sink_stream_full(330000000, SEG - 1, SEG) &&
+              !asrc_sink_stream_full(1999999, 0, SEG) && !asrc_sink_stream_full(330000000, SEG, SEG));
+    int64_t qp = -1, qs = -1;
+    asrc_sink_queued_push(330000000, 912000000, 1000000, &qp, &qs);
+    CHECK("a queue thread's gap the write's buffer waited through: that push, less its time on or waiting for a CPU, "
+          "ended that long ago", qp == 329000000 && qs == 1000000);
+    asrc_sink_queued_push(330000000, 329999999, 0, &qp, &qs);
+    const bool waited_data = qp == 0 && qs == 330000000;
+    asrc_sink_queued_push(330000000, 912000000, -1, &qp, &qs);
+    const bool unknown = qp == 0 && qs == 330000000;
+    asrc_sink_queued_push(5000000, 900000000, 9000000, &qp, &qs);
+    CHECK("... nothing when the buffer came during the gap (an outage), the CPU time is unknown, or it was all CPU",
+          waited_data && unknown && qp == 0 && qs == 9000000);
     CHECK("a refill is capped: the silence at most the cap, none still none",
           asrc_sink_silence(-1, 0, SPS, M, true, 20 * 48000, 4 * SPS, CAP) == CAP &&
               asrc_sink_silence(-1, 0, SPS, M, true, 20 * 48000, 4 * SPS) > CAP &&
