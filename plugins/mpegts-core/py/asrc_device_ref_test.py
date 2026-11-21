@@ -833,8 +833,8 @@ def test_replay_format():
     seq.append({"op": "start", "mono": 6 * SEC})
     out = ad.replay(json.dumps(x) for x in seq)
     first = json.loads(out[0])
-    check("14: one line per sample, keys in order", list(first) == ["mono", "lock", "dev_ppb", "ratio_ppb",
-                                                                  "stalled", "flush"] and first["lock"] == "idle")
+    check("14: one line per sample, keys in order", list(first) == ["mono", "lock", "dev_ppb", "ratio_ppb", "stalled",
+                                                                  "flush", "trusted"] and first["lock"] == "idle")
     check("14: the restart's event line, its recalibration, then the summary", json.loads(out[-3]) == {
         "event": "relock-device", "reason": "restart", "at": 6 * SEC} and json.loads(out[-2]) == {"recalibrated": 1}
           and "summary" in json.loads(out[-1]))
@@ -1012,11 +1012,37 @@ def test_foreign_flush_resync():
                   worst > 200)
 
 
+def test_clock_trusted():
+    """20. The clock is not trusted while stalled, nor for settle_ns after the resume or a step relock, as the lock
+    waits (c42): pulsesink's clock runs on through a server stop and converges back over seconds, and the sink guard
+    learned that lag as a sink latency for good. From the start it is trusted, as before."""
+    per = FS // 10
+    t = ad.DeviceTerm()
+    t.start(0)
+    pushed, up, at = 0, 0, {}
+    for k in range(1, 1201):   # 120 s of 100 ms reads; the Audio Decoder's shape (case 17), its clock running on
+        mono = k * 100 * MS
+        sec = k / 10
+        if 30 <= sec < 32.5:
+            up = min(3 * per, up + per)
+        else:
+            pushed += per
+            up = max(0, up - per)
+        dev = mono + (200 * MS if sec >= 80 else 0)   # a 200 ms clock step at 80 s
+        t.sample(dev, 1000 * SEC + mono, pushed, pushed, up)
+        at[round(sec, 1)] = t.clock_trusted(1000 * SEC + mono)
+    want = {10.0: True, 29.9: True, 31.6: False, 32.4: False, 45.0: False, 50.0: True, 79.9: True, 85.0: False,
+            94.0: False, 100.0: True, 120.0: True}
+    got = {k: at.get(k) for k in want}
+    check("20: trusted from the start, not while stalled (from 31.0 s) nor 15 s after the resume (32.5 s) or the step "
+          "relock (80.1 s), then again: %s" % got, got == want)
+
+
 CASES = (test_lock_port, test_ratio, test_jitter, test_fill_1h, test_input_stall, test_device_step,
          test_traces, test_trace_underrun, test_clock_stall_underrun, test_start_and_restart,
          test_device_stall_clock_stopped, test_device_stall_clock_running, test_render_lateness_ring,
          test_replay_format, test_recalibrated, test_restart_counts, test_upstream_waiting, test_foreign_flush_discard,
-         test_foreign_flush_resync)
+         test_foreign_flush_resync, test_clock_trusted)
 
 # (name, the case it must fail, file, [(text, its replacement), ...]). The first four are the brief's.
 MUTANTS = (
@@ -1074,6 +1100,12 @@ MUTANTS = (
     # c42 (MR-059): a stall whose backlog waits above the element.
     ("a stall flushes whatever waits", 17, "asrc_device_ref.py",
      [("                self.flushing = pending > self.wait_samples\n", "                self.flushing = True\n")]),
+    ("the clock trusted at once after a resume", 20, "asrc_device_ref.py",
+     [("            self.trust_at = max(self.trust_at, mono + c.settle_ns)\n", "")]),
+    ("the clock trusted at once after a step", 20, "asrc_device_ref.py",
+     [("        self.trust_at = max(self.trust_at, mono + self.cfg.settle_ns)\n", "")]),
+    ("the clock trusted while stalled", 20, "asrc_device_ref.py",
+     [("        return not self.stalled and mono >= self.trust_at", "        return mono >= self.trust_at")]),
     ("a foreign flush's discard not counted", 18, "asrc_device_ref.py",
      [("        self.discarded += max(0, frames)\n", "        pass\n")]),
     ("no resync at a foreign flush", 19, "asrc_device_ref.py",

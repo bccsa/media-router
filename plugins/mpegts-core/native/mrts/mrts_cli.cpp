@@ -1937,9 +1937,10 @@ bool device_op(const Json& o, std::unique_ptr<AsrcDeviceTerm>* term, std::unique
     const bool flush = t.sample(dev, mono, pushed, rendered, &events, upstream);
     print_device_events(events);
     print_recalibrated(&t);
-    std::printf("{\"mono\":%lld,\"lock\":\"%s\",\"dev_ppb\":%lld,\"ratio_ppb\":%lld,\"stalled\":%d,\"flush\":%d}\n",
+    std::printf("{\"mono\":%lld,\"lock\":\"%s\",\"dev_ppb\":%lld,\"ratio_ppb\":%lld,\"stalled\":%d,\"flush\":%d,"
+                "\"trusted\":%d}\n",
                 (long long)mono, asrc_device_lock_state_name(t.lock_state()), (long long)t.device_ppb(),
-                (long long)t.ratio_ppb(in_ppb), (int)t.stalled(), (int)flush);
+                (long long)t.ratio_ppb(in_ppb), (int)t.stalled(), (int)flush, (int)t.clock_trusted(mono));
     return true;
 }
 

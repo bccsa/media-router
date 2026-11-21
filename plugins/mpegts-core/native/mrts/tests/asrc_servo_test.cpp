@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -3326,6 +3327,37 @@ void test_dev_foreign_flush_resync() {
     }
 }
 
+// 20 (py's, c42): the clock is not trusted while stalled, nor settle_ns after the resume or a step relock.
+void test_dev_clock_trusted() {
+    AsrcDeviceTerm t;
+    const int64_t per = t.config().rate_hz / 10;
+    std::vector<AsrcDeviceEvent> ev;
+    t.start(0, &ev);
+    int64_t pushed = 0, up = 0;
+    std::map<int, bool> at;   // tenths of a second -> trusted
+    for (int k = 1; k <= 1200; k++) {
+        const int64_t mono = k * 100 * MS;
+        if (k >= 300 && k < 325) up = std::min(3 * per, up + per);
+        else pushed += per, up = std::max<int64_t>(0, up - per);
+        const int64_t dev = mono + (k >= 800 ? 200 * MS : 0);
+        t.sample(dev, 1000 * S + mono, pushed, pushed, &ev, up);
+        at[k] = t.clock_trusted(1000 * S + mono);
+    }
+    const std::pair<int, bool> want[] = {{100, true}, {299, true}, {316, false}, {324, false}, {450, false},
+                                         {500, true}, {799, true}, {850, false}, {940, false}, {1000, true},
+                                         {1200, true}};
+    bool ok = true;
+    std::string got;
+    for (const auto& w : want) {
+        ok = ok && at[w.first] == w.second;
+        got += std::to_string(w.first / 10.0).substr(0, 5) + (at[w.first] ? ":1 " : ":0 ");
+    }
+    char name[400];
+    std::snprintf(name, sizeof name, "20: trusted from the start, not while stalled nor 15 s after the resume or the "
+                  "step relock, then again: %s", got.c_str());
+    CHECK(name, ok);
+}
+
 // 17 (py's, c40 B-249 D2): no queue between the element and the sink, so what waits is the upstream queue's (decq).
 void test_dev_upstream_waiting() {
     for (const bool counted : {true, false}) {
@@ -3733,6 +3765,7 @@ int main(int argc, char** argv) {
     test_dev_stall_clock_running();
     test_dev_restart_counts();
     test_dev_upstream_waiting();
+    test_dev_clock_trusted();
     test_dev_foreign_flush_discard();
     test_dev_foreign_flush_resync();
     test_dev_render_lateness_ring();

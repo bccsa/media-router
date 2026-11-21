@@ -636,6 +636,7 @@ void AsrcDeviceTerm::relock_step(int64_t mono, int64_t step_ns, std::vector<Asrc
     moved_ = true;
     moved_at_ = mono;
     beyond_ = 0;
+    trust_at_ = std::max(trust_at_, mono + cfg_.settle_ns);
 }
 
 bool AsrcDeviceTerm::take_recalibrated() {
@@ -712,6 +713,7 @@ bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, int64_t
         stalled_ = waiting_ = false;
         events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_resumed, "", mono,
                                           dropped_ + (flushing_ ? pending : 0)});
+        trust_at_ = std::max(trust_at_, mono + cfg_.settle_ns);
         flush = flushing_;
     } else if (flushing_ && mono - flush_at_ >= cfg_.probe_ns) {
         // What the sink took since the last flush sat in a ring the stopped device never read.

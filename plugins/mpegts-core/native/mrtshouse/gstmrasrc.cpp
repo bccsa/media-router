@@ -705,7 +705,8 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
         if (!d->own_ring) {   // a server's stream: the guard, held while the stream may have run dry
             const int64_t sps = rb->samples_per_seg;
             d->guard.set_base(mrts::asrc_server_latency((int64_t)rb->spec.segtotal * sps, sps));
-            if (dev > 0) d->guard.segdone_seen(segdone, sps, play);
+            // Not from a clock a stall or a step left behind the read index: learned, that lag stayed for good (c42).
+            if (dev > 0 && d->term.clock_trusted(mono)) d->guard.segdone_seen(segdone, sps, play);
             guard = d->guard.frames();
             d->guard_ns.store((int64_t)gst_util_uint64_scale_int((guint64)guard, GST_SECOND, d->rate));
             int64_t residence = 0;

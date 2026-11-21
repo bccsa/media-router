@@ -57,6 +57,10 @@ ratio never reads the counts):
     refuses while it lasts (0.3-0.7 s of a 2.5 s stop on the Pi 4's card), and the refills after it
     aimed past a clock that ran on (1.4-1.9 s of silence at load). So the stall is told and nothing
     is flushed: its backlog plays late, as c38 plays it, and the catch-up gives it back (c42, MR-059).
+  - the clock is not trusted (clock_trusted) while stalled, nor for settle_ns after the resume or
+    a step relock, as the lock itself waits: pulsesink's clock runs on through a server stop and
+    converges back over seconds, and the sink guard learned that lag as a sink latency for good
+    (60 -> 328 ms on the Pi 4 after a 2.5 s stop), which held the catch-up idle (c42).
 Render lateness: now - PTS(the sample at the device). The device clock gives its position in the
 ring (samples); each rendered buffer's write position is the base sink's next_sample after its
 render, less its samples, so a realign (an underflow, a flush) moves the map with the sink. Not the
@@ -78,6 +82,7 @@ API:
     term.sample(dev_ns, mono_ns, pushed=None, rendered=None) -> (events, flush)
     term.ratio_ppb(eps_in_ppb=0), term.device_ppb(), term.lock_state(), term.stats()
     term.take_recalibrated()           a relock-device since the last call
+    term.clock_trusted(mono_ns)        the clock may be learned from (not stalled, settled since a resume or step)
     acc = RenderLateness(rate_hz)
     acc.rendered(write_pos, n, pts_ns); acc.flush(); acc.at(now_ns, dev_ns) -> ns|None
 Run as a script it replays a recorded clock or a call sequence (the format p4-4b's
@@ -91,7 +96,7 @@ term (other keys are labels), {"op":"start","mono":ns}, {"op":"stop","mono":ns},
 RenderLateness (rate_hz's): {"op":"rendered","write_pos":n,"n":n,"pts":ns}, {"op":"flush"},
 {"op":"lateness","now":ns,"dev":ns}, which prints {"lateness":ns|null}. Out, compact, keys in
 this order: each event {"event":kind,...}; per sample {"mono":ns,"lock":state,"dev_ppb":ppb,
-"ratio_ppb":ppb,"stalled":0|1,"flush":0|1}, or {"refused":...} for one before start(); after the
+"ratio_ppb":ppb,"stalled":0|1,"flush":0|1,"trusted":0|1}, or {"refused":...} for one before start(); after the
 events of a call that relocked, {"recalibrated":1}; at each term's end {"summary":{stats}}. p4-4b's `mrts_cli asrc-device` prints the same lines (asrc_device_parity_test.py).
 """
 import json
@@ -186,6 +191,7 @@ class DeviceTerm:
         # the stall rule
         self.stalled = False
         self.flushing = False       # this stall flushes: what waited below the element was past waiting_ns
+        self.trust_at = 0           # the clock is trusted from here (a resume or a step, plus settle_ns)
         self.taken_prev = None
         self.discarded = 0          # pushed samples the flushes discarded before the sink took them
         self.wait_since = None
@@ -255,6 +261,12 @@ class DeviceTerm:
         events.append({"event": "relock-device", "reason": "step", "at": mono, "step_ns": step_ns})
         self.moved_at = mono
         self.beyond = 0
+        self.trust_at = max(self.trust_at, mono + self.cfg.settle_ns)
+
+    def clock_trusted(self, mono):
+        """Whether the clock's position may be learned from now (the sink guard's latency): not while stalled, nor
+        settle_ns after the resume or a step relock (c42)."""
+        return not self.stalled and mono >= self.trust_at
 
     def take_recalibrated(self):
         """Whether a relock-device came since the last call: the servo's device timeline takes its
@@ -318,6 +330,7 @@ class DeviceTerm:
             self.wait_since = None
             events.append({"event": "device-resumed", "at": mono,
                            "dropped": self.dropped + (pending if self.flushing else 0)})
+            self.trust_at = max(self.trust_at, mono + c.settle_ns)
             flush = self.flushing
         elif self.flushing and mono - self.flush_at >= c.probe_ns:
             # What the sink took since the last flush sat in a ring the stopped device never read.
@@ -480,7 +493,7 @@ def replay(lines):
         _recalibrated(term, out)
         out.append(_line({"mono": mono, "lock": term.lock_state(), "dev_ppb": term.device_ppb(),
                           "ratio_ppb": term.ratio_ppb(in_ppb), "stalled": int(term.stalled),
-                          "flush": int(flush)}))
+                          "flush": int(flush), "trusted": int(term.clock_trusted(mono))}))
     if term is not None:
         out.append(_line({"summary": term.stats()}))
     return out
