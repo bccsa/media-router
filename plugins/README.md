@@ -2602,7 +2602,11 @@ resampler); the sink is never asked to skew. A device that stops taking
 samples (1 s with more than 100 ms waiting between `mrasrc` and the sink, or
 in `upstream-queue` where named: the Audio Decoder has no queue before its
 sink) is flushed and skipped, and plays live again once it takes
-(`device-stalled`, `device-resumed`; the owner's Q2). A flush that is not
+(`device-stalled`, `device-resumed`; the owner's Q2); where no more than
+100 ms waited between `mrasrc` and the sink when it was declared (the
+backlog waits in `upstream-queue`: the Audio Decoder), it is told and
+nothing is flushed: the backlog plays late and the catch-up gives it back
+(c42). A flush that is not
 `mrasrc`'s own is counted for what it took (read off the first buffer after
 it) and restarts the clock reads, keeping the rate (`relock-device` `flush`):
 the sink's clock steps there. The output counter runs on from the first PTS on the device timeline: a
@@ -2617,7 +2621,9 @@ still play. On a sink that is not a `GstAudioSink` (pulsesink: a sound
 server's stream, which reads ahead of the clock and drops a write behind its
 read index) that frame is the clock plus a guard: the server's configured
 latency (tlength less two minreq, 40 ms at buffer-time 100 ms), plus the
-sink's latency learned from the segment count where it moves; held only while
+sink's latency learned from the segment count where it moves (only while the
+device term trusts its clock: not in a device stall, nor 15 s after its
+resume or a clock step, c42); held only while
 the stream may have run dry (its buffer did not wait a segment in a queue
 before the sink, and no push into the sink blocked 2 ms less than a segment
 before). A write within two segments of such a push (the stream was full,
@@ -2655,7 +2661,8 @@ or phase, `source-ppb`, `phase-ns`, `rate-known`), `relock-device` (`reason`
 restart, step or flush, `step-ns`), `device-stalled` (`pending-frames`) and
 `device-resumed` (`dropped-frames`; B-166), and once an element
 `sink-push-unread` (`reason` schedstat: the kernel has no
-`/proc/thread-self/schedstat`, so a queue's push into a server's stream is
+`/proc/thread-self/schedstat`, as the x86 kernels before the Yocto tree's
+`sched-info.cfg` (MR-061), so a queue's push into a server's stream is
 not read and every write reads the clock; c41b). A decode +
 device element whose source still passes reports
 mode `device`, so read its decode term from `bypass-below-ppm`, not from
