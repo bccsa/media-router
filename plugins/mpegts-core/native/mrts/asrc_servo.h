@@ -314,6 +314,7 @@ class AsrcDeviceTerm {
     int64_t flat_ns_ = 0;
     uint64_t fed_ = 0;
     bool stalled_ = false;
+    bool flushing_ = false;   // this stall flushes: what waited below the element was past waiting_ns (c42)
     bool have_taken_ = false;
     int64_t taken_prev_ = 0;
     int64_t discarded_ = 0;   // pushed frames the flushes discarded before the sink took them

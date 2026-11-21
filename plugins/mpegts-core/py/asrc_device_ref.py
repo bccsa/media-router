@@ -52,6 +52,11 @@ ratio never reads the counts):
     live input plays. Counted: device-stalls; dropped, the samples pushed that the sink never took
     plus those it took into a ring the stopped device never read (not the ring's content when the
     device stopped, which the element cannot see).
+  - where what waits below the element was waiting_ns or less when the stall was declared, the
+    backlog waits above it (the Audio Decoder's decq, upstream): a flush drops of it only what it
+    refuses while it lasts (0.3-0.7 s of a 2.5 s stop on the Pi 4's card), and the refills after it
+    aimed past a clock that ran on (1.4-1.9 s of silence at load). So the stall is told and nothing
+    is flushed: its backlog plays late, as c38 plays it, and the catch-up gives it back (c42, MR-059).
 Render lateness: now - PTS(the sample at the device). The device clock gives its position in the
 ring (samples); each rendered buffer's write position is the base sink's next_sample after its
 render, less its samples, so a realign (an underflow, a flush) moves the map with the sink. Not the
@@ -180,6 +185,7 @@ class DeviceTerm:
         self.fed = 0
         # the stall rule
         self.stalled = False
+        self.flushing = False       # this stall flushes: what waited below the element was past waiting_ns
         self.taken_prev = None
         self.discarded = 0          # pushed samples the flushes discarded before the sink took them
         self.wait_since = None
@@ -302,13 +308,18 @@ class DeviceTerm:
                 self.stalled = True
                 self.stalls += 1
                 events.append({"event": "device-stalled", "at": mono, "pending": waiting})
-                flush = True
+                # Flushed only where what waits below the element is past waiting_ns; a backlog above plays late (c42).
+                self.flushing = pending > self.wait_samples
+                self.flush_at = mono
+                self.taken_at_flush = taken
+                flush = self.flushing
         elif taken - self.taken_at_flush > self.resume_samples:
             self.stalled = False
             self.wait_since = None
-            events.append({"event": "device-resumed", "at": mono, "dropped": self.dropped + pending})
-            flush = True
-        elif mono - self.flush_at >= c.probe_ns:
+            events.append({"event": "device-resumed", "at": mono,
+                           "dropped": self.dropped + (pending if self.flushing else 0)})
+            flush = self.flushing
+        elif self.flushing and mono - self.flush_at >= c.probe_ns:
             # What the sink took since the last flush sat in a ring the stopped device never read.
             self.dropped += taken - self.taken_at_flush
             flush = True

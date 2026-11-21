@@ -681,7 +681,8 @@ void AsrcDeviceTerm::clock(int64_t dev, int64_t mono, std::vector<AsrcDeviceEven
 
 // Device stall (the owner's Q2, skip and resume live), read on the render: stalled once the sink took nothing
 // for stall_ns while frames waited past waiting_ns; then a flush every probe_ns, and resumed once it took past
-// an empty ring since the last flush, with one more flush. What the flushes discard is dropped.
+// an empty ring since the last flush, with one more flush. What the flushes discard is dropped. With at most
+// waiting_ns below the element (the backlog waits above it) nothing is flushed: it plays late (c42).
 bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, int64_t upstream,
                             std::vector<AsrcDeviceEvent>* events) {
     const bool had = have_taken_;
@@ -702,13 +703,17 @@ bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, int64_t
             stalled_ = true;
             stalls_++;
             events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_stalled, "", mono, waiting});
-            flush = true;
+            flushing_ = pending > wait_frames_;
+            flush_at_ = mono;
+            taken_at_flush_ = taken;
+            flush = flushing_;
         }
     } else if (taken - taken_at_flush_ > resume_frames_) {
         stalled_ = waiting_ = false;
-        events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_resumed, "", mono, dropped_ + pending});
-        flush = true;
-    } else if (mono - flush_at_ >= cfg_.probe_ns) {
+        events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_resumed, "", mono,
+                                          dropped_ + (flushing_ ? pending : 0)});
+        flush = flushing_;
+    } else if (flushing_ && mono - flush_at_ >= cfg_.probe_ns) {
         // What the sink took since the last flush sat in a ring the stopped device never read.
         dropped_ += taken - taken_at_flush_;
         flush = true;

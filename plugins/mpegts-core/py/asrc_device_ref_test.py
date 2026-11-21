@@ -908,7 +908,8 @@ def test_restart_counts():
 def test_upstream_waiting():
     """17. The Audio Decoder's sink end has no queue between mrasrc and the sink: its push blocks in the sink, so
     what waits is in the queue before it (upstream-queue, decq). A 2.5 s stall with decq filling to 300 ms is
-    device-stalled on that count (c40, B-249 D2); without it none; an input gap (decq empty) none either."""
+    device-stalled on that count (c40, B-249 D2); without it none; an input gap (decq empty) none either. Nothing
+    waits below the element, so the stall flushes nothing and drops nothing: the backlog plays late (c42, MR-059)."""
     per = FS // 10
     for counted in (True, False):
         for gap in (False, True):
@@ -938,9 +939,13 @@ def test_upstream_waiting():
             stalled = [e for e in evs if e["event"] == "device-stalled"]
             what = "an input gap (decq empty)" if gap else "a 2.5 s device stall, decq full"
             if counted and not gap:
-                check("17: %s: device-stalled once, then resumed (%s), %s frames waiting, %d flushes"
-                      % (what, names, [e["pending"] for e in stalled], flushes),
+                check("17: %s: device-stalled once, then resumed (%s), %s frames waiting"
+                      % (what, names, [e["pending"] for e in stalled]),
                       names == ["device-stalled", "device-resumed"] and stalled[0]["pending"] == 3 * per)
+                resumed = [e for e in evs if e["event"] == "device-resumed"]
+                check("17: ... the backlog waits above the element: %d flushes, %d frames dropped (told %s), none"
+                      % (flushes, t.stats()["dropped"], [e["dropped"] for e in resumed]),
+                      flushes == 0 and t.stats()["dropped"] == 0 and [e["dropped"] for e in resumed] == [0])
             elif counted:
                 check("17: %s: no device stall (%s)" % (what, names), not names)
             elif not gap:
@@ -1042,10 +1047,8 @@ MUTANTS = (
       ("            if prev is None or taken > prev or waiting <= self.wait_samples:",
        "            if prev is None or getattr(self, 'clock_moved', True) or waiting <= self.wait_samples:")]),
     ("no flush at the resume", 11, "asrc_device_ref.py",
-     [("            events.append({\"event\": \"device-resumed\", \"at\": mono, \"dropped\": self.dropped + pending})\n"
-       "            flush = True",
-       "            events.append({\"event\": \"device-resumed\", \"at\": mono, \"dropped\": self.dropped + pending})\n"
-       "            return False")]),
+     [("            flush = self.flushing\n        elif self.flushing and mono",
+       "            return False\n        elif self.flushing and mono")]),
     ("the capture lock's 20 ppm fit acceptance", 10, "asrc_device_ref.py",
      [("rate_tau_ns=1200 * SEC, slew_track_ppm=1000)", "rate_tau_ns=1200 * SEC, slew_track_ppm=20)")]),
     ("a 300-bucket window, a 60 s loop", 7, "asrc_device_ref.py",
@@ -1068,6 +1071,9 @@ MUTANTS = (
     # c40 (B-249 D2): what waits before the element.
     ("the upstream queue not counted", 17, "asrc_device_ref.py",
      [("        waiting = pending + max(0, upstream)\n", "        waiting = pending\n")]),
+    # c42 (MR-059): a stall whose backlog waits above the element.
+    ("a stall flushes whatever waits", 17, "asrc_device_ref.py",
+     [("                self.flushing = pending > self.wait_samples\n", "                self.flushing = True\n")]),
     ("a foreign flush's discard not counted", 18, "asrc_device_ref.py",
      [("        self.discarded += max(0, frames)\n", "        pass\n")]),
     ("no resync at a foreign flush", 19, "asrc_device_ref.py",

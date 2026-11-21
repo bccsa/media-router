@@ -3348,16 +3348,20 @@ void test_dev_upstream_waiting() {
             read(25, false, !gap);
             read(100, true, false);
             int stalled = 0, resumed = 0;
-            int64_t waiting = 0;
+            int64_t waiting = 0, told = -1;
             for (const AsrcDeviceEvent& e : ev) {
                 if (e.kind == AsrcDeviceEvent::Kind::device_stalled) stalled++, waiting = e.value;
-                resumed += e.kind == AsrcDeviceEvent::Kind::device_resumed;
+                if (e.kind == AsrcDeviceEvent::Kind::device_resumed) resumed++, told = e.value;
             }
             char name[300];
             if (counted && !gap) {
                 std::snprintf(name, sizeof name, "17: a 2.5 s device stall, decq full: device-stalled once (%d), resumed "
                               "(%d), %lld frames waiting, %d flushes", stalled, resumed, (long long)waiting, flushes);
                 CHECK(name, stalled == 1 && resumed == 1 && waiting == 3 * per);
+                // c42 (MR-059): the backlog waits above the element: nothing flushed or dropped.
+                std::snprintf(name, sizeof name, "17: ... the backlog waits above the element: %d flushes, %lld frames "
+                              "dropped (told %lld), none", flushes, (long long)t.stats().dropped, (long long)told);
+                CHECK(name, flushes == 0 && t.stats().dropped == 0 && told == 0);
             } else if (counted) {
                 std::snprintf(name, sizeof name, "17: an input gap (decq empty): no device stall (%d)", stalled);
                 CHECK(name, stalled == 0 && resumed == 0);

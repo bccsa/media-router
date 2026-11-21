@@ -1474,6 +1474,39 @@ else:
           f"prerolls again) and posted stats to the end ({_stats[-1][0] if _stats else 0:.0f} s)",
           not _errors and _stats and _stats[-1][0] >= _secs - 5)
 
+    # c42 (MR-059): the Audio Decoder's shape, no queue between the element and the sink, decq before it. A stall's
+    # backlog waits above the element: told, nothing flushed or dropped, played late (00b03b02 flushed, dropped 2.3 s).
+    _secs = 160
+    print(f"\n--- device mode: a 2.5 s device stall at 100 s, decq before the element and no queue after it (the Audio "
+          f"Decoder's), a {_speed}x clock ---")
+    _at = {}
+
+    def _stall_dec(p, now):
+        _at["stall"] = now
+        p.get_by_name("sink").set_property("stall-ms", 2500)
+
+    _ev, _stats, _errors, _lost, _p = clock_run(
+        "audiotestsrc is-live=true samplesperbuffer=1024 ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! "
+        "queue name=decq leaky=0 max-size-time=300000000 max-size-buffers=0 max-size-bytes=0 ! "
+        "mrasrc name=asrc device-sink=sink upstream-queue=decq ! mrtestaudiosink name=sink ppm=-135 "
+        "device-ns=40000000 sync=false buffer-time=100000 latency-time=10000", _speed, _secs,
+        actions=((100, _stall_dec),))
+    _p.set_state(Gst.State.NULL)
+    _stl, _res = kinds(_ev, "device-stalled"), kinds(_ev, "device-resumed")
+    _t0 = _at.get("stall", 100)
+    check(f"decq's shape: device-stalled once, {(_stl[0][0] - _t0) if _stl else -1:.2f} s after the device stopped "
+          f"(1.0-1.6 s), {_stl[0][1]['pending-frames'] if _stl else -1} frames waiting; device-resumed once, "
+          f"{(_res[0][0] - _t0 - 2.5) if _res else -1:.2f} s after its return (within 0.6 s): {len(_stl)}, {len(_res)}",
+          len(_stl) == 1 and 1.0 <= _stl[0][0] - _t0 <= 1.6 and len(_res) == 1 and 0 <= _res[0][0] - _t0 - 2.5 <= 0.6)
+    check(f"... nothing flushed (back to PAUSED {_lost} times: a flushed async sink prerolls again) and nothing "
+          f"dropped ({_res[0][1]['dropped-frames'] if _res else -1} frames told at the resume)",
+          _lost == 0 and bool(_res) and _res[0][1]["dropped-frames"] == 0 and not _errors)
+    _before = [s["render-lateness-ns"] for t, s in _stats if 80 <= t < 99]
+    _after = [s["render-lateness-ns"] for t, s in _stats if 115 <= t < _secs - 2]
+    _kept = (sum(_after) / len(_after) - sum(_before) / len(_before)) / MS if _before and _after else -1
+    check(f"... the stall's backlog played late, not skipped: render lateness {_kept:.0f} ms over the reading before "
+          f"it (2.5 s stall: 2200-2900)", 2200 <= _kept <= 2900)
+
     print("\n--- decode and device together: a source 40 ppm fast into a device 20 ppm slow (2x clock, 120 s) ---")
     cap = Capture(num=1000040, den=1000000, formula=True, channels=2)
 
