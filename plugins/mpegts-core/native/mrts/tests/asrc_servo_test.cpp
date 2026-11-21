@@ -3327,7 +3327,7 @@ void test_dev_foreign_flush_resync() {
     }
 }
 
-// 20 (py's, c42): the clock is not trusted while stalled, nor settle_ns after the resume or a step relock.
+// 20 (py's, c42): the clock is not trusted while stalled, nor settle_ns after the resume or a step inside that.
 void test_dev_clock_trusted() {
     AsrcDeviceTerm t;
     const int64_t per = t.config().rate_hz / 10;
@@ -3339,13 +3339,13 @@ void test_dev_clock_trusted() {
         const int64_t mono = k * 100 * MS;
         if (k >= 300 && k < 325) up = std::min(3 * per, up + per);
         else pushed += per, up = std::max<int64_t>(0, up - per);
-        const int64_t dev = mono + (k >= 800 ? 200 * MS : 0);
+        const int64_t dev = mono + (k >= 400 ? 200 * MS : 0) + (k >= 800 ? 200 * MS : 0);
         t.sample(dev, 1000 * S + mono, pushed, pushed, &ev, up);
         at[k] = t.clock_trusted(1000 * S + mono);
     }
     const std::pair<int, bool> want[] = {{100, true}, {299, true}, {316, false}, {324, false}, {450, false},
-                                         {500, true}, {799, true}, {850, false}, {940, false}, {1000, true},
-                                         {1200, true}};
+                                         {500, false}, {549, false}, {555, true}, {799, true}, {850, true},
+                                         {940, true}, {1000, true}, {1200, true}};
     bool ok = true;
     std::string got;
     for (const auto& w : want) {
@@ -3353,9 +3353,10 @@ void test_dev_clock_trusted() {
         got += std::to_string(w.first / 10.0).substr(0, 5) + (at[w.first] ? ":1 " : ":0 ");
     }
     char name[400];
-    std::snprintf(name, sizeof name, "20: trusted from the start, not while stalled nor 15 s after the resume or the "
-                  "step relock, then again: %s", got.c_str());
-    CHECK(name, ok);
+    std::snprintf(name, sizeof name, "20: trusted from the start, not while stalled nor 15 s after the resume or a step "
+                  "inside that, still after a step while trusted (%llu): %s", (unsigned long long)t.stats().relocks_step,
+                  got.c_str());
+    CHECK(name, ok && t.stats().relocks_step == 2);
 }
 
 // 17 (py's, c40 B-249 D2): no queue between the element and the sink, so what waits is the upstream queue's (decq).

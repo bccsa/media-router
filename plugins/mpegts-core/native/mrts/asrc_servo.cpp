@@ -636,7 +636,7 @@ void AsrcDeviceTerm::relock_step(int64_t mono, int64_t step_ns, std::vector<Asrc
     moved_ = true;
     moved_at_ = mono;
     beyond_ = 0;
-    trust_at_ = std::max(trust_at_, mono + cfg_.settle_ns);
+    if (mono < trust_at_) trust_at_ = mono + cfg_.settle_ns;   // still converging after a resume (c42)
 }
 
 bool AsrcDeviceTerm::take_recalibrated() {

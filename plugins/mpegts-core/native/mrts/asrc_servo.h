@@ -286,8 +286,8 @@ class AsrcDeviceTerm {
                 std::vector<AsrcDeviceEvent>* events, int64_t upstream = 0);
     bool rendering() const { return rendering_; }
     bool stalled() const { return stalled_; }
-    // The clock may be learned from (the sink guard's latency): not while stalled, nor settle_ns after the resume or
-    // a step relock, as the lock waits (c42).
+    // The clock may be learned from (the sink guard's latency): not while stalled, nor settle_ns after the resume, as
+    // the lock waits (c42); a step relock while trusted leaves it so, one inside that window extends it.
     bool clock_trusted(int64_t mono) const { return !stalled_ && mono >= trust_at_; }
     int64_t device_ppb() const;   // eps_dev in ClockLock's sense; 0 until the lock has a rate
     int64_t ratio_ppb(int64_t eps_in_ppb = 0) const;
@@ -318,7 +318,7 @@ class AsrcDeviceTerm {
     uint64_t fed_ = 0;
     bool stalled_ = false;
     bool flushing_ = false;   // this stall flushes: what waited below the element was past waiting_ns (c42)
-    int64_t trust_at_ = 0;    // the clock is trusted from here: a resume or a step, plus settle_ns
+    int64_t trust_at_ = 0;    // the clock is trusted from here: a resume plus settle_ns
     bool have_taken_ = false;
     int64_t taken_prev_ = 0;
     int64_t discarded_ = 0;   // pushed frames the flushes discarded before the sink took them

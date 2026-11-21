@@ -1013,9 +1013,11 @@ def test_foreign_flush_resync():
 
 
 def test_clock_trusted():
-    """20. The clock is not trusted while stalled, nor for settle_ns after the resume or a step relock, as the lock
-    waits (c42): pulsesink's clock runs on through a server stop and converges back over seconds, and the sink guard
-    learned that lag as a sink latency for good. From the start it is trusted, as before."""
+    """20. The clock is not trusted while stalled, nor for settle_ns after the resume, as the lock waits (c42):
+    pulsesink's clock runs on through a server stop and converges back over seconds, and the sink guard learned that
+    lag as a sink latency for good. From the start it is trusted, as before, and a step relock while trusted leaves
+    it so: the lag after a step at load lasts, and the guard must learn it (c42 fix 3); one inside the window after
+    the resume extends the window to 15 s past it (c42 fix 4)."""
     per = FS // 10
     t = ad.DeviceTerm()
     t.start(0)
@@ -1028,14 +1030,16 @@ def test_clock_trusted():
         else:
             pushed += per
             up = max(0, up - per)
-        dev = mono + (200 * MS if sec >= 80 else 0)   # a 200 ms clock step at 80 s
+        dev = mono + (200 * MS if sec >= 40 else 0) + (200 * MS if sec >= 80 else 0)   # 200 ms clock steps at 40, 80 s
         t.sample(dev, 1000 * SEC + mono, pushed, pushed, up)
         at[round(sec, 1)] = t.clock_trusted(1000 * SEC + mono)
-    want = {10.0: True, 29.9: True, 31.6: False, 32.4: False, 45.0: False, 50.0: True, 79.9: True, 85.0: False,
-            94.0: False, 100.0: True, 120.0: True}
+    want = {10.0: True, 29.9: True, 31.6: False, 32.4: False, 45.0: False, 50.0: False, 54.9: False, 55.5: True,
+            79.9: True, 85.0: True, 94.0: True, 100.0: True, 120.0: True}
     got = {k: at.get(k) for k in want}
-    check("20: trusted from the start, not while stalled (from 31.0 s) nor 15 s after the resume (32.5 s) or the step "
-          "relock (80.1 s), then again: %s" % got, got == want)
+    steps = t.stats()["relocks_step"]
+    check("20: trusted from the start, not while stalled (from 31.0 s) nor 15 s after the resume (32.5 s), a step "
+          "relock inside that (40.1 s) holding it to 55.1 s, and still trusted after the step relock at 80.1 s (%d step "
+          "relocks): %s" % (steps, got), got == want and steps == 2)
 
 
 CASES = (test_lock_port, test_ratio, test_jitter, test_fill_1h, test_input_stall, test_device_step,
@@ -1102,8 +1106,10 @@ MUTANTS = (
      [("                self.flushing = pending > self.wait_samples\n", "                self.flushing = True\n")]),
     ("the clock trusted at once after a resume", 20, "asrc_device_ref.py",
      [("            self.trust_at = max(self.trust_at, mono + c.settle_ns)\n", "")]),
-    ("the clock trusted at once after a step", 20, "asrc_device_ref.py",
-     [("        self.trust_at = max(self.trust_at, mono + self.cfg.settle_ns)\n", "")]),
+    ("a step relock untrusts the clock", 20, "asrc_device_ref.py",
+     [("        if mono < self.trust_at:   # still converging after a resume (c42)\n", "        if True:\n")]),
+    ("a step after a resume does not extend the window", 20, "asrc_device_ref.py",
+     [("        if mono < self.trust_at:   # still converging after a resume (c42)\n", "        if False:\n")]),
     ("the clock trusted while stalled", 20, "asrc_device_ref.py",
      [("        return not self.stalled and mono >= self.trust_at", "        return mono >= self.trust_at")]),
     ("a foreign flush's discard not counted", 18, "asrc_device_ref.py",
