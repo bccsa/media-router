@@ -2653,7 +2653,10 @@ and `render-lateness-ns` (house time less the content time of the sample at
 the device, 0 while unknown); `mrasrc-event` gains `engaged` (`reason` ratio
 or phase, `source-ppb`, `phase-ns`, `rate-known`), `relock-device` (`reason`
 restart, step or flush, `step-ns`), `device-stalled` (`pending-frames`) and
-`device-resumed` (`dropped-frames`; B-166). A decode +
+`device-resumed` (`dropped-frames`; B-166), and once an element
+`sink-push-unread` (`reason` schedstat: the kernel has no
+`/proc/thread-self/schedstat`, so a queue's push into a server's stream is
+not read and every write reads the clock; c41b). A decode +
 device element whose source still passes reports
 mode `device`, so read its decode term from `bypass-below-ppm`, not from
 `mode`. The element answers LATENCY with its filter's lookahead, 32 frames

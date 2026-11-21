@@ -1,6 +1,7 @@
 /* libgstmrtest.so (plan ch. 7 WI-P3-5, S18; ch. 8 WI-P4-4), test-only, never installed. mrtestaudiosink: a device
  * `ppm` off the pipeline clock holding `device-ns`, its own clock, a `stall-ms` that stops it; the ring's fill,
- * resyncs, calibration changes. MrTestClock: `speed` times real time, its waits in its own time. */
+ * resyncs, calibration changes. MrTestClock: `speed` times real time, its waits in its own time. mrtestserversink:
+ * a sound server's stream (c41b). */
 #include <gst/audio/audio.h>
 #include <gst/gst.h>
 
@@ -601,9 +602,257 @@ static void mr_test_audio_sink_class_init(MrTestAudioSinkClass* klass) {
                                           "media-router");
 }
 
+/* --- mrtestserversink ------------------------------------------------------------------------- */
+
+/* A server's stream (c41b), as pulsesink's: a GstAudioBaseSink of its own ring (not a GstAudioSink), its writes
+ * blocking while the ring is full; a server thread takes a segment a period, none through a `stall-ms`; its clock
+ * runs on from the read index at timing updates `update-ms` apart, through a stall too, and never goes back. */
+#define MR_TYPE_TEST_SERVER_RING (mr_test_server_ring_get_type())
+G_DECLARE_FINAL_TYPE(MrTestServerRing, mr_test_server_ring, MR, TEST_SERVER_RING, GstAudioRingBuffer)
+#define MR_TYPE_TEST_SERVER_SINK (mr_test_server_sink_get_type())
+G_DECLARE_FINAL_TYPE(MrTestServerSink, mr_test_server_sink, MR, TEST_SERVER_SINK, GstAudioBaseSink)
+
+struct _MrTestServerRing {
+    GstAudioRingBuffer parent;
+    GThread* thread;
+    GMutex lock;
+    GCond cond;
+    gboolean quit, running;
+    gint64 stall_end;            /* us, monotonic: the server takes nothing before it */
+    gint64 update_us;
+    gint64 anchor_us, next_update; /* the last timing update, and the next */
+    gint64 anchor_frames;        /* the read index then, in the base sink's write positions */
+    gint64 clock_held;           /* frames: the clock never goes back */
+    gint64 taken_segs;
+};
+
+struct _MrTestServerSink {
+    GstAudioBaseSink parent;
+    guint stall_ms, update_ms;
+    MrTestServerRing* ring;
+};
+
+G_DEFINE_TYPE(MrTestServerRing, mr_test_server_ring, GST_TYPE_AUDIO_RING_BUFFER)
+G_DEFINE_TYPE(MrTestServerSink, mr_test_server_sink, GST_TYPE_AUDIO_BASE_SINK)
+
+static gint64 server_read_frames(GstAudioRingBuffer* buf) {
+    return ((gint64)g_atomic_int_get(&buf->segdone) - (gint64)buf->segbase) * buf->samples_per_seg;
+}
+
+/* A timing update (lock held): the clock re-anchors at the read index. */
+static void server_update(MrTestServerRing* self, gint64 now) {
+    self->anchor_frames = server_read_frames(GST_AUDIO_RING_BUFFER(self));
+    self->anchor_us = now;
+    self->next_update = now + self->update_us;
+}
+
+static gpointer server_loop(gpointer data) {
+    MrTestServerRing* self = MR_TEST_SERVER_RING(data);
+    GstAudioRingBuffer* buf = GST_AUDIO_RING_BUFFER(data);
+    gint64 due = 0;
+    g_mutex_lock(&self->lock);
+    while (!self->quit) {
+        if (!self->running) {
+            g_cond_wait(&self->cond, &self->lock);
+            due = 0;
+            continue;
+        }
+        const gint64 period = (gint64)buf->samples_per_seg * G_USEC_PER_SEC / MAX(1, GST_AUDIO_INFO_RATE(&buf->spec.info));
+        gint64 now = g_get_monotonic_time();
+        if (!due) {
+            due = now;
+            server_update(self, now);
+        }
+        if (now < due) {
+            g_cond_wait_until(&self->cond, &self->lock, due);
+            continue;
+        }
+        if (now >= self->next_update) server_update(self, now);
+        if (now < self->stall_end) {   /* it takes nothing; the next segment one period after the stall */
+            due = self->stall_end;
+            continue;
+        }
+        due += period;
+        g_mutex_unlock(&self->lock);
+        gint seg, len;
+        guint8* ptr;
+        if (gst_audio_ring_buffer_prepare_read(buf, &seg, &ptr, &len)) {
+            gst_audio_ring_buffer_clear(buf, seg);
+            gst_audio_ring_buffer_advance(buf, 1);
+        }
+        g_mutex_lock(&self->lock);
+        self->taken_segs++;
+    }
+    g_mutex_unlock(&self->lock);
+    return NULL;
+}
+
+static gboolean server_acquire(GstAudioRingBuffer* buf, GstAudioRingBufferSpec* spec) {
+    MrTestServerRing* self = MR_TEST_SERVER_RING(buf);
+    buf->size = spec->segtotal * spec->segsize;
+    buf->memory = (guint8*)g_malloc(buf->size);
+    gst_audio_format_info_fill_silence(spec->info.finfo, buf->memory, buf->size);
+    g_mutex_lock(&self->lock);
+    self->quit = self->running = FALSE;
+    self->clock_held = self->anchor_frames = self->taken_segs = 0;
+    self->anchor_us = self->next_update = 0;
+    g_mutex_unlock(&self->lock);
+    self->thread = g_thread_new("mrtestserver", server_loop, self);
+    return TRUE;
+}
+
+static gboolean server_release(GstAudioRingBuffer* buf) {
+    MrTestServerRing* self = MR_TEST_SERVER_RING(buf);
+    g_mutex_lock(&self->lock);
+    self->quit = TRUE;
+    g_cond_broadcast(&self->cond);
+    g_mutex_unlock(&self->lock);
+    if (self->thread) g_thread_join(self->thread);
+    self->thread = NULL;
+    g_free(buf->memory);
+    buf->memory = NULL;
+    return TRUE;
+}
+
+static gboolean server_run(GstAudioRingBuffer* buf, gboolean on) {
+    MrTestServerRing* self = MR_TEST_SERVER_RING(buf);
+    g_mutex_lock(&self->lock);
+    self->running = on;
+    g_cond_broadcast(&self->cond);
+    g_mutex_unlock(&self->lock);
+    return TRUE;
+}
+static gboolean server_start(GstAudioRingBuffer* buf) { return server_run(buf, TRUE); }
+static gboolean server_stop(GstAudioRingBuffer* buf) { return server_run(buf, FALSE); }
+static guint server_delay(GstAudioRingBuffer* buf G_GNUC_UNUSED) { return 0; }
+
+static void mr_test_server_ring_finalize(GObject* object) {
+    MrTestServerRing* self = MR_TEST_SERVER_RING(object);
+    g_mutex_clear(&self->lock);
+    g_cond_clear(&self->cond);
+    G_OBJECT_CLASS(mr_test_server_ring_parent_class)->finalize(object);
+}
+
+static void mr_test_server_ring_init(MrTestServerRing* self) {
+    g_mutex_init(&self->lock);
+    g_cond_init(&self->cond);
+    self->update_us = 1500000;
+}
+
+static void mr_test_server_ring_class_init(MrTestServerRingClass* klass) {
+    GstAudioRingBufferClass* r = GST_AUDIO_RING_BUFFER_CLASS(klass);
+    G_OBJECT_CLASS(klass)->finalize = mr_test_server_ring_finalize;
+    r->acquire = server_acquire;
+    r->release = server_release;
+    r->start = server_start;
+    r->resume = server_start;
+    r->pause = server_stop;
+    r->stop = server_stop;
+    r->delay = server_delay;
+}
+
+/* The provided clock: the read index at the last timing update and the time since, held (libpulse's). */
+static GstClockTime server_time(GstClock* clock G_GNUC_UNUSED, gpointer data) {
+    MrTestServerSink* sink = MR_TEST_SERVER_SINK(data);
+    MrTestServerRing* self = sink->ring;
+    GstAudioRingBuffer* buf = GST_AUDIO_RING_BUFFER(self);
+    if (!self) return GST_CLOCK_TIME_NONE;
+    const gint rate = GST_AUDIO_INFO_RATE(&buf->spec.info);
+    if (rate <= 0) return GST_CLOCK_TIME_NONE;
+    g_mutex_lock(&self->lock);
+    gint64 f = self->clock_held;
+    if (self->running && self->anchor_us > 0)
+        f = MAX(f, self->anchor_frames + (g_get_monotonic_time() - self->anchor_us) * rate / G_USEC_PER_SEC);
+    self->clock_held = f;
+    g_mutex_unlock(&self->lock);
+    return (GstClockTime)gst_util_uint64_scale_int((guint64)MAX(f, 0), GST_SECOND, rate);
+}
+
+static GstAudioRingBuffer* server_create_ringbuffer(GstAudioBaseSink* abs) {
+    MrTestServerSink* sink = MR_TEST_SERVER_SINK(abs);
+    MrTestServerRing* ring = (MrTestServerRing*)g_object_new(MR_TYPE_TEST_SERVER_RING, NULL);
+    ring->update_us = (gint64)sink->update_ms * 1000;
+    sink->ring = ring;
+    return GST_AUDIO_RING_BUFFER(ring);
+}
+
+enum { SERVER_PROP_0, SERVER_PROP_STALL, SERVER_PROP_UPDATE, SERVER_PROP_TAKEN };
+
+static void mr_test_server_set_property(GObject* object, guint id, const GValue* v, GParamSpec* ps) {
+    MrTestServerSink* self = MR_TEST_SERVER_SINK(object);
+    switch (id) {
+        case SERVER_PROP_STALL:
+            self->stall_ms = g_value_get_uint(v);
+            if (self->ring) {
+                g_mutex_lock(&self->ring->lock);
+                self->ring->stall_end = g_get_monotonic_time() + (gint64)self->stall_ms * 1000;
+                g_cond_broadcast(&self->ring->cond);
+                g_mutex_unlock(&self->ring->lock);
+            }
+            break;
+        case SERVER_PROP_UPDATE: self->update_ms = g_value_get_uint(v); break;
+        default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, ps); break;
+    }
+}
+
+static void mr_test_server_get_property(GObject* object, guint id, GValue* v, GParamSpec* ps) {
+    MrTestServerSink* self = MR_TEST_SERVER_SINK(object);
+    switch (id) {
+        case SERVER_PROP_STALL: g_value_set_uint(v, self->stall_ms); break;
+        case SERVER_PROP_UPDATE: g_value_set_uint(v, self->update_ms); break;
+        case SERVER_PROP_TAKEN: {
+            guint64 n = 0;
+            if (self->ring) {
+                g_mutex_lock(&self->ring->lock);
+                n = (guint64)self->ring->taken_segs;
+                g_mutex_unlock(&self->ring->lock);
+            }
+            g_value_set_uint64(v, n);
+            break;
+        }
+        default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, ps); break;
+    }
+}
+
+static void mr_test_server_sink_init(MrTestServerSink* self) {
+    self->update_ms = 1500;
+    GstAudioBaseSink* abs = GST_AUDIO_BASE_SINK(self);
+    if (abs->provided_clock) gst_object_unref(abs->provided_clock);
+    abs->provided_clock = gst_audio_clock_new("MrTestServerSinkClock", server_time, self, NULL);
+}
+
+static void mr_test_server_sink_class_init(MrTestServerSinkClass* klass) {
+    GObjectClass* o = G_OBJECT_CLASS(klass);
+    GstElementClass* e = GST_ELEMENT_CLASS(klass);
+    o->set_property = mr_test_server_set_property;
+    o->get_property = mr_test_server_get_property;
+    GST_AUDIO_BASE_SINK_CLASS(klass)->create_ringbuffer = server_create_ringbuffer;
+    const GParamFlags rw = (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+    g_object_class_install_property(
+        o, SERVER_PROP_STALL, g_param_spec_uint("stall-ms", "Stall", "Setting it stops the server taking from the "
+                                                "stream for this many ms from now (writes block, the clock runs on).",
+                                                0, 3600000, 0, rw));
+    g_object_class_install_property(
+        o, SERVER_PROP_UPDATE, g_param_spec_uint("update-ms", "Timing updates", "The clock re-anchors at the read "
+                                                 "index this often; set before the ring.", 1, 60000, 1500, rw));
+    g_object_class_install_property(
+        o, SERVER_PROP_TAKEN, g_param_spec_uint64("taken-segments", "Taken", "Segments the server took.", 0,
+                                                  G_MAXUINT64, 0, (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
+    gst_element_class_add_static_pad_template(
+        e, &(GstStaticPadTemplate)GST_STATIC_PAD_TEMPLATE(
+               "sink", GST_PAD_SINK, GST_PAD_ALWAYS,
+               GST_STATIC_CAPS("audio/x-raw, format = (string) { S16LE, S32LE, F32LE }, "
+                               "rate = (int) [ 8000, 192000 ], channels = (int) [ 1, 8 ], "
+                               "layout = (string) interleaved")));
+    gst_element_class_set_static_metadata(e, "Media Router test server sink", "Sink/Audio",
+                                          "A sound server's stream: its own ring, its clock from timing updates "
+                                          "(tests only)", "media-router");
+}
+
 static gboolean plugin_init(GstPlugin* plugin) {
     g_type_ensure(MR_TYPE_TEST_CLOCK);
-    return gst_element_register(plugin, "mrtestaudiosink", GST_RANK_NONE, MR_TYPE_TEST_AUDIO_SINK);
+    return gst_element_register(plugin, "mrtestaudiosink", GST_RANK_NONE, MR_TYPE_TEST_AUDIO_SINK) &&
+           gst_element_register(plugin, "mrtestserversink", GST_RANK_NONE, MR_TYPE_TEST_SERVER_SINK);
 }
 
 #define PACKAGE "media-router"

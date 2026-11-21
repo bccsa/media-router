@@ -273,6 +273,7 @@ describe('the forwarded messages as recorded (forwarded-messages.json)', () => {
             'relock-device',
             'device-stalled',
             'device-resumed',
+            'sink-push-unread',
             'engaged',
             'relock',
             'gap',

@@ -108,6 +108,7 @@ struct AsrcDevice {
     std::atomic<int64_t> probe_ns{0};              // when the probe last let a buffer on into the sink
     std::atomic<int64_t> block_ns{0}, block_end_ns{0};
     int64_t busy_ns = -1;   // the writing thread's CPU time, run and waiting, at its last write (c41; -1: unknown)
+    bool push_unread_said = false;   // a push not read for want of schedstat, said once (c41b)
     // The catch-up (catch-up-ppm): the sink's write end after the probe's last buffer (-1: none since a start or a
     // flush), the frames a flush took from between mrasrc and the sink, and the stats' copy of its state.
     guint catch_up_ppm = 0;
@@ -542,6 +543,15 @@ static int64_t asrc_thread_busy_ns() {
     return std::sscanf(buf, "%llu %llu", &run, &wait) == 2 ? (int64_t)(run + wait) : -1;
 }
 
+/* Once an element (c41b): a queue's push into a server's stream could not be read, this thread's schedstat being
+ * unreadable (a kernel without CONFIG_SCHED_INFO), so every such write reads the clock (c40's rule). */
+static void asrc_post_push_unread(GstMrAsrc* self, gint64 house_ns) {
+    GST_WARNING_OBJECT(self, "/proc/thread-self/schedstat unreadable: a push into the sink is not read from the "
+                       "writer's gaps, so the clock is read for every write");
+    asrc_post(self, gst_structure_new("mrasrc-event", "kind", G_TYPE_STRING, "sink-push-unread", "reason",
+                                      G_TYPE_STRING, "schedstat", "house-ns", G_TYPE_INT64, house_ns, NULL));
+}
+
 /* The device sink's own time (gst_audio_clock_get_time: no calibration, no offset; pulsesink's stream time, the
  * clock DEV-P4a recorded): the sample at the device, in the frame of the base sink's write positions. */
 static int64_t asrc_device_time(GstAudioBaseSink* sink) {
@@ -677,6 +687,7 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
     gint64 mono = 0;
     const gint64 now = clocked ? asrc_running(self, clock, &mono) : 0;
     if (clock) gst_object_unref(clock);
+    bool unread = false;   // a push this write could not read, said after the lock (c41b)
     // The silence before this write (null: none); the clock is read only once the sink renders (DEV-P4a), after a
     // flush too.
     auto refill = [&](guint64 off, bool rendering) -> GstBuffer* {
@@ -706,8 +717,10 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
             // A queue's thread writing (the 302M's outq): the push before this write, read from its gaps (c41).
             const int64_t t = g_get_monotonic_time() * 1000, busy = asrc_thread_busy_ns();
             if (d->probe_thread.load() == g_thread_self()) {
+                const int64_t gap = t - d->probe_ns.load();
+                if (busy < 0 && gap > 0 && residence >= gap && !d->push_unread_said) unread = d->push_unread_said = true;
                 int64_t push = 0, gone = 0;
-                mrts::asrc_sink_queued_push(t - d->probe_ns.load(), residence,
+                mrts::asrc_sink_queued_push(gap, residence,
                                             busy >= 0 && d->busy_ns >= 0 ? busy - d->busy_ns : -1, &push, &gone);
                 if (push >= mrts::ASRC_SINK_BLOCKED_NS) {
                     d->block_ns.store(push);
@@ -796,6 +809,7 @@ static GstPadProbeReturn asrc_sink_probe(GstPad* pad, GstPadProbeInfo* info, gpo
         d->relocks.store(d->term.stats().relocks_restart + d->term.stats().relocks_step);
     }
     asrc_post_device(self, ev, now);
+    if (unread) asrc_post_push_unread(self, now);
     if (info->type & (GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST)) {   // from here: the sink's time
         d->probe_thread.store(g_thread_self());
         d->probe_ns.store(g_get_monotonic_time() * 1000);

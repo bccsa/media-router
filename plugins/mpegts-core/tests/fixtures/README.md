@@ -117,7 +117,7 @@ B-166 (B-217) replaced the custom slaving's `device-resyncs` and its `device-rel
 `device-resync` events with `device-relocks`, `device-stalls` and `render-lateness-ns` and the
 `relock-device`, `device-stalled` and `device-resumed` events; B-249 added `margin-refills`,
 `margin-silence-ns` and `margin-guard-ns`, and its catch-up `catch-up-state`, `catch-up-excess-ns` and
-`catch-up-removed-ns`.
+`catch-up-removed-ns`; c41b the `sink-push-unread` event (once an element: no schedstat to read a queue's push).
 
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|

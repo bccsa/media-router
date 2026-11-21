@@ -1513,6 +1513,78 @@ else:
           and len(_late) > 10 and abs(_devp + 20000) <= 500 and abs(_ratio + 60000) <= 1000
           and _sk["calibrations"] == 0 and 0 <= _rs.get("start", -1) <= START_REALIGNS and _sk["resyncs"] == _rs["start"])
 
+    # c41b: the blocked-push detection wired, on a server's stream (mrtestserversink: its own ring, its clock run on
+    # from timing updates 1.5 s apart). With it the write after a 0.3 s server stall is held to the read index; without
+    # (schedstat unreadable, the queue's-thread test broken, c40's rule) the clock is read and each stall refills.
+    import json
+    import threading
+    import time
+
+    def server_run(tail, secs=24, stalls=(8, 16)):
+        """The sink end `tail` fed live 30 ms late into mrtestserversink in real time, the server taking nothing for
+        0.3 s at each of `stalls` s: margin-refills by the end, the mrasrc events, errors, segments the server took."""
+        desc = (f"appsrc name=src is-live=true format=time do-timestamp=false block=false max-bytes=0 "
+                f"caps=audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! "
+                + tail.replace("%SINK%", "mrtestserversink name=sink"))
+        p = Gst.parse_launch(desc)
+        tone = np.repeat(0.25 * np.sin(2 * np.pi * 1000 * np.arange(480) / FS), 2).astype("<f4").tobytes()
+        stop = threading.Event()
+
+        def feed():
+            src = p.get_by_name("src")
+            while p.get_base_time() == 0 and not stop.is_set():
+                time.sleep(0.001)
+            base, clk, nxt = p.get_base_time(), p.get_pipeline_clock(), 0
+            while not stop.is_set() and nxt < secs * S:
+                Gst.Clock.id_wait(clk.new_single_shot_id(base + nxt + 30 * MS))
+                b = Gst.Buffer.new_wrapped(tone)
+                b.pts, b.duration = nxt, 10 * MS
+                if src.emit("push-buffer", b) != Gst.FlowReturn.OK:
+                    break
+                nxt += 10 * MS
+
+        p.set_state(Gst.State.PLAYING)
+        th = threading.Thread(target=feed, daemon=True)
+        th.start()
+        t0, bus, todo, ev, errs = time.monotonic(), p.get_bus(), list(stalls), [], []
+        while time.monotonic() - t0 < secs:
+            while todo and time.monotonic() - t0 >= todo[0]:
+                todo.pop(0)
+                p.get_by_name("sink").set_property("stall-ms", 300)
+            m = bus.timed_pop(20 * Gst.MSECOND)
+            if m is None:
+                continue
+            if m.type == Gst.MessageType.ERROR:
+                errs.append(m.parse_error()[0].message)
+                break
+            if m.type == Gst.MessageType.ELEMENT and m.get_structure().get_name() == "mrasrc-event":
+                ev.append(sdict(m.get_structure()))
+        stop.set()
+        asrc = p.get_by_name("outasrc") or p.get_by_name("asrc")
+        refills = sdict(asrc.get_property("stats")).get("margin-refills", -1)
+        taken = p.get_by_name("sink").get_property("taken-segments")
+        p.set_state(Gst.State.NULL)
+        th.join(2)
+        return refills, ev, errs, taken
+
+    _PL = os.path.normpath(os.path.join(_HERE, "..", "..", "..", "..", "plugins"))
+    _LAT = "mrlateness name=lat_render reference=running-time ! "
+    _t302 = json.load(open(os.path.join(_PL, "audio-output-302m", "tests", "fixtures", "sink-end.json")))["tail"]
+    _tdec = json.load(open(os.path.join(_PL, "audio-decoder", "tests", "fixtures", "sink-end.json")))["tail"]
+    _tdec = _tdec.replace("%DECODER% ! ", "").replace("%TS_OFFSET%", "0")
+    for _what, _tail in (("the 302M's (outq's thread writes: the push read from its gaps and schedstat)", _t302),
+                         ("the Audio Decoder's (asrc's chain writes: its push timed)", _tdec)):
+        print(f"\n--- c41b: {_what} sink end into a server's stream that takes nothing for 0.3 s at 8 s and 16 s, "
+              "24 s real time ---")
+        _ref, _ev, _err, _taken = server_run(_tail.replace(_LAT, ""))
+        _unread = [e for e in _ev if e["kind"] == "sink-push-unread"]
+        check(f"the lateness tap taken off the fixture's string ({_LAT.strip(' !')} in it: {_LAT in _tail})",
+              _LAT in _tail)
+        check(f"the write after each stall is held to the read index: margin-refills {_ref} (the start's only; c40's "
+              f"rule, or the detection unwired: one more a stall), no sink-push-unread event ({len(_unread)}), the "
+              f"server took {_taken} segments, errors {_err}",
+              _ref == 1 and not _unread and _taken > 1500 and not _err)
+
 print("\n--- a device-sink that cannot be followed is an error naming it; no custom slaving left ---")
 for desc, what in (("fakesink name=sink", "not a GstAudioBaseSink"),
                    ("fakesink name=other", "no element of that name downstream")):
