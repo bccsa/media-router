@@ -797,8 +797,8 @@ if CU_TABLE:
     print("\n--- the drain table: profile x seed x holes x lost x render lateness before -> after (by) x removed ---")
     for _name, _seed, _r, _x in CU_TABLE:
         if _name == "field-long":
-            print(f"  {_name:10} seed {_seed}: holes {_r['holes']} (none: {_x['holes']}), lost {_r['lost'] / 48:.2f} ms "
-                  f"(none: {_x['lost'] / 48:.2f}), removed {_r['removed']:.0f} ms")
+            print(f"  {_name:10} seed {_seed}: holes {_r['holes']}, lost {_r['lost'] / 48:.2f} ms, removed "
+                  f"{_r['removed']:.0f} ms")
         else:
             _lv = f"{_x[0]:.0f} -> {_x[1]:.0f} ms (by {_x[2]:.0f} s)" if _x else "none"
             print(f"  {_name:10} seed {_seed}: holes {_r['holes']}, lost {_r['lost'] / 48:.2f} ms, {_lv}, removed "
