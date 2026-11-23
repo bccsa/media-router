@@ -25,6 +25,8 @@ export interface DrainGroupView {
     withRenderMs?: Array<number | null>;
     /** Its origins touch two groups: it drains alone (two programmes). */
     neither?: string[];
+    /** How far its group's published targets spread (ms), when past the 1 s rise cap (p5-20). */
+    spreadMs?: number;
 }
 
 export interface DrainGrouping {
@@ -59,14 +61,22 @@ export function busOrigins(id: string, edges: readonly DrainEdge[]): Set<string>
 
 const touches = (a: Set<string>, b: Set<string>): boolean => [...a].some((x) => b.has(x));
 
+/** An origin module's key (p5-20): `tl:` + the sender's timeline id for an ingest on the Trust
+ *  timeline, so two ingests of one sender programme are one origin; else the module id. */
+export type DrainOriginKeyOf = (moduleId: string) => string;
+
 /** The groups: Video Players sharing an origin form one (a player whose origins touch two such
  *  groups stays apart, never chaining them); each audio output joins the one group its origins
- *  touch, origins touching none ignored; one touching two joins neither. */
+ *  touch, origins touching none ignored; one touching two joins neither. Origins compare by
+ *  `keyOf` (default: the module id). */
 export function drainGroups(
     members: readonly DrainMemberRef[],
     edges: readonly DrainEdge[],
+    keyOf: DrainOriginKeyOf = (id) => id,
 ): DrainGrouping {
-    const origins = new Map(members.map((m) => [m.id, busOrigins(m.id, edges)]));
+    const origins = new Map(
+        members.map((m) => [m.id, new Set([...busOrigins(m.id, edges)].map(keyOf))]),
+    );
     const built: Array<{ ids: string[]; origins: Set<string> }> = [];
     const anchors = members.filter((m) => m.anchor && origins.get(m.id)!.size > 0);
     // Fewest origins first: the programmes; a player of several joins the one group it touches,
@@ -108,14 +118,21 @@ export interface DrainMember extends DrainMemberRef {
 export interface DrainHost {
     members(): DrainMember[];
     edges(): DrainEdge[];
+    /** The origins' keys (p5-20); absent: every module its own id. */
+    keyOf?: DrainOriginKeyOf;
     log(msg: string, obj: Record<string, unknown>): void;
 }
 
+/** p4-18 E21: a member rises at most 1 s to its group; past it the spread is named (p5-20). */
+export const DRAIN_RISE_CAP_MS = 1000;
+
 /** The engine's half: at each refresh (2 s) P = the max of each group's published targets, to
- *  every member, below 0 too (early outputs); the groups again only when the members or the routing
- *  change. A member alone, or a group none of whose members publishes, gets DRAIN_GROUP_ALONE_NS. */
+ *  every member, below 0 too (early outputs); the groups again only when the members, the routing
+ *  or an origin's key change. A member alone, or a group none of whose members publishes, gets
+ *  DRAIN_GROUP_ALONE_NS. */
 export class DrainGroupLoop {
     private key = '';
+    private keys = '';
     private grouping: DrainGrouping = { groups: [], neither: new Map() };
     private readonly alone = new Set<string>();
     private readonly logged = new Set<string>();
@@ -130,13 +147,23 @@ export class DrainGroupLoop {
     tick(): void {
         const members = this.host.members();
         const edges = this.host.edges();
+        const keyOf = this.host.keyOf ?? ((id: string) => id);
         const key = JSON.stringify([
             members.map((m) => [m.id, m.anchor]).sort(),
             edges.map((e) => [e.sourceModuleId, e.sinkModuleId, e.streamType]).sort(),
         ]);
-        if (key !== this.key) {
+        // Only the keys that differ from their module id: a Trust ingest on a sender timeline.
+        const keyed = [...new Set(edges.map((e) => e.sourceModuleId))]
+            .sort()
+            .flatMap((id) => (keyOf(id) === id ? [] : [[id, keyOf(id)]]));
+        const keys = JSON.stringify(keyed);
+        if (key !== this.key || keys !== this.keys) {
+            const before = this.grouping;
+            const regroup = key === this.key;
             this.key = key;
-            this.grouping = drainGroups(members, edges);
+            this.keys = keys;
+            this.grouping = drainGroups(members, edges, keyOf);
+            if (regroup) this.logRegroup(before, members, keyed);
         }
         const byId = new Map(members.map((m) => [m.id, m]));
         const grouped = new Set<string>();
@@ -145,6 +172,7 @@ export class DrainGroupLoop {
             const published = live.flatMap((m) =>
                 m.publishedMs === undefined ? [] : [m.publishedMs],
             );
+            const spread = published.length ? Math.max(...published) - Math.min(...published) : 0;
             for (const m of live) {
                 grouped.add(m.id);
                 this.alone.delete(m.id);
@@ -155,6 +183,7 @@ export class DrainGroupLoop {
                 const view: DrainGroupView = { with: others.map((o) => o.name) };
                 if (others.some((o) => o.renderMs !== undefined))
                     view.withRenderMs = others.map((o) => o.renderMs ?? null);
+                if (spread > DRAIN_RISE_CAP_MS) view.spreadMs = spread;
                 m.apply(p, view);
             }
         }
@@ -176,5 +205,26 @@ export class DrainGroupLoop {
             m.apply(DRAIN_GROUP_ALONE_NS, names ? { neither: names } : {});
         }
         for (const id of [...this.alone]) if (!byId.has(id)) this.alone.delete(id);
+    }
+
+    /** A regroup an origin's key made (a Trust ingest reaching or leaving its sender's timeline):
+     *  each member whose group changed, once. */
+    private logRegroup(before: DrainGrouping, members: DrainMember[], keyed: string[][]): void {
+        const names = new Map(members.map((m) => [m.id, m.name]));
+        const partners = (g: DrainGrouping, id: string): string[] =>
+            (g.groups.find((ids) => ids.includes(id)) ?? []).filter((x) => x !== id).sort();
+        for (const m of members) {
+            const was = partners(before, m.id);
+            const now = partners(this.grouping, m.id);
+            if (JSON.stringify(was) === JSON.stringify(now)) continue;
+            const text = now.length
+                ? `in sync with ${now.map((id) => names.get(id) ?? id).join(', ')}`
+                : 'drains alone';
+            this.host.log(`${m.name}: ${text}: an input's sender timeline changed`, {
+                member: m.id,
+                with: now,
+                keys: Object.fromEntries(keyed),
+            });
+        }
     }
 }

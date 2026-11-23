@@ -8,6 +8,8 @@ import type { ManagerConnectionProfile } from '@media-router/shared-types';
  * Profiles are stored as JSON at ~/.media-router/profiles.json
  */
 export class ProfileStore {
+    /** The engine's state directory: the profile store's, beside which other state lives. */
+    readonly dir: string;
     private filePath: string;
     private profiles: Record<string, ManagerConnectionProfile> = {};
     private activeProfile: string | null = null;
@@ -21,6 +23,7 @@ export class ProfileStore {
             fs.mkdirSync(configDir, { recursive: true });
         }
 
+        this.dir = configDir;
         this.filePath = filePath ?? path.join(configDir, 'profiles.json');
         this.loadFromDisk();
         this.seedDefaults();

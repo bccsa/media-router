@@ -62,6 +62,27 @@ Draft: Phase 5 is being built. Lines are added as its parts land.
   re-anchored, as late content does. Keep a Trust link's latency below
   about 3.8 s.
 
+**Outputs fed by Trust inputs of one programme play in step**
+
+- **A Video Player and an audio output fed by two Trust inputs of one
+  programme** (its video over SRT, its audio over RIST, from one sender) now
+  drain together and play the same content at the same moment, as outputs
+  fed by one input already did. Two unrelated Trust programmes stay two
+  groups. An input in Restamp, or falling back, plays on its own and rejoins
+  its group at the next refresh (2 s) after it is back on Trust.
+- **SRT Output, RIST Output and MPEG-TS IP Output name the programme's
+  timeline** in their stream; an output relaying a Trust input passes on its
+  sender's. A relay is in step with the sender's other receivers only once
+  its input's Converging has ended.
+- **Keep the Trust links of one programme within 1 s of each other.** Past
+  that, the outputs follow each other within 1 s only, and their Latency
+  target row says so: "in sync with Video Player within 1 s only: the links
+  differ by 1.4 s".
+- **Send the components of one programme from the same sources on every
+  link, or in one link**, for them to stay in step at the receiver: a muxed
+  programme on one link and an audio-only output of part of it on another
+  name two timelines, and the receiving box keeps them apart.
+
 ## v2.0.0.103 — house-clock timing, Phase 4
 
 Phase 4 of the house-clock timing work: every output now plays what it

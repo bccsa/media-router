@@ -1,0 +1,12 @@
+{
+  "scenario": "scn-out-drain-group-trust",
+  "graph": "generated 720p50 H.264 + AAC from two producers -> player50 and the audio decoder (two Trust ingests of one sender timeline), cap-mixer-302m-house.ts looped -> Audio Output (302M) on another; the rig groups by the keys every 2 s: the pair within 45 ms at the end, the 302M output alone and never rising (p5-20)",
+  "kind": "h264-aac-720p50",
+  "fixture": "cap-mixer-302m-house.ts",
+  "pid": 65,
+  "runner": "native",
+  "seconds": 60,
+  "expect": {
+    "spread_ms": 45
+  }
+}

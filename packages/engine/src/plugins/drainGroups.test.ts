@@ -141,6 +141,118 @@ describe('drainGroups', () => {
     });
 });
 
+/** p5-20: the receiver's keys, as ModuleManager gives them: a Trust ingest's sender timeline. */
+const TL_A = '0123456789abcdef';
+const TL_B = 'fedcba9876543210';
+const keyed =
+    (map: Record<string, string>) =>
+    (id: string): string =>
+        map[id] ? `tl:${map[id]}` : id;
+
+describe('drainGroups: Trust inputs by their sender timeline (p5-20)', () => {
+    // A Video Player on a Trust srt-input, an Audio Output (302M) on a Trust rist-input.
+    const av = [e('srt-in', 'vp'), e('rist-in', 'out302', A302)];
+
+    it('(a) one timeline id on both ingests: one group', () => {
+        const g = drainGroups(
+            [video('vp'), audio('out302')],
+            av,
+            keyed({ 'srt-in': TL_A, 'rist-in': TL_A }),
+        );
+        expect(sorted(g.groups)).toEqual([['out302', 'vp']]);
+    });
+
+    it('(b) different ids: apart; and without keys, two modules are two origins as before', () => {
+        const members = [video('vp'), audio('out302')];
+        expect(drainGroups(members, av, keyed({ 'srt-in': TL_A, 'rist-in': TL_B })).groups).toEqual(
+            [],
+        );
+        expect(drainGroups(members, av).groups).toEqual([]);
+    });
+
+    it('(d) two unrelated Trust programmes, two players and two audio outputs: two groups, not one per box', () => {
+        const edges = [
+            e('srt-1', 'v1'),
+            e('rist-1', 'a1', A302),
+            e('srt-2', 'v2'),
+            e('rist-2', 'a2', A302),
+        ];
+        const g = drainGroups(
+            [video('v1'), audio('a1'), video('v2'), audio('a2')],
+            edges,
+            keyed({ 'srt-1': TL_A, 'rist-1': TL_A, 'srt-2': TL_B, 'rist-2': TL_B }),
+        );
+        expect(sorted(g.groups)).toEqual([
+            ['a1', 'v1'],
+            ['a2', 'v2'],
+        ]);
+    });
+
+    it('(e) a Trust and a Restamp ingest of one programme: apart (their labels differ by k)', () => {
+        // The Restamp ingest has no key: its module id, whatever its sender declares.
+        const g = drainGroups([video('vp'), audio('out302')], av, keyed({ 'srt-in': TL_A }));
+        expect(g.groups).toEqual([]);
+    });
+
+    it('(g) the two-origin Video Player rule holds on Trust keys: a player of two programmes chains nothing', () => {
+        // A muxer of programme A's video and programme B's audio on a third display.
+        const edges = [
+            e('srt-1', 'v1'),
+            e('rist-1', 'a1', A302),
+            e('srt-2', 'v2'),
+            e('rist-2', 'a2', A302),
+            e('srt-1', 'mux'),
+            e('rist-2', 'mux'),
+            e('mux', 'v3'),
+        ];
+        const keys = keyed({ 'srt-1': TL_A, 'rist-1': TL_A, 'srt-2': TL_B, 'rist-2': TL_B });
+        const g = drainGroups(
+            [video('v1'), audio('a1'), video('v2'), audio('a2'), video('v3')],
+            edges,
+            keys,
+        );
+        expect(sorted(g.groups)).toEqual([
+            ['a1', 'v1'],
+            ['a2', 'v2'],
+        ]);
+        // An audio output whose two origins are two Trust programmes joins neither.
+        const mix = [...edges.slice(0, 4), e('rist-1', 'mix', A302), e('srt-2', 'mix', A302)];
+        const g2 = drainGroups(
+            [video('v1'), audio('a1'), video('v2'), audio('a2'), audio('mix')],
+            mix,
+            keys,
+        );
+        expect(g2.neither.get('mix')?.sort()).toEqual(['v1', 'v2']);
+        // Audio-only components are not grouped, Trust or not.
+        const only = [e('rist-1', 'a1', A302), e('srt-1', 'dec')];
+        expect(
+            drainGroups([audio('a1'), audio('dec')], only, keyed({ 'srt-1': TL_A, 'rist-1': TL_A }))
+                .groups,
+        ).toEqual([]);
+    });
+
+    it("(i) the named limit: a sender's {A, V} mux and its {A} egress arrive with two ids and stay apart", () => {
+        // The sender hashed {A, V} to one id and {A} to A's own: one 64-bit id cannot say "touches".
+        const g = drainGroups(
+            [video('vp'), audio('out302')],
+            av,
+            keyed({ 'srt-in': 'aaaaaaaaaaaaaaaa', 'rist-in': 'bbbbbbbbbbbbbbbb' }),
+        );
+        expect(g.groups).toEqual([]);
+    });
+
+    it('(j) an ingest with timeline_id 0 has no key (its drainOriginKey is undefined): its module id', () => {
+        // ModuleManager maps an undefined key to the module id; the ingest side pins 0 -> undefined.
+        const g = drainGroups([video('vp'), audio('out302')], av, keyed({ 'rist-in': TL_A }));
+        expect(g.groups).toEqual([]);
+        // Two members of the one 0-id ingest still group by its module id, as before Trust.
+        const one = [e('srt-in', 'vp'), e('srt-in', 'dec')];
+        expect(sorted(drainGroups([video('vp'), audio('dec')], one, keyed({})).groups)).toEqual([
+            ['dec', 'vp'],
+        ]);
+    });
+});
+
 /** A member that records what the loop gave it. */
 function member(id: string, anchor: boolean, publishedMs?: number) {
     const applied: Array<[number, unknown]> = [];
@@ -261,6 +373,67 @@ describe('DrainGroupLoop', () => {
         expect(log).toHaveBeenCalledOnce();
         expect(log.mock.calls[0][0]).toBe('MIX: in sync with neither V1 nor V2: two programmes');
         expect(mix.applied).toEqual([[DRAIN_GROUP_ALONE_NS, { neither: ['V1', 'V2'] }]]);
+    });
+});
+
+describe('DrainGroupLoop: Trust keys (p5-20)', () => {
+    const av = [e('srt-in', 'vp'), e('rist-in', 'out302', A302)];
+
+    it('(c) a key that moves (a fallback) regroups at the next refresh, logged; its return regroups again', () => {
+        const vp = member('vp', true, 300);
+        const out = member('out302', false, 120);
+        const keys: Record<string, string> = { 'srt-in': TL_A, 'rist-in': TL_A };
+        const log = vi.fn();
+        const loop = new DrainGroupLoop({
+            members: () => [vp.m, out.m],
+            edges: () => av,
+            keyOf: keyed(keys),
+            log,
+        });
+        loop.tick();
+        expect(sorted(loop.current().groups)).toEqual([['out302', 'vp']]);
+        expect(out.applied.at(-1)).toEqual([300e6, { with: ['VP'] }]);
+        expect(log).not.toHaveBeenCalled();
+        delete keys['rist-in']; // its trust-fallback event: the ingest's key is undefined at once
+        loop.tick();
+        expect(loop.current().groups).toEqual([]);
+        expect(out.applied.at(-1)).toEqual([DRAIN_GROUP_ALONE_NS, {}]);
+        expect(vp.applied.at(-1)).toEqual([DRAIN_GROUP_ALONE_NS, {}]);
+        expect(log.mock.calls.map((c) => c[0]).sort()).toEqual([
+            "OUT302: drains alone: an input's sender timeline changed",
+            "VP: drains alone: an input's sender timeline changed",
+        ]);
+        keys['rist-in'] = TL_A; // back through converging
+        loop.tick();
+        expect(sorted(loop.current().groups)).toEqual([['out302', 'vp']]);
+        expect(out.applied.at(-1)).toEqual([300e6, { with: ['VP'] }]);
+        expect(log).toHaveBeenCalledTimes(4);
+        expect(log.mock.calls[2][1]).toMatchObject({ keys: { 'rist-in': `tl:${TL_A}` } });
+        loop.tick();
+        expect(log).toHaveBeenCalledTimes(4);
+    });
+
+    it('(h) published targets 1.4 s apart: each member is told the spread; within 1 s it is not', () => {
+        const vp = member('vp', true, 1500);
+        const out = member('out302', false, 100);
+        const keys = keyed({ 'srt-in': TL_A, 'rist-in': TL_A });
+        new DrainGroupLoop({
+            members: () => [vp.m, out.m],
+            edges: () => av,
+            keyOf: keys,
+            log: vi.fn(),
+        }).tick();
+        expect(vp.applied[0]).toEqual([1500e6, { with: ['OUT302'], spreadMs: 1400 }]);
+        expect(out.applied[0]).toEqual([1500e6, { with: ['VP'], spreadMs: 1400 }]);
+        const near = member('out302', false, 500);
+        const vp2 = member('vp', true, 1500);
+        new DrainGroupLoop({
+            members: () => [vp2.m, near.m],
+            edges: () => av,
+            keyOf: keys,
+            log: vi.fn(),
+        }).tick();
+        expect(near.applied[0]).toEqual([1500e6, { with: ['VP'] }]);
     });
 });
 

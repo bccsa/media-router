@@ -127,6 +127,8 @@ export interface DrainSummary {
     groupApart?: { name: string; ms: number };
     /** A member's render lateness unknown: the group's sync not judged (B-241). */
     groupUnjudged?: true;
+    /** Its group's published targets spread past the 1 s rise cap: in sync within 1 s only (ms, p5-20). */
+    groupSpreadMs?: number;
     /** Its origins touch two groups: it drains alone (two programmes). */
     neither?: true;
     /** Video: frames the drain skipped, per minute. */

@@ -19,15 +19,18 @@ export const EGRESS_UNSTABLE_TEXT = (n: number): string =>
 export const EGRESS_AT_MAX_TEXT = 'Egress delay held at max; receivers get late content';
 export const EGRESS_E_UNKNOWN_TEXT = 'Network time unknown: the egress carries no house time';
 
-/** `mrtsegress name=<name> house-clock="…"`; `houseClock` is GstPluginBase.houseClockProperty()'s. */
+/** `mrtsegress name=<name> house-clock="…" timeline-id=<16 hex>`; `houseClock` is
+ *  GstPluginBase.houseClockProperty()'s, `timelineId` its egressTimelineId() (p5-20). */
 export function buildEgressWriter({
     name = EGRESS_ELEMENT,
     houseClock,
+    timelineId,
 }: {
     name?: string;
     houseClock: string;
+    timelineId: string;
 }): string {
-    return `mrtsegress name=${name} ${houseClock}`;
+    return `mrtsegress name=${name} ${houseClock} timeline-id=${timelineId}`;
 }
 
 /** The writer's two messages, as `mrtsegress-stats:<name>` and `mrtsegress-event:<name>`. */

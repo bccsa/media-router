@@ -82,6 +82,9 @@ export type PluginConstructor = (new () => PluginModule) & PluginClassStatics;
 /** Services passed to each module instance's `onInit` — `EngineServices` plus the instance id. */
 export interface ModuleServices extends EngineServices {
     instanceId: string;
+    /** This module's sender timeline id over the routing now (p5-20, 16 hex digits): an egress
+     *  writer's `timeline-id` at build. Absent in test harnesses. */
+    timelineId?: () => string;
 }
 
 /**
@@ -186,6 +189,11 @@ export interface PluginModule {
     isLatencyGroupAnchor?(): boolean;
     /** The group's target (ns, 0: alone) for the drain elements, and the group for the display. */
     applyLatencyGroupTarget?(targetNs: number, group?: DrainGroupView): Promise<void>;
+    /** A network ingest's drain key (p5-20): its sender's timeline id while on the Trust timeline;
+     *  undefined: the module is its own origin. */
+    drainOriginKey?(): string | undefined;
+    /** An egress writer's sender timeline id (p5-20), pushed every 2 s; a change goes out live. */
+    applyTimelineId?(id: string): Promise<void>;
     /**
      * Target of the tracked `bus_reinput` RPC that executes a live input swap.
      * Defaults to the gst child process; a native (non-GStreamer) sink

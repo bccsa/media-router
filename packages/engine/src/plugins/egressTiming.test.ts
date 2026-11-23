@@ -96,13 +96,22 @@ function event(
 }
 
 describe('buildEgressWriter and egressBusReports', () => {
-    it('names the writer `egress` and carries the house-clock property as given', () => {
-        expect(buildEgressWriter({ houseClock: 'house-clock="house-clock, seq=(uint)1"' })).toBe(
-            'mrtsegress name=egress house-clock="house-clock, seq=(uint)1"',
+    it('names the writer `egress` and carries the house-clock property and timeline id as given', () => {
+        expect(
+            buildEgressWriter({
+                houseClock: 'house-clock="house-clock, seq=(uint)1"',
+                timelineId: '0123456789abcdef',
+            }),
+        ).toBe(
+            'mrtsegress name=egress house-clock="house-clock, seq=(uint)1" timeline-id=0123456789abcdef',
         );
-        expect(buildEgressWriter({ name: 'w2', houseClock: 'house-clock=""' })).toBe(
-            'mrtsegress name=w2 house-clock=""',
-        );
+        expect(
+            buildEgressWriter({
+                name: 'w2',
+                houseClock: 'house-clock=""',
+                timelineId: '0000000000000000',
+            }),
+        ).toBe('mrtsegress name=w2 house-clock="" timeline-id=0000000000000000');
         expect(egressBusReports('w2')).toEqual([
             { element: 'w2', structure: 'mrtsegress-stats' },
             { element: 'w2', structure: 'mrtsegress-event' },

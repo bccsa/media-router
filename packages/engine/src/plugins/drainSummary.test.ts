@@ -147,6 +147,40 @@ describe('the Latency target row', () => {
         expect(latencyTargetText(alone)).toBe('-520 ms (measured), now -520 ms');
     });
 
+    it('(h) Trust links 1.4 s apart (p5-20): in sync within 1 s only, the spread named beside the cap', () => {
+        // The lower member held 1 s above its own target, 400 ms short of the group.
+        const low = drainSummary(
+            fields({
+                ppm: 0,
+                state: 'idle',
+                capped: true,
+                groupTargetMs: 1500,
+                excessMs: 1000,
+                publishedMs: 100,
+            }),
+            1100,
+            { with: ['Video Player'], withRenderMs: [1500], spreadMs: 1400 },
+        );
+        expect(low.groupSpreadMs).toBe(1400);
+        expect(latencyTargetText(low)).toBe(
+            '1.10 s (measured), now 1.10 s · 400 ms ahead of Video Player (held 1 s above its own target) · in sync with Video Player within 1 s only: the links differ by 1.4 s',
+        );
+        const high = drainSummary(
+            fields({ ppm: 0, state: 'idle', groupTargetMs: 1500, excessMs: 0, publishedMs: 1500 }),
+            1500,
+            { with: ['Audio Output 302M'], withRenderMs: [1100], spreadMs: 1400 },
+        );
+        expect(latencyTargetText(high)).toBe(
+            '1.50 s (measured), now 1.50 s · 400 ms behind Audio Output 302M · in sync with Audio Output 302M within 1 s only: the links differ by 1.4 s',
+        );
+        // Alone (no group target from the element yet): no group, no spread.
+        const alone = drainSummary(fields({ ppm: 0, state: 'idle', excessMs: 0 }), 100, {
+            with: ['Video Player'],
+            spreadMs: 1400,
+        });
+        expect(alone.groupSpreadMs).toBeUndefined();
+    });
+
     it('a negative excess (a clean link under its margin): the target is now, never above it (fix 2)', () => {
         const live = drainSummary(
             fields({ ppm: 0, state: 'idle', excessMs: -20, publishedMs: 2 }),

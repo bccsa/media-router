@@ -18,6 +18,7 @@ import { STAMP_OFF_CLOCK_EVENT, stampOffClockText, type StampOffClock } from './
 import { ModuleTiming } from './moduleTiming.js';
 import type { DrainGroupView } from './drainGroups.js';
 import { DRAIN_GROUP_ALONE_NS } from './drainSummary.js';
+import { NO_TIMELINE } from './timelineId.js';
 import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
 import type { DemuxInputRef } from './demuxWatches.js';
 import type { StreamWarning } from './latenessReporter.js';
@@ -226,6 +227,23 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.houseClockUnbind = null;
         };
         push(); // a move between the build and here
+    }
+
+    /** The `timeline-id` last put in a pipeline string or pushed (p5-20). */
+    private timelineIdSent = '';
+
+    /** An egress writer's `timeline-id` at build (p5-20): the engine's id over the routing now,
+     *  so the first PMT carries it; none (0) without the engine. */
+    protected egressTimelineId(): string {
+        this.timelineIdSent = this.services?.timelineId?.() ?? NO_TIMELINE;
+        return this.timelineIdSent;
+    }
+
+    /** A changed id to the writer live (a PMT version, no flagged PCR); the runner replays it. */
+    protected async pushTimelineId(element: string, id: string): Promise<void> {
+        if (!this.childProcess || id === this.timelineIdSent) return;
+        this.timelineIdSent = id;
+        await this.setElementProperty(element, 'timeline-id', id);
     }
 
     /** Subclasses define their GStreamer pipeline here. Return null to skip pipeline (idle module). */

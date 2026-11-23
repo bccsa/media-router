@@ -63,6 +63,11 @@ export class RistOutputModule extends GstPluginBase {
         this.peerCleanupTimer = setInterval(() => this.cleanupStalePeers(), 2000);
     }
 
+    /** The engine's sender timeline id (p5-20), every 2 s: a change goes to the writer live. */
+    applyTimelineId(id: string): Promise<void> {
+        return this.pushTimelineId(EGRESS_ELEMENT, id);
+    }
+
     async onStop(): Promise<void> {
         if (this.peerCleanupTimer) {
             clearInterval(this.peerCleanupTimer);
@@ -102,7 +107,10 @@ export class RistOutputModule extends GstPluginBase {
                 socketPath: udpSource.socketPath,
             }),
             // The house-time writer (ADR-0029); no queue here, and the writer adds none.
-            buildEgressWriter({ houseClock: this.houseClockProperty() }),
+            buildEgressWriter({
+                houseClock: this.houseClockProperty(),
+                timelineId: this.egressTimelineId(),
+            }),
             withLatenessTap('lat_egress', `mrristsink name=${RIST_SINK} ${props.join(' ')}`),
         ].join(' ! ');
 

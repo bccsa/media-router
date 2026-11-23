@@ -998,25 +998,38 @@ def scn_out_drain_burst(tag, argv, exp):
 
 class GroupRole:
     """The engine's role (drainGroups.ts) every 2 s: P = the max of the members' published targets, set on each
-    as group-target-ns; `ignore`: the mutant 'the group target ignored' (nothing set)."""
+    as group-target-ns; `ignore`: the mutant 'the group target ignored' (nothing set). `keys` (p5-20): each
+    member's origin key; members sharing one are a group, one alone gets the alone target."""
 
-    def __init__(self, run, members, ignore=False):
+    def __init__(self, run, members, ignore=False, keys=None):
         self.run, self.members, self.ignore, self.p = run, members, ignore, []
+        self.keys = keys
 
     def latest(self, key):
         o = self.run.outputs[key]
         series = o.paces() if key == "player" else device_stats(o)
         return last(series)
 
-    def __call__(self):
-        pub = [self.latest(k)["drain-target-lateness-ns"] for k, _el in self.members
-               if self.latest(k).get("drain-member")]
-        p = max(pub) if pub else -3600 * S   # none publishes: alone (DRAIN_GROUP_ALONE_NS, B-177)
-        self.p.append((rig.now_ns(), p))
-        if self.ignore:
-            return
+    def groups(self):
+        if self.keys is None:
+            return [self.members]
+        by = {}
         for k, el in self.members:
-            self.run.outputs[k].set_prop(el, "group-target-ns", int(p))
+            by.setdefault(self.keys[k], []).append((k, el))
+        return list(by.values())
+
+    def __call__(self):
+        for i, group in enumerate(self.groups()):
+            pub = [self.latest(k)["drain-target-lateness-ns"] for k, _el in group
+                   if self.latest(k).get("drain-member")]
+            # None publishes, or one alone: the alone target (DRAIN_GROUP_ALONE_NS, B-177).
+            p = max(pub) if pub and len(group) > 1 else -3600 * S
+            if i == 0:
+                self.p.append((rig.now_ns(), p))
+            if self.ignore:
+                continue
+            for k, el in group:
+                self.run.outputs[k].set_prop(el, "group-target-ns", int(p))
 
 
 def renders_of(o, key):
@@ -1220,6 +1233,46 @@ def scn_out_drain_seam(tag, argv, exp):
           step is not None and abs(step) <= x["drift_ms"])
 
 
+def scn_out_drain_group_trust(tag, argv, exp):
+    """-group-trust (p5-20): the rig plays the engine with Trust keys. A Video Player and an Audio Decoder fed by
+    two producers (two Trust ingests of one sender timeline) are one group and end within 45 ms; an Audio Output
+    302M on another timeline is alone: its group target stays the alone value and it never rises to the others.
+    MR_DRAIN_MUTANT=one-key: every member on one key; the checks fail."""
+    label, x = f"{exp['scenario']} {tag}", exp["expect"]
+    run = Run(argv)
+    rel = rig.generated(exp["kind"], exp["seconds"] + 2)
+    run.rel, run.pids = rel, orig.stream_pids(rel)
+    run.producer("vfeed", ["vp"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"])
+    run.producer("afeed", ["ad"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"])
+    whole = orig.chunked(orig.looped(*loop_of(orig.fixture(exp["fixture"]), exp["pid"], exp["seconds"] + 2)))
+    run.producer("ao", ["ao"], ts=lambda t0: orig.at_house(whole, t0), stop_s=exp["seconds"])
+    run.output("player", "player50", video=orig.display())
+    run.output("decoder", "decoder", audio=orig.card())
+    run.output("aout", "aout302m", audio=orig.card())
+    members = [("player", "vp_pace"), ("decoder", "asrc"), ("aout", "outasrc")]
+    keys = {"player": "tl:0123456789abcdef", "decoder": "tl:0123456789abcdef", "aout": "tl:fedcba9876543210"}
+    if os.environ.get("MR_DRAIN_MUTANT") == "one-key":   # the mutant 'Trust keys ignored': one group
+        keys = dict.fromkeys(keys, "tl:0123456789abcdef")
+    role = GroupRole(run, members, keys=keys)
+    run.go(exp["seconds"] + 1, [(s, role) for s in range(2, exp["seconds"], 2)],
+           [("aout", "outasrc", "group-target-ns")])
+    run.on_time(label)
+    run.clean(label)
+    t0, end = run.t0, exp["seconds"]
+    check(f"{label}: the rig's groups by key: player and decoder together, aout alone "
+          f"({[[k for k, _ in g] for g in role.groups()]})",
+          [[k for k, _ in g] for g in role.groups()] == [["player", "decoder"], ["aout"]])
+    tail = group_spread(run, ["player", "decoder"], t0, end - 8, end)
+    check(f"{label}: player and decoder within {x['spread_ms']} ms at the end ({tail} ms)",
+          tail is not None and tail <= x["spread_ms"])
+    target = run.reads.get(("aout", "outasrc", "group-target-ns"))
+    ao = device_stats(run.outputs["aout"])
+    rose = [p.get("drain-ppm") for _t, p in ao if (p.get("drain-ppm") or 0) < 0]
+    check(f"{label} aout: alone (group-target-ns {target}), never rising to the group ({len(rose)} rising "
+          f"windows of {len(ao)}; drain-ppm {rose[:3]})",
+          target is not None and int(target) == -3600 * S and ao and not rose)
+
+
 def scn_out_drain_group_jitter(tag, argv, exp):
     """-group-jitter (B-256): the Video Player and the Audio Decoder of one source grouped (the rig plays the
     engine, P = the max every 2 s), the video fed in `burst_ms` bursts: the video's invariants always; P at the
@@ -1323,6 +1376,7 @@ SCENARIOS = {
     "scn-out-drain-dip": scn_out_drain_dip,
     "scn-out-drain-seam": scn_out_drain_seam,
     "scn-out-drain-group-jitter": scn_out_drain_group_jitter,
+    "scn-out-drain-group-trust": scn_out_drain_group_trust,
 }
 _NEEDS = ("unixfdsrc", "unixfdsink", "mpegtsmux", "x264enc", "avdec_h264", "h264parse", "avenc_aac", "avdec_aac",
           "aacparse", "avdec_s302m", "textoverlay")

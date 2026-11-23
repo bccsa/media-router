@@ -42,6 +42,7 @@ export function drainSummary(
     if (video && !video.rateKnown) d.notMeasured = true;
     if (f.capped) d.capped = true;
     if (grouped) Object.assign(d, groupSync(nowMs, group!));
+    if (grouped && group!.spreadMs !== undefined) d.groupSpreadMs = group!.spreadMs;
     if (group?.neither?.length) d.neither = true;
     if (video?.drainDropsPerMin !== undefined) d.drainDropsPerMin = video.drainDropsPerMin;
     return d;
@@ -91,7 +92,8 @@ function about(seconds: number): string {
 
 /** `95 ms (measured), now 2.41 s · draining at 0.50 % (about 7 min) · in sync with Video Player`;
  *  out of sync (B-241): `4.50 s ahead of Video Player (held 1 s above its own target)`,
- *  `rising to Video Player's latency at 0.20 %`, `2.10 s behind Audio Decoder`. */
+ *  `rising to Video Player's latency at 0.20 %`, `2.10 s behind Audio Decoder`; links apart by
+ *  more than the rise cap (p5-20): `in sync with Video Player within 1 s only: the links differ by 1.4 s`. */
 export function latencyTargetText(d: DrainSummary): string {
     if (d.notMeasured) return 'not measured (no display rate)';
     const parts = [`${msOrS(d.targetMs)} (measured), now ${msOrS(d.nowMs)}`];
@@ -116,6 +118,10 @@ export function latencyTargetText(d: DrainSummary): string {
         if (off) parts.push(off);
     }
     if (d.neither) parts.push('in sync with neither (two programmes)');
+    else if (d.groupWith?.length && d.groupSpreadMs !== undefined)
+        parts.push(
+            `in sync with ${d.groupWith.join(', ')} within 1 s only: the links differ by ${(d.groupSpreadMs / 1000).toFixed(1)} s`,
+        );
     else if (d.groupWith?.length && !apart)
         parts.push(
             `${d.groupUnjudged ? 'grouped with' : 'in sync with'} ${d.groupWith.join(', ')}`,

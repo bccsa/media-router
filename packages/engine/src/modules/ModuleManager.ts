@@ -10,7 +10,9 @@ import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js
 import type { HouseClock } from '../clock/HouseClock.js';
 import { ModuleInstance } from './ModuleInstance.js';
 import { checkStartSettings } from './startSettings.js';
-import { DrainGroupLoop, type DrainMember } from '../plugins/drainGroups.js';
+import { DrainGroupLoop, busOrigins, type DrainMember } from '../plugins/drainGroups.js';
+import { senderTimelineId } from '../plugins/timelineId.js';
+import { randomBytes } from 'crypto';
 
 const log = createLogger('ModuleManager');
 
@@ -38,8 +40,14 @@ export class ModuleManager extends EventEmitter {
     private readonly drainGroups = new DrainGroupLoop({
         members: () => this.drainMembers(),
         edges: () => this.mediaRouter?.getConnections() ?? [],
+        keyOf: (id) => {
+            const key = this.receivedTimeline(id);
+            return key ? `tl:${key}` : id;
+        },
         log: (msg, obj) => log.info(obj, msg),
     });
+    /** The engine's timeline salt (p5-20); the Engine sets the one it keeps on disk. */
+    private timelineSalt = randomBytes(8).toString('hex');
     private drainTimer: ReturnType<typeof setInterval> | null = null;
 
     constructor(
@@ -104,6 +112,7 @@ export class ModuleManager extends EventEmitter {
                       deviceProviders: this.deviceProviders,
                       ...(this.houseClock ? { houseClock: this.houseClock } : {}),
                       instanceId,
+                      timelineId: () => this.timelineIdOf(instanceId),
                   }
                 : undefined;
 
@@ -142,7 +151,7 @@ export class ModuleManager extends EventEmitter {
         if (!mod) throw new Error(`Module not found: ${instanceId}`);
         await mod.start();
         if (this.mediaRouter && !this.drainTimer) {
-            this.drainTimer = setInterval(() => this.drainGroups.tick(), DRAIN_GROUP_REFRESH_MS);
+            this.drainTimer = setInterval(() => this.refreshDrainGroups(), DRAIN_GROUP_REFRESH_MS);
             this.drainTimer.unref?.();
         }
     }
@@ -171,9 +180,42 @@ export class ModuleManager extends EventEmitter {
         return out;
     }
 
-    /** One refresh of the A/V groups now (the timer's; tests). */
+    /** One refresh of the A/V groups and the egress timeline ids now (the timer's; tests). */
     refreshDrainGroups(): void {
         this.drainGroups.tick();
+        this.pushTimelineIds();
+    }
+
+    /** The salt the senders' timeline ids hash under (p5-20): the Engine's, read from disk. */
+    setTimelineSalt(salt: string): void {
+        this.timelineSalt = salt;
+    }
+
+    /** A Trust ingest's received sender timeline (16 hex digits); undefined for any other module. */
+    private receivedTimeline(id: string): string | undefined {
+        return this.modules.get(id)?.getPlugin().drainOriginKey?.();
+    }
+
+    /** The sender timeline id of a module's bus origins over the routing now (p5-20). */
+    timelineIdOf(instanceId: string): string {
+        const edges = this.mediaRouter?.getConnections() ?? [];
+        return senderTimelineId(
+            busOrigins(instanceId, edges),
+            (id) => this.receivedTimeline(id),
+            this.timelineSalt,
+        );
+    }
+
+    /** Each running egress writer's id: a routing change, or an upstream Trust ingest reaching or
+     *  leaving its sender's timeline, goes out live (the plugin sends only a change). */
+    private pushTimelineIds(): void {
+        for (const [id, mod] of this.modules) {
+            const plugin = mod.getPlugin();
+            if (!mod.running || !plugin.applyTimelineId) continue;
+            plugin
+                .applyTimelineId(this.timelineIdOf(id))
+                .catch((err: unknown) => log.debug({ err, id }, 'timeline-id not set'));
+        }
     }
 
     /** Stop a module by instance ID. */

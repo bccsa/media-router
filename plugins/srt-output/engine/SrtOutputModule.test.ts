@@ -83,6 +83,29 @@ function makeModule(
     return { module, getModuleBusSource, setStatusData, setBadge };
 }
 
+describe('the sender timeline id on the writer (p5-20)', () => {
+    it("carries the engine's id at build, 0 without one, and a change goes to the writer live once", async () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({}).pipeline).toContain(' timeline-id=0000000000000000 ! ');
+        module.services.timelineId = () => '0123456789abcdef';
+        expect(module.buildPipeline({}).pipeline).toMatch(
+            /mrtsegress name=egress house-clock="(?:[^"\\]|\\.)*" timeline-id=0123456789abcdef ! /,
+        );
+        module.childProcess = { on: vi.fn() };
+        module.setElementProperty = vi.fn().mockResolvedValue(undefined);
+        await module.applyTimelineId('0123456789abcdef');
+        expect(module.setElementProperty).not.toHaveBeenCalled();
+        await module.applyTimelineId('fedcba9876543210');
+        await module.applyTimelineId('fedcba9876543210');
+        expect(module.setElementProperty).toHaveBeenCalledTimes(1);
+        expect(module.setElementProperty).toHaveBeenCalledWith(
+            'egress',
+            'timeline-id',
+            'fedcba9876543210',
+        );
+    });
+});
+
 describe('SrtOutputModule.buildPipeline', () => {
     beforeEach(() => vi.clearAllMocks());
 

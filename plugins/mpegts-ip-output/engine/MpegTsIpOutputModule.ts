@@ -56,6 +56,11 @@ export class MpegTsIpOutputModule extends GstPluginBase {
         this.updateStatusData();
     }
 
+    /** The engine's sender timeline id (p5-20), every 2 s: a change goes to the writer live. */
+    applyTimelineId(id: string): Promise<void> {
+        return this.pushTimelineId(EGRESS_ELEMENT, id);
+    }
+
     async onStop(): Promise<void> {
         if (this.statsTimer) {
             clearInterval(this.statsTimer);
@@ -102,7 +107,10 @@ export class MpegTsIpOutputModule extends GstPluginBase {
             }),
             buildBackpressureQueue(200),
             // The house-time writer (ADR-0029): once, before re-chunk, payloader and tee.
-            buildEgressWriter({ houseClock: this.houseClockProperty() }),
+            buildEgressWriter({
+                houseClock: this.houseClockProperty(),
+                timelineId: this.egressTimelineId(),
+            }),
         ];
         // ALWAYS re-chunk in raw mode (ADR-0011): bus buffers are one access
         // unit each — tens of KB for a video keyframe — and a udpsink datagram

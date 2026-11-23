@@ -546,9 +546,9 @@ describe('the egress writer (WI-P5-10)', () => {
 
     it('every egress module addresses one element, `egress`, by name', () => {
         expect(EGRESS_ELEMENT).toBe('egress');
-        expect(buildEgressWriter({ houseClock: 'house-clock=""' })).toBe(
-            'mrtsegress name=egress house-clock=""',
-        );
+        expect(
+            buildEgressWriter({ houseClock: 'house-clock=""', timelineId: '0000000000000000' }),
+        ).toBe('mrtsegress name=egress house-clock="" timeline-id=0000000000000000');
         expect(egressBusReports().map((r) => r.element)).toEqual(['egress', 'egress']);
     });
 

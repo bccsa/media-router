@@ -29,6 +29,7 @@ import { ModuleLifecycle, mapPorts } from './modules/ModuleLifecycle.js';
 import { retireConnectionsOnPorts } from './modules/portPrune.js';
 import { ModuleRunController } from './modules/ModuleRunController.js';
 import { HouseClock } from './clock/HouseClock.js';
+import { loadTimelineSalt } from './plugins/timelineId.js';
 import type { RouterTree } from './tree/RouterTree.js';
 import { createRouterTree } from './tree/createRouterTree.js';
 import * as fs from 'fs';
@@ -127,6 +128,15 @@ export class Engine {
         this.lcpServer = new LcpServer();
         this.lcpServer._getInitData = () => this.getLcpInitData();
         this.profileStore = new ProfileStore(config.profilesPath);
+        // The senders' timeline salt (p5-20), beside the profile store, read once per start.
+        const salt = loadTimelineSalt(this.profileStore.dir, (err) =>
+            log.warn(
+                { err },
+                'Timeline salt not saved: sender timeline ids change at the next start',
+            ),
+        );
+        if (salt.created) log.info({ dir: this.profileStore.dir }, 'Timeline salt created');
+        this.moduleManager.setTimelineSalt(salt.salt);
         this.routerTree = createRouterTree({
             config: () => this.currentConfig,
             pluginLoader: this.pluginLoader,
