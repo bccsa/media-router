@@ -5,7 +5,6 @@ import {
     buildAsrc,
     buildBusDemux,
     buildLatenessTap,
-    buildOutputPrefill,
     pulsePinnedStreamProps,
     tsQueueByteCap,
     type PipelineDescription,
@@ -18,7 +17,9 @@ import {
 const DEMUX_NAME = 'addemux';
 /** `name=` of this leg's ASRC: the source's clock term and the sink's, one resampler (OQ-23). */
 const ASRC_NAME = 'asrc';
-/** The compressed queue after the demux: a stall's backlog waits here until a gap (part 4.4). */
+/** The compressed queue after the demux: a stall's backlog waits here until a gap (part 4.4); its
+ *  level is held for `asrc`'s drain and its device-stall rule (`upstream-queue`, B-249). */
+const ES_QUEUE_NAME = 'ad_esq';
 const ES_QUEUE_MS = 5000;
 
 /**
@@ -28,8 +29,11 @@ const ES_QUEUE_MS = 5000;
  * probes the stream to detect the codec, then builds the appropriate
  * decode pipeline for its first audio stream. Outputs PCM to a named null-sink.
  *
- * TIMING (house-clock part 4.1, B-168). It plays as soon as it can: a content-time input, a 40 ms
- * prefill and a `sync=false` sink on a 100 ms ring (`outputSink.ts`); no playout offset, no trim.
+ * TIMING (house-clock part 4.1, B-168, B-249). It plays as soon as it can: a content-time input and a
+ * `sync=false` sink on a 100 ms ring (`outputSink.ts`), no queue between `asrc` and it, so the sink's
+ * push is timed in `asrc`'s own chain (B-249's guard) and a device stall's backlog waits in `ad_esq`,
+ * told, not flushed; no playout offset, no trim. `asrc` keeps a 60 ms margin in the ring and rebuilds
+ * it after a hole (B-249); its drain plays `ad_esq`'s backlog back down at 0.5 % at most (B-179).
  *
  * CLOCKS (house-clock part 4.4). `asrc` resamples a source on a clock of its own to house rate
  * where it is decoded, and follows the null sink's clock, read on a timer (B-166): one
@@ -178,18 +182,23 @@ export class AudioDecoderModule extends GstPluginBase {
         const parts = [
             // Non-leaky (part 4.4): PES bursts and a stall's backlog wait here, compressed, and
             // nothing is dropped for lateness; the byte cap bounds it whatever its stamps (ADR-0015).
-            `${busDemux} ! queue name=ad_esq leaky=0 max-size-time=${ES_QUEUE_MS * 1_000_000} max-size-buffers=0 max-size-bytes=${tsQueueByteCap(ES_QUEUE_MS)} ! ${decoder}`,
+            `${busDemux} ! queue name=${ES_QUEUE_NAME} leaky=0 max-size-time=${ES_QUEUE_MS * 1_000_000} max-size-buffers=0 max-size-bytes=${tsQueueByteCap(ES_QUEUE_MS)} ! ${decoder}`,
             // Interleaved for `asrc` (avdec_aac's output is planar). Render lateness is read
             // before it, where PTS is still content time (part 4.4).
             'audioconvert',
             buildLatenessTap('lat_render'),
-            buildAsrc({ name: ASRC_NAME, bypassBelowPpm: DECODE_BYPASS_PPM, deviceSink: 'sink' }),
+            // `ad_esq`'s level is held for `asrc`'s drain and stall rule: a late start's backlog waits there (B-249).
+            buildAsrc({
+                name: ASRC_NAME,
+                bypassBelowPpm: DECODE_BYPASS_PPM,
+                deviceSink: 'sink',
+                upstreamQueue: ES_QUEUE_NAME,
+            }),
             'audioconvert',
             `volume name=vol volume=${gstVolume}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
-            buildOutputPrefill(),
             // `name=sink` is what `asrc`'s device term follows. It writes each sample as it comes
-            // (sync=false): no ts-offset, nothing late to drop.
+            // (sync=false): no ts-offset, nothing late to drop; no queue before it (B-249).
             `pulsesink name=sink device=${this.pwNodeName} sync=false provide-clock=false processing-deadline=100000000 buffer-time=${OUTPUT_RING_US} ${pulsePinnedStreamProps()}`,
         ];
         const pipeline = parts.filter((p) => p).join(' ! ');

@@ -348,11 +348,11 @@ void AsrcServo::lose(int64_t frames, bool whole, int64_t res_ns) {
     events_.push_back(e);
 }
 
-// Decode modes (B-148): this buffer's PTS against the last one's end past the bound (the phase bound, or an
-// upstream acquire slew's 2000 ppm of the last span), after a buffer that continued its own: up to LOST_MAX_NS
-// lost time, back a break, else 0. A source off its rate past the bound steps every buffer: the lock's.
+// Decode and device modes (B-148; the device term alone too, c40): this buffer's PTS against the last one's end past
+// the bound (the phase bound, or an upstream acquire slew's 2000 ppm of the last span), after a buffer that continued
+// its own: up to LOST_MAX_NS lost time, back a break, else 0. A source off its rate past the bound steps every buffer.
 int64_t AsrcServo::content_step(int64_t pts_ns) {
-    if (!decode_ || last_frames_ == 0) return 0;
+    if (capture_ || last_frames_ == 0) return 0;
     const int64_t span = half_frames_ns(2 * (int64_t)last_frames_, in_hz_);
     const int64_t d = sat_sub(pts_ns, sat_add(last_pts_, span));
     const int64_t bound = std::max(cfg_.bypass_phase_ns, span / 500);
@@ -460,9 +460,9 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
         // B-148: the content time stepped back past the bound, unflagged: a break.
         drain = end_epoch();
         new_epoch(pts_ns, "jump");
-        lock_.feed(sigma, pts_ns);
+        if (has_lock_) lock_.feed(sigma, pts_ns);
         relocked = true;
-    } else if (has_lock_) {
+    } else {
         if (step > 0) {
             // B-148: a hole past the bound, unflagged: lost content time, the output jumping it
             // (DISCONT on resampled output, same epoch), its part under a frame too.
@@ -472,8 +472,8 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
             lose(lost, false, step - span);
             gapped = true;
         }
-        lock_.feed(pos_ns(2 * (n_in_ + lost_)), pts_ns);
-        if (lock_.envelope_step()) {
+        if (has_lock_) lock_.feed(pos_ns(2 * (n_in_ + lost_)), pts_ns);
+        if (has_lock_ && lock_.envelope_step()) {
             // The timeline stepped, the content did not: the lock onto the new floor, the labels
             // re-anchored on it, the resampler kept.
             lock_.step_to_floor();
@@ -611,6 +611,22 @@ void AsrcDeviceTerm::stop(int64_t) {
     have_prev_ = stalled_ = waiting_ = have_taken_ = false;
 }
 
+void AsrcDeviceTerm::resync(int64_t mono, std::vector<AsrcDeviceEvent>* events) {
+    if (!rendering_) return;
+    have_prev_ = moved_ = false;
+    beyond_ = 0;
+    if (!epoch_) return;
+    lock_.relock(true);
+    relocks_restart_++;
+    recal_ = true;
+    events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::relock_device, "flush", mono, 0});
+}
+
+void AsrcDeviceTerm::restart_counts() {
+    have_taken_ = waiting_ = false;
+    taken_prev_ = discarded_ = taken_at_flush_ = 0;
+}
+
 void AsrcDeviceTerm::relock_step(int64_t mono, int64_t step_ns, std::vector<AsrcDeviceEvent>* events) {
     lock_.relock(true);
     relocks_step_++;
@@ -619,6 +635,7 @@ void AsrcDeviceTerm::relock_step(int64_t mono, int64_t step_ns, std::vector<Asrc
     moved_ = true;
     moved_at_ = mono;
     beyond_ = 0;
+    if (mono < trust_at_) trust_at_ = mono + cfg_.settle_ns;   // still converging after a resume (c42)
 }
 
 bool AsrcDeviceTerm::take_recalibrated() {
@@ -664,16 +681,20 @@ void AsrcDeviceTerm::clock(int64_t dev, int64_t mono, std::vector<AsrcDeviceEven
 
 // Device stall (the owner's Q2, skip and resume live), read on the render: stalled once the sink took nothing
 // for stall_ns while frames waited past waiting_ns; then a flush every probe_ns, and resumed once it took past
-// an empty ring since the last flush, with one more flush. What the flushes discard is dropped.
-bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, std::vector<AsrcDeviceEvent>* events) {
+// an empty ring since the last flush, with one more flush. What the flushes discard is dropped. With at most
+// waiting_ns below the element (the backlog waits above it) nothing is flushed: it plays late (c42).
+bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, int64_t upstream,
+                            std::vector<AsrcDeviceEvent>* events) {
     const bool had = have_taken_;
     const int64_t prev = taken_prev_;
     have_taken_ = true;
     taken_prev_ = taken;
     const int64_t pending = pushed - taken - discarded_;
+    // What waits before the element counts as waiting too (c40): with no queue before the sink, its push blocks.
+    const int64_t waiting = pending + std::max<int64_t>(0, upstream);
     bool flush = false;
     if (!stalled_) {
-        if (!had || taken > prev || pending <= wait_frames_) {
+        if (!had || taken > prev || waiting <= wait_frames_) {
             waiting_ = false;
         } else if (!waiting_) {
             waiting_ = true;
@@ -681,14 +702,19 @@ bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, std::ve
         } else if (mono - wait_since_ >= cfg_.stall_ns) {
             stalled_ = true;
             stalls_++;
-            events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_stalled, "", mono, pending});
-            flush = true;
+            events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_stalled, "", mono, waiting});
+            flushing_ = pending > wait_frames_;
+            flush_at_ = mono;
+            taken_at_flush_ = taken;
+            flush = flushing_;
         }
     } else if (taken - taken_at_flush_ > resume_frames_) {
         stalled_ = waiting_ = false;
-        events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_resumed, "", mono, dropped_ + pending});
-        flush = true;
-    } else if (mono - flush_at_ >= cfg_.probe_ns) {
+        events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_resumed, "", mono,
+                                          dropped_ + (flushing_ ? pending : 0)});
+        trust_at_ = std::max(trust_at_, mono + cfg_.settle_ns);
+        flush = flushing_;
+    } else if (flushing_ && mono - flush_at_ >= cfg_.probe_ns) {
         // What the sink took since the last flush sat in a ring the stopped device never read.
         dropped_ += taken - taken_at_flush_;
         flush = true;
@@ -704,10 +730,10 @@ bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, std::ve
 }
 
 bool AsrcDeviceTerm::sample(int64_t dev_ns, int64_t mono_ns, int64_t pushed, int64_t rendered,
-                            std::vector<AsrcDeviceEvent>* events) {
+                            std::vector<AsrcDeviceEvent>* events, int64_t upstream) {
     if (!rendering_) return false;   // read only between start() and stop()
     clock(dev_ns, mono_ns, events);
-    const bool flush = pushed >= 0 && rendered >= 0 && render(mono_ns, pushed, rendered, events);
+    const bool flush = pushed >= 0 && rendered >= 0 && render(mono_ns, pushed, rendered, upstream, events);
     lock_.tick(mono_ns);
     return flush;
 }
@@ -755,6 +781,68 @@ bool AsrcRenderLateness::at(int64_t now_ns, int64_t dev_ns, int64_t* lateness_ns
     const Seg& s = map_.front();
     *lateness_ns = now_ns - (s.pts + (int64_t)floor_div128((__int128)(pos - s.write_pos) * E9, rate_));
     return true;
+}
+
+int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos, int64_t guard) {
+    const int64_t c = (segdone + 1) * sps;
+    return have_play && play_pos + guard > c ? play_pos + guard : c;
+}
+
+int64_t asrc_sink_write_pos(int64_t next_sample, int64_t segdone, int64_t sps) {
+    int64_t p = next_sample < 0 ? 0 : next_sample;
+    if (p / sps < segdone) p = (segdone + 1) * sps;   // gst_audio_base_sink_get_offset's realign
+    return p;
+}
+
+int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int64_t margin, bool have_play,
+                          int64_t play_pos, int64_t guard, int64_t cap) {
+    if (sps <= 0 || margin < 0) return 0;
+    if (guard < 0) guard = 0;
+    const int64_t c = asrc_sink_consumed(segdone, sps, have_play, play_pos, guard);
+    if (next_sample >= 0 && next_sample >= c) return 0;
+    // A start or a flush: the device (a server: its read-ahead) takes its own buffer out of it.
+    const int64_t want = next_sample >= 0 ? margin : margin + std::max(margin, guard);
+    const int64_t n = c + want - asrc_sink_write_pos(next_sample, segdone, sps);
+    if (n <= 0) return 0;
+    return cap > 0 && n > cap ? cap : n;
+}
+
+int64_t asrc_server_latency(int64_t buffer, int64_t sps) {
+    return buffer - 2 * sps > 0 ? buffer - 2 * sps : 0;
+}
+
+void AsrcSinkGuard::segdone_seen(int64_t segdone, int64_t sps, int64_t play_pos) {
+    if (segdone > 0 && sps > 0 && play_pos >= 0) sink_lat_ = std::max(sink_lat_, (segdone - 1) * sps - play_pos);
+}
+
+bool asrc_sink_guard_applies(int64_t residence_ns, int64_t push_ns, int64_t since_push_ns, int64_t seg_ns) {
+    return residence_ns < seg_ns && !(push_ns >= ASRC_SINK_BLOCKED_NS && since_push_ns < seg_ns);
+}
+
+bool asrc_sink_stream_full(int64_t push_ns, int64_t since_push_ns, int64_t seg_ns) {
+    return push_ns >= ASRC_SINK_BLOCKED_NS && since_push_ns < ASRC_SINK_FULL_SEGS * seg_ns;
+}
+
+void asrc_sink_queued_push(int64_t gap_ns, int64_t residence_ns, int64_t busy_ns, int64_t* push_ns,
+                           int64_t* since_push_ns) {
+    if (gap_ns <= 0 || residence_ns < gap_ns || busy_ns < 0) {   // it waited for data, or nothing is known
+        *push_ns = 0;
+        *since_push_ns = gap_ns > 0 ? gap_ns : 0;
+        return;
+    }
+    *push_ns = gap_ns - busy_ns > 0 ? gap_ns - busy_ns : 0;   // it slept, with its buffer waiting: in the sink
+    *since_push_ns = busy_ns;
+}
+
+int64_t AsrcSinkMargin::silence(int64_t next_sample, int64_t segdone, int64_t sps, bool have_play,
+                                int64_t play_pos, int64_t guard) {
+    const int64_t n =
+        margin_ ? asrc_sink_silence(next_sample, segdone, sps, margin_, have_play, play_pos, guard, cap_) : 0;
+    if (n) {
+        refills_++;
+        silence_ += n;
+    }
+    return n;
 }
 
 }  // namespace mrts

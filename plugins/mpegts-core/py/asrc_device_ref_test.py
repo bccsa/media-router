@@ -833,8 +833,8 @@ def test_replay_format():
     seq.append({"op": "start", "mono": 6 * SEC})
     out = ad.replay(json.dumps(x) for x in seq)
     first = json.loads(out[0])
-    check("14: one line per sample, keys in order", list(first) == ["mono", "lock", "dev_ppb", "ratio_ppb",
-                                                                  "stalled", "flush"] and first["lock"] == "idle")
+    check("14: one line per sample, keys in order", list(first) == ["mono", "lock", "dev_ppb", "ratio_ppb", "stalled",
+                                                                  "flush", "trusted"] and first["lock"] == "idle")
     check("14: the restart's event line, its recalibration, then the summary", json.loads(out[-3]) == {
         "event": "relock-device", "reason": "restart", "at": 6 * SEC} and json.loads(out[-2]) == {"recalibrated": 1}
           and "summary" in json.loads(out[-1]))
@@ -864,10 +864,189 @@ def test_recalibrated():
           not clean and len(told) == 1 and told[0][1] and len(restart) == 1 and first and not again)
 
 
+def test_restart_counts():
+    """16. READY empties what waited and the element counts from 0 again (B-249 fix round 4): after
+    restart_counts() a stall is read on the new counts; without it, what the old flushes discarded hides it."""
+    for recount in (True, False):
+        t = ad.DeviceTerm()
+        per = FS // 10
+        st = {"pushed": 0, "taken": 0, "mono": 0}
+        evs = []
+
+        def read(secs, takes):
+            for _ in range(secs * 10):
+                st["mono"] += 100 * MS
+                st["pushed"] += per
+                if takes:
+                    st["taken"] += per
+                evs.extend(t.sample(st["mono"], 1000 * SEC + st["mono"], st["pushed"], st["taken"])[0])
+
+        t.start(0)
+        read(20, True)
+        read(4, False)
+        read(5, True)
+        first = [e["event"] for e in evs if e["event"].startswith("device-")]
+        t.stop(st["mono"])
+        if recount:
+            t.restart_counts()
+        st["pushed"] = st["taken"] = 0
+        evs.clear()
+        t.start(st["mono"])
+        read(20, True)
+        read(2, False)
+        stalled = [e for e in evs if e["event"] == "device-stalled"]
+        if recount:
+            check("16: after a 4 s stall, READY and restart_counts(): a 2 s stall on the new counts is device-stalled "
+                  "once, %s frames waiting (the first: %s)" % ([e["pending"] for e in stalled], first),
+                  first == ["device-stalled", "device-resumed"] and len(stalled) == 1
+                  and stalled[0]["pending"] <= 13 * per)
+        else:
+            check("16: ... without it the old flushes' discard hides that stall (%d device-stalled)" % len(stalled),
+                  not stalled)
+
+
+def test_upstream_waiting():
+    """17. The Audio Decoder's sink end has no queue between mrasrc and the sink: its push blocks in the sink, so
+    what waits is in the queue before it (upstream-queue, decq). A 2.5 s stall with decq filling to 300 ms is
+    device-stalled on that count (c40, B-249 D2); without it none; an input gap (decq empty) none either. Nothing
+    waits below the element, so the stall flushes nothing and drops nothing: the backlog plays late (c42, MR-059)."""
+    per = FS // 10
+    for counted in (True, False):
+        for gap in (False, True):
+            t = ad.DeviceTerm()
+            st = {"pushed": 0, "mono": 0, "up": 0}
+            evs, flushes = [], 0
+
+            def read(secs, takes, fills):
+                nonlocal flushes
+                for _ in range(int(secs * 10)):
+                    st["mono"] += 100 * MS
+                    if takes:
+                        st["pushed"] += per   # what the sink took: no queue between, pushed is taken
+                        st["up"] = max(0, st["up"] - per)
+                    elif fills:
+                        st["up"] = min(3 * per, st["up"] + per)
+                    ev, fl = t.sample(st["mono"], 1000 * SEC + st["mono"], st["pushed"], st["pushed"],
+                                      st["up"] if counted else 0)
+                    evs.extend(ev)
+                    flushes += fl
+
+            t.start(0)
+            read(20, True, False)
+            read(2.5, False, not gap)
+            read(10, True, False)
+            names = [e["event"] for e in evs if e["event"].startswith("device-")]
+            stalled = [e for e in evs if e["event"] == "device-stalled"]
+            what = "an input gap (decq empty)" if gap else "a 2.5 s device stall, decq full"
+            if counted and not gap:
+                check("17: %s: device-stalled once, then resumed (%s), %s frames waiting"
+                      % (what, names, [e["pending"] for e in stalled]),
+                      names == ["device-stalled", "device-resumed"] and stalled[0]["pending"] == 3 * per)
+                resumed = [e for e in evs if e["event"] == "device-resumed"]
+                check("17: ... the backlog waits above the element: %d flushes, %d frames dropped (told %s), none"
+                      % (flushes, t.stats()["dropped"], [e["dropped"] for e in resumed]),
+                      flushes == 0 and t.stats()["dropped"] == 0 and [e["dropped"] for e in resumed] == [0])
+            elif counted:
+                check("17: %s: no device stall (%s)" % (what, names), not names)
+            elif not gap:
+                check("17: ... without the upstream count that stall is never read (%s)" % names, not names)
+
+
+def test_foreign_flush_discard():
+    """18. A flush from elsewhere took 590 ms that waited between the element and the sink (c40, review 5's minor 2):
+    told to the term (discard), a 1.5 s input gap after it is no device stall; not told, that gap reads as one."""
+    per = FS // 10
+    for told in (True, False):
+        t = ad.DeviceTerm()
+        st = {"pushed": 0, "taken": 0, "mono": 0}
+        evs = []
+
+        def read(tenths, push, take):
+            for _ in range(tenths):
+                st["mono"] += 100 * MS
+                st["pushed"] += per if push else 0
+                st["taken"] += per if take else 0
+                evs.extend(t.sample(st["mono"], 1000 * SEC + st["mono"], st["pushed"], st["taken"])[0])
+
+        t.start(0)
+        read(200, True, True)
+        st["pushed"] += 59 * FS // 100   # 590 ms more pushed, waiting before the sink, then flushed from elsewhere
+        if told:
+            t.discard(59 * FS // 100)
+        read(100, True, True)
+        read(15, False, False)            # the input gap: nothing pushed, nothing taken
+        read(50, True, True)
+        names = [e["event"] for e in evs if e["event"].startswith("device-")]
+        if told:
+            check("18: the flush's 590 ms told to the term: the 1.5 s gap after it is no device stall (%s)" % names,
+                  not names)
+        else:
+            check("18: ... not told, the gap reads as a device stall (%s)" % names, "device-stalled" in names)
+
+
+def test_foreign_flush_resync():
+    """19. A flush from elsewhere steps the sink's clock (the ring's content dropped: 33 ms on pulsesink, 49 on the
+    test device, under relock_ns). resync() at the flush starts the clock pairs again keeping the rate (c40); without
+    it a step at 30 s, inside the first fit, puts the rate at the clamp, a device 100 ppm fast read 1000 ppm fast."""
+    for resync in (True, False):
+        t = ad.DeviceTerm()
+        evs, worst = [], 0.0
+        t.start(0)
+        step = 0
+        for k in range(1, 1201):   # 120 s of 100 ms reads
+            mono = k * 100 * MS
+            if k == 300:
+                step = 45 * MS
+                if resync:
+                    evs.extend(t.resync(mono))
+            dev = mono + mono * 100 // 1000000 + step
+            evs.extend(t.sample(dev, 1000 * SEC + mono)[0])
+            if t.device_ppb():
+                worst = max(worst, abs(device_rate_ppm(t) - 100))
+        rel = [e.get("reason") for e in evs if e["event"] == "relock-device"]
+        if resync:
+            check("19: a 45 ms clock step at a flush from elsewhere, resync() there: the rate within %.1f ppm of the "
+                  "device's 100 from its first fit (20 at most), relocks %s" % (worst, rel), worst <= 20)
+        else:
+            check("19: ... without it the step is fit as a rate: %.1f ppm off at worst (more than 200)" % worst,
+                  worst > 200)
+
+
+def test_clock_trusted():
+    """20. The clock is not trusted while stalled, nor for settle_ns after the resume, as the lock waits (c42):
+    pulsesink's clock runs on through a server stop and converges back over seconds, and the sink guard learned that
+    lag as a sink latency for good. From the start it is trusted, as before, and a step relock while trusted leaves
+    it so: the lag after a step at load lasts, and the guard must learn it (c42 fix 3); one inside the window after
+    the resume extends the window to 15 s past it (c42 fix 4)."""
+    per = FS // 10
+    t = ad.DeviceTerm()
+    t.start(0)
+    pushed, up, at = 0, 0, {}
+    for k in range(1, 1201):   # 120 s of 100 ms reads; the Audio Decoder's shape (case 17), its clock running on
+        mono = k * 100 * MS
+        sec = k / 10
+        if 30 <= sec < 32.5:
+            up = min(3 * per, up + per)
+        else:
+            pushed += per
+            up = max(0, up - per)
+        dev = mono + (200 * MS if sec >= 40 else 0) + (200 * MS if sec >= 80 else 0)   # 200 ms clock steps at 40, 80 s
+        t.sample(dev, 1000 * SEC + mono, pushed, pushed, up)
+        at[round(sec, 1)] = t.clock_trusted(1000 * SEC + mono)
+    want = {10.0: True, 29.9: True, 31.6: False, 32.4: False, 45.0: False, 50.0: False, 54.9: False, 55.5: True,
+            79.9: True, 85.0: True, 94.0: True, 100.0: True, 120.0: True}
+    got = {k: at.get(k) for k in want}
+    steps = t.stats()["relocks_step"]
+    check("20: trusted from the start, not while stalled (from 31.0 s) nor 15 s after the resume (32.5 s), a step "
+          "relock inside that (40.1 s) holding it to 55.1 s, and still trusted after the step relock at 80.1 s (%d step "
+          "relocks): %s" % (steps, got), got == want and steps == 2)
+
+
 CASES = (test_lock_port, test_ratio, test_jitter, test_fill_1h, test_input_stall, test_device_step,
          test_traces, test_trace_underrun, test_clock_stall_underrun, test_start_and_restart,
          test_device_stall_clock_stopped, test_device_stall_clock_running, test_render_lateness_ring,
-         test_replay_format, test_recalibrated)
+         test_replay_format, test_recalibrated, test_restart_counts, test_upstream_waiting, test_foreign_flush_discard,
+         test_foreign_flush_resync, test_clock_trusted)
 
 # (name, the case it must fail, file, [(text, its replacement), ...]). The first four are the brief's.
 MUTANTS = (
@@ -895,13 +1074,11 @@ MUTANTS = (
     ("the stall read on the clock alone (the plan's 'clock not advancing')", 12, "asrc_device_ref.py",
      [("        dd, dm = dev - prev[0], mono - prev[1]\n",
        "        dd, dm = dev - prev[0], mono - prev[1]\n        self.clock_moved = dm > 0 and dd * c.flat_den > dm\n"),
-      ("            if prev is None or taken > prev or pending <= self.wait_samples:",
-       "            if prev is None or getattr(self, 'clock_moved', True) or pending <= self.wait_samples:")]),
+      ("            if prev is None or taken > prev or waiting <= self.wait_samples:",
+       "            if prev is None or getattr(self, 'clock_moved', True) or waiting <= self.wait_samples:")]),
     ("no flush at the resume", 11, "asrc_device_ref.py",
-     [("            events.append({\"event\": \"device-resumed\", \"at\": mono, \"dropped\": self.dropped + pending})\n"
-       "            flush = True",
-       "            events.append({\"event\": \"device-resumed\", \"at\": mono, \"dropped\": self.dropped + pending})\n"
-       "            return False")]),
+     [("            flush = self.flushing\n        elif self.flushing and mono",
+       "            return False\n        elif self.flushing and mono")]),
     ("the capture lock's 20 ppm fit acceptance", 10, "asrc_device_ref.py",
      [("rate_tau_ns=1200 * SEC, slew_track_ppm=1000)", "rate_tau_ns=1200 * SEC, slew_track_ppm=20)")]),
     ("a 300-bucket window, a 60 s loop", 7, "asrc_device_ref.py",
@@ -921,7 +1098,25 @@ MUTANTS = (
      [("        self.relock_samples = 2 ", "        self.relock_samples = 1 ")]),
     ("a step relock leaves the servo's offset", 15, "asrc_device_ref.py",
      [("        self.relocks[\"step\"] += 1\n        self.recal = True\n", "        self.relocks[\"step\"] += 1\n")]),
-)
+    # c40 (B-249 D2): what waits before the element.
+    ("the upstream queue not counted", 17, "asrc_device_ref.py",
+     [("        waiting = pending + max(0, upstream)\n", "        waiting = pending\n")]),
+    # c42 (MR-059): a stall whose backlog waits above the element.
+    ("a stall flushes whatever waits", 17, "asrc_device_ref.py",
+     [("                self.flushing = pending > self.wait_samples\n", "                self.flushing = True\n")]),
+    ("the clock trusted at once after a resume", 20, "asrc_device_ref.py",
+     [("            self.trust_at = max(self.trust_at, mono + c.settle_ns)\n", "")]),
+    ("a step relock untrusts the clock", 20, "asrc_device_ref.py",
+     [("        if mono < self.trust_at:   # still converging after a resume (c42)\n", "        if True:\n")]),
+    ("a step after a resume does not extend the window", 20, "asrc_device_ref.py",
+     [("        if mono < self.trust_at:   # still converging after a resume (c42)\n", "        if False:\n")]),
+    ("the clock trusted while stalled", 20, "asrc_device_ref.py",
+     [("        return not self.stalled and mono >= self.trust_at", "        return mono >= self.trust_at")]),
+    ("a foreign flush's discard not counted", 18, "asrc_device_ref.py",
+     [("        self.discarded += max(0, frames)\n", "        pass\n")]),
+    ("no resync at a foreign flush", 19, "asrc_device_ref.py",
+     [("        if not self.rendering:\n            return []\n        self.prev = None\n        self.moved_at = None\n",
+       "        if True:\n            return []\n        self.prev = None\n        self.moved_at = None\n")]),)
 
 
 def run_mutants():

@@ -92,6 +92,10 @@ def random_run(r, seed, out):
     mono0 = r.randrange(1, 10**6) * SEC
     origin, started = 0, False
     pushed = rendered = write = 0
+    # c40: some sinks have no queue before them (the Audio Decoder's): a stall holds the push, and what waits is
+    # the upstream queue's (its own draws, so the other sequences stay as they were).
+    rq = random.Random(seed * 7919 + 1)
+    noqueue, up = rq.random() < 0.4, 0
     for k in range(secs * 10):
         h = k * TICK
         if restarts and h >= restarts[0] * SEC:
@@ -115,7 +119,11 @@ def random_run(r, seed, out):
                 "late70": 70 * MS if r.random() < 0.01 else r.randrange(200000),
                 "corrections": r.randrange(200000)}[shape]
         stalled = any(at_s * SEC <= h < at_s * SEC + ln for at_s, ln in stalls)
-        pushed += rate // 10
+        if noqueue and stalled:
+            up = min(3 * rate // 10, up + rate // 10)
+        else:
+            up = max(0, up - rate // 10)
+            pushed += rate // 10
         if not stalled:
             n = pushed - rendered
             if r.random() < 0.02:   # the base sink realigned its write: an underflow
@@ -125,6 +133,12 @@ def random_run(r, seed, out):
         op = {"op": "sample", "dev": max(dev, 0), "mono": mono0 + h + late}
         if r.random() < 0.95:
             op.update(pushed=pushed, rendered=rendered)
+            if noqueue:
+                op["upstream"] = up
+        if started and rq.random() < 0.004:   # a flush from elsewhere: what it took, the clock's step after it
+            took = rq.randrange(0, rate)
+            out.write(line({"op": "discard", "n": took}))
+            out.write(line({"op": "resync", "mono": mono0 + h + late}))
         if r.random() < 0.3:
             op["in_ppb"] = r.randrange(-60000, 60001)
         out.write(line(op))

@@ -277,7 +277,7 @@ def scn_out_stall(tag, argv, exp):
           and orig.spread(ra) <= x["flat_ms"] and st.get("dropped-frames") == 0 and st.get("lost-frames") == 0
           and st.get("relocks") == 0)
     ov = overruns(dec)
-    check(f"{label} decoder: the backlog waits in the prefill, never in a leaky queue (episodes {ov[:3]})",
+    check(f"{label} decoder: the backlog waits in ad_esq, never in a leaky queue (episodes {ov[:3]})",
           all(e[0] in x["decoder_full"] and not e[1] for e in ov))
     dm = demux_last(dec)
     check(f"{label} decoder: the demux lost nothing (gaps {dm.get('gaps')}, cc-lost {dm.get('cc-lost')})",
@@ -366,8 +366,9 @@ def scn_out_gap_recovers(tag, argv, exp):
 
 
 def scn_out_device_stall(tag, argv, exp):
-    """The display and the card stop 3 s (stall-ms): both resume live (Q2) — the video no later than
-    before within a frame (T31: its cadence hold restarts lower), the audio skips its backlog."""
+    """The display and the card stop 3 s (stall-ms): the video resumes live (Q2), no later than before
+    within a frame (T31: its cadence hold restarts lower); the Audio Decoder, whose backlog waits in ad_esq
+    above its asrc, is told and plays it late (c42, the owner's Limit of 2026-11-23; its drain gives it back)."""
     label, x = f"{exp['scenario']} {tag}", exp["expect"]
     at, length = exp["stall"]
     run = Run(argv)
@@ -395,11 +396,12 @@ def scn_out_device_stall(tag, argv, exp):
     evs = [p for _t, p in dec.asrc_events()]
     kinds = [p.get("kind") for p in evs]
     skipped = sum(p.get("dropped-frames") or 0 for p in evs if p.get("kind") == "device-resumed")
-    check(f"{label} decoder: device-stalled then device-resumed ({kinds}), its backlog skipped ({skipped} "
-          f"frames), back live ({orig.mid(rb)} -> {orig.mid(ra)} ms, within "
-          f"{x['audio_back_ms']}), no queue full past the prefill ({overruns(dec)})",
-          kinds == ["device-stalled", "device-resumed"] and skipped > 0
-          and ra and rb and abs(orig.mid(ra) - orig.mid(rb)) <= x["audio_back_ms"]
+    late = orig.mid(ra) - orig.mid(rb) if ra and rb else None
+    check(f"{label} decoder: device-stalled then device-resumed ({kinds}), nothing skipped ({skipped} frames), "
+          f"the backlog played late ({orig.mid(rb)} -> {orig.mid(ra)} ms, +{late}, want {x['audio_late_ms']}), no "
+          f"queue full but ad_esq ({overruns(dec)})",
+          kinds == ["device-stalled", "device-resumed"] and skipped == 0 and late is not None
+          and x["audio_late_ms"][0] <= late <= x["audio_late_ms"][1]
           and all(e[0] in x["decoder_full"] and not e[1] for e in overruns(dec)))
 
 

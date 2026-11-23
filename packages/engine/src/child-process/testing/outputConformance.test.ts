@@ -181,8 +181,12 @@ describe('the output conformance runner commands', () => {
             // The ts-probe tap's queue is named, so the runners' queue watch leaves it out (B-248).
             expect(s).toContain(' vp_ts. ! queue name=vp_probeq leaky=downstream ');
         }
-        expect(String(out.decoder.start.pipeline)).toMatch(/queue name=ad_esq leaky=0 .* queue name=prefill /);
-        expect(String(out.aout302m.start.pipeline)).toMatch(/queue name=prefill .*pulsesink name=sink /);
+        // B-249 as M6 carried it: the decoder's backlog in ad_esq (asrc's upstream-queue), no queue after asrc;
+        // the 302M behind outq.
+        expect(String(out.decoder.start.pipeline)).toMatch(
+            /queue name=ad_esq leaky=0 .* mrasrc name=asrc [^!]*upstream-queue=ad_esq ! [^q]*pulsesink name=sink /,
+        );
+        expect(String(out.aout302m.start.pipeline)).toMatch(/queue name=outq .*pulsesink name=sink /);
         expect(String(out.burnin.start.pipeline)).toMatch(/mralignwatch name=aw_burnv aligner=burnin /);
         expect(out.burnin.runner).toBe('python');
         await expect(`${JSON.stringify(out, null, 2)}\n`).toMatchFileSnapshot(FIXTURE);

@@ -16,8 +16,8 @@ testing/decodeAsrcChains.test.ts). Here each runs with its bus sources reading a
   - audio-decoder (WI-P3-10, WI-P4-7), each decoder branch on a recording of its codec, the same way:
     the first audio stream plays (an input listing its video first too), the decoder's PCM (avdec_aac's
     planar) reaches `asrc` interleaved through `audioconvert`, and `asrc` follows the sink (opusdec's
-    pre-skip stamping is one lost-time gap, B-148, which the sync=false sink writes on through), the
-    40 ms prefill before it (B-168);
+    pre-skip stamping is one lost-time gap, B-148, which the sync=false sink writes on through), with
+    its 60 ms sink margin and no queue after it (B-168, B-249);
   - audio-transcoder (WI-P3-12), each decoder branch on a recording of its codec, its renditions
     into files: `asrc` passes a house-rate decode untouched, and each rendition's PES PTS meet S40
     (the first AU exact, Opus 0 ticks, AAC a tick under its ladder at most, 302M at its PCM's
@@ -140,7 +140,7 @@ def run(pipe, secs=None):
 def run_settled(pipe, sink, secs, start=1.5):
     """run() for `secs`, the sink's write-position jumps read at `start` s and at the end: a
     sync=false ring starts before the first write, so up to two realigns may come with the first
-    renders (B-166, a start-up race; the outputs' prefill does not prevent it, B-167, B-168, B-172);
+    renders (B-166, a start-up race; the outputs' queue does not prevent it, B-167, B-168, B-172);
     none may come after."""
     e1, x1, eos = run(pipe, secs=start)
     first = sink.get_property("resyncs")
@@ -270,7 +270,12 @@ def _caps_of(pad):
     return caps.get_structure(0) if caps and caps.get_size() else None
 
 
-def adec_run(desc, path, secs=4.0):
+# 4.5 s: the sink's 130 ms start margin (B-249) holds the output labels back, so mrasrc's 4 s stats post
+# comes after a 4 s run.
+ADEC_SECS = 4.5
+
+
+def adec_run(desc, path, secs=ADEC_SECS):
     """An audio-decoder string on `path` (on the house clock half a second from its start) into
     mrtestaudiosink 40 ppm fast: what each element saw, or why it did not parse."""
     try:
@@ -320,12 +325,14 @@ else:
         _desc = PIPELINES[_key]
         print(f"\n--- audio-decoder, {_key}: {_fx} through its real string into mrtestaudiosink ---")
         check(f"{_key}: the first audio stream from mrtsdemux, its 5 s non-leaky ES queue, the decoder, "
-              f"audioconvert, the render tap, then the one ASRC on the sink, the 40 ms prefill before it (no "
-              f"tsdemux, no audioresample; the sink sync=false, no slave-method, ts-offset or max-lateness: B-168)",
+              f"audioconvert, the render tap, then the one ASRC on the sink with its margin and ad_esq as its "
+              f"upstream queue, no queue after it (no tsdemux, no audioresample; the sink sync=false, no "
+              f"slave-method, ts-offset or max-lateness: B-168, B-249)",
               " ! mrtsdemux name=addemux media=audio ! queue name=ad_esq leaky=0 max-size-time=5000000000 " in _desc
               and re.search(r" ! audioconvert ! mrlateness name=lat_render \S+ ! mrasrc name=asrc "
-                            r"bypass-below-ppm=0\.5 device-sink=sink ! audioconvert ! ", _desc) is not None
-              and " ! queue name=prefill leaky=0 min-threshold-time=40000000 " in _desc
+                            r"bypass-below-ppm=0\.5 device-sink=sink margin-ms=60 upstream-queue=ad_esq "
+                            r"! audioconvert ! ", _desc) is not None
+              and "mrasrc name=asrc" in _desc and "! queue" not in _desc[_desc.index("mrasrc name=asrc"):]
               and not re.search(r"\btsdemux\b", _desc) and "audioresample" not in _desc
               and " sync=false " in _desc
               and not any(k in _desc for k in ("slave-method", "ts-offset", "max-lateness")))
@@ -335,7 +342,7 @@ else:
             continue
         _linked = [int(n.rsplit("_", 1)[1], 16) for n, linked in _r["pads"] if linked]
         check(f"{_key}: plays in real time without an error ({_r['errors'][:1]}; {_r['played_s']:.2f} s "
-              f"into the sink in 4 s)", not _r["errors"] and 2.0 <= _r["played_s"] <= 4.6)
+              f"into the sink in {ADEC_SECS} s)", not _r["errors"] and 2.0 <= _r["played_s"] <= ADEC_SECS + 0.6)
         check(f"{_key}: the demux offers audio only and the first audio PID plays ({_r['pads']})",
               all(n.startswith("audio_") for n, _ in _r["pads"]) and _linked == [_pid])
         _in, _out = _r["asrc_in"], _r["dec_out"].get(_dec)

@@ -162,7 +162,10 @@ B-148 added `mrasrc-stats`' `rate-known`, the engage's `rate-known` and the lost
 B-166 replaced the custom-slaving `device-relock` and `device-resync` events and `device-resyncs` with
 the timer term's `relock-device`, `device-stalled` and `device-resumed` events and `mrasrc-stats`'
 `device-relocks`, `device-stalls` and `render-lateness-ns` (a run on `mrtestaudiosink` `sync=false`
-with a 3 s stall and a restart). B-169 added the `mrvideopace` message, the Video Player's pace, held
+with a 3 s stall and a restart). B-249 added `margin-refills`, `margin-silence-ns` and
+`margin-guard-ns`, and c41b the `sink-push-unread` event (once an element: no schedstat to read a
+queue's push); its catch-up's fields went with it in M6 (the drain is the only rate controller). B-169
+added the `mrvideopace` message, the Video Player's pace, held
 to its entry by the protocol case `video-leg-pace` (a generated 1080p50 into `mrtestvideosink` at 50 Hz).
 
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |

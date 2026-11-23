@@ -69,7 +69,7 @@ class Consumer extends GstPluginBase {
         return {
             pipeline:
                 'unixfdsrc socket-path=/tmp/x.sock ! mrtsdemux name=demux media=audio' +
-                ' ! avdec_aac ! audioconvert ! mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink' +
+                ' ! avdec_aac ! audioconvert ! mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60' +
                 ' ! pulsesink name=sink sync=false',
         };
     }

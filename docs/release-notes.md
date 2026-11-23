@@ -105,9 +105,11 @@ there is no in-app switch, and the stored values of the removed settings
 - **A sound card that stops taking sound** (HDMI audio suspended, a USB
   device removed): Audio Decoder and Audio Output (302M) show "Audio device
   stalled — nothing plays until it takes audio again, then it plays live"
-  about a second after it stopped, skip what arrives meanwhile (counted in
-  **Device stalls**), and play live again within about a second of the card
-  taking sound.
+  about a second after it stopped (counted in **Device stalls**). Audio
+  Output (302M) skips what arrives meanwhile and plays live again within
+  about a second of the card taking sound; Audio Decoder keeps what waited
+  (up to about 5 s), plays it late and catches up by itself, as in
+  v2.0.0.102.
 - **"Plays nothing: every buffer reaches the sink … past its playout time"
   is gone** with the playout offset: no output is late at its sink any more.
   A stopped card shows "Audio device stalled" instead, and Audio Output
@@ -116,10 +118,9 @@ there is no in-app switch, and the stored values of the removed settings
 
 **Audio Output (302M) plays as soon as it can**
 
-- **It plays what its sources send as it comes,** through a 40 ms buffer and
-  the sound card's 100 ms ring, instead of waiting for a playout offset. Its
-  delay is its sources' own plus about 140 ms and the card's. A route's
-  Playout Offset no longer moves it.
+- **It plays what its sources send as it comes,** into the sound card's
+  100 ms ring with 60 ms in hand there, as v2.0.0.102 keeps it, instead of
+  waiting for a playout offset. A route's Playout Offset no longer moves it.
 - **A start skips what its mix held back before it played.** When it mixes
   two or more sources and one is connected but sends nothing yet, the mix waits
   up to 2 s for it; the output now starts live after that wait instead of
@@ -129,18 +130,19 @@ there is no in-app switch, and the stored values of the removed settings
   return used to cause (v2.0.0.98's fix for a burst of stale packets) is gone:
   the output plays on. (MR-011)
 - **A pause in its sources is a pause.** The card plays silence for it and
-  what follows plays at once. On the box's PipeWire up to about a tenth of a
-  second after a pause can be lost as well (100 to 127 ms after a 300 ms
-  pause, measured before this release).
+  what follows plays late by about the pause, with 60 ms in hand again, as in
+  v2.0.0.102: nothing after it is lost.
 - **After a stall in its sources it plays behind, then catches up to its
-  latency target by itself** (up to 0.5 % faster); nothing is dropped.
+  latency target by itself** (up to 0.5 % faster); nothing is dropped. This
+  is v2.0.0.102's catch-up done by the latency drain (below): its Timing row
+  "Catch-up" gives way to **Latency target**, and it never plays faster than
+  0.5 %.
 
 **Audio Decoder plays as soon as it can**
 
-- **It plays what its input sends as it comes,** through the same 40 ms
-  buffer and 100 ms ring as Audio Output (302M), instead of waiting for a
-  playout offset: its input's own delay plus about a tenth of a second. A
-  route's Playout Offset no longer moves it.
+- **It plays what its input sends as it comes,** into the card's 100 ms ring
+  with 60 ms in hand, as Audio Output (302M) does, instead of waiting for a
+  playout offset. A route's Playout Offset no longer moves it.
 - **After a stall in its input it plays behind, then catches up to its
   latency target by itself** (up to 0.5 % faster). What the input sends late
   is kept (up to 5 s); nothing is dropped to catch up.
@@ -148,9 +150,8 @@ there is no in-app switch, and the stored values of the removed settings
   return used to cause (v2.0.0.98's fix for a burst of stale packets) is gone:
   the output plays on. (MR-011)
 - **A gap in its input is a gap.** Packets lost on the way or missing from
-  the stream: its sink plays silence for them and what follows plays at once,
-  no later than before. On the box's PipeWire up to about a tenth of a second
-  after a gap can be lost as well, as on Audio Output (302M).
+  the stream: its sink plays silence for them and what follows plays late by
+  about the gap, with 60 ms in hand again, as on Audio Output (302M).
 
 **Video Player plays as soon as it can**
 
@@ -1022,6 +1023,38 @@ elements" below do not start.
   source of a multichannel output its own map (Input 1 to Output 1, say) to
   have it play on that one channel. A mono or stereo output on a device of two
   channels (an SSL 2) is unchanged.
+- **Audio Output (302M) plays audio that arrives late, late, instead of
+  cutting it (MR-057).** On v2.0.0.101, on a busy box, an Audio Output (302M)
+  cut every sample that reached its device after its slot into silence:
+  hundreds of short holes a minute behind a clean mix, or nothing at all while
+  it showed ok. It now plays what it gets, late if it came late, and keeps
+  60 ms in hand at its device beyond what the sound server may already have
+  taken (40 ms on a PipeWire device): 60 to 100 ms ahead of what you hear
+  after a gap, and 130 ms or more when it starts. Its feed may come up to
+  60 ms later than before without a gap. If the feed falls further behind, or
+  stops, or the box holds the output itself up for a moment (a hiccup under
+  heavy load), you hear one gap; the output then plays on later by about that
+  gap (a hiccup: its length, up to 0.06 s more), with 60 ms in hand again, and
+  such gaps add up. When it holds more than it needs (after a spike in the
+  feed's lateness, a start that came up late, or such gaps), it plays it out
+  slightly fast until it is back to 60 ms in hand: at most 0.5 % fast, a pitch
+  change of under 9 cents, nothing skipped. It waits a minute after the last
+  gap first, so a feed whose lateness keeps going up and down keeps the room
+  its worst moment in that minute needed, then gives back 5 ms a second: 0.8 s
+  too much takes under 4 minutes (60 s, then 160 s). Six hiccups of about
+  0.1 s in two and a half minutes left it about 0.75 s late at most, back 1.2
+  to 2.5 minutes after the last (an Audio Decoder about 0.9 s, back 3 to
+  5.5 minutes after the last). Hiccups that add more than 5 ms a second for
+  minutes on end (a 0.1 s one more often than every 20 to 30 seconds) make it
+  later and later until they stop: an Audio Output (302M) then holds up its
+  mix once it is 1 s behind, and an Audio Decoder drops audio once it is
+  about 5 s behind (more than its Buffer and its input queue hold). Its
+  Timing shows "Catch-up: catching up" with what is left meanwhile. The Audio
+  Decoder's output does the same. The output now plays behind a video player
+  on the same route by that much less the route's playout offset (60 ms by
+  default); raise the route's playout offset to bring the picture back in
+  line. The Audio Output (302M)'s Lip-Sync Trim is gone from its settings: it
+  no longer moved anything.
 - **Audio inputs capture again by themselves after PipeWire restarts.** Up to
   v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
   buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and

@@ -2,14 +2,14 @@
 // (leaky) or holds an output's backlog (the names below) counts each buffer that meets it full;
 // each episode is one `queue_overrun` event (mr-gst-runner queue_watch.cpp, its python twin).
 
-import { OUTPUT_PREFILL_NAME } from './outputSink.js';
+import { OUTPUT_QUEUE_NAME } from './outputSink.js';
 
 /** The plugin-event channel of one episode of a queue meeting its bound. */
 export const QUEUE_OVERRUN_EVENT = 'queue_overrun';
 
-/** Watched though not leaky: the Video Player's and the Audio Decoder's ES queues, the audio
- *  outputs' prefill. Both runners carry the same list (busRunnerContract.test.ts). */
-export const WATCHED_QUEUE_NAMES: readonly string[] = ['vp_esq', 'ad_esq', OUTPUT_PREFILL_NAME];
+/** Watched though not leaky: the Video Player's and the Audio Decoder's ES queues, the Audio
+ *  Output (302M)'s `outq` (B-249). Both runners carry the same list (busRunnerContract.test.ts). */
+export const WATCHED_QUEUE_NAMES: readonly string[] = ['vp_esq', 'ad_esq', OUTPUT_QUEUE_NAME];
 
 /** Never watched though leaky: the Video Player's probe tap, whose drops are by design (B-248).
  *  Both runners carry the same list (busRunnerContract.test.ts). */
@@ -40,8 +40,8 @@ export interface QueueOverrun {
 export const QUEUE_FULL_CLEAR_MS = 30_000;
 
 /** The warning by `leaky` (S15): a leaky queue loses content at its bound; a full non-leaky one
- *  loses nothing, it holds its upstream (an Audio Decoder's `ad_esq` before its prefill, then the
- *  leaky input queue: B-177, B-174's F1).
+ *  loses nothing, it holds its upstream (an Audio Decoder's `ad_esq`, then the leaky input queue:
+ *  B-177, B-174's F1).
  *  `input`: the bus input it serves, by its label; none: the queue's own name. */
 export function queueFullText(p: QueueOverrun, input?: string): string {
     const ms = p.levelTimeMs ?? 0;

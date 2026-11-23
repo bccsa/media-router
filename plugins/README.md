@@ -1636,8 +1636,10 @@ writes no timing arithmetic of its own:
   content's cadence, never before it arrives, a display slower than the
   content matched by dropping frames evenly (Video Player, below).
 - **Audio** goes through `mrasrc` with `deviceSink` (its card's clock read on
-  a timer) and ends in `buildOutputPrefill()` and a `sync=false` sink at
-  `buffer-time=OUTPUT_RING_US` (`packages/engine/src/plugins/outputSink.ts`).
+  a timer, `margin-ms` its sink margin, B-249) and ends in a `sync=false` sink at
+  `buffer-time=OUTPUT_RING_US`, the Audio Output (302M) behind `buildOutputQueue()`
+  (`outq`), the Audio Decoder with no queue before it
+  (`packages/engine/src/plugins/outputSink.ts`).
 - **Lateness is shown, not budgeted**: the output's Render lateness is when
   its frame is presented or its sample heard, read from those elements, and
   what a stall holds up shows as latency that the device elements drain back
@@ -2214,10 +2216,10 @@ the aligners' `input-absent` and `aligner-full` warnings
   that ASRC instead, where PTS is still content time: after the device term
   they are device-time labels (house-clock Phase 3); its Render lateness
   then leaves out the ASRC's filter delay, 0.667 ms at 48 kHz. Audio Output
-  (302M) and Audio Decoder end in `buildOutputPrefill()` (`queue name=prefill`,
-  non-leaky, holding `OUTPUT_PREFILL_MS` 40 ms) and their `sync=false` sink at
+  (302M) ends in `buildOutputQueue()` (`queue name=outq`, non-leaky, no
+  min-threshold: B-249) and the Audio Decoder with no queue, each `sync=false` sink at
   `buffer-time=OUTPUT_RING_US` (100 ms; `packages/engine/src/plugins/outputSink.ts`,
-  OQ-31, B-167, B-168). Set
+  OQ-31, B-167, B-168, B-249). Set
   `timingSink: { element, kind: 'audio' | 'video', refreshHz? }` on the
   description too: at each PLAYING the engine reads an audio base sink's
   `buffer-time` through `get_property`, and a video sink's device latency is
@@ -2279,9 +2281,11 @@ the aligners' `input-absent` and `aligner-full` warnings
   `mrasrc` (device term) or `mrvideopace` names that drain (Audio Decoder
   `asrc`, Audio Output (302M) `outasrc`, Video Player `vp_pace`, which also
   answers `isLatencyGroupAnchor()` true), and a Video Player's pace takes
-  `backlog-queue=<its ES queue>`. Each plays what it holds up to 0.5 % faster
+  `backlog-queue=<its ES queue>`, an Audio Decoder's asrc `upstream-queue=ad_esq`
+  (B-249). Each plays what it holds up to 0.5 % faster
   (`mrts::DrainServo`: the 30 s minimum of what was ready early, less a
-  measured margin) until it is back at its target. An audio output's margin
+  measured margin, for audio never under the sink's `margin-ms`) until it is
+  back at its target; it is the only rate controller (M6). An audio output's margin
   rises only at a short starvation on a steady stream with its buffer at the
   margin, judged 10 s after it; one while catching up, under load, while
   settling or after an input break raises nothing and is counted by reason
@@ -2653,20 +2657,63 @@ run `sync=false`, is followed on its own clock: a timer reads it every 100 ms
 from the first buffer the sink renders, never while it starts, and the ratio
 carries that device term, times the decode term when both are set (one
 resampler); the sink is never asked to skew. A device that stops taking
-samples (1 s with more than 100 ms waiting) is flushed and skipped, and plays
-live again once it takes (`device-stalled`, `device-resumed`; the owner's
-Q2). The output counter runs on from the first PTS on the device timeline: a
+samples (1 s with more than 100 ms waiting between `mrasrc` and the sink, or
+in `upstream-queue` where named: the Audio Decoder has no queue before its
+sink) is flushed and skipped, and plays live again once it takes
+(`device-stalled`, `device-resumed`; the owner's Q2); where no more than
+100 ms waited between `mrasrc` and the sink when it was declared (the
+backlog waits in `upstream-queue`: the Audio Decoder), it is told and
+nothing is flushed: the backlog plays late and the drain gives it back
+(c42). A flush that is not
+`mrasrc`'s own is counted for what it took (read off the first buffer after
+it) and restarts the clock reads, keeping the rate (`relock-device` `flush`):
+the sink's clock steps there. The output counter runs on from the first PTS on the device timeline: a
 break's new epoch starts at the last label end plus the gap at the device
 ratio, the offset restarting at each `relock-device` (B-148, B-166).
-`bypass-below-ppm=0` with `device-sink` is the device term alone.
+`bypass-below-ppm=0` with `device-sink` is the device term alone; an
+unflagged PTS hole is lost time and a step back a break there too (c40).
+`margin-ms` (B-249; the outputs' `OUTPUT_MARGIN_MS` 60) keeps that much in
+the sink's ring: a write the device can no longer play (a hole), or the first,
+gets silence first so it lands the margin past the first frame the device can
+still play. On a sink that is not a `GstAudioSink` (pulsesink: a sound
+server's stream, which reads ahead of the clock and drops a write behind its
+read index) that frame is the clock plus a guard: the server's configured
+latency (tlength less two minreq, 40 ms at buffer-time 100 ms), plus the
+sink's latency learned from the segment count where it moves (only while the
+device term trusts its clock: not in a device stall, nor 15 s after its
+resume or a clock step, c42); held only while
+the stream may have run dry (its buffer did not wait a segment in a queue
+before the sink, and no push into the sink blocked 2 ms less than a segment
+before). A write within two segments of such a push (the stream was full,
+and a full stream holds tlength, two minreq past that latency) is held to the
+segment count alone: a clock that ran on while the server took nothing does
+not read it as behind (c41). A push from `mrasrc`'s own chain is timed there;
+one from a queue's thread (the 302M's `outq`) is the time that thread slept
+while the write's buffer waited for it (`/proc/thread-self/schedstat`: its
+time on and waiting for a CPU taken off). A refill is at most 3 s; a longer
+gap is crossed by the writes after it. `mrasrc-stats` adds `margin-refills`,
+`margin-silence-ns` and `margin-guard-ns`. What is held past the margin is
+played back down by the drain (B-179, below), the only rate controller: its
+margin never under `margin-ms`, and `upstream-queue`'s level (the Audio
+Decoder's `ad_esq`, before its decoder, where a late start's or a device
+stall's backlog sits) a second window of its fill, never read as a
+starvation. A refill after a hole counts as the device's starvation, so the
+drain's raise rules (B-240) judge it. A backlog past `ad_esq` waits in the
+Audio Decoder's 5 s leaky ingress queue (`buildBusSrc`) and is shed only
+once that output is far behind (M6 carried B-249 into Phase 4: its catch-up
+and `catch-up-ppm` went, the drain is the one controller at 0.5 %).
 `mrasrc-stats` gains `mode` (`capture`, `bypass`, `decode`, `device`,
 `decode+device`), `source-ppb` and `device-ppb` (each clock against house
 time, positive when fast), `rate-known`, `device-relocks`, `device-stalls`
 and `render-lateness-ns` (house time less the content time of the sample at
 the device, 0 while unknown); `mrasrc-event` gains `engaged` (`reason` ratio
 or phase, `source-ppb`, `phase-ns`, `rate-known`), `relock-device` (`reason`
-restart or step, `step-ns`), `device-stalled` (`pending-frames`) and
-`device-resumed` (`dropped-frames`; B-166). A decode +
+restart, step or flush, `step-ns`), `device-stalled` (`pending-frames`) and
+`device-resumed` (`dropped-frames`; B-166), and once an element
+`sink-push-unread` (`reason` schedstat: the kernel has no
+`/proc/thread-self/schedstat`, as the x86 kernels before the Yocto tree's
+`sched-info.cfg` (MR-061), so a queue's push into a server's stream is
+not read and every write reads the clock; c41b). A decode +
 device element whose source still passes reports
 mode `device`, so read its decode term from `bypass-below-ppm`, not from
 `mode`. The element answers LATENCY with its filter's lookahead, 32 frames

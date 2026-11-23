@@ -945,7 +945,7 @@ def _install_no_late_drop(pipe):
 # (named below) counts each buffer that meets it full (`overrun`); each episode is one
 # `queue_overrun` plugin event (B-182's rule). Twin: mr-gst-runner queue_watch.cpp.
 QUEUE_OVERRUN_EVENT = "queue_overrun"          # queueOverrun.ts QUEUE_OVERRUN_EVENT
-WATCHED_QUEUE_NAMES = ("vp_esq", "ad_esq", "prefill")   # queueOverrun.ts: watched though not leaky
+WATCHED_QUEUE_NAMES = ("vp_esq", "ad_esq", "outq")   # queueOverrun.ts: watched though not leaky
 PROBE_QUEUE_NAMES = ("vp_probeq",)   # queueOverrun.ts: a report-only tap's leaky queue, never watched
 _QUEUE_QUIET_MS = 1000     # an episode ends after this long without an overrun
 _QUEUE_LONG_MS = 10000     # one still open this long is reported as it stands, then at its end

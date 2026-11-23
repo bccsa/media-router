@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -1793,6 +1794,35 @@ void test_device_only() {
                     d.outputs[starts[0]].label == d.pts[0] && iabs(off - ran) <= US && off > MS);
 }
 
+// py's test_device_only_steps (c40, B-249 D1): the device term alone, a 1.5 s unflagged hole at 40 s and a 21 ms step
+// back at 60 s; the counter's content time (the render-lateness map's) after each buffer less the buffer's end.
+void test_device_only_steps() {
+    std::printf("\n  c40 (B-249 D1): the device term alone, an unflagged hole is lost time, a step back a break\n");
+    Driver d(48000, 48000, 0, true);
+    DeviceClock clock(40000);
+    int64_t n = 0, lo = INT64_MAX, hi = INT64_MIN;
+    for (int64_t k = 0; k < 8000; k++) {
+        n += k == 4000 ? 72000 : k == 6000 ? -1008 : 0;
+        const int64_t t = T0 + n * S / 48000;
+        clock(d, t);
+        d.push(t, 480, k == 0);
+        const int64_t off = d.sv.next_content_pts() - (T0 + (n + 480) * S / 48000);
+        if (k >= 100) lo = std::min(lo, off), hi = std::max(hi, off);
+        n += 480;
+    }
+    const auto g = d.of(AsrcEvent::Kind::gap);
+    const auto rel = d.of(AsrcEvent::Kind::relock);
+    char name[300];
+    std::snprintf(name, sizeof name, "a 1.5 s hole at 40 s: one lost-time gap of 72000 frames (%zu gap(s), %lld frames); "
+                  "a 21 ms step back at 60 s: one relock 'jump' (%zu relock(s))", g.size(),
+                  g.empty() ? 0LL : (long long)g[0].second.lost_frames, rel.size());
+    CHECK(name, g.size() == 1 && !std::strcmp(g[0].second.reason, "lost-time") && g[0].second.lost_frames == 72000 &&
+                    rel.size() == 1 && !std::strcmp(rel[0].second.reason, "jump"));
+    std::snprintf(name, sizeof name, "the counter's content time stays on the input's across both (its offset %+.3f .. "
+                  "%+.3f ms from 1 s; before c40 it kept the hole's -1500 ms)", lo / 1e6, hi / 1e6);
+    CHECK(name, hi - lo <= MS);
+}
+
 // --- B-148: the device timeline across a break, lost time, the decode bound, the engage's rate ----------
 // py/asrc_bypass_ref_test.py's B-148 cases, the same scenarios (its random draws differ: the checks hold either).
 
@@ -3194,6 +3224,191 @@ void test_dev_stall_clock_running() {
     CHECK("12: a device that keeps reading (a suspended null sink runs on a timer): no stall, no flush", quiet);
 }
 
+// 16 (py's): READY empties what waited and the element counts from 0 again (B-249 fix round 4).
+void test_dev_restart_counts() {
+    for (const bool recount : {true, false}) {
+        AsrcDeviceTerm t;
+        const int64_t per = t.config().rate_hz / 10;
+        int64_t pushed = 0, taken = 0, mono = 0;
+        std::vector<AsrcDeviceEvent> ev;
+        auto read = [&](int64_t secs, bool takes) {
+            for (int64_t k = 0; k < secs * 10; k++) {
+                mono += 100 * MS;
+                pushed += per;
+                if (takes) taken += per;
+                t.sample(mono, 1000 * S + mono, pushed, taken, &ev);
+            }
+        };
+        t.start(0, &ev);
+        read(20, true);
+        read(4, false);
+        read(5, true);
+        int first = 0;
+        for (const AsrcDeviceEvent& e : ev)
+            first += e.kind == AsrcDeviceEvent::Kind::device_stalled || e.kind == AsrcDeviceEvent::Kind::device_resumed;
+        t.stop(mono);
+        if (recount) t.restart_counts();
+        pushed = taken = 0;
+        ev.clear();
+        t.start(mono, &ev);
+        read(20, true);
+        read(2, false);
+        int stalled = 0;
+        int64_t waiting = 0;
+        for (const AsrcDeviceEvent& e : ev)
+            if (e.kind == AsrcDeviceEvent::Kind::device_stalled) {
+                stalled++;
+                waiting = e.value;
+            }
+        char name[300];
+        if (recount) {
+            std::snprintf(name, sizeof name, "16: after a 4 s stall, READY and restart_counts(): a 2 s stall on the new "
+                          "counts is device-stalled once (%d), %lld frames waiting", stalled, (long long)waiting);
+            CHECK(name, first == 2 && stalled == 1 && waiting <= 13 * per);
+        } else {
+            std::snprintf(name, sizeof name, "16: ... without it the old flushes' discard hides that stall (%d "
+                          "device-stalled)", stalled);
+            CHECK(name, stalled == 0);
+        }
+    }
+}
+
+// 18 (py's, c40): a flush from elsewhere took 590 ms that waited before the sink; told (discard), no false stall.
+void test_dev_foreign_flush_discard() {
+    for (const bool told : {true, false}) {
+        AsrcDeviceTerm t;
+        const int64_t per = t.config().rate_hz / 10, fs = t.config().rate_hz;
+        int64_t pushed = 0, taken = 0, mono = 0;
+        std::vector<AsrcDeviceEvent> ev;
+        auto read = [&](int64_t tenths, bool push, bool take) {
+            for (int64_t k = 0; k < tenths; k++) {
+                mono += 100 * MS;
+                pushed += push ? per : 0;
+                taken += take ? per : 0;
+                t.sample(mono, 1000 * S + mono, pushed, taken, &ev);
+            }
+        };
+        t.start(0, &ev);
+        read(200, true, true);
+        pushed += 59 * fs / 100;
+        if (told) t.discard(59 * fs / 100);
+        read(100, true, true);
+        read(15, false, false);
+        read(50, true, true);
+        int stalled = 0;
+        for (const AsrcDeviceEvent& e : ev) stalled += e.kind == AsrcDeviceEvent::Kind::device_stalled;
+        char name[300];
+        std::snprintf(name, sizeof name, told ? "18: the flush's 590 ms told to the term: the 1.5 s gap after it is no "
+                      "device stall (%d)" : "18: ... not told, the gap reads as a device stall (%d)", stalled);
+        CHECK(name, told ? stalled == 0 : stalled == 1);
+    }
+}
+
+// 19 (py's, c40): a 45 ms clock step at a flush from elsewhere inside the first fit; resync() keeps it out of the rate.
+void test_dev_foreign_flush_resync() {
+    for (const bool resync : {true, false}) {
+        AsrcDeviceTerm t;
+        std::vector<AsrcDeviceEvent> ev;
+        t.start(0, &ev);
+        int64_t step = 0;
+        double worst = 0;
+        for (int64_t k = 1; k <= 1200; k++) {
+            const int64_t mono = k * 100 * MS;
+            if (k == 300) {
+                step = 45 * MS;
+                if (resync) t.resync(mono, &ev);
+            }
+            t.sample(mono + mono * 100 / 1000000 + step, 1000 * S + mono, -1, -1, &ev);
+            if (t.device_ppb()) worst = std::max(worst, std::abs(device_rate_ppm(t) - 100));
+        }
+        char name[300];
+        std::snprintf(name, sizeof name, resync ? "19: a 45 ms clock step at a flush from elsewhere, resync() there: "
+                      "the rate within %.1f ppm of the device's 100 from its first fit (20 at most)" : "19: ... without it "
+                      "the step is fit as a rate: %.1f ppm off at worst (more than 200)", worst);
+        CHECK(name, resync ? worst <= 20 : worst > 200);
+    }
+}
+
+// 20 (py's, c42): the clock is not trusted while stalled, nor settle_ns after the resume or a step inside that.
+void test_dev_clock_trusted() {
+    AsrcDeviceTerm t;
+    const int64_t per = t.config().rate_hz / 10;
+    std::vector<AsrcDeviceEvent> ev;
+    t.start(0, &ev);
+    int64_t pushed = 0, up = 0;
+    std::map<int, bool> at;   // tenths of a second -> trusted
+    for (int k = 1; k <= 1200; k++) {
+        const int64_t mono = k * 100 * MS;
+        if (k >= 300 && k < 325) up = std::min(3 * per, up + per);
+        else pushed += per, up = std::max<int64_t>(0, up - per);
+        const int64_t dev = mono + (k >= 400 ? 200 * MS : 0) + (k >= 800 ? 200 * MS : 0);
+        t.sample(dev, 1000 * S + mono, pushed, pushed, &ev, up);
+        at[k] = t.clock_trusted(1000 * S + mono);
+    }
+    const std::pair<int, bool> want[] = {{100, true}, {299, true}, {316, false}, {324, false}, {450, false},
+                                         {500, false}, {549, false}, {555, true}, {799, true}, {850, true},
+                                         {940, true}, {1000, true}, {1200, true}};
+    bool ok = true;
+    std::string got;
+    for (const auto& w : want) {
+        ok = ok && at[w.first] == w.second;
+        got += std::to_string(w.first / 10.0).substr(0, 5) + (at[w.first] ? ":1 " : ":0 ");
+    }
+    char name[400];
+    std::snprintf(name, sizeof name, "20: trusted from the start, not while stalled nor 15 s after the resume or a step "
+                  "inside that, still after a step while trusted (%llu): %s", (unsigned long long)t.stats().relocks_step,
+                  got.c_str());
+    CHECK(name, ok && t.stats().relocks_step == 2);
+}
+
+// 17 (py's, c40 B-249 D2): no queue between the element and the sink, so what waits is the upstream queue's (decq).
+void test_dev_upstream_waiting() {
+    for (const bool counted : {true, false}) {
+        for (const bool gap : {false, true}) {
+            AsrcDeviceTerm t;
+            const int64_t per = t.config().rate_hz / 10;
+            int64_t pushed = 0, mono = 0, up = 0;
+            int flushes = 0;
+            std::vector<AsrcDeviceEvent> ev;
+            auto read = [&](int64_t tenths, bool takes, bool fills) {
+                for (int64_t k = 0; k < tenths; k++) {
+                    mono += 100 * MS;
+                    if (takes) pushed += per, up = std::max<int64_t>(0, up - per);
+                    else if (fills) up = std::min(3 * per, up + per);
+                    flushes += t.sample(mono, 1000 * S + mono, pushed, pushed, &ev, counted ? up : 0);
+                }
+            };
+            t.start(0, &ev);
+            read(200, true, false);
+            read(25, false, !gap);
+            read(100, true, false);
+            int stalled = 0, resumed = 0;
+            int64_t waiting = 0, told = -1;
+            for (const AsrcDeviceEvent& e : ev) {
+                if (e.kind == AsrcDeviceEvent::Kind::device_stalled) stalled++, waiting = e.value;
+                if (e.kind == AsrcDeviceEvent::Kind::device_resumed) resumed++, told = e.value;
+            }
+            char name[300];
+            if (counted && !gap) {
+                std::snprintf(name, sizeof name, "17: a 2.5 s device stall, decq full: device-stalled once (%d), resumed "
+                              "(%d), %lld frames waiting, %d flushes", stalled, resumed, (long long)waiting, flushes);
+                CHECK(name, stalled == 1 && resumed == 1 && waiting == 3 * per);
+                // c42 (MR-059): the backlog waits above the element: nothing flushed or dropped.
+                std::snprintf(name, sizeof name, "17: ... the backlog waits above the element: %d flushes, %lld frames "
+                              "dropped (told %lld), none", flushes, (long long)t.stats().dropped, (long long)told);
+                CHECK(name, flushes == 0 && t.stats().dropped == 0 && told == 0);
+            } else if (counted) {
+                std::snprintf(name, sizeof name, "17: an input gap (decq empty): no device stall (%d)", stalled);
+                CHECK(name, stalled == 0 && resumed == 0);
+            } else if (!gap) {
+                std::snprintf(name, sizeof name, "17: ... without the upstream count that stall is never read (%d)",
+                              stalled);
+                CHECK(name, stalled == 0);
+            }
+        }
+    }
+}
+
 void test_dev_render_lateness_ring() {
     char name[400];
     {
@@ -3426,6 +3641,88 @@ void test_drain() {
     CHECK("no drain outside the device modes", dec.sv.stats().drain_ppb == 0);
 }
 
+// The sink margin (B-249): py/sink_margin_ref_test.py's rule cases, same names, same order.
+static void test_sink_margin() {
+    std::printf("\n--- the sink margin (B-249) ---\n");
+    const int64_t SPS = 480, M = 2880;
+    CHECK("a contiguous write past the segment in flight: no silence", asrc_sink_silence(5 * SPS, 3, SPS, M, false, 0, 0) == 0);
+    CHECK("... with a frame of margin left, still none (a hole of our own otherwise)",
+          asrc_sink_silence(4 * SPS, 3, SPS, M, false, 0, 0) == 0);
+    CHECK("a write into the segment in flight: silence to margin past it",
+          asrc_sink_silence(3 * SPS + 100, 3, SPS, M, false, 0, 0) == 4 * SPS + M - (3 * SPS + 100));
+    CHECK("a write behind the read (the base sink realigns to segdone + 1): silence = the margin",
+          asrc_sink_silence(1 * SPS, 7, SPS, M, false, 0, 0) == M);
+    CHECK("the first write (next -1): twice the margin past the segment in flight",
+          asrc_sink_silence(-1, 0, SPS, M, false, 0, 0) == SPS + 2 * M && asrc_sink_silence(-1, 9, SPS, M, false, 0, 0) == 2 * M);
+    CHECK("the device clock past a stale segdone moves `consumed`",
+          asrc_sink_silence(5 * SPS, 3, SPS, M, true, 6 * SPS, 0) == 6 * SPS + M - 5 * SPS);
+    CHECK("... a clock behind it does not", asrc_sink_silence(5 * SPS, 3, SPS, M, true, 2 * SPS, 0) == 0);
+    CHECK("the guard moves `consumed` past the clock: a write less than the guard ahead gets silence",
+          asrc_sink_silence(6 * SPS, 3, SPS, M, true, 5 * SPS, 2 * SPS) == 7 * SPS + M - 6 * SPS &&
+              asrc_sink_silence(7 * SPS, 3, SPS, M, true, 5 * SPS, 2 * SPS) == 0);
+    CHECK("... no guard without a clock (before the first render)",
+          asrc_sink_silence(5 * SPS, 3, SPS, M, false, 0, 10 * SPS) == 0);
+    CHECK("a start: the margin plus the larger of the margin and the guard",
+          asrc_sink_silence(-1, 0, SPS, M, false, 0, SPS) == SPS + 2 * M &&
+              asrc_sink_silence(-1, 0, SPS, M, false, 0, 2 * M) == SPS + 3 * M);
+    CHECK("after a flush while the device plays (next -1, a clock): the start's silence past the clock and guard, from "
+          "where the base sink writes (pulsesink 1.22: frame 0)",
+          asrc_sink_silence(-1, 0, SPS, M, true, 3000000, SPS) == 3000000 + SPS + 2 * M &&
+              asrc_sink_silence(-1, 7, SPS, M, true, 2 * SPS, 0) == 2 * M);
+    CHECK("the server's configured latency: tlength less two minreq (60 ms, 10 ms: 40 ms)",
+          asrc_server_latency(6 * SPS, SPS) == 4 * SPS && asrc_server_latency(SPS, SPS) == 0);
+    AsrcSinkGuard g(4 * SPS, 500 * 48);
+    g.segdone_seen(0, SPS, 100);
+    CHECK("while segdone has not moved (1.22): the configured latency", g.frames() == 4 * SPS);
+    g.segdone_seen(12, SPS, 11 * SPS + 100);
+    CHECK("... a read index's ceiling within a segment of the clock: still that", g.frames() == 4 * SPS);
+    g.segdone_seen(12, SPS, 12 * SPS - 900);
+    g.segdone_seen(12, SPS, 12 * SPS - 600);
+    CHECK("... ahead by more: the sink's latency learned, its largest less the ceiling's segment",
+          g.frames() == 4 * SPS + 900 - SPS);
+    g.segdone_seen((int64_t)1 << 30, SPS, 0);
+    CHECK("... capped (500 ms)", g.frames() == 500 * 48);
+    const int64_t SEG = 10000000, CAP = ASRC_SINK_REFILL_MAX_MS * 48;
+    CHECK("the guard holds a write that came straight through, not one that waited a segment in the queue or followed "
+          "a push that blocked less than a segment before",
+          asrc_sink_guard_applies(0, 0, 0, SEG) && asrc_sink_guard_applies(9999999, 1999999, 0, SEG) &&
+              !asrc_sink_guard_applies(SEG, 0, 0, SEG) && !asrc_sink_guard_applies(0, 2000000, 0, SEG) &&
+              !asrc_sink_guard_applies(0, 50000000, SEG - 1, SEG));
+    CHECK("... a push that blocked a segment or more before this write says nothing of it: the guard holds",
+          asrc_sink_guard_applies(0, 2000000, SEG, SEG) && asrc_sink_guard_applies(0, 80000000, 5 * SEG, SEG) &&
+              !asrc_sink_guard_applies(SEG, 80000000, 5 * SEG, SEG));
+    CHECK("a write is held to segdone alone within two segments of a push that blocked, not after (c41)",
+          asrc_sink_stream_full(2000000, 0, SEG) && asrc_sink_stream_full(330000000, 2 * SEG - 1, SEG) &&
+              !asrc_sink_stream_full(1999999, 0, SEG) && !asrc_sink_stream_full(330000000, 2 * SEG, SEG));
+    int64_t qp = -1, qs = -1;
+    asrc_sink_queued_push(330000000, 912000000, 1000000, &qp, &qs);
+    CHECK("a queue thread's gap the write's buffer waited through: that push, less its time on or waiting for a CPU, "
+          "ended that long ago", qp == 329000000 && qs == 1000000);
+    asrc_sink_queued_push(330000000, 329999999, 0, &qp, &qs);
+    const bool waited_data = qp == 0 && qs == 330000000;
+    asrc_sink_queued_push(330000000, 912000000, -1, &qp, &qs);
+    const bool unknown = qp == 0 && qs == 330000000;
+    asrc_sink_queued_push(5000000, 900000000, 9000000, &qp, &qs);
+    CHECK("... nothing when the buffer came during the gap (an outage), the CPU time is unknown, or it was all CPU",
+          waited_data && unknown && qp == 0 && qs == 9000000);
+    CHECK("a refill is capped: the silence at most the cap, none still none",
+          asrc_sink_silence(-1, 0, SPS, M, true, 20 * 48000, 4 * SPS, CAP) == CAP &&
+              asrc_sink_silence(-1, 0, SPS, M, true, 20 * 48000, 4 * SPS) > CAP &&
+              asrc_sink_silence(5 * SPS, 3, SPS, M, false, 0, 0, CAP) == 0 &&
+              asrc_sink_silence(3 * SPS + 100, 3, SPS, M, false, 0, 0, CAP) == 4 * SPS + M - (3 * SPS + 100));
+    AsrcSinkMargin z(0);
+    CHECK("margin 0 (mrasrc margin-ms 0): never, not even into the segment in flight",
+          z.silence(3 * SPS + 100, 3, SPS, false, 0, 0) == 0 && z.silence(-1, 0, SPS, false, 0, 0) == 0);
+    AsrcSinkMargin m(M);
+    m.silence(-1, 0, SPS, false, 0, 0);
+    m.silence(5 * SPS, 3, SPS, false, 0, 0);
+    m.silence(1 * SPS, 7, SPS, false, 0, 0);
+    CHECK("stats count the refills and their silence", m.refills() == 2 && m.silence_total() == SPS + 2 * M + M);
+    AsrcSinkMargin mc(M, CAP);
+    mc.silence(-1, 0, SPS, true, 20 * 48000, 4 * SPS);
+    CHECK("... a capped refill counts its capped silence", mc.refills() == 1 && mc.silence_total() == CAP);
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && !std::strcmp(argv[1], "--sweep")) return sweep(std::atoi(argv[2]));
     if (const char* e = std::getenv("MRTS_FIXTURES")) {
@@ -3457,6 +3754,7 @@ int main(int argc, char** argv) {
     test_decode_breaks();
     test_decode_composite();
     test_device_only();
+    test_device_only_steps();
     std::printf("\n  CHECKSUM asrc_decode %016llx (compare across machines)\n", (unsigned long long)g_dec.h);
     test_device_continuity();
     test_lost_time();
@@ -3476,9 +3774,15 @@ int main(int argc, char** argv) {
     test_dev_start_and_restart();
     test_dev_stall_clock_stopped();
     test_dev_stall_clock_running();
+    test_dev_restart_counts();
+    test_dev_upstream_waiting();
+    test_dev_clock_trusted();
+    test_dev_foreign_flush_discard();
+    test_dev_foreign_flush_resync();
     test_dev_render_lateness_ring();
     test_dev_replay_format();
     test_dev_recalibrated();
     test_drain();
+    test_sink_margin();
     return test_summary("asrc_servo");
 }

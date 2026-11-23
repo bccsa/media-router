@@ -271,10 +271,10 @@ export { REDACTED, redactSecrets } from '@media-router/shared-types';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
 export {
-    OUTPUT_PREFILL_MS,
-    OUTPUT_PREFILL_NAME,
+    OUTPUT_MARGIN_MS,
+    OUTPUT_QUEUE_NAME,
     OUTPUT_RING_US,
-    buildOutputPrefill,
+    buildOutputQueue,
 } from './plugins/outputSink.js';
 export { CATCH_UP_EVENT, catchUpText, readCatchUp } from './plugins/catchUp.js';
 export type { CaughtUpInput } from './plugins/catchUp.js';
