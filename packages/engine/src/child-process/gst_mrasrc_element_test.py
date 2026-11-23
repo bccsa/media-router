@@ -28,7 +28,9 @@ known PTS jitter, so the capture time of every input frame is known:
     realign after the start; a tone into a device 100 ppm off for 30 min with the render lateness
     flat and THD+N within Phase 1's bound; a 3 s device stall skipped and live again, a restart's
     one relock; decode and device in one ratio; a device-sink that cannot be followed is an error
-    naming it, and no custom slaving is left in the source.
+    naming it, and no custom slaving is left in the source; B-179's drain and B-240's raises; B-249's
+    margin, guard and c40-c42 stall rule; M6: a device stall's backlog in upstream-queue given back
+    by the drain alone, at 0.5 % at most.
 
 Skips (exit 0) without GStreamer, numpy or the built plugin."""
 import os
@@ -366,7 +368,8 @@ _st = _el.find_property("stats")
 _s0 = _el.get_property("stats")
 BASE_FIELDS = ["state", "ratio-ppb", "phase-err-ns", "relocks", "in-frames", "out-frames",
                "discont-in", "dropped-frames", "gaps", "lost-frames", "mode", "source-ppb", "device-ppb",
-               "rate-known", "device-relocks", "device-stalls", "render-lateness-ns"]
+               "rate-known", "device-relocks", "device-stalls", "render-lateness-ns", "margin-refills",
+               "margin-silence-ns", "margin-guard-ns"]
 # B-179's drain, in every post (0 and "warm-up" without a device term; the group target alone, B-177).
 ALONE_NS = -3600 * 1000000000
 DRAIN_FIELDS = ["drain-ppm", "drain-excess-ns", "drain-margin-ns", "drain-learned-ns", "fill-trough-ns",
@@ -388,10 +391,18 @@ check("stats is read-only; a fresh element's: mrasrc-stats, acquiring, mode capt
       and _s0.get_value("rate-known") is False and all(_s0.get_value(k) == 0 for k in COUNT_FIELDS)
       and all(_s0.get_value(k) == v for k, v in NO_DRAIN.items()))
 _bp, _ds = _el.find_property("bypass-below-ppm"), _el.find_property("device-sink")
-check("bypass-below-ppm: 0 (capture) by default, 0..1000; device-sink: \"\" by default; both apply at "
-      "a start (WI-P3-5)",
+_mm = _el.find_property("margin-ms")
+check("bypass-below-ppm: 0 (capture) by default, 0..1000; device-sink: \"\" by default; margin-ms 0 by default, "
+      "0..1000 (B-249); all apply at a start (WI-P3-5)",
       _el.get_property("bypass-below-ppm") == 0.0 and _bp.minimum == 0.0 and _bp.maximum == 1000.0
-      and _el.get_property("device-sink") == "" and all(p.flags & Gst.PARAM_MUTABLE_READY for p in (_bp, _ds)))
+      and _el.get_property("device-sink") == "" and _el.get_property("margin-ms") == 0
+      and _mm.minimum == 0 and _mm.maximum == 1000
+      and all(p.flags & Gst.PARAM_MUTABLE_READY for p in (_bp, _ds, _mm)))
+_uq = _el.find_property("upstream-queue")
+check("upstream-queue \"\" by default, applies at a start (B-249); no catch-up-ppm: the drain is the only rate "
+      "controller (B-179, M6)",
+      _el.get_property("upstream-queue") == "" and _uq.flags & Gst.PARAM_MUTABLE_READY
+      and _el.find_property("catch-up-ppm") is None)
 
 # --- the acceptance: THD+N and the PTS formula at a 1.0002 ratio -----------------------------
 print("\n--- a 1 kHz sine at a 1.0002 ratio (device 199.96 ppm slow, 1 ms jitter), 60 s ---")
@@ -706,13 +717,14 @@ posts = h.messages("mrasrc-stats")
 _gaps = [b["out-frames"] - a["out-frames"] for a, b in zip(posts, posts[1:-1])]
 check(f"mrasrc-stats every 2 s of output ({len(posts)} posts, {sorted(set(_gaps))} frames "
       "apart) and once more at EOS", len(posts) == 6 and all(abs(g - 2 * FS) <= BUF for g in _gaps))
-check("each carries part 10's fields, WI-P3-5's mode and clocks, B-148's rate-known and B-166's device "
-      "relocks, stalls and render lateness and B-179's drain, in order and typed (capture: mode capture, no "
-      "device, the drain at rest)",
+check("each carries part 10's fields, WI-P3-5's mode and clocks, B-148's rate-known, B-166's device "
+      "relocks, stalls and render lateness, B-249's margin refills and guard and B-179's drain, in order and typed "
+      "(capture: mode capture, no device, no margin, the drain at rest)",
       all(list(p) == STATS_FIELDS and isinstance(p["state"], str) and p["mode"] == "capture"
           and all(isinstance(p[k], int) for k in COUNT_FIELDS) and isinstance(p["rate-known"], bool)
           and p["device-ppb"] == 0 and p["device-relocks"] == 0 and p["device-stalls"] == 0
-          and p["render-lateness-ns"] == 0 and all(p[k] == v for k, v in NO_DRAIN.items()) for p in posts))
+          and p["render-lateness-ns"] == 0 and p["margin-refills"] == 0 and p["margin-silence-ns"] == 0
+          and p["margin-guard-ns"] == 0 and all(p[k] == v for k, v in NO_DRAIN.items()) for p in posts))
 _ev = h.messages("mrasrc-event")
 check(f"mrasrc-event relock: kind, reason, house-ns, jump-ns, dropped-ns "
       f"({sorted(_ev[0]) if _ev else []})",
@@ -1311,9 +1323,13 @@ def kinds(events, *names):
 
 def resyncs_at(t, into):
     """An action: the sink's write-position jumps by clock second `t`. A sync=false ring starts before its first
-    write, so up to two realigns may come with the first renders (F7: no prefill there; 2 at load, B-177); none
-    may come after."""
+    write, so a realign may come with the first renders (F7: no queue there), up to two at load (B-177), three when
+    the device's 1 s buffer takes the ring past the writer again (B-249); none may come after."""
     return (t, lambda p, now: into.__setitem__("start", p.get_by_name("sink").get_property("resyncs")))
+
+
+# Three: about 4 % of starts on the gate VM read 3, on c39 and c40 alike (B-249, c40 review 1); none came after.
+START_REALIGNS = 3
 
 
 if not os.path.exists(_TEST_SO):
@@ -1344,7 +1360,7 @@ else:
           f"the first render ({_f['calibrations']} changes in {_f['renders']} renders), {_r0} realign with the first "
           f"renders and none at the {len(_holes)} lost cycles' DISCONTs ({_f['resyncs'] - _r0}: sync=false writes on), "
           f"no underrun ({_f['underruns']})",
-          not _errors and _f["renders"] > 25000 and _f["calibrations"] == 0 and 0 <= _r0 <= 2
+          not _errors and _f["renders"] > 25000 and _f["calibrations"] == 0 and 0 <= _r0 <= START_REALIGNS
           and _f["resyncs"] == _r0 and _f["underruns"] == 0 and len(_holes) == 10)
     _rel = {k: (_f[f"fill-{k}-ns"] - _f["fill-first-ns"]) / MS for k in ("p05", "p95", "last")}
     check(f"the ring stayed full: 5 s windows' top fills p05 {_rel['p05']:+.3f}, p95 {_rel['p95']:+.3f}, the last "
@@ -1400,12 +1416,17 @@ else:
     _late = [(t, s["render-lateness-ns"]) for t, s in _stats if _t_drain and t >= max(120, _t_drain + 2)]
     _fit = np.polyfit([t for t, _ in _late], [v for _, v in _late], 1) if len(_late) > 5 else (0, 0)
     _res = [v - (_fit[0] * t + _fit[1]) for t, v in _late] or [0]
+    # p1-p99 (B-249's reading, M6): a lone timer read preempted between the device clock and house time reads high
+    # once (4-11 ms seen under load); max-min within a loose 20 ms still catches a level that moves.
+    _sr = sorted(_res)
+    _r01, _r99 = _sr[len(_sr) // 100], _sr[-1 - len(_sr) // 100]
     check(f"render lateness from 120 s to {_late[-1][0] / 60 if _late else 0:.0f} min on the drain's line within 2 ms "
-          f"({_fit[0] / MS:+.3f} ms/s of clock; residual {min(_res) / MS:+.3f} .. {max(_res) / MS:+.3f} ms), {len(_late)} "
+          f"({_fit[0] / MS:+.3f} ms/s of clock; residual p1-p99 {_r01 / MS:+.3f} .. {_r99 / MS:+.3f} ms, max-min "
+          f"{min(_res) / MS:+.3f} .. {max(_res) / MS:+.3f} within 20), {len(_late)} "
           f"posts, no underrun ({_sk['underruns']}), no realign after the start ({_sk['resyncs'] - _rs.get('start', -1)}; "
           f"{_rs.get('start')} with the first renders)",
-          not _errors and len(_late) > 500 and abs(_fit[0] / MS + 5) <= 0.05 and max(_res) - min(_res) < 2 * MS
-          and _sk["underruns"] == 0 and 0 <= _rs.get("start", -1) <= 2 and _sk["resyncs"] == _rs["start"])
+          not _errors and len(_late) > 500 and abs(_fit[0] / MS + 5) <= 0.05 and _r99 - _r01 < 2 * MS
+          and max(_res) - min(_res) < 20 * MS and _sk["underruns"] == 0 and 0 <= _rs.get("start", -1) <= START_REALIGNS and _sk["resyncs"] == _rs["start"])
     # The device's 1 s is what the reading holds before the drain (the ring and the quantum add a little).
     _pre = [s["render-lateness-ns"] for t, s in _stats if 20 <= t and _t_drain and t < _t_drain - 10]
     _lo, _hi = min(_pre, default=0), max(_pre, default=0)
@@ -1480,6 +1501,97 @@ else:
           f"prerolls again) and posted stats to the end ({_stats[-1][0] if _stats else 0:.0f} s)",
           not _errors and _stats and _stats[-1][0] >= _secs - 5)
 
+    # c42 (MR-059): the Audio Decoder's shape, no queue between the element and the sink, decq before it. A stall's
+    # backlog waits above the element: told, nothing flushed or dropped, played late (00b03b02 flushed, dropped 2.3 s).
+    _secs = 160
+    print(f"\n--- device mode: a 2.5 s device stall at 100 s, decq before the element and no queue after it (the Audio "
+          f"Decoder's), a {_speed}x clock ---")
+    _at = {}
+
+    def _stall_dec(p, now):
+        _at["stall"] = now
+        p.get_by_name("sink").set_property("stall-ms", 2500)
+
+    _ev, _stats, _errors, _lost, _p = clock_run(
+        "audiotestsrc is-live=true samplesperbuffer=1024 ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! "
+        "queue name=decq leaky=0 max-size-time=300000000 max-size-buffers=0 max-size-bytes=0 ! "
+        "mrasrc name=asrc device-sink=sink upstream-queue=decq ! mrtestaudiosink name=sink ppm=-135 "
+        "device-ns=40000000 sync=false buffer-time=100000 latency-time=10000", _speed, _secs,
+        actions=((100, _stall_dec),))
+    _p.set_state(Gst.State.NULL)
+    _stl, _res = kinds(_ev, "device-stalled"), kinds(_ev, "device-resumed")
+    _t0 = _at.get("stall", 100)
+    check(f"decq's shape: device-stalled once, {(_stl[0][0] - _t0) if _stl else -1:.2f} s after the device stopped "
+          f"(1.0-1.6 s), {_stl[0][1]['pending-frames'] if _stl else -1} frames waiting; device-resumed once, "
+          f"{(_res[0][0] - _t0 - 2.5) if _res else -1:.2f} s after its return (within 0.6 s): {len(_stl)}, {len(_res)}",
+          len(_stl) == 1 and 1.0 <= _stl[0][0] - _t0 <= 1.6 and len(_res) == 1 and 0 <= _res[0][0] - _t0 - 2.5 <= 0.6)
+    check(f"... nothing flushed (back to PAUSED {_lost} times: a flushed async sink prerolls again) and nothing "
+          f"dropped ({_res[0][1]['dropped-frames'] if _res else -1} frames told at the resume)",
+          _lost == 0 and bool(_res) and _res[0][1]["dropped-frames"] == 0 and not _errors)
+    _before = [s["render-lateness-ns"] for t, s in _stats if 80 <= t < 99]
+    _after = [s["render-lateness-ns"] for t, s in _stats if 115 <= t < _secs - 2]
+    _kept = (sum(_after) / len(_after) - sum(_before) / len(_before)) / MS if _before and _after else -1
+    check(f"... the stall's backlog played late, not skipped: render lateness {_kept:.0f} ms over the reading before "
+          f"it (2.5 s stall: 2200-2900)", 2200 <= _kept <= 2900)
+
+    # M6 (B-249 into Phase 4): the drain is the only rate controller and counts upstream-queue. The Audio Decoder's
+    # shape (ad_esq before the element, no queue after it; no margin-ms: the test device's clock runs on through its
+    # stall, so a refill would add the stall again, c43's open item): a 2.5 s device stall's backlog waits in ad_esq,
+    # told and not flushed, and the drain gives it back at 0.5 % at most, the stats with no catch-up.
+    _speed, _secs = 2, 900
+    print(f"\n--- M6: a 2.5 s device stall at 100 s with an ad_esq backlog; the drain gives it back ({_speed}x, {_secs} s) ---")
+    _at = {}
+
+    def _stall_esq(p, now):
+        _at["stall"] = now
+        p.get_by_name("sink").set_property("stall-ms", 2500)
+
+    _ev, _stats, _errors, _lost, _p = clock_run(
+        "audiotestsrc is-live=true samplesperbuffer=1024 ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! "
+        "queue name=ad_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0 ! "
+        "mrasrc name=asrc device-sink=sink upstream-queue=ad_esq ! mrtestaudiosink name=sink ppm=-135 "
+        "device-ns=40000000 sync=false buffer-time=100000 latency-time=10000", _speed, _secs,
+        actions=((100, _stall_esq),))
+    _p.set_state(Gst.State.NULL)
+    _t0 = _at.get("stall", 100)
+    _stl, _res = kinds(_ev, "device-stalled"), kinds(_ev, "device-resumed")
+    _lat = [(t, s["render-lateness-ns"]) for t, s in _stats if s["render-lateness-ns"]]
+    _pre = [v for t, v in _lat if 70 <= t < _t0 - 1]
+    _base = sum(_pre) / len(_pre) if _pre else 0
+    _peak = max((v for t, v in _lat if _t0 < t < _t0 + 30), default=0)
+    check(f"M6 the stall told, not flushed: device-stalled {len(_stl)}, device-resumed {len(_res)} with "
+          f"{_res[0][1]['dropped-frames'] if _res else -1} frames dropped, back to PAUSED {_lost} times; the backlog "
+          f"plays late: render lateness {_base / MS:.0f} -> {_peak / MS:.0f} ms (+{(_peak - _base) / MS:.0f}; 2200-2900)",
+          len(_stl) == 1 and len(_res) == 1 and _res[0][1]["dropped-frames"] == 0 and _lost == 0 and not _errors
+          and 2200 * MS <= _peak - _base <= 2900 * MS)
+    _cu = sorted({k for _, s in _stats for k in s if k.startswith("catch-up")})
+    _ppm = [s["drain-ppm"] for t, s in _stats if t > _t0]
+    _drn = [(t, s) for t, s in _stats if t > _t0 and s["drain-ppm"] >= 5000]
+    check(f"M6 one rate controller: no catch-up fields ({_cu}), drain-ppm at most 5,000 ({max(_ppm, default=0)}), and "
+          f"5,000 while it drains ({len(_drn)} posts), the stats' ratio the device term's alone",
+          not _cu and _ppm and max(_ppm) <= 5000 and len(_drn) > 20
+          and all(abs(s["ratio-ppb"] - s["device-ppb"]) <= 1000 for t, s in _drn))
+    # What the element took against what it made while draining: a device slow by e takes (1 - e) of the house rate,
+    # so the input per output is (1 + drain) / (1 + device-ppb); the drain alone at most 0.5 %, never more.
+    _rates = []
+    for (ta, a), (tb, b) in zip(_drn, _drn[1:]):
+        if tb - ta < 10 and b["out-frames"] > a["out-frames"]:
+            _rates.append(((b["in-frames"] - a["in-frames"]) / (b["out-frames"] - a["out-frames"]))
+                          * (1 + a["device-ppb"] / 1e9) - 1)
+    _rmax = max(_rates, default=0)
+    _rmed = sorted(_rates)[len(_rates) // 2] if _rates else 0
+    check(f"M6 ... the input consumed at most 0.5 % faster than the device takes it: {_rmed * 1e6:+.0f} ppm median, "
+          f"{_rmax * 1e6:+.0f} max over {len(_rates)} stats intervals (<= +5,100: a post's frame count rounds)",
+          _rates and _rmax <= 0.0051 and 0.0045 <= _rmed <= 0.0051)
+    _fall = [(t, v) for t, v in _lat if _drn and _drn[0][0] + 4 <= t <= _drn[-1][0] - 2]
+    _slope = (np.polyfit([t for t, _ in _fall], [v for _, v in _fall], 1)[0] / MS) if len(_fall) > 5 else 0
+    _end = [v for t, v in _lat if t >= _secs - 30]
+    _end_ms = (sum(_end) / len(_end) - _base) / MS if _end else 99999
+    check(f"M6 ... the render lateness falls {_slope:+.2f} ms/s of clock while it drains (-5.5 .. -4.5), and is back "
+          f"within 100 ms of the reading before the stall by the end ({_end_ms:+.0f} ms; drain-state "
+          f"{_stats[-1][1]['drain-state'] if _stats else '?'}, drained {_stats[-1][1]['drained-ns'] / MS if _stats else 0:.0f} ms)",
+          -5.5 <= _slope <= -4.5 and abs(_end_ms) <= 100 and _stats and _stats[-1][1]["drained-ns"] >= 2000 * MS)
+
     print("\n--- decode and device together: a source 40 ppm fast into a device 20 ppm slow (2x clock, 120 s) ---")
     cap = Capture(num=1000040, den=1000000, formula=True, channels=2)
 
@@ -1517,7 +1629,7 @@ else:
           f"{_rs.get('start')} with the first renders)",
           len(_eng) == 1 and abs(_eng[0]["source-ppb"] - 40000) <= 2000 and _st.get("mode") == "decode+device"
           and len(_late) > 10 and abs(_devp + 20000) <= 500 and abs(_ratio + 60000) <= 1000
-          and _sk["calibrations"] == 0 and 0 <= _rs.get("start", -1) <= 2 and _sk["resyncs"] == _rs["start"])
+          and _sk["calibrations"] == 0 and 0 <= _rs.get("start", -1) <= START_REALIGNS and _sk["resyncs"] == _rs["start"])
 
     # B-179: the drain. A live source that stalled 1.5 s at its start, then plays on: the backlog fills the
     # prefill (1 s) and waits upstream; once the term is locked and 30 s sampled, it drains at up to 0.5 %.
@@ -1686,6 +1798,78 @@ else:
           and _st.get("drain-margin-ns") == 20 * MS and set(_why) <= _allowed
           and (_drained or _why.get("load", 0) >= 1) and not kinds(_ev, "underrun"))
 
+    # c41b: the blocked-push detection wired, on a server's stream (mrtestserversink: its own ring, its clock run on
+    # from timing updates 1.5 s apart). With it the write after a 0.3 s server stall is held to the read index; without
+    # (schedstat unreadable, the queue's-thread test broken, c40's rule) the clock is read and each stall refills.
+    import json
+    import threading
+    import time
+
+    def server_run(tail, secs=24, stalls=(8, 16)):
+        """The sink end `tail` fed live 30 ms late into mrtestserversink in real time, the server taking nothing for
+        0.3 s at each of `stalls` s: margin-refills by the end, the mrasrc events, errors, segments the server took."""
+        desc = (f"appsrc name=src is-live=true format=time do-timestamp=false block=false max-bytes=0 "
+                f"caps=audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! "
+                + tail.replace("%SINK%", "mrtestserversink name=sink"))
+        p = Gst.parse_launch(desc)
+        tone = np.repeat(0.25 * np.sin(2 * np.pi * 1000 * np.arange(480) / FS), 2).astype("<f4").tobytes()
+        stop = threading.Event()
+
+        def feed():
+            src = p.get_by_name("src")
+            while p.get_base_time() == 0 and not stop.is_set():
+                time.sleep(0.001)
+            base, clk, nxt = p.get_base_time(), p.get_pipeline_clock(), 0
+            while not stop.is_set() and nxt < secs * S:
+                Gst.Clock.id_wait(clk.new_single_shot_id(base + nxt + 30 * MS))
+                b = Gst.Buffer.new_wrapped(tone)
+                b.pts, b.duration = nxt, 10 * MS
+                if src.emit("push-buffer", b) != Gst.FlowReturn.OK:
+                    break
+                nxt += 10 * MS
+
+        p.set_state(Gst.State.PLAYING)
+        th = threading.Thread(target=feed, daemon=True)
+        th.start()
+        t0, bus, todo, ev, errs = time.monotonic(), p.get_bus(), list(stalls), [], []
+        while time.monotonic() - t0 < secs:
+            while todo and time.monotonic() - t0 >= todo[0]:
+                todo.pop(0)
+                p.get_by_name("sink").set_property("stall-ms", 300)
+            m = bus.timed_pop(20 * Gst.MSECOND)
+            if m is None:
+                continue
+            if m.type == Gst.MessageType.ERROR:
+                errs.append(m.parse_error()[0].message)
+                break
+            if m.type == Gst.MessageType.ELEMENT and m.get_structure().get_name() == "mrasrc-event":
+                ev.append(sdict(m.get_structure()))
+        stop.set()
+        asrc = p.get_by_name("outasrc") or p.get_by_name("asrc")
+        refills = sdict(asrc.get_property("stats")).get("margin-refills", -1)
+        taken = p.get_by_name("sink").get_property("taken-segments")
+        p.set_state(Gst.State.NULL)
+        th.join(2)
+        return refills, ev, errs, taken
+
+    _PL = os.path.normpath(os.path.join(_HERE, "..", "..", "..", "..", "plugins"))
+    _LAT = "mrlateness name=lat_render reference=running-time ! "
+    _t302 = json.load(open(os.path.join(_PL, "audio-output-302m", "tests", "fixtures", "sink-end.json")))["tail"]
+    _tdec = json.load(open(os.path.join(_PL, "audio-decoder", "tests", "fixtures", "sink-end.json")))["tail"]
+    _tdec = _tdec.replace("%DECODER% ! ", "").replace("%TS_OFFSET%", "0")
+    for _what, _tail in (("the 302M's (outq's thread writes: the push read from its gaps and schedstat)", _t302),
+                         ("the Audio Decoder's (asrc's chain writes: its push timed)", _tdec)):
+        print(f"\n--- c41b: {_what} sink end into a server's stream that takes nothing for 0.3 s at 8 s and 16 s, "
+              "24 s real time ---")
+        _ref, _ev, _err, _taken = server_run(_tail.replace(_LAT, ""))
+        _unread = [e for e in _ev if e["kind"] == "sink-push-unread"]
+        check(f"the lateness tap taken off the fixture's string ({_LAT.strip(' !')} in it: {_LAT in _tail})",
+              _LAT in _tail)
+        check(f"the write after each stall is held to the read index: margin-refills {_ref} (the start's only; c40's "
+              f"rule, or the detection unwired: one more a stall), no sink-push-unread event ({len(_unread)}), the "
+              f"server took {_taken} segments, errors {_err}",
+              _ref == 1 and not _unread and _taken > 1500 and not _err)
+
 print("\n--- a device-sink that cannot be followed is an error naming it; no custom slaving left ---")
 for desc, what in (("fakesink name=sink", "not a GstAudioBaseSink"),
                    ("fakesink name=other", "no element of that name downstream")):
@@ -1696,6 +1880,17 @@ for desc, what in (("fakesink name=sink", "not a GstAudioBaseSink"),
     check(f"{desc.split()[0]} {desc.split()[-1]}: the state change fails, an error from asrc naming it "
           f"({msg!r})", ret == Gst.StateChangeReturn.FAILURE and m is not None and m.src.get_name() == "asrc"
           and 'device-sink "sink"' in msg and what in msg)
+    _p.set_state(Gst.State.NULL)
+for desc, what in (("queue name=q ! ", "no element of that name in the pipeline"),
+                   ("identity name=decq ! ", "no current-level-time")):
+    _p = Gst.parse_launch(f"audiotestsrc num-buffers=4 ! {desc}mrasrc name=asrc device-sink=sink margin-ms=60 "
+                          "upstream-queue=decq ! mrtestaudiosink name=sink")
+    ret = _p.set_state(Gst.State.PAUSED)
+    m = _p.get_bus().timed_pop_filtered(2 * Gst.SECOND, Gst.MessageType.ERROR)
+    msg = m.parse_error()[0].message if m else ""
+    check(f"upstream-queue decq, {what}: the state change fails, an error from asrc naming it ({msg!r})",
+          ret == Gst.StateChangeReturn.FAILURE and m is not None and m.src.get_name() == "asrc"
+          and 'upstream-queue "decq"' in msg and what in msg)
     _p.set_state(Gst.State.NULL)
 _src = open(os.path.join(_HERE, "..", "..", "..", "..", "plugins", "mpegts-core", "native", "mrtshouse",
                          "gstmrasrc.cpp")).read()

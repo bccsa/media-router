@@ -612,6 +612,37 @@ def test_device_only():
           and abs(off - ran) <= US and off > MS)
 
 
+def device_only_steps_run(hole=72000, back=1008):
+    """The device term alone (302M's mixer arm), 480-frame buffers at house rate, a device 40 ppm fast: an unflagged
+    hole of `hole` frames at 40 s, a step back of `back` frames at 60 s, 80 s. Per buffer: the counter's content time
+    after it less the buffer's end (what the render-lateness map gives its next output)."""
+    drv = Driver(48000, 48000, 0, device=True)
+    clock = DeviceClock(40000)
+    n, offs = 0, []
+    for k in range(8000):
+        n += hole if k == 4000 else -back if k == 6000 else 0
+        t = T0 + n * S // 48000
+        clock(drv, t)
+        drv.push(t, 480, k == 0)
+        offs.append(drv.sv._house_pts() - (T0 + (n + 480) * S // 48000))
+        n += 480
+    return drv, offs
+
+
+def test_device_only_steps():
+    print("\n--- c40 (B-249 D1): the device term alone, an unflagged hole is lost time, a step back a break ---")
+    drv, offs = device_only_steps_run()
+    g = gaps_of(drv)
+    rel = [e.reason for _, e in drv.relocks()]
+    lo, hi = min(offs[100:]), max(offs[100:])
+    check(f"a 1.5 s hole at 40 s: one lost-time gap of 72000 frames ({[(e.reason, e.lost_frames) for e in g]}); a 21 ms "
+          f"step back at 60 s: one relock 'jump' ({rel})",
+          len(g) == 1 and g[0].reason == "lost-time" and g[0].lost_frames == 72000 and rel == ["jump"])
+    check(f"the counter's content time stays on the input's across both (its offset {lo / MS:+.3f} .. {hi / MS:+.3f} ms "
+          f"from 1 s; before c40 it kept the hole's -1500 ms from 40 s, as a 302M mixer arm's render lateness did)",
+          hi - lo <= MS)
+
+
 # --- B-148: the device timeline across a break, lost time, the decode bound, the engage's rate --------
 
 HOLE = 1024   # a lost PipeWire cycle at 48 kHz: 21.333 ms
@@ -1103,6 +1134,8 @@ def b148_sequences():
         if k % 250 == 0:
             drv.stats()
     out.append(("B-148 device alone, 136 ppm fast: DISCONTs, a restart, a device clock step", drv.seq))
+    out.append(("c40 device alone, 40 ppm fast: an unflagged 1.5 s hole, a 21 ms step back",
+                device_only_steps_run()[0].seq))
     drv = Driver(48000, 48000, 500)
     tick = 450000 * 90000
     for k in range(3000):   # 60 s of 960-frame buffers on 90 kHz ticks
@@ -1187,6 +1220,9 @@ REF_MUTANTS = [
     ("house_advance without the drain", "        f = self.mh_frac + frames * self.run_ppb\n",
      "        f = self.mh_frac + frames * self.dev_ppb\n"),
     ("the drain unclamped", "clamp(drain_ppb, -DRAIN_MAX_PPB, DRAIN_MAX_PPB) if", "drain_ppb if"),
+    # c40: the device term alone reads its content's holes and steps back too.
+    ("the device term alone steps nothing", "        if self.capture or self.last_frames == 0:\n",
+     "        if not self.decode or self.last_frames == 0:\n"),
 ]
 
 
@@ -1250,6 +1286,7 @@ if __name__ == "__main__":
     test_breaks()
     test_composite()
     test_device_only()
+    test_device_only_steps()
     test_device_continuity()
     test_lost_time()
     test_v7dec_replay()

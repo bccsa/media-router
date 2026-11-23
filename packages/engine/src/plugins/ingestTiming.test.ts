@@ -108,10 +108,10 @@ describe('buildAsrc and the bus reports', () => {
             'mrasrc name=asrc bypass-below-ppm=0.5 out-rate=48000',
         );
         expect(buildAsrc({ bypassBelowPpm: 0.5, deviceSink: 'sink' })).toBe(
-            'mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink',
+            'mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60',
         );
         expect(buildAsrc({ name: 'outasrc', deviceSink: 'sink' })).toBe(
-            'mrasrc name=outasrc device-sink=sink',
+            'mrasrc name=outasrc device-sink=sink margin-ms=60',
         );
     });
 
@@ -122,7 +122,7 @@ describe('buildAsrc and the bus reports', () => {
         expect(buildAsrc({ bypassBelowPpm: 5000 })).toBe('mrasrc name=asrc bypass-below-ppm=1000');
         expect(buildAsrc({ deviceSink: '' })).toBe('mrasrc name=asrc');
         expect(buildAsrc({ deviceSink: 'out sink' })).toBe(
-            'mrasrc name=asrc device-sink="out sink"',
+            'mrasrc name=asrc device-sink="out sink" margin-ms=60',
         );
     });
 

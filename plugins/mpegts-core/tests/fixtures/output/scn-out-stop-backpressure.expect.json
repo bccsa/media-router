@@ -1,6 +1,6 @@
 {
   "scenario": "scn-out-stop-backpressure",
-  "graph": "each output stopped with a full backlog in its queues (T26, MR-041): the player's vp_esq behind a throttled decoder; the audio decoder's prefill and ad_esq and Audio Output (302M)'s prefill behind an input stall's backlog (a card stall skips, Q2: it holds nothing); the burn-in transcoder's raw buffer behind a slowed encoder",
+  "graph": "each output stopped with a full backlog in its queues (T26, MR-041): the player's vp_esq behind a throttled decoder; the audio decoder's ad_esq and Audio Output (302M)'s outq behind an input stall's backlog (a card stall skips, Q2: it holds nothing); the burn-in transcoder's raw buffer behind a slowed encoder",
   "seconds": 12,
   "arms": [
     {
@@ -30,10 +30,6 @@
       ],
       "full": [
         [
-          "prefill",
-          900
-        ],
-        [
           "ad_esq",
           4900
         ]
@@ -51,7 +47,7 @@
       ],
       "full": [
         [
-          "prefill",
+          "outq",
           900
         ]
       ]

@@ -3125,7 +3125,7 @@ def _decoder_hole_run(argv, env, desc, raw, drop, clock, tmp):
             st = r.wait_event(ev_is("stats", id=f"st{tag}"))
             res[f"asrc{tag}"] = (st or {}).get("data") or {}
             props = [("sink", "resyncs"), ("sink", "renders")]
-            for element, prop in props + ([("prefill", "current-level-time")] if level else []):
+            for element, prop in props + ([("ad_esq", "current-level-time")] if level else []):
                 rid = f"{tag}{element}.{prop}"
                 r.send({"cmd": "get_property", "id": rid, "element": element, "property": prop})
                 ev = r.wait_event(lambda e, rid=rid: e.get("id") == rid
@@ -3169,8 +3169,9 @@ def test_decoder_hole():
         desc = json.load(fh)["adec_aac"]
     desc = re.sub(r' stream-properties="[^"]*"', "", desc.replace("pulsesink name=sink device=MR_PW_adec ",
                                                                   "mrtestaudiosink name=sink "))
-    check("decoder-hole: the decoder's string, its sink the test sink with the module's ring and the prefill",
-          " ! queue name=prefill leaky=0 min-threshold-time=40000000 " in desc
+    check("decoder-hole: the decoder's string, its sink the test sink with the module's ring, asrc's margin, no queue "
+          "after it (B-249 as M6 carried it)",
+          " margin-ms=60 upstream-queue=ad_esq ! " in desc and "! queue" not in desc[desc.index("mrasrc name=asrc"):]
           and " ! mrtestaudiosink name=sink sync=false provide-clock=false processing-deadline=100000000"
           " buffer-time=100000" in desc and "ts-offset" not in desc)
     tmp = tempfile.mkdtemp(prefix="mrtest-")
@@ -3193,7 +3194,7 @@ def test_decoder_hole():
                 # The sink takes one decoded frame a buffer: what it played between the reads, 4.3 s apart.
                 played = ((n1 or 0) - (n0 or 0)) * frame_ns / 1e9
                 due = 4.3 - (_DECODER_HOLE[1] if drop else frame_ns) / 1e9
-                level = res.get("1prefill.current-level-time")
+                level = res.get("1ad_esq.current-level-time")
                 late0, late1 = a0.get("render-lateness-ns") or 0, a1.get("render-lateness-ns") or 0
                 kinds = [e.get("kind") for e in res["events"]]
                 label = f"decoder-hole {tag}, {shape}"
@@ -3202,18 +3203,22 @@ def test_decoder_hole():
                       f"stalls {a1.get('device-stalls')})",
                       a1.get("dropped-frames") == 0 and a1.get("device-stalls") == 0)
                 check(f"{label}: it plays on after the hole ({played:.2f} s of the {due:.2f} s due from 0.3 s "
-                      f"before it to the end less 1 s) and the prefill holds no backlog ({(level or 0) / 1e6:.0f} ms)",
+                      f"before it to the end less 1 s) and ad_esq holds no backlog ({(level or 0) / 1e6:.0f} ms)",
                       None not in (n0, n1) and played >= due - 0.2 and level is not None and level <= 60_000_000)
                 if drop:
                     check(f"{label}: the hole reaches asrc as one break, the demux's DISCONT ({kinds}; discont-in "
                           f"{a0.get('discont-in')} -> {a1.get('discont-in')})",
                           kinds == ["relock"] and a0.get("discont-in") == 0 and a1.get("discont-in") == 1)
-                    check(f"{label}: the hole drains the prefill and the ring and the sink's write position "
-                          f"realigns behind it ({r0} realigns before it, {r1} at the end)",
-                          isinstance(r0, int) and isinstance(r1, int) and r1 > r0)
-                    check(f"{label}: what follows plays at once, no later than before: render lateness "
-                          f"{late0 / 1e6:.1f} ms before the hole, {late1 / 1e6:.1f} ms after",
-                          late0 and late1 and abs(late1 - late0) <= 30_000_000)
+                    # B-249: the margin puts silence before the write after the hole, where the base sink realigned.
+                    f0, f1 = a0.get("margin-refills") or 0, a1.get("margin-refills") or 0
+                    check(f"{label}: the hole drains the ring and the write after it lands past the device: a margin "
+                          f"refill ({f0} -> {f1}) or a realign ({r0} realigns before it, {r1} at the end)",
+                          isinstance(r0, int) and isinstance(r1, int) and (r1 > r0 or f1 > f0))
+                    # B-249's margin: the start lands two margins ahead of the device, the write after a hole one,
+                    # so what follows may be up to a margin earlier than before, never later.
+                    check(f"{label}: what follows plays at once, no later than before (at most a margin, 60 ms, "
+                          f"earlier): render lateness {late0 / 1e6:.1f} ms before the hole, {late1 / 1e6:.1f} ms after",
+                          late0 and late1 and late0 - 90_000_000 <= late1 <= late0 + 30_000_000)
                 else:
                     lost = [e.get("lost-frames") for e in res["events"] if e.get("kind") == "gap"]
                     check(f"{label}: the hole reaches asrc unflagged, as lost time ({kinds}; "
@@ -3963,8 +3968,8 @@ def test_probe_tap_unwatched():
 
 
 def test_queue_label_jump():
-    """IJ (B-177), both runners: the outputs' prefill (a 40 ms delay line, bound 1 s) fed over a bus
-    input whose labels jump 2 s (an outage's return): the one buffer that meets it full behind the
+    """IJ (B-177), both runners: the outputs' queue (`outq`, bound 1 s; B-249's, no delay line since M6) fed
+    over a bus input whose labels jump 2 s (an outage's return): the one buffer that meets it full behind the
     jump is no episode; a real backlog (drained at half its rate) to the bound still reports."""
     sys.path.insert(0, _HERE)
     from gst_lateness_protocol_test import TS_CAPS
@@ -3994,8 +3999,8 @@ def test_queue_label_jump():
         r = RunnerProc(argv)
         try:
             r.send({"cmd": "start", "eosDrain": False,
-                    "pipeline": f"unixfdsrc name=busin socket-path={sock} ! queue name=prefill"
-                                " min-threshold-time=40000000 max-size-time=1000000000 max-size-buffers=0"
+                    "pipeline": f"unixfdsrc name=busin socket-path={sock} ! queue name=outq"
+                                " max-size-time=1000000000 max-size-buffers=0"
                                 " max-size-bytes=0 ! identity name=slow sleep-time=5000"
                                 " ! fakesink sync=false async=false"})
             playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
@@ -4003,22 +4008,22 @@ def test_queue_label_jump():
             push(2 * Gst.SECOND)
             paced(2.5)
             r.pump()
-            jump = _overruns(r, "prefill")
+            jump = _overruns(r, "outq")
             r.send({"cmd": "set_property", "id": "slow", "element": "slow", "property": "sleep-time",
                     "value": 20000})
             paced(3.0)
             r.send({"cmd": "set_property", "id": "fast", "element": "slow", "property": "sleep-time", "value": 0})
             paced(2.5)
             r.pump()
-            backlog = _overruns(r, "prefill")[len(jump):]
+            backlog = _overruns(r, "outq")[len(jump):]
             code = r.stop_and_wait()
         finally:
             r.kill()
             feed.set_state(Gst.State.NULL)
             shutil.rmtree(tmp, ignore_errors=True)
-        check(f"IJ {tag}: a 2 s label jump through the prefill reports no queue_overrun ({jump})",
+        check(f"IJ {tag}: a 2 s label jump through outq reports no queue_overrun ({jump})",
               playing and jump == [])
-        check(f"IJ {tag}: a backlog to the prefill's 1 s bound still does ({backlog})",
+        check(f"IJ {tag}: a backlog to outq's 1 s bound still does ({backlog})",
               len(backlog) == 1 and backlog[0].get("overruns", 0) > 1 and backlog[0].get("levelTimeMs", 0) >= 900
               and backlog[0].get("ongoing") is False and code == 0)
 

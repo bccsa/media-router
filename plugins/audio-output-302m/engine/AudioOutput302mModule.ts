@@ -6,7 +6,7 @@ import {
     OUTPUT_RING_US,
     buildAsrc,
     buildLatenessTap,
-    buildOutputPrefill,
+    buildOutputQueue,
     pulsePinnedStreamProps,
     type LiveInputBranch,
     type ModuleServices,
@@ -42,9 +42,11 @@ const MIXER = 'mixin';
  * (`pulsesink device=…`); it is not a routing fabric here: no remap-sink,
  * no pw-links, no pactl volume.
  *
- * TIMING (house-clock part 4.1, B-167). It plays as soon as it can: content-time inputs, a 40 ms
- * prefill and a `sync=false` sink on a 100 ms ring (`outputSink.ts`); no playout offset, no trim.
- * A launch skips its inputs' outage and what its mix queued before it first played (B-206, B-167).
+ * TIMING (house-clock part 4.1, B-167, B-249). It plays as soon as it can: content-time inputs, the
+ * non-leaky `outq` and a `sync=false` sink on a 100 ms ring (`outputSink.ts`); no playout offset, no
+ * trim. `outasrc` keeps a 60 ms margin in the sink's ring (120 ms at a start) and rebuilds it after a
+ * hole (B-249); its drain plays what is held past its target back down (B-179). A launch skips its
+ * inputs' outage and what its mix queued before it first played (B-206, B-167).
  *
  * CLOCKS (house-clock part 4.4). A source on a clock of its own is resampled to house rate where
  * it is decoded; `outasrc` follows the device's clock, read on a timer (B-166), so the
@@ -288,10 +290,11 @@ export class AudioOutput302mModule extends GstPluginBase {
             outAsrc,
             `volume name=vol volume=${(volumePct / 100).toFixed(2)}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
-            // Placement (if any) sits between the VU and the prefill: the level meter
+            // Placement (if any) sits between the VU and the queue: the level meter
             // reads the mix, the sink receives the device-wide spread.
             placement.fragment,
-            buildOutputPrefill(),
+            // Its own thread before the sink; never leaks: a late or bursty feed waits, it is not dropped.
+            buildOutputQueue(),
             sink,
         ];
         const pipeline = `${fragment} ${chain.filter((e) => e).join(' ! ')}`;

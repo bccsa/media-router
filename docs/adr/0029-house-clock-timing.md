@@ -2343,16 +2343,14 @@ work items.
   output's ts-offset (`seedsWithin`): up to it the sink plays from its whole
   ring, past it every buffer is late, and a seed read during a producer's
   burst is seconds old; at D 60 the ts-offset is 0, so no seed. (3) The
-  shed probe's playout watch (`missWatchMs` 1000): every buffer past the
-  budget + the re-anchor tolerance for 1 s is `playout_watch` {playing:
-  false, lateMs}, 200 ms in budget {playing: true}, on a change only; "Plays
-  nothing: every buffer reaches the sink …" takes it at once (it waited on
-  the lateness reporter's window over 5 s), and a relaunch keeps it until
-  the runner sees the sink in budget. (4) A raise the output asked for is
+  shed probe's playout watch (`missWatchMs`, `playout_watch`) is gone
+  (B-249): the output's sink runs sync=false and plays every buffer, late
+  or not, so no buffer misses a budget; "Plays nothing: …" is only a mix
+  that delivers no audio (SilentOutputWatch). (4) A raise the output asked for is
   its section once its sink plays on time (`notePlayoutOnTime`): no
   warning, and no later PLAYING posts it again; the route head keeps its
-  own. Native only: the python runner ignores `catchUp` and `missWatchMs`
-  (it never hosts this output).
+  own. Native only: the python runner ignores `catchUp` (it never hosts
+  this output).
 
 ### Audio processing: the aligned interleave and the ducker (WI-P2-10; OQ-22)
 

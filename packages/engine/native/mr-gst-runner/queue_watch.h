@@ -11,7 +11,7 @@ namespace mr::queue_watch {
 /** queueOverrun.ts QUEUE_OVERRUN_EVENT. */
 constexpr const char* EVENT = "queue_overrun";
 /** queueOverrun.ts WATCHED_QUEUE_NAMES: watched though not leaky. */
-constexpr const char* NAMES[] = {"vp_esq", "ad_esq", "prefill"};
+constexpr const char* NAMES[] = {"vp_esq", "ad_esq", "outq"};
 /** queueOverrun.ts PROBE_QUEUE_NAMES: a report-only tap's leaky queue, never watched. */
 constexpr const char* PROBE_NAMES[] = {"vp_probeq"};
 /** An episode ends after this long without an overrun (a non-leaky queue's one overrun, below

@@ -43,8 +43,8 @@ buffer). A device that stops taking data blocks the sink's render, its clock sto
 PipeWire node, DEV-P4a case 8) running on, so the rule reads the render, never the clock (and the
 ratio never reads the counts):
   - stalled: for stall_ns (1 s) the sink took nothing while more than waiting_ns of samples waited
-    for it (pushed less taken, beyond the 40 ms the prefill holds back): event device-stalled, and
-    the timer flushes downstream (FLUSH_START/STOP from the src pad: the prefill, the ring and a
+    for it (pushed less taken, beyond what a queue before the sink holds): event device-stalled, and
+    the timer flushes downstream (FLUSH_START/STOP from the src pad: the queue, the ring and a
     blocked push hold only what no one can hear). The streaming thread keeps pushing live input;
     while the device stays stopped what reaches downstream is flushed every probe_ns (500 ms).
   - resumed: since the last flush the sink took more than an empty ring holds (resume_ns): the
@@ -52,6 +52,19 @@ ratio never reads the counts):
     live input plays. Counted: device-stalls; dropped, the samples pushed that the sink never took
     plus those it took into a ring the stopped device never read (not the ring's content when the
     device stopped, which the element cannot see).
+  - where what waits below the element was waiting_ns or less when the stall was declared, the
+    backlog waits above it (the Audio Decoder's decq, upstream): a flush drops of it only what it
+    refuses while it lasts (0.3-0.7 s of a 2.5 s stop on the Pi 4's card), and the refills after it
+    aimed past a clock that ran on (1.4-1.9 s of silence at load). So the stall is told and nothing
+    is flushed: its backlog plays late, as c38 plays it, and the catch-up gives it back (c42, MR-059).
+  - the clock is not trusted (clock_trusted) while stalled, nor for settle_ns after the resume, as
+    the lock itself waits: pulsesink's clock runs on through a server stop and converges back over
+    seconds, and the sink guard learned that lag as a sink latency for good (60 -> 328 ms on the
+    Pi 4 after a 2.5 s stop), which held the catch-up idle (c42). A step relock while trusted
+    leaves it trusted: the step is the clock correcting itself, and the lag behind the read index
+    after one lasts (74 -> 108 ms at load), which the guard must learn at once (c42 fix 3). One
+    inside the window after a resume is part of the convergence (13.7-15.2 s after the resume on
+    the Pi 4) and extends the window to settle_ns past it (c42 fix 4).
 Render lateness: now - PTS(the sample at the device). The device clock gives its position in the
 ring (samples); each rendered buffer's write position is the base sink's next_sample after its
 render, less its samples, so a realign (an underflow, a flush) moves the map with the sink. Not the
@@ -73,6 +86,7 @@ API:
     term.sample(dev_ns, mono_ns, pushed=None, rendered=None) -> (events, flush)
     term.ratio_ppb(eps_in_ppb=0), term.device_ppb(), term.lock_state(), term.stats()
     term.take_recalibrated()           a relock-device since the last call
+    term.clock_trusted(mono_ns)        the clock may be learned from (not stalled, settled since a resume)
     acc = RenderLateness(rate_hz)
     acc.rendered(write_pos, n, pts_ns); acc.flush(); acc.at(now_ns, dev_ns) -> ns|None
 Run as a script it replays a recorded clock or a call sequence (the format p4-4b's
@@ -86,7 +100,7 @@ term (other keys are labels), {"op":"start","mono":ns}, {"op":"stop","mono":ns},
 RenderLateness (rate_hz's): {"op":"rendered","write_pos":n,"n":n,"pts":ns}, {"op":"flush"},
 {"op":"lateness","now":ns,"dev":ns}, which prints {"lateness":ns|null}. Out, compact, keys in
 this order: each event {"event":kind,...}; per sample {"mono":ns,"lock":state,"dev_ppb":ppb,
-"ratio_ppb":ppb,"stalled":0|1,"flush":0|1}, or {"refused":...} for one before start(); after the
+"ratio_ppb":ppb,"stalled":0|1,"flush":0|1,"trusted":0|1}, or {"refused":...} for one before start(); after the
 events of a call that relocked, {"recalibrated":1}; at each term's end {"summary":{stats}}. p4-4b's `mrts_cli asrc-device` prints the same lines (asrc_device_parity_test.py).
 """
 import json
@@ -115,7 +129,7 @@ class DeviceTermConfig:
         self.relock_samples = 2          # ... in this many fed samples in a row
         self.flat_den = 10               # flat: the clock moved under 1/flat_den of house time
         self.stall_ns = 1 * SEC          # the sink took nothing this long while samples waited
-        self.waiting_ns = 100 * MS       # samples waiting beyond what the 40 ms prefill holds back
+        self.waiting_ns = 100 * MS       # samples waiting beyond what a queue before the sink holds
         self.probe_ns = 500 * MS         # while stalled, a flush this often
         self.resume_ns = 200 * MS        # taken since a flush past an empty 100 ms ring: resumed
         self.rate_hz = 48000
@@ -180,6 +194,8 @@ class DeviceTerm:
         self.fed = 0
         # the stall rule
         self.stalled = False
+        self.flushing = False       # this stall flushes: what waited below the element was past waiting_ns
+        self.trust_at = 0           # the clock is trusted from here (a resume plus settle_ns)
         self.taken_prev = None
         self.discarded = 0          # pushed samples the flushes discarded before the sink took them
         self.wait_since = None
@@ -216,6 +232,32 @@ class DeviceTerm:
         self.wait_since = None
         self.taken_prev = None
 
+    def restart_counts(self):
+        """The element's counts start again from 0 (READY emptied what waited): forget what the flushes discarded."""
+        self.taken_prev = None
+        self.wait_since = None
+        self.discarded = 0
+        self.taken_at_flush = 0
+
+    def discard(self, frames):
+        """A flush from elsewhere discarded `frames` that waited before the sink (c40): not waiting any more."""
+        self.discarded += max(0, frames)
+
+    def resync(self, mono):
+        """A flush from elsewhere reached the sink, whose clock may step there (c40): the next read starts a new pair,
+        the lock relocks keeping its rate (reason flush), as at a restart. Its events."""
+        if not self.rendering:
+            return []
+        self.prev = None
+        self.moved_at = None
+        self.beyond = 0
+        if not self.epoch:
+            return []
+        self.lock.relock(True)
+        self.relocks["restart"] += 1
+        self.recal = True
+        return [{"event": "relock-device", "reason": "flush", "at": mono}]
+
     def _relock(self, mono, step_ns, events):
         self.lock.relock(True)
         self.relocks["step"] += 1
@@ -223,6 +265,13 @@ class DeviceTerm:
         events.append({"event": "relock-device", "reason": "step", "at": mono, "step_ns": step_ns})
         self.moved_at = mono
         self.beyond = 0
+        if mono < self.trust_at:   # still converging after a resume (c42)
+            self.trust_at = mono + self.cfg.settle_ns
+
+    def clock_trusted(self, mono):
+        """Whether the clock's position may be learned from now (the sink guard's latency): not while stalled, nor
+        settle_ns after the resume or after a step relock inside that window (c42)."""
+        return not self.stalled and mono >= self.trust_at
 
     def take_recalibrated(self):
         """Whether a relock-device came since the last call: the servo's device timeline takes its
@@ -260,27 +309,35 @@ class DeviceTerm:
 
     # --- the render ------------------------------------------------------------------------
 
-    def _render(self, mono, pushed, taken, events):
+    def _render(self, mono, pushed, taken, upstream, events):
         c = self.cfg
         prev, self.taken_prev = self.taken_prev, taken
         pending = pushed - taken - self.discarded
+        # What waits before the element counts as waiting too (c40): with no queue before the sink, its push blocks.
+        waiting = pending + max(0, upstream)
         flush = False
         if not self.stalled:
-            if prev is None or taken > prev or pending <= self.wait_samples:
+            if prev is None or taken > prev or waiting <= self.wait_samples:
                 self.wait_since = None
             elif self.wait_since is None:
                 self.wait_since = mono
             elif mono - self.wait_since >= c.stall_ns:
                 self.stalled = True
                 self.stalls += 1
-                events.append({"event": "device-stalled", "at": mono, "pending": pending})
-                flush = True
+                events.append({"event": "device-stalled", "at": mono, "pending": waiting})
+                # Flushed only where what waits below the element is past waiting_ns; a backlog above plays late (c42).
+                self.flushing = pending > self.wait_samples
+                self.flush_at = mono
+                self.taken_at_flush = taken
+                flush = self.flushing
         elif taken - self.taken_at_flush > self.resume_samples:
             self.stalled = False
             self.wait_since = None
-            events.append({"event": "device-resumed", "at": mono, "dropped": self.dropped + pending})
-            flush = True
-        elif mono - self.flush_at >= c.probe_ns:
+            events.append({"event": "device-resumed", "at": mono,
+                           "dropped": self.dropped + (pending if self.flushing else 0)})
+            self.trust_at = max(self.trust_at, mono + c.settle_ns)
+            flush = self.flushing
+        elif self.flushing and mono - self.flush_at >= c.probe_ns:
             # What the sink took since the last flush sat in a ring the stopped device never read.
             self.dropped += taken - self.taken_at_flush
             flush = True
@@ -292,15 +349,16 @@ class DeviceTerm:
             self.flushes += 1
         return flush
 
-    def sample(self, dev, mono, pushed=None, rendered=None):
-        """One timer tick: (events, flush); flush: send FLUSH_START and FLUSH_STOP downstream now."""
+    def sample(self, dev, mono, pushed=None, rendered=None, upstream=0):
+        """One timer tick: (events, flush); flush: send FLUSH_START and FLUSH_STOP downstream now. upstream: frames
+        waiting before the element (its upstream-queue), counted as waiting, never as discarded."""
         if not self.rendering:
             raise RuntimeError("the device clock is read only between start() and stop()")
         events = []
         self._clock(dev, mono, events)
         flush = False
         if pushed is not None and rendered is not None:
-            flush = self._render(mono, pushed, rendered, events)
+            flush = self._render(mono, pushed, rendered, upstream, events)
         self.lock.tick(mono)
         return events, flush
 
@@ -410,13 +468,20 @@ def replay(lines):
         if op == "stop":
             term.stop(o["mono"])
             continue
+        if op == "discard":
+            term.discard(o["n"])
+            continue
+        if op == "resync":
+            out.extend(_line(e) for e in term.resync(o["mono"]))
+            _recalibrated(term, out)
+            continue
         if op == "sample":
             dev, mono, in_ppb = o["dev"], o["mono"], o.get("in_ppb", 0)
-            pushed, rendered = o.get("pushed"), o.get("rendered")
+            pushed, rendered, upstream = o.get("pushed"), o.get("rendered"), o.get("upstream", 0)
         elif "clock_ns" in o:
             if o.get("next_sample", -1) < 0:
                 continue    # nothing rendered yet: never read
-            dev, mono, in_ppb, pushed, rendered = o["clock_ns"], o["mono_ns"], 0, None, None
+            dev, mono, in_ppb, pushed, rendered, upstream = o["clock_ns"], o["mono_ns"], 0, None, None, 0
             if not term.rendering:
                 out.extend(_line(e) for e in term.start(mono))
                 _recalibrated(term, out)
@@ -425,7 +490,7 @@ def replay(lines):
                 term.stop(o["mono_ns"])
             continue
         try:
-            events, flush = term.sample(dev, mono, pushed, rendered)
+            events, flush = term.sample(dev, mono, pushed, rendered, upstream)
         except RuntimeError:   # no read before the first rendered buffer
             out.append(_line({"refused": "sample before start"}))
             continue
@@ -433,7 +498,7 @@ def replay(lines):
         _recalibrated(term, out)
         out.append(_line({"mono": mono, "lock": term.lock_state(), "dev_ppb": term.device_ppb(),
                           "ratio_ppb": term.ratio_ppb(in_ppb), "stalled": int(term.stalled),
-                          "flush": int(flush)}))
+                          "flush": int(flush), "trusted": int(term.clock_trusted(mono))}))
     if term is not None:
         out.append(_line({"summary": term.stats()}))
     return out

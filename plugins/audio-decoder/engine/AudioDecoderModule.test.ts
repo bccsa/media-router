@@ -23,8 +23,8 @@ function decodeString(decoder: string): string {
     return (
         `${BUS_IN} ! mrtsdemux name=addemux media=audio ! queue name=ad_esq leaky=0 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! ${decoder}` +
         ' ! audioconvert ! mrlateness name=lat_render reference=running-time ! mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink' +
+        ' margin-ms=60 upstream-queue=ad_esq' +
         ' ! audioconvert ! volume name=vol volume=1.00 ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
-        ' ! queue name=prefill leaky=0 min-threshold-time=40000000 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0' +
         ' ! pulsesink name=sink device=MR_PW_dec-1 sync=false provide-clock=false processing-deadline=100000000 buffer-time=100000' +
         ' stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true"'
     );
@@ -97,7 +97,7 @@ describe('AudioDecoderModule.buildPipeline', () => {
     });
 
     it.each(BRANCHES)(
-        'builds the %s branch: first audio stream, decoder, audioconvert, the ASRC, the prefill, the sink',
+        'builds the %s branch: first audio stream, decoder, audioconvert, the ASRC, the sink',
         (codec, decoder) => {
             // House-clock WI-P3-10 (part 4.3, S15): `audioconvert` before `mrasrc`, whose caps are
             // interleaved only; the render tap before it; one ASRC for the source's and the sink's clock.
@@ -106,6 +106,26 @@ describe('AudioDecoderModule.buildPipeline', () => {
             expect(module.buildPipeline({})!.pipeline).toBe(decodeString(decoder));
         },
     );
+
+    it('builds the sink end gst_302m_late_feed_test.py runs on a real pulsesink (B-249)', () => {
+        const fixture = JSON.parse(
+            readFileSync(join(__dirname, '..', 'tests', 'fixtures', 'sink-end.json'), 'utf8'),
+        ).tail as string;
+        const { module } = makeModule();
+        module.probeResult = { codec: 'opus' };
+        const p = module.buildPipeline({})!.pipeline;
+        const from = p.indexOf(' ! queue name=ad_esq leaky=0 ') + 3;
+        const to = p.indexOf(' stream-properties=', from);
+        expect(from).toBeGreaterThan(3);
+        expect(
+            p
+                .slice(from, to)
+                .replace(' ! opusdec ! ', ' ! %DECODER% ! ')
+                .replace('pulsesink name=sink device=MR_PW_dec-1', '%SINK%'),
+        ).toBe(fixture);
+        // No queue between the ASRC and the sink: the push into the sink is the ASRC's own chain.
+        expect(fixture.slice(fixture.indexOf('mrasrc '))).not.toContain('! queue');
+    });
 
     it('puts the parser directly after the ES queue for AAC (unframed → avdec_aac fails without it)', () => {
         const { module } = makeModule();
@@ -197,7 +217,7 @@ describe('AudioDecoderModule.buildPipeline', () => {
 describe('AudioDecoderModule plays as soon as it can (B-168)', () => {
     beforeEach(() => vi.clearAllMocks());
 
-    it('each branch: ad_esq, lat_render, asrc on the sink, the VU, the 40 ms prefill, a sync=false sink; nothing that waits or drops', () => {
+    it('each branch: ad_esq, lat_render, asrc on the sink with its margin, the VU, no queue, a sync=false sink; nothing that waits or drops', () => {
         for (const [codec] of BRANCHES) {
             const { module } = makeModule();
             module.probeResult = { codec };
@@ -211,15 +231,16 @@ describe('AudioDecoderModule plays as soon as it can (B-168)', () => {
             );
             // Render lateness before the ASRC, where PTS is still content time (part 4.4).
             expect(p).toContain(
-                '! audioconvert ! mrlateness name=lat_render reference=running-time ! mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink ! ',
+                '! audioconvert ! mrlateness name=lat_render reference=running-time ! mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink' +
+                    ' margin-ms=60 upstream-queue=ad_esq ! ',
             );
             expect(at('lat_render')).toBeLessThan(at('mrasrc'));
+            // No queue between asrc and the sink (B-249): the push into the sink is asrc's own chain.
             expect(p).toContain(
-                ' ! queue name=prefill leaky=0 min-threshold-time=40000000 max-size-time=1000000000' +
-                    ' max-size-buffers=0 max-size-bytes=0 ! pulsesink name=sink device=MR_PW_dec-1' +
+                ' interval=100000000 ! pulsesink name=sink device=MR_PW_dec-1' +
                     ' sync=false provide-clock=false processing-deadline=100000000 buffer-time=100000 stream-properties=',
             );
-            expect(at(' ! queue name=prefill ')).toBeGreaterThan(at('level post-messages=true'));
+            expect(p.slice(at('mrasrc name=asrc'))).not.toContain('! queue');
             for (const gone of [
                 'ts-offset',
                 'slave-method',
@@ -357,7 +378,9 @@ describe('AudioDecoderModule plays as soon as it can (B-168)', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'opus' };
         const p = module.buildPipeline({})!.pipeline;
-        expect(p).toContain('mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink !');
+        expect(p).toContain(
+            'mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60 upstream-queue=ad_esq !',
+        );
         expect(p).toContain('pulsesink name=sink device=MR_PW_dec-1 sync=false ');
         expect(p).not.toContain('slave-method');
         expect(p.match(/\bmrasrc /g)).toHaveLength(1);

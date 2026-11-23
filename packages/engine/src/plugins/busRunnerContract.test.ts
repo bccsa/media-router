@@ -12,7 +12,7 @@ import {
 } from './busHelpers.js';
 import { INGEST_QUEUE_NAME, buildIngestQueue } from './tsHelpers.js';
 import { PROBE_QUEUE_NAMES, QUEUE_OVERRUN_EVENT, WATCHED_QUEUE_NAMES } from './queueOverrun.js';
-import { OUTPUT_PREFILL_NAME } from './outputSink.js';
+import { OUTPUT_QUEUE_NAME } from './outputSink.js';
 
 /**
  * Cross-language contract pins between the TS bus helpers and the python
@@ -509,7 +509,7 @@ describe('the no-late-drop hook and the queue watch, in both runners (B-170)', (
     });
 
     it('the named queues are the ones the modules build, and the ingest queue is leaky', () => {
-        expect(WATCHED_QUEUE_NAMES).toContain(OUTPUT_PREFILL_NAME);
+        expect(WATCHED_QUEUE_NAMES).toContain(OUTPUT_QUEUE_NAME);
         const player = readFileSync(
             join(repo, 'plugins', 'video-player', 'engine', 'helpers', 'pipelines.ts'),
             'utf8',
@@ -522,8 +522,9 @@ describe('the no-late-drop hook and the queue watch, in both runners (B-170)', (
             join(repo, 'plugins', 'audio-decoder', 'engine', 'AudioDecoderModule.ts'),
             'utf8',
         );
-        expect(decoder).toContain(' ! queue name=ad_esq leaky=0 ');
-        expect(WATCHED_QUEUE_NAMES).toEqual(['vp_esq', 'ad_esq', 'prefill']);
+        expect(decoder).toContain("const ES_QUEUE_NAME = 'ad_esq';");
+        expect(decoder).toContain(' ! queue name=${ES_QUEUE_NAME} leaky=0 ');
+        expect(WATCHED_QUEUE_NAMES).toEqual(['vp_esq', 'ad_esq', 'outq']);
         expect(buildIngestQueue()).toMatch(new RegExp(`^queue name=${INGEST_QUEUE_NAME} leaky=2 `));
     });
 

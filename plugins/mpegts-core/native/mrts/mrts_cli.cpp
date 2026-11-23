@@ -10,6 +10,8 @@
 //        mrts_cli asrc seq.txt|-
 //        mrts_cli pace seq.jsonl|-
 //        mrts_cli asrc-device seq.jsonl|-
+//        mrts_cli drain seq.jsonl|-
+//        mrts_cli sink-margin cases.jsonl|-
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -1967,8 +1969,9 @@ bool device_config(const Json& op, AsrcDeviceConfig* c, std::string* err) {
 
 void print_device_events(const std::vector<AsrcDeviceEvent>& events) {
     for (const AsrcDeviceEvent& e : events) {
-        if (e.kind == AsrcDeviceEvent::Kind::relock_device && !std::strcmp(e.reason, "restart"))
-            std::printf("{\"event\":\"relock-device\",\"reason\":\"restart\",\"at\":%lld}\n", (long long)e.at);
+        if (e.kind == AsrcDeviceEvent::Kind::relock_device && (!std::strcmp(e.reason, "restart") ||
+                                                               !std::strcmp(e.reason, "flush")))
+            std::printf("{\"event\":\"relock-device\",\"reason\":\"%s\",\"at\":%lld}\n", e.reason, (long long)e.at);
         else if (e.kind == AsrcDeviceEvent::Kind::relock_device)
             std::printf("{\"event\":\"relock-device\",\"reason\":\"%s\",\"at\":%lld,\"step_ns\":%lld}\n", e.reason,
                         (long long)e.at, (long long)e.value);
@@ -2031,7 +2034,20 @@ bool device_op(const Json& o, std::unique_ptr<AsrcDeviceTerm>* term, std::unique
         return true;
     }
     std::vector<AsrcDeviceEvent> events;
-    int64_t dev = 0, mono = 0, in_ppb = 0, pushed = -1, rendered = -1;
+    int64_t dev = 0, mono = 0, in_ppb = 0, pushed = -1, rendered = -1, upstream = 0;
+    if (op == "discard") {
+        int64_t n = 0;
+        if (!op_i64(o, "n", &n, err)) return false;
+        t.discard(n);
+        return true;
+    }
+    if (op == "resync") {
+        if (!op_i64(o, "mono", &mono, err)) return false;
+        t.resync(mono, &events);
+        print_device_events(events);
+        print_recalibrated(&t);
+        return true;
+    }
     if (op == "start" || op == "stop") {
         if (!op_i64(o, "mono", &mono, err)) return false;
         if (op == "start") t.start(mono, &events);
@@ -2049,6 +2065,7 @@ bool device_op(const Json& o, std::unique_ptr<AsrcDeviceTerm>* term, std::unique
         if (o.get("in_ppb") && !op_i64(o, "in_ppb", &in_ppb, err)) return false;
         if (o.get("pushed") && (!op_i64(o, "pushed", &pushed, err) || !op_i64(o, "rendered", &rendered, err)))
             return false;
+        if (o.get("upstream") && !op_i64(o, "upstream", &upstream, err)) return false;
     } else if (!op.empty()) {
         return *err = "unknown op \"" + op + "\"", false;
     } else if (o.get("clock_ns")) {
@@ -2070,12 +2087,13 @@ bool device_op(const Json& o, std::unique_ptr<AsrcDeviceTerm>* term, std::unique
         }
         return true;
     }
-    const bool flush = t.sample(dev, mono, pushed, rendered, &events);
+    const bool flush = t.sample(dev, mono, pushed, rendered, &events, upstream);
     print_device_events(events);
     print_recalibrated(&t);
-    std::printf("{\"mono\":%lld,\"lock\":\"%s\",\"dev_ppb\":%lld,\"ratio_ppb\":%lld,\"stalled\":%d,\"flush\":%d}\n",
+    std::printf("{\"mono\":%lld,\"lock\":\"%s\",\"dev_ppb\":%lld,\"ratio_ppb\":%lld,\"stalled\":%d,\"flush\":%d,"
+                "\"trusted\":%d}\n",
                 (long long)mono, asrc_device_lock_state_name(t.lock_state()), (long long)t.device_ppb(),
-                (long long)t.ratio_ppb(in_ppb), (int)t.stalled(), (int)flush);
+                (long long)t.ratio_ppb(in_ppb), (int)t.stalled(), (int)flush, (int)t.clock_trusted(mono));
     return true;
 }
 
@@ -2220,6 +2238,90 @@ int drain_main(int argc, char** argv) {
     return rc;
 }
 
+
+// --- sink-margin: the sink margin (B-249), py/sink_margin_ref.py's line format ---------------------
+
+int sink_margin_main(int argc, char** argv) {
+    if (argc != 2) {
+        std::fprintf(stderr, "usage: mrts_cli sink-margin cases.jsonl|-\n");
+        return 2;
+    }
+    std::string text, err;
+    if (!read_file(argv[1], &text)) {
+        std::perror(argv[1]);
+        return 1;
+    }
+    size_t at = 0, lineno = 0;
+    AsrcSinkGuard guard;
+    while (at < text.size()) {
+        size_t nl = text.find('\n', at);
+        if (nl == std::string::npos) nl = text.size();
+        const std::string line = text.substr(at, nl - at);
+        at = nl + 1;
+        lineno++;
+        if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
+        Json o;
+        bool ok = parse_json(line, &o, &err);
+        if (ok && o.get("next")) {   // a silence case
+            int64_t next = 0, segdone = 0, sps = 0, margin = 0, play = 0, g = 0, cap = 0;
+            ok = op_i64(o, "next", &next, &err) && op_i64(o, "segdone", &segdone, &err) && op_i64(o, "sps", &sps, &err) &&
+                 op_i64(o, "margin", &margin, &err);
+            const bool play_given = ok && o.get("play") && o.get("play")->type != Json::Type::null;
+            if (ok && play_given) ok = op_i64(o, "play", &play, &err);
+            if (ok && o.get("guard")) ok = op_i64(o, "guard", &g, &err);
+            if (ok && o.get("cap")) ok = op_i64(o, "cap", &cap, &err);
+            if (ok) {
+                std::printf("{\"silence\":%lld}\n",
+                            (long long)asrc_sink_silence(next, segdone, sps, margin, play_given, play, g, cap));
+                continue;
+            }
+        } else if (ok && o.get("gap")) {   // the push before a write from a queue's thread (c41)
+            int64_t gap = 0, res = 0, busy = 0, push = 0, since = 0;
+            ok = op_i64(o, "gap", &gap, &err) && op_i64(o, "res", &res, &err) && op_i64(o, "busy", &busy, &err);
+            if (ok) {
+                asrc_sink_queued_push(gap, res, busy, &push, &since);
+                std::printf("{\"push\":%lld,\"since\":%lld}\n", (long long)push, (long long)since);
+                continue;
+            }
+        } else if (ok && o.get("res")) {   // whether the guard holds a write
+            int64_t res = 0, push = 0, since = 0, segns = 0;
+            ok = op_i64(o, "res", &res, &err) && op_i64(o, "push", &push, &err) && op_i64(o, "since", &since, &err) &&
+                 op_i64(o, "segns", &segns, &err);
+            if (ok) {
+                std::printf("{\"applies\":%d}\n", asrc_sink_guard_applies(res, push, since, segns) ? 1 : 0);
+                continue;
+            }
+        } else if (ok && o.get("push")) {   // whether a write is held to segdone alone (c41)
+            int64_t push = 0, since = 0, segns = 0;
+            ok = op_i64(o, "push", &push, &err) && op_i64(o, "since", &since, &err) && op_i64(o, "segns", &segns, &err);
+            if (ok) {
+                std::printf("{\"full\":%d}\n", asrc_sink_stream_full(push, since, segns) ? 1 : 0);
+                continue;
+            }
+        } else if (ok) {   // a guard event
+            int64_t a = 0, b = 0, c = 0;
+            if (o.get("base")) {
+                ok = op_i64(o, "base", &a, &err) && op_i64(o, "cap", &b, &err);
+                if (ok) guard = AsrcSinkGuard(a, b);
+            } else if (o.get("seg")) {
+                ok = op_i64(o, "seg", &a, &err) && op_i64(o, "sps", &b, &err) && op_i64(o, "play", &c, &err);
+                if (ok) guard.segdone_seen(a, b, c);
+            } else {
+                ok = false;
+                err = "neither a silence case, a guard event nor a guard test";
+            }
+            if (ok) {
+                std::printf("{\"guard\":%lld}\n", (long long)guard.frames());
+                continue;
+            }
+        }
+        std::fflush(stdout);
+        std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", argv[1], lineno, err.c_str());
+        return 1;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2233,6 +2335,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "pace") == 0) return pace_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "asrc-device") == 0) return asrc_device_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "drain") == 0) return drain_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "sink-margin") == 0) return sink_margin_main(argc - 1, argv + 1);
     std::fprintf(stderr,
                  "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
@@ -2245,6 +2348,7 @@ int main(int argc, char** argv) {
                  "       mrts_cli asrc seq.txt|-\n"
                  "       mrts_cli pace seq.jsonl|-\n"
                  "       mrts_cli asrc-device seq.jsonl|-\n"
-                 "       mrts_cli drain seq.jsonl|-\n");
+                 "       mrts_cli drain seq.jsonl|-\n"
+                 "       mrts_cli sink-margin cases.jsonl|-\n");
     return 2;
 }

@@ -9,9 +9,12 @@
   ],
   "expect": {
     "frame_ms": 20,
-    "audio_back_ms": 40,
+    "audio_late_ms": [
+      2500,
+      3400
+    ],
     "decoder_full": [
-      "prefill"
+      "ad_esq"
     ],
     "video_flat_ms": 41
   }

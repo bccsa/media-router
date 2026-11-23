@@ -1,6 +1,6 @@
-// The ASRC (plan ch. 5 part 4.5, WI-P1-8; ch. 7 part 4.4, WI-P3-5, B-148), py/asrc_bypass_ref.py ported rule
-// for rule (OQ-1, S30): a ClockLock gives the source rate and a phase servo commands the resampler; its device
-// term follows the sink's clock on a timer (ch. 8 WI-P4-4, B-166: py/asrc_device_ref.py). Integer-only.
+// The ASRC (ch. 5 part 4.5, WI-P1-8; ch. 7 part 4.4, WI-P3-5, B-148; py/asrc_bypass_ref.py rule for rule, OQ-1, S30):
+// a ClockLock and a phase servo command the resampler; a device term follows the sink's clock (WI-P4-4, B-166), a sink
+// margin is rebuilt after a hole (B-249); the drain's rate (B-179) times the device term. Integer-only.
 #pragma once
 #include <cstdint>
 #include <deque>
@@ -95,7 +95,7 @@ class AsrcServo {
         uint64_t in_frames = 0, out_frames = 0;
         uint64_t discont_in = 0;    // DISCONT flags after the first buffer
         uint64_t dropped_frames = 0;   // input frames skipped as relock overlap
-        uint64_t gaps = 0;          // cycle_input, decode modes: gaps the output jumped (lost cycles or time)
+        uint64_t gaps = 0;          // cycle_input, decode and device modes: gaps the output jumped (lost cycles or time)
         int64_t lost_frames = 0;    // ... the input frames they lost (reverted ones taken back)
         Mode mode = Mode::capture;
         int64_t source_ppb = 0;     // the source clock against house (asrc_rate_of); 0 without a lock
@@ -185,7 +185,7 @@ class AsrcServo {
     int64_t delay_ = 0;
     int64_t n_in_ = 0;           // input frames pushed
     int64_t lost_ = 0;           // input frames lost between buffers: counted on the input position
-    int64_t lost_res_ = 0;       // decode modes: lost time's remainder under a frame (ns), on it too (B-148)
+    int64_t lost_res_ = 0;       // decode, device modes: lost time's remainder under a frame (ns), on it too (B-148)
     int64_t drop_left_ = 0;      // of the overlap, frames still to skip
     uint64_t dropped_ = 0;       // frames skipped so far
     uint64_t n_out_ = 0;         // output frames produced
@@ -205,7 +205,7 @@ class AsrcServo {
     bool oob_ = false;           // out-of-bounds raised and not yet back inside
     bool past_ = false;          // decode: the fit past the bound while locked, since oob_since_
     int64_t oob_since_ = 0;
-    bool cont_ = false;          // decode: the last buffer continued its predecessor within the lost-time bound
+    bool cont_ = false;          // decode, device: the last buffer continued its predecessor within the lost-time bound
     // Device mode (B-148): labels minus house time at T0, and that offset at the sink's last calibration.
     int64_t t0_dev_ = 0, cal_off_ = 0;
     bool engaged_ = false;       // decode mode: the decode term commands the ratio
@@ -239,7 +239,7 @@ struct AsrcDeviceConfig {
     int relock_samples = 2;              // ... in this many fed samples in a row
     int64_t flat_den = 10;               // flat: the clock moved under 1/flat_den of house time
     int64_t stall_ns = 1000000000;       // the sink took nothing this long while samples waited
-    int64_t waiting_ns = 100000000;      // samples waiting beyond what the 40 ms prefill holds back
+    int64_t waiting_ns = 100000000;      // samples waiting beyond what a queue before the sink holds
     int64_t probe_ns = 500000000;        // while stalled, a flush this often
     int64_t resume_ns = 200000000;       // taken since a flush past an empty 100 ms ring: resumed
     int64_t rate_hz = 48000;
@@ -250,9 +250,9 @@ struct AsrcDeviceConfig {
 struct AsrcDeviceEvent {
     enum class Kind { relock_device, device_stalled, device_resumed };
     Kind kind;
-    const char* reason;   // relock_device: "restart" or "step"; "" otherwise
+    const char* reason;   // relock_device: "restart", "step" or "flush" (a flush from elsewhere, c40); "" otherwise
     int64_t at;           // house time of the read (a restart: of the start)
-    // relock_device step: the step (ns, 0 for a restart); stalled: frames waiting; resumed: frames dropped so far.
+    // relock_device step: the step (ns, 0 for a restart or flush); stalled: frames waiting; resumed: frames dropped.
     int64_t value;
 };
 
@@ -278,11 +278,21 @@ class AsrcDeviceTerm {
     // relocks keeping the rate (reason restart): the stream's clock starts again from 0.
     void start(int64_t mono, std::vector<AsrcDeviceEvent>* events);
     void stop(int64_t mono);   // the ring released: no read until the next start
+    // The element's counts start again from 0 (READY emptied what waited): forget what the flushes discarded.
+    void restart_counts();
+    // A flush from elsewhere (c40): it discarded `frames` that waited before the sink; and the sink's clock may step
+    // there, so resync() starts the pairs again, the lock relocking keeping its rate (reason "flush").
+    void discard(int64_t frames) { discarded_ += frames > 0 ? frames : 0; }
+    void resync(int64_t mono, std::vector<AsrcDeviceEvent>* events);
     // One timer read: the device clock, then house time; the counts or < 0 for none. True: flush downstream now.
+    // upstream: frames waiting before the element (its upstream-queue), counted as waiting, never as discarded.
     bool sample(int64_t dev_ns, int64_t mono_ns, int64_t pushed, int64_t rendered,
-                std::vector<AsrcDeviceEvent>* events);
+                std::vector<AsrcDeviceEvent>* events, int64_t upstream = 0);
     bool rendering() const { return rendering_; }
     bool stalled() const { return stalled_; }
+    // The clock may be learned from (the sink guard's latency): not while stalled, nor settle_ns after the resume, as
+    // the lock waits (c42); a step relock while trusted leaves it so, one inside that window extends it.
+    bool clock_trusted(int64_t mono) const { return !stalled_ && mono >= trust_at_; }
     int64_t device_ppb() const;   // eps_dev in ClockLock's sense; 0 until the lock has a rate
     int64_t ratio_ppb(int64_t eps_in_ppb = 0) const;
     LockState lock_state() const;
@@ -294,7 +304,7 @@ class AsrcDeviceTerm {
 
   private:
     void clock(int64_t dev, int64_t mono, std::vector<AsrcDeviceEvent>* events);
-    bool render(int64_t mono, int64_t pushed, int64_t taken, std::vector<AsrcDeviceEvent>* events);
+    bool render(int64_t mono, int64_t pushed, int64_t taken, int64_t upstream, std::vector<AsrcDeviceEvent>* events);
     void relock_step(int64_t mono, int64_t step_ns, std::vector<AsrcDeviceEvent>* events);
 
     AsrcDeviceConfig cfg_;
@@ -311,6 +321,8 @@ class AsrcDeviceTerm {
     int64_t flat_ns_ = 0;
     uint64_t fed_ = 0;
     bool stalled_ = false;
+    bool flushing_ = false;   // this stall flushes: what waited below the element was past waiting_ns (c42)
+    int64_t trust_at_ = 0;    // the clock is trusted from here: a resume plus settle_ns
     bool have_taken_ = false;
     int64_t taken_prev_ = 0;
     int64_t discarded_ = 0;   // pushed frames the flushes discarded before the sink took them
@@ -341,6 +353,64 @@ class AsrcRenderLateness {
     };
     int64_t rate_;
     std::deque<Seg> map_;
+};
+
+// The sink margin (B-249, py/sink_margin_ref.py): silence before a sync=false sink's write that is behind the first
+// frame the device can still play, or the first (a start, a flush), so it lands `margin` past it (a first: plus margin
+// or guard). At most `cap` (> 0) frames; a longer gap is crossed by the writes after it.
+int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos, int64_t guard);
+int64_t asrc_sink_write_pos(int64_t next_sample, int64_t segdone, int64_t sps);
+int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int64_t margin, bool have_play,
+                          int64_t play_pos, int64_t guard, int64_t cap = 0);
+// A refill's silence at most (sink_margin_ref.REFILL_MAX_MS).
+constexpr int64_t ASRC_SINK_REFILL_MAX_MS = 3000;
+// A pulse server's configured latency for a stream of tlength `buffer` frames, minreq `sps`.
+int64_t asrc_server_latency(int64_t buffer, int64_t sps);
+
+// How far a server may have read ahead of the device clock (sink_margin_ref.SinkGuard): its configured latency (the
+// graph quantum's bound) plus the sink's latency, learned from segdone once it moves. Learned term only grows; capped.
+class AsrcSinkGuard {
+  public:
+    explicit AsrcSinkGuard(int64_t base = 0, int64_t cap = 0) : base_(base > 0 ? base : 0), cap_(cap > 0 ? cap : 0) {}
+    void segdone_seen(int64_t segdone, int64_t sps, int64_t play_pos);
+    int64_t frames() const { return base_ + sink_lat_ < cap_ ? base_ + sink_lat_ : cap_; }
+    void set_base(int64_t base) { base_ = base > 0 ? base : 0; }
+
+  private:
+    int64_t base_, cap_;
+    int64_t sink_lat_ = 0;
+};
+
+// Whether the guard holds a write: not when the stream was full at the write before (its buffer waited a segment
+// or more in the queue before the sink, or a push blocked in the sink for ASRC_SINK_BLOCKED_NS and ended less than
+// a segment before this write: push_ns that push's wait, since_push_ns since it ended).
+constexpr int64_t ASRC_SINK_BLOCKED_NS = 2000000;
+bool asrc_sink_guard_applies(int64_t residence_ns, int64_t push_ns, int64_t since_push_ns, int64_t seg_ns);
+// Whether a write is held to segdone alone, never the clock (sink_margin_ref.stream_full, c41): the push before it
+// blocked and ended less than ASRC_SINK_FULL_SEGS segments before it (a full stream holds tlength, two minreq past
+// the server's configured latency), so the server holds it, whatever a clock that ran on reads.
+constexpr int64_t ASRC_SINK_FULL_SEGS = 2;
+bool asrc_sink_stream_full(int64_t push_ns, int64_t since_push_ns, int64_t seg_ns);
+// The push before a write from a queue's thread (sink_margin_ref.queued_push): from the gap since that thread's last
+// write, the write's time in the queue and the thread's time on or waiting for a CPU over the gap (< 0: unknown).
+void asrc_sink_queued_push(int64_t gap_ns, int64_t residence_ns, int64_t busy_ns, int64_t* push_ns,
+                           int64_t* since_push_ns);
+
+class AsrcSinkMargin {
+  public:
+    explicit AsrcSinkMargin(int64_t margin_frames = 0, int64_t cap_frames = 0)
+        : margin_(margin_frames > 0 ? margin_frames : 0), cap_(cap_frames > 0 ? cap_frames : 0) {}
+    // next_sample < 0: none; have_play false: the clock must not be read (before the first render).
+    int64_t silence(int64_t next_sample, int64_t segdone, int64_t sps, bool have_play, int64_t play_pos,
+                    int64_t guard);
+    int64_t margin() const { return margin_; }
+    uint64_t refills() const { return refills_; }
+    int64_t silence_total() const { return silence_; }
+
+  private:
+    int64_t margin_, cap_;
+    uint64_t refills_ = 0;
+    int64_t silence_ = 0;
 };
 
 }  // namespace mrts
