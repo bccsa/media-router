@@ -1,13 +1,13 @@
 {
   "scenario": "scn-asrc-out-drift",
-  "graph": "cap-mixer-302m-house.ts looped -> Audio Output (302M), mrtestaudiosink 100 ppm fast; CI 120 s, MR_GATE=1 30 min",
+  "graph": "cap-mixer-302m-house.ts looped -> Audio Output (302M), mrtestaudiosink 100 ppm fast; CI 240 s (from 170 s: the drain has given back the start's second sink margin, B-249), MR_GATE=1 30 min",
   "fixture": "cap-mixer-302m-house.ts",
   "pid": 65,
   "ppm": 100.0,
-  "seconds": 120,
+  "seconds": 240,
   "gate_seconds": 1800,
   "expect": {
-    "settle_s": 60,
+    "settle_s": 170,
     "ppm_tol": 2.0,
     "drift_ms_30min": 2.0,
     "step_ms": 1.0,

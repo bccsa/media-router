@@ -351,13 +351,15 @@ def scn_out_gap_recovers(tag, argv, exp):
         if gap_full:
             print(f"    {label} decoder: Found (B-174, F9): prefill met full at the gap {gap_full} "
                   "(its time level counts the PTS jump)")
+        # B-249: the write after the gap lands one sink margin ahead, the start two: up to a margin earlier.
         check(f"{label} decoder: back at its render lateness ({orig.mid(rb)} -> {orig.mid(ra)} ms, within "
-              f"{x['audio_back_ms']}), events {evs} (want {arm['asrc_events']}), dropped {st.get('dropped-frames')}, "
+              f"{x['audio_back_ms']}, or up to {x.get('margin_ms', 0)} ms earlier), events {evs} (want {arm['asrc_events']}), dropped {st.get('dropped-frames')}, "
               f"demux gaps {dd.get('gaps')} markers {dd.get('markers')}, stale {dd.get('pes-dropped-stale')}, "
               f"not-house-time "
               f"{[(p.get('stale'), p.get('offset-ms')) for p in nh]}, queues {ov} (at most one prefill episode "
               f"of one overrun at {lo:g}-{hi:g} s)",
-              ra and rb and abs(orig.mid(ra) - orig.mid(rb)) <= x["audio_back_ms"]
+              ra and rb and -x["audio_back_ms"] - x.get("margin_ms", 0) <= orig.mid(ra) - orig.mid(rb)
+              <= x["audio_back_ms"]
               and evs == arm["asrc_events"] and st.get("dropped-frames") == 0
               and dd.get("gaps") == want_gaps and dd.get("markers") == arm.get("markers", 0)
               and dd.get("pes-dropped-stale") == arm.get("stale", 0)
@@ -583,7 +585,8 @@ def scn_asrc_out_drift(tag, argv, exp):
     ao, t0 = run.outputs["aout"], run.t0
     stats = ao.asrc_stats()
     engaged = next((t for t, p in stats if p.get("device-ppb")), None)
-    rows = [(t, p.get("render-lateness-ns") / 1e6) for t, p in stats
+    # With what the drain removed added back (B-179): the start's second sink margin is given back (B-249, M6).
+    rows = [(t, (p.get("render-lateness-ns") + (p.get("drained-ns") or 0)) / 1e6) for t, p in stats
             if p.get("render-lateness-ns") and t >= t0 + x["settle_s"] * S]
     st = last(stats)
     diffs = [(b_[0], b_[1] - a_[1]) for a_, b_ in zip(rows, rows[1:])]
