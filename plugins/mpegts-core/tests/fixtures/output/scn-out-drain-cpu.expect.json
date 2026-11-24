@@ -1,10 +1,10 @@
 {
   "scenario": "scn-out-drain-cpu",
-  "graph": "generated 720p50 H.264 + AAC -> the audio decoder (mrtestaudiosink) alone; from 100 s (its drain warm about 85 s in) its input held 20 times, 3 s apart, each hold 100 ms longer than the last (a consumer falling further behind each time: none lost): no raise, the margin unchanged, every underrun under load or warm-up (B-240, V-P4-12's CPU arm)",
+  "graph": "generated 720p50 H.264 + AAC -> the audio decoder (mrtestaudiosink) alone; from 130 s (its drain warm about 115 s in: the term locks about 55 s in, then the 60 s window, M6b) its input held 20 times, 3 s apart, each hold 100 ms longer than the last (a consumer falling further behind each time: none lost): no raise, the margin unchanged, every underrun under load or warm-up (B-240, V-P4-12's CPU arm)",
   "kind": "h264-aac-720p50",
-  "seconds": 175,
+  "seconds": 205,
   "load": [
-    100,
+    130,
     20
   ],
   "expect": {
@@ -12,6 +12,7 @@
       120,
       100
     ],
-    "underruns_min": 5
+    "underruns_min": 5,
+    "margin_ms": 60
   }
 }
