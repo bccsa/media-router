@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 try:
@@ -103,8 +104,13 @@ class Run:
                 self.reads[(key, element, prop)] = self.outputs[key].prop(element, prop)
         finally:
             gc.enable()
-            for o in reversed(list(self.outputs.values())):
-                o.stop()
+            # All at once (M6b): stopped one after another, an output whose stop drains a backlog (the Audio
+            # Decoder's full ad_esq, 4.9 s) held the next one past its bus watchdog's 5 s after the feed ended.
+            stops = [threading.Thread(target=o.stop) for o in self.outputs.values()]
+            for t in stops:
+                t.start()
+            for t in stops:
+                t.join()
             for p in self.producers:
                 p.stop()
             self.dir.close()
