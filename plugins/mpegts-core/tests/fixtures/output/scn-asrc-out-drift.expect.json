@@ -1,13 +1,14 @@
 {
   "scenario": "scn-asrc-out-drift",
-  "graph": "cap-mixer-302m-house.ts looped -> Audio Output (302M), mrtestaudiosink 100 ppm fast; CI 120 s, MR_GATE=1 30 min",
+  "graph": "cap-mixer-302m-house.ts looped -> Audio Output (302M), mrtestaudiosink 100 ppm fast with a 40 ms device buffer of its own (pulsesink's; a run whose card still starved is the host's and runs again: its GstAudioSink clock slips there, B-166 F6); CI 240 s read from 170 s (a start later than the margin is given back from lock + the 60 s window over the drain law's tail, about 112-180 s; what it removed is added back: M6b), MR_GATE=1 30 min",
   "fixture": "cap-mixer-302m-house.ts",
   "pid": 65,
   "ppm": 100.0,
-  "seconds": 120,
+  "card_extra": "device-ns=40000000",
+  "seconds": 240,
   "gate_seconds": 1800,
   "expect": {
-    "settle_s": 60,
+    "settle_s": 170,
     "ppm_tol": 2.0,
     "drift_ms_30min": 2.0,
     "step_ms": 1.0,

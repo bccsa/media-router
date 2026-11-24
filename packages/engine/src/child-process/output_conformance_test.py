@@ -603,13 +603,23 @@ def scn_asrc_out_drift(tag, argv, exp):
     whole = orig.chunked(orig.looped(*loop_of(orig.fixture(exp["fixture"]), exp["pid"], seconds)))
     run = Run(argv)
     run.producer("feed", ["ao"], ts=lambda t0: orig.at_house(whole, t0), stop_s=seconds)
-    run.output("aout", "aout302m", audio=orig.card(ppm=exp["ppm"]))
-    run.go(seconds + 1, (), [("aout", "sink", "resyncs"), ("aout", "sink", "renders")])
+    # A device buffer of its own (pulsesink's 40 ms server latency, as the late feed's test device): with the default
+    # one segment a ring thread 10 ms late on the shared host starves the card (M6b).
+    run.output("aout", "aout302m", audio=orig.card(ppm=exp["ppm"], extra=exp.get("card_extra", "")))
+    run.go(seconds + 1, (), [("aout", "sink", "resyncs"), ("aout", "sink", "renders"), ("aout", "sink", "underruns")])
     run.on_time(label)
     run.clean(label)
     ao, t0 = run.outputs["aout"], run.t0
     stats = ao.asrc_stats()
     engaged = next((t for t, p in stats if p.get("device-ppb")), None)
+    # The arm reads the device term on a clean link. The test card is a GstAudioSink: a starved write (the host's)
+    # holds its clock by the gap, a sub-relock slip the term reads as rate for minutes (B-166 F6; pulsesink's clock
+    # runs on through an underrun, DEV-P4a). A run whose card starved is the host's: run again (M6b).
+    card_under = run.reads.get(("aout", "sink", "underruns"))
+    if card_under:
+        first = next((sec(t, t0) for t, p in stats if p.get("underruns")), None)
+        raise Retry(f"{label}: the card starved {card_under} times (the drain saw the first at {first} s): its clock "
+                    "slipped, which the device term reads as rate")
     # With what the drain removed added back (B-179): a start a little later than the margin drains from lock + its
     # 60 s window, inside the read (the VM's py runner, M6b); the device term's drift is what is left.
     rows = [(t, (p.get("render-lateness-ns") + (p.get("drained-ns") or 0)) / 1e6) for t, p in stats
