@@ -356,8 +356,8 @@ class AsrcRenderLateness {
 };
 
 // The sink margin (B-249, py/sink_margin_ref.py): silence before a sync=false sink's write that is behind the first
-// frame the device can still play, or the first (a start, a flush), so it lands `margin` past it (a first: plus margin
-// or guard). At most `cap` (> 0) frames; a longer gap is crossed by the writes after it.
+// frame the device can still play, or the first (a start, a flush), so it lands `margin` past it (a start with no
+// clock: past the guard too). At most `cap` (> 0) frames; a longer gap is crossed by the writes after it.
 int64_t asrc_sink_consumed(int64_t segdone, int64_t sps, bool have_play, int64_t play_pos, int64_t guard);
 int64_t asrc_sink_write_pos(int64_t next_sample, int64_t segdone, int64_t sps);
 int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int64_t margin, bool have_play,

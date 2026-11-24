@@ -21,16 +21,17 @@ first sample lands `margin` frames past `consumed`: the hole grows by at most th
 is written where it cannot play, and from there a feed may get up to `margin` later again without a
 hole. The silence starts where the base sink will write, which is segdone + 1 when it realigns.
 Delay never shrinks (nothing is dropped); it grows only at a hole. The first write after a start or
-a flush lands the margin plus the larger of the margin and the guard past `consumed`: a device that
-starts takes its own buffer out of it at once (the test sink's 40 ms, pulsesink's server its
-read-ahead). After a flush the clock is read once the sink has rendered (fix round 1). The silence
-starts where the base sink writes, which after a flush on a pulsesink whose segdone is still (1.22)
-is frame 0, so it would span the stream's run (10 and 20 s at flushes 10 and 20 s in, measured);
-moving next_sample past it instead (tried) left the stream silent after a flush in 4 of 16 runs on
-the dev Pi. On the image's pulsesink (1.28) segdone follows the read index: at most its staleness
-(1.5 s). A refill is capped at REFILL_MAX_MS (fix round 2): a longer gap is crossed by several
-writes, each capped, the ones still behind the read index dropped by the server, so a refill never
-allocates more than the cap however long the stream ran.
+a flush lands one margin past `consumed`, as a hole's write does (M6b); at a start, with no clock yet,
+`consumed` is the segment in flight plus the guard (a server's read-ahead). A GstAudioSink's device
+that takes a buffer of its own when it starts takes it out of that margin. After a flush the clock
+is read once the sink has rendered (fix round 1). The silence starts where the base sink writes,
+which after a flush on a pulsesink whose segdone is still (1.22) is frame 0, so it would span the
+stream's run (10 and 20 s at flushes 10 and 20 s in, measured); moving next_sample past it instead
+(tried) left the stream silent after a flush in 4 of 16 runs on the dev Pi. On the image's
+pulsesink (1.28) segdone follows the read index: at most its staleness (1.5 s). A refill is capped
+at REFILL_MAX_MS (fix round 2): a longer gap is crossed by several writes, each capped, the ones
+still behind the read index dropped by the server, so a refill never allocates more than the cap
+however long the stream ran.
 
 The guard (c39 review, blocking 1). A GstAudioSink hands each segment to the device itself, so its
 segdone is the device's read: guard 0. pulsesink's ring is a server's stream: the server reads ahead
@@ -137,8 +138,8 @@ def silence_frames(next_sample, segdone, sps, margin, play_pos=None, guard=0, ca
     c = consumed_frames(segdone, sps, play_pos, guard)
     if next_sample >= 0 and next_sample >= c:
         return 0
-    # A start or a flush: the device (a server: its read-ahead) takes its own buffer out of it.
-    want = margin if next_sample >= 0 else margin + max(margin, guard)
+    # A start, no clock yet: past the server's read-ahead too, where a hole's write reads it off the clock.
+    want = margin + guard if next_sample < 0 and play_pos is None else margin
     n = max(0, c + want - base_write_pos(next_sample, segdone, sps))
     return min(n, cap) if cap > 0 else n
 
