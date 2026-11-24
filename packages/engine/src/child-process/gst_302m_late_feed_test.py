@@ -27,7 +27,7 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     the Audio Decoder's sink end: the one into `asrc`) is held (it spins) 80-120 ms at content 10, 15, 20, 25, 55
     and 150 s, the feed 30 ms late: each stall a hole at most (each with its refill), nothing lost, each adding at
     most its length plus the margin, 40 ms and two segments to the delay, which is back at the target at the end,
-    within the drain's 30 s hold and its law (+20 %) of the last stall; on the Audio Decoder the backlog waits in
+    within the drain's 60 s hold and its law (+20 %) of the last stall; on the Audio Decoder the backlog waits in
     ad_esq, whose level the drain reads at once (M6; before it, c39-c42's decq showed it a queue's worth at a time;
     900 s on a server).
   - flushes (B-249 fix round 4; seeds 7, 8, 9, a 70-90 ms feed): a 3 s device stall past the first window (300 s),
@@ -192,7 +192,7 @@ CATCH_RUNS = int(os.environ.get("MR_302M_CATCH_RUNS", "3"))
 # On a real pulsesink the sink's own start may come up 0.3-2 s late on top (the dev Pi): room for 2.8 s at 0.5 %.
 PULSE_CATCH_SECS = {"late": 660, "spike": 540}
 RATE = 0.005                               # mrts::DrainServo::DMAX_PPB (the owner's 0.5 %)
-WINDOW_S = 30                              # DrainServo::WINDOW_NS: sampled this long since a clear before it drains
+WINDOW_S = 60                              # DrainServo::AUDIO_WINDOW_NS: sampled this long since a clear before it drains
 TAU_S = 30                                 # DrainServo::TAU_NS: delta = E / 30 s, saturated from 150 ms
 
 
@@ -537,7 +537,7 @@ def stall_metrics(raw, fired, plan, secs):
 
 
 def stall_predicted(m, plan, queue_ms=0):
-    """The drain's own bound on the recovery (B-179): its 30 s hold after the last starvation (a stall's hole), then
+    """The drain's own bound on the recovery (B-179): its 60 s hold after the last starvation (a stall's hole), then
     the excess by its law; upstream-queue's level is a window of its fill, seen at once (queue_ms kept for the
     callers)."""
     x = max(m["growth"][-1] or 0, (m["peak"] or 0) - (m["end"] or 0), 0.0)
@@ -608,7 +608,7 @@ _FLUSH_SEEDS = [int(v) for v in os.environ.get("MR_302M_FLUSH_SEEDS", "7,8,9").s
 
 def flush_plan(name, seed):
     """(the event's clock s, the feed's lateness ms). A flush, ours or not, comes once the drain is warm (the device
-    term locks about 50 s in, then 30 s are sampled), so its `warm-up` after it is the reset (M6)."""
+    term locks about 50 s in, then 60 s are sampled: M6b), so its `warm-up` after it is the reset (M6)."""
     rng = random.Random(seed * 53)
     late = name in ("devstall", "flush", "flush-held")
     at = round(rng.uniform(25, 35) if name.startswith("ready") else rng.uniform(130, 150) if late
@@ -712,7 +712,7 @@ def flush_run(name, seed):
     own = marks.get("own", secs)
     h, _ = holes_from(lv, sk, own)
     ref = [s.get("margin-refills", 0) for t, s in st if t >= own]
-    # The drain's window after a clear is 30 s (B-179; the catch-up's was 60).
+    # The drain's window after a clear is 60 s (M6b; B-179's 30 s, the catch-up's 60).
     after = [s.get("drain-state") for t, s in st if (at + 5 if name == "devstall" else at + 1) <= t <= at + 25]
     before = [s.get("drain-state") for t, s in st if at - 6 <= t < at]
     tail = [s.get("render-lateness-ns", 0) / MS for t, s in st if t >= secs - 10 and s.get("render-lateness-ns", 0)]

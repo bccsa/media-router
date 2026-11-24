@@ -843,6 +843,31 @@ def case_fall():
              reasons_of(d) == ["raised"] and s.raises == 1)]
 
 
+def case_audio_window():
+    """M6b. Audio's 60 s window: a 2 s backlog drains only once 60 s are sampled, and a low reading 45 s back
+    still bounds the trough, where video's 30 s window has let it go (the room a later rise needs)."""
+    s = DrainServo(False, window_ns=ds.AUDIO_WINDOW_NS)
+    ln = Link(s, source(steady(20 * MS)), fill_ns=2 * SEC)
+    r = Run([ln])
+    r.until(3 * MIN)
+    start = events(r.log[0], "drain-start")
+    out = {}
+    for name, w in (("audio", ds.AUDIO_WINDOW_NS), ("video", ds.WINDOW_NS)):
+        a = DrainServo(False, window_ns=w)
+        for k in range(1, 1500):          # 150 s of ticks: 100 ms of slack, 25 ms once at 100 s
+            t = k * TICK
+            a.sample(t, 25 * MS if k == 1000 else 100 * MS)
+            a.update(t, 200 * MS, True)
+        out[name] = (a.trough, a.excess)
+    return [
+        (f"audio window: a drain starts once 60 s are sampled, not at 30 s ({start[:1]})",
+         bool(start) and start[0][0] >= 60 * SEC),
+        (f"audio window: 45 s after a 25 ms reading the trough still holds it ({out['audio']}), video's 30 s "
+         f"window not ({out['video']})",
+         out["audio"] == (25 * MS, 5 * MS) and out["video"] == (100 * MS, 80 * MS)),
+    ]
+
+
 CASES = {
     "backlog": case_backlog, "steady": case_steady, "steady_raise": case_steady_raise,
     "step": case_step, "starve": case_starve, "dip": case_dip, "creep": case_creep,
@@ -852,7 +877,7 @@ CASES = {
     "dip_drain": case_dip_drain, "f1_pin": case_f1_pin, "cpu": case_cpu, "stall_arm": case_stall_arm,
     "drain_timing": case_drain_timing, "keep_up": case_keep_up, "spacing": case_spacing, "band": case_band,
     "hold_state": case_hold_state, "input": case_input, "fall": case_fall,
-    "seam_floor": case_seam_floor, "video_never": case_video_never,
+    "seam_floor": case_seam_floor, "video_never": case_video_never, "audio_window": case_audio_window,
 }
 
 
@@ -1037,8 +1062,17 @@ def m_s1_window_only():
     def starve(self, now, on):
         orig(self, now, on)
         if self.episode is not None and self.episode["start"] == now:
-            self.episode["warm"] = self.sampled and now - self.warm_from >= ds.WINDOW_NS
+            self.episode["warm"] = self.sampled and now - self.warm_from >= self.window
     return _patch(DrainServo, "starve", starve)
+
+
+def m_q_zero():
+    orig = DrainServo.__init__
+
+    def init(self, *a, **k):
+        orig(self, *a, **k)
+        self.quiet = 0
+    return _patch(DrainServo, "__init__", init)
 
 
 def m_s2_off():
@@ -1144,8 +1178,9 @@ MUTANTS = [
     ("S4 off", m_s4_off, "cpu"),
     ("S6 off", m_s6_off, "band"),
     ("S6's edges exclusive", m_s6_exclusive, "band"),
-    ("Q as 0", lambda: _patch(ds, "QUIET_NS", 0), "drain_timing"),
+    ("Q as 0", m_q_zero, "drain_timing"),
     ("C as 0", lambda: _patch(ds, "CONFIRM_NS", 0), "keep_up"),
+    ("audio's window as video's 30 s (M6b)", lambda: _patch(ds, "AUDIO_WINDOW_NS", ds.WINDOW_NS), "audio_window"),
     ("S3 off", m_s3_off, "input"),
     ("a clear dropping the pending episodes uncounted", m_clear_drops_pending, "input"),
     ("a clear counting every pending episode `input`", m_clear_all_input, "input"),

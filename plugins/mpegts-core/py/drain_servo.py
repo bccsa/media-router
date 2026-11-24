@@ -10,8 +10,9 @@ integer arithmetic throughout, so the C++ agrees exactly. Rates are ppb: +5,000,
 The measure. A slack sample is content that was ready at the device element before it was
 needed: the audio fill downstream of mrasrc less the prefill's delay line, a video frame's lead
 on its drained slot (plus `vp_esq`'s level, a second window). The trough F is the minimum of the
-samples over 3 buckets of 10 s, the newest open (CoDel's standing-queue test, used to speed up
-instead of drop); F is the slack's trough plus the level's where both are fed.
+samples over the window W, buckets of 10 s, the newest open (CoDel's standing-queue test, used to
+speed up instead of drop): 3 buckets for video, 6 for audio (M6b: a 30 s window plays away room a
+later rise needs, c39's measure); F is the slack's trough plus the level's where both are fed.
 
 The law. Excess E = F - m (m the margin). The command E' is E alone (never below 0: alone it only
 drains), or, in a group whose target P (any value above -1 h: early outputs group below 0) was
@@ -19,23 +20,23 @@ refreshed within 10 s, E' = L - min(P, T + 1 s) where L
 is the render lateness and T the published target: min(E, E') when that is >= 0 (never below its
 own target), else E' (it rises to the group). delta* = clamp(E' / 30 s, +-0.5 %) while engaged:
 it engages at |E'| >= 20 ms and lets go at |E'| <= 5 ms. delta slews at most 500 ppm/s, except at
-an epoch break (a DISCONT or GAP), where it steps. No drain until 30 s were sampled since the last
+an epoch break (a DISCONT or GAP), where it steps. No drain until W was sampled since the last
 window clear (a relock, a stall's flush, caps, a flush, PAUSED), nor while an episode runs, nor for
-30 s after an audio starvation or an outage (its zeros are in the window). A sample below 0 (content that was late) reads
+W after an audio starvation or an outage (its zeros are in the window). A sample below 0 (content that was late) reads
 0: the slack is what was early.
 
 The margin. Audio starts at its 20 ms floor (the live fill sits at the prefill's delay line: no
 ring margin to keep), video at its floor, 1 frame; ceiling 500 ms. Only a steady audio starvation
 the margin limited raises it (B-240, owner decision 2026-11-13): one of at most 250 ms is judged
 10 s after its end (t_c) and raises there only if (S1) the servo was warm at its start (window
-full, no starvation hold), (S2) delta was 0 from 30 s before its start to t_c, (S3) no epoch
-break, outage or window clear from 30 s before its start to t_c, (S4) the render lateness at t_c
+full, no starvation hold), (S2) delta was 0 from W before its start to t_c, (S3) no epoch
+break, outage or window clear from W before its start to t_c, (S4) the render lateness at t_c
 is at most its start's + the episode's length + 20 ms, and (S6) the trough 1-2 s before its start
 (the fill's own fall into it left out) was within the margin +- 20 ms; a longer one is an outage,
 counted apart. Each that does not raise counts under
-its first failed test: drain (delta != 0 in it), after-drain (within 30 s after), warm-up, input,
+its first failed test: drain (delta != 0 in it), after-drain (within W after), warm-up, input,
 load, not-margin. A video late release never raises it (B-256): it counts as drain (delta != 0),
-after-drain (within 30 s after delta last was) or video. Late frames within 1 s of the last are one
+after-drain (within W after delta last was) or video. Late frames within 1 s of the last are one
 episode; one more than 250 ms late is an outage. A raise: L = m_u (the margin
 that underran), m = min(500 ms, max(2 m_u, m_u + 20 ms)).
 Every 10 min without a raise m falls 5 ms, never below the floor nor L + 10 ms (L once it exists);
@@ -48,7 +49,7 @@ while delta < 0.
 
 Run as a script it replays a sequence (the format `mrts_cli drain` reads):
     drain_servo.py seq.jsonl|-
-one JSON object per line: {"op":"config","video":0|1,"start":ns,"floor":ns} starts a new servo
+one JSON object per line: {"op":"config","video":0|1,"start":ns,"floor":ns,"window":ns} starts a new servo
 (other keys are labels), {"op":"sample","now":ns,"slack":ns}, {"op":"queue","now":ns,"level":ns},
 {"op":"starve","now":ns,"on":0|1}, {"op":"late","now":ns,"by":ns}, {"op":"clear","now":ns},
 {"op":"break"}, {"op":"group","now":ns,"target":ns} and {"op":"update","now":ns,"render":ns,
@@ -68,7 +69,8 @@ SEC = 1000000000
 MS = 1000000
 BUCKET_NS = 10 * SEC
 BUCKETS = 3
-WINDOW_NS = BUCKETS * BUCKET_NS
+WINDOW_NS = BUCKETS * BUCKET_NS       # video's W
+AUDIO_WINDOW_NS = 6 * BUCKET_NS       # audio's (M6b)
 TAU_NS = 30 * SEC
 DMAX_PPB = 5000000                    # 0.5 %, the owner's (9 Nov)
 SLEW_DEN = 2000                       # 500 ppm/s: dt / 2000 ppb per ns of dt
@@ -89,7 +91,6 @@ GROUP_ALONE_NS = -3600 * SEC          # the group target that means alone; any o
 AUDIO_START_NS = 20 * MS
 AUDIO_FLOOR_NS = 20 * MS
 CONFIRM_NS = 10 * SEC                 # C: an audio starvation is judged this long after its end (B-240)
-QUIET_NS = WINDOW_NS                  # Q: delta 0 this long before it (the window still holds the drain's fill)
 LIMIT_BAND_NS = ENGAGE_NS             # S6: its start trough within the margin +- this, both edges in
 KEEP_UP_NS = 20 * MS                  # S4: render lateness may grow by the episode's length + this
 SETTLE_NS = SEC                       # S6 reads the trough 1-2 s before the start: not the fill's own descent
@@ -106,9 +107,10 @@ def clamp(v, lo, hi):
 
 
 class Window:
-    """The minimum over 3 buckets of 10 s on the servo's clock, the newest open."""
+    """The minimum over `buckets` buckets of 10 s on the servo's clock, the newest open."""
 
-    def __init__(self):
+    def __init__(self, buckets=BUCKETS):
+        self.buckets = buckets
         self.clear(0)
 
     def clear(self, now):
@@ -120,11 +122,11 @@ class Window:
             return
         k = (now - self.open_at) // BUCKET_NS
         self.open_at += k * BUCKET_NS
-        if k >= BUCKETS:
+        if k >= self.buckets:
             self.mins = [None]
             return
         self.mins.extend([None] * k)
-        del self.mins[:-BUCKETS]
+        del self.mins[:-self.buckets]
 
     def add(self, now, v):
         self._rotate(now)
@@ -138,13 +140,16 @@ class Window:
 
 
 class DrainServo:
-    def __init__(self, video=False, start_ns=AUDIO_START_NS, floor_ns=AUDIO_FLOOR_NS):
+    def __init__(self, video=False, start_ns=AUDIO_START_NS, floor_ns=AUDIO_FLOOR_NS, window_ns=WINDOW_NS):
         self.video = video
         self.floor = floor_ns
         self.margin = start_ns
         self.learned = None
-        self.slack = Window()
-        self.queue = Window()
+        buckets = max(1, window_ns // BUCKET_NS)
+        self.window = buckets * BUCKET_NS     # W: the trough's, the warm-up's and the holds'
+        self.quiet = self.window              # Q: delta 0 this long before it (the window still holds the drain's fill)
+        self.slack = Window(buckets)
+        self.queue = Window(buckets)
         self.started = False
         self.ppb = 0
         self.engaged = False
@@ -238,7 +243,7 @@ class DrainServo:
 
     def _outage(self, now, length):
         self.outages += 1
-        self.hold_until = now + WINDOW_NS
+        self.hold_until = now + self.window
         self.broken_at = now
         self.events.append(("outage", now, length))
 
@@ -249,7 +254,7 @@ class DrainServo:
             self.episode_at = now
             # S1 as the window and the hold judge it, not the lock: the starvation itself can stop the
             # render lateness reading (`can`) on the tick before it is detected.
-            warm = (self.sampled and now - self.warm_from >= WINDOW_NS
+            warm = (self.sampled and now - self.warm_from >= self.window
                     and (self.hold_until is None or now >= self.hold_until))
             self.episode = {"start": now, "render": self.render, "trough": self.settled,
                             "margin": self.margin, "warm": warm, "drain": self.ppb != 0,
@@ -258,7 +263,7 @@ class DrainServo:
             length = now - self.episode_at
             self.episode_at = None
             if length <= SHORT_NS:
-                self.hold_until = now + WINDOW_NS
+                self.hold_until = now + self.window
                 self.underruns += 1
                 ep = dict(self.episode, length=length, tc=now + CONFIRM_NS)
                 ep["drain"] = ep["drain"] or self.ppb != 0
@@ -267,12 +272,11 @@ class DrainServo:
                 self._outage(now, length)
             self.episode = None
 
-    @staticmethod
-    def _first_reason(ep):
+    def _first_reason(self, ep):
         """The first of drain, after-drain and warm-up (S2, Q, S1) that applies to `ep`, else None."""
         if ep["drain"]:
             return "drain"
-        if ep["quiet"] is not None and ep["quiet"] >= ep["start"] - QUIET_NS:
+        if ep["quiet"] is not None and ep["quiet"] >= ep["start"] - self.quiet:
             return "after-drain"
         return None if ep["warm"] else "warm-up"
 
@@ -280,7 +284,7 @@ class DrainServo:
         """S1-S4, S6 at t_c (B-240): raise, or count under the first test that fails."""
         start = ep["start"]
         reason = self._first_reason(ep)
-        if reason is None and self.broken_at is not None and self.broken_at >= start - WINDOW_NS:
+        if reason is None and self.broken_at is not None and self.broken_at >= start - self.window:
             reason = "input"
         if reason is None and render_ns > ep["render"] + ep["length"] + KEEP_UP_NS:
             reason = "load"
@@ -307,7 +311,7 @@ class DrainServo:
         self.underruns += 1
         if self.ppb != 0:
             self._count(now, "drain", 0)
-        elif self.nonzero_at is not None and now - self.nonzero_at <= QUIET_NS:
+        elif self.nonzero_at is not None and now - self.nonzero_at <= self.quiet:
             self._count(now, "after-drain", 0)
         else:
             self._count(now, "video", 0)
@@ -364,7 +368,7 @@ class DrainServo:
         trough = self._trough(now)
         if self.next_at is None or now - self.next_at >= SETTLE_NS:
             self.settled, self.next_trough, self.next_at = self.next_trough, trough, now
-        warm = (bool(can) and trough is not None and now - self.warm_from >= WINDOW_NS
+        warm = (bool(can) and trough is not None and now - self.warm_from >= self.window
                 and (self.hold_until is None or now >= self.hold_until))
         self.trough = trough if trough is not None else 0
         excess = trough - self.margin if warm else 0
@@ -448,7 +452,8 @@ def replay(lines, out):
         k = op["op"]
         if k == "config":
             video = bool(op.get("video", 0))
-            s = DrainServo(video, op.get("start", AUDIO_START_NS), op.get("floor", AUDIO_FLOOR_NS))
+            s = DrainServo(video, op.get("start", AUDIO_START_NS), op.get("floor", AUDIO_FLOOR_NS),
+                           op.get("window", WINDOW_NS))
         elif k == "sample":
             s.sample(op["now"], op["slack"])
         elif k == "queue":

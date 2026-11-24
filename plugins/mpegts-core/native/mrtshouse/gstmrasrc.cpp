@@ -116,7 +116,9 @@ struct AsrcDevice {
     std::deque<AsrcContent> contents;   // outputs the probe has not met
     // The drain: the anchor (a rendered buffer's frames pushed before it and its write position), the pushes since
     // the last tick (clock time, frames pushed before), that tick's device position, a threshold queue's delay (ns).
-    mrts::DrainServo drain;
+    // Audio's 60 s window (M6b): a 30 s one plays away room a later rise needs.
+    mrts::DrainServo drain{false, mrts::DrainServo::AUDIO_START_NS, mrts::DrainServo::AUDIO_FLOOR_NS,
+                           mrts::DrainServo::AUDIO_WINDOW_NS};
     bool have_anchor = false, have_tick = false, was_locked = false;
     int64_t anchor_pushed = 0, anchor_write = 0, tick_mono = 0, tick_pos = 0, prefill_ns = 0;
     std::vector<std::pair<int64_t, int64_t>> pushes;
@@ -1143,7 +1145,8 @@ static gboolean asrc_install_device(GstMrAsrc* self) {
         self->dev->margin = asrc_margin(margin_ms, self->dev->rate);
         // The drain plays back down to the sink's margin, never into it (B-249's rule kept under B-179's drain).
         const int64_t m = std::max<int64_t>((int64_t)margin_ms * GST_MSECOND, mrts::DrainServo::AUDIO_FLOOR_NS);
-        self->dev->drain = mrts::DrainServo(false, std::max<int64_t>(m, mrts::DrainServo::AUDIO_START_NS), m);
+        self->dev->drain = mrts::DrainServo(false, std::max<int64_t>(m, mrts::DrainServo::AUDIO_START_NS), m,
+                                            mrts::DrainServo::AUDIO_WINDOW_NS);
     }
     {   // READY emptied what waited before the sink: the counts start again (B-249)
         std::lock_guard<std::mutex> g(self->dev->mu);

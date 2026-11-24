@@ -60,13 +60,13 @@ void DrainWindow::rotate(int64_t now) {
     if (now - open_at_ < BUCKET_NS) return;
     const int64_t k = (now - open_at_) / BUCKET_NS;
     open_at_ += k * BUCKET_NS;
-    if (k >= BUCKETS) {
+    if (k >= buckets_) {
         n_ = 1;
         have_[0] = false;
         return;
     }
     // The oldest go first: shift what stays to the front, the new buckets empty.
-    const int keep = std::min<int>(n_, BUCKETS - (int)k);
+    const int keep = std::min<int>(n_, buckets_ - (int)k);
     const int drop = n_ - keep;
     for (int i = 0; i < keep; i++) {
         mins_[i] = mins_[i + drop];
@@ -96,8 +96,19 @@ bool DrainWindow::min(int64_t now, int64_t* out) {
     return any;
 }
 
-DrainServo::DrainServo(bool video, int64_t start_ns, int64_t floor_ns)
-    : video_(video), floor_(floor_ns), margin_(start_ns) {}
+namespace {
+
+int window_buckets(int64_t window_ns) {
+    const int64_t b = window_ns / DrainWindow::BUCKET_NS;
+    return (int)std::max<int64_t>(1, std::min<int64_t>(DrainWindow::MAX_BUCKETS, b));
+}
+
+}  // namespace
+
+DrainServo::DrainServo(bool video, int64_t start_ns, int64_t floor_ns, int64_t window_ns)
+    : video_(video), floor_(floor_ns), margin_(start_ns),
+      window_(window_buckets(window_ns) * DrainWindow::BUCKET_NS), slack_(window_buckets(window_ns)),
+      queue_(window_buckets(window_ns)) {}
 
 void DrainServo::touch(int64_t now) {
     if (started_) return;
@@ -150,7 +161,7 @@ void DrainServo::raise(int64_t now, const Episode& ep, int64_t steady) {
 void DrainServo::outage(int64_t now, int64_t length) {
     outages_++;
     have_hold_ = true;
-    hold_until_ = now + WINDOW_NS;
+    hold_until_ = now + window_;
     have_broken_ = true;
     broken_at_ = now;
     events_.push_back(DrainEvent{DrainEvent::Kind::outage, now, length});
@@ -172,9 +183,9 @@ void DrainServo::count(int64_t now, UnderrunReason r, int64_t length) {
 }
 
 // The first of drain, after-drain and warm-up (S2, Q, S1) that applies to `ep`; false if none.
-bool DrainServo::first_reason(const Episode& ep, UnderrunReason* r) {
+bool DrainServo::first_reason(const Episode& ep, UnderrunReason* r) const {
     if (ep.drain) *r = UnderrunReason::drain;
-    else if (ep.have_quiet && ep.quiet >= ep.start - QUIET_NS) *r = UnderrunReason::after_drain;
+    else if (ep.have_quiet && ep.quiet >= ep.start - window_) *r = UnderrunReason::after_drain;
     else if (!ep.warm) *r = UnderrunReason::warm_up;
     else return false;
     return true;
@@ -187,7 +198,7 @@ void DrainServo::judge(int64_t now, const Episode& ep, int64_t render_ns) {
         count(now, r, ep.length);
         return;
     }
-    if (have_broken_ && broken_at_ >= ep.start - WINDOW_NS) r = UnderrunReason::input;
+    if (have_broken_ && broken_at_ >= ep.start - window_) r = UnderrunReason::input;
     else if (render_ns > ep.render + ep.length + KEEP_UP_NS) r = UnderrunReason::load;
     else if (!ep.have_trough || iabs(ep.trough - ep.margin) > LIMIT_BAND_NS) r = UnderrunReason::not_margin;
     else {
@@ -229,7 +240,7 @@ void DrainServo::starve(int64_t now, bool on) {
         episode_.margin = margin_;
         // S1 as the window and the hold judge it, not the lock: the starvation itself can stop the render
         // lateness reading (`can`) on the tick before it is detected.
-        episode_.warm = sampled_ && now - warm_from_ >= WINDOW_NS && (!have_hold_ || now >= hold_until_);
+        episode_.warm = sampled_ && now - warm_from_ >= window_ && (!have_hold_ || now >= hold_until_);
         episode_.drain = ppb_ != 0;
         episode_.have_quiet = have_nonzero_;
         episode_.quiet = nonzero_at_;
@@ -238,7 +249,7 @@ void DrainServo::starve(int64_t now, bool on) {
         in_episode_ = false;
         if (length <= SHORT_NS) {
             have_hold_ = true;
-            hold_until_ = now + WINDOW_NS;
+            hold_until_ = now + window_;
             underruns_++;
             Episode ep = episode_;
             ep.length = length;
@@ -264,7 +275,7 @@ void DrainServo::late(int64_t now, int64_t by_ns) {
     underruns_++;
     // Never a raise (B-256): counted drain, after-drain (within Q of delta != 0) or video.
     if (ppb_ != 0) count(now, UnderrunReason::drain, 0);
-    else if (have_nonzero_ && now - nonzero_at_ <= QUIET_NS) count(now, UnderrunReason::after_drain, 0);
+    else if (have_nonzero_ && now - nonzero_at_ <= window_) count(now, UnderrunReason::after_drain, 0);
     else count(now, UnderrunReason::video, 0);
 }
 
@@ -334,7 +345,7 @@ int64_t DrainServo::update(int64_t now, int64_t render_ns, bool can) {
         have_next_at_ = true;
         next_at_ = now;
     }
-    const bool warm = can && have && now - warm_from_ >= WINDOW_NS && (!have_hold_ || now >= hold_until_);
+    const bool warm = can && have && now - warm_from_ >= window_ && (!have_hold_ || now >= hold_until_);
     trough_ = have ? trough : 0;
     const int64_t excess = warm ? trough - margin_ : 0;
     excess_ = excess;

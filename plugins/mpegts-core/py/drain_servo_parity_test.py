@@ -42,11 +42,11 @@ class Recorded(ds.DrainServo):
     """A servo that writes each call as an op of the replay format, one sequence per servo."""
     made = []
 
-    def __init__(self, video=False, start_ns=ds.AUDIO_START_NS, floor_ns=ds.AUDIO_FLOOR_NS):
-        super().__init__(video, start_ns, floor_ns)
+    def __init__(self, video=False, start_ns=ds.AUDIO_START_NS, floor_ns=ds.AUDIO_FLOOR_NS, window_ns=ds.WINDOW_NS):
+        super().__init__(video, start_ns, floor_ns, window_ns)
         self.out = io.StringIO()
         Recorded.made.append(self)
-        self._w({"op": "config", "video": int(video), "start": start_ns, "floor": floor_ns})
+        self._w({"op": "config", "video": int(video), "start": start_ns, "floor": floor_ns, "window": window_ns})
 
     def _w(self, op):
         self.out.write(ds.line(op) + "\n")
@@ -111,7 +111,7 @@ def random_ops(seed):
     r = Lcg(seed)
     video = r.int(0, 1)
     ops = [{"op": "config", "video": video, "start": r.int(20, 120) * MS,
-            "floor": r.int(10, 40) * MS}]
+            "floor": r.int(10, 40) * MS, "window": (3 if video else r.int(3, 6)) * ds.BUCKET_NS}]
     t = r.int(0, 1000) * SEC
     end = t + r.int(5, 40) * 60 * SEC
     fill = r.int(0, 3000) * MS
@@ -161,7 +161,9 @@ def run_ref(text):
 
 # A drain after an episode's end cannot happen through the servo's inputs (the hold keeps delta at 0 to t_c):
 # only the reference's forced case tells that mutant.
-SERVO_MUTANTS = [m for m in dt.MUTANTS if m[0] not in ("P as the min", "a drain between the end and t_c ignored")]
+# The audio window's mutant moves the call, not the servo: the config carries it, so parity cannot tell it (M6b).
+SERVO_MUTANTS = [m for m in dt.MUTANTS if m[0] not in ("P as the min", "a drain between the end and t_c ignored",
+                                                       "audio's window as video's 30 s (M6b)")]
 
 
 def main():

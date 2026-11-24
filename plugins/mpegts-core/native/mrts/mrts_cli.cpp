@@ -2411,13 +2411,14 @@ bool drain_op(const Json& op, DrainServo* s, std::string* err) {
     int64_t now = 0, v = 0;
     bool flag = false;
     if (k == "config") {
-        int64_t start = DrainServo::AUDIO_START_NS, floor = DrainServo::AUDIO_FLOOR_NS;
+        int64_t start = DrainServo::AUDIO_START_NS, floor = DrainServo::AUDIO_FLOOR_NS, window = DrainServo::WINDOW_NS;
         bool video = false;
         if ((op.get("video") && !op_flag(op, "video", &video, err)) ||
             (op.get("start") && !op_i64(op, "start", &start, err)) ||
-            (op.get("floor") && !op_i64(op, "floor", &floor, err)))
+            (op.get("floor") && !op_i64(op, "floor", &floor, err)) ||
+            (op.get("window") && !op_i64(op, "window", &window, err)))
             return false;
-        *s = DrainServo(video, start, floor);
+        *s = DrainServo(video, start, floor, window);
     } else if (k == "sample" || k == "queue") {
         if (!op_i64(op, "now", &now, err) || !op_i64(op, k == "sample" ? "slack" : "level", &v, err)) return false;
         if (k == "sample") s->sample(now, v);
