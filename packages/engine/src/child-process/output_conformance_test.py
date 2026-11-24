@@ -610,7 +610,9 @@ def scn_asrc_out_drift(tag, argv, exp):
     ao, t0 = run.outputs["aout"], run.t0
     stats = ao.asrc_stats()
     engaged = next((t for t, p in stats if p.get("device-ppb")), None)
-    rows = [(t, p.get("render-lateness-ns") / 1e6) for t, p in stats
+    # With what the drain removed added back (B-179): a start a little later than the margin drains from lock + its
+    # 60 s window, inside the read (the VM's py runner, M6b); the device term's drift is what is left.
+    rows = [(t, (p.get("render-lateness-ns") + (p.get("drained-ns") or 0)) / 1e6) for t, p in stats
             if p.get("render-lateness-ns") and t >= t0 + x["settle_s"] * S]
     st = last(stats)
     diffs = [(b_[0], b_[1] - a_[1]) for a_, b_ in zip(rows, rows[1:])]
