@@ -13,7 +13,9 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     mrasrc's resampler holds 32 frames; the feed ends with EOS, where mrasrc posts its counts); no hole after 2 s,
     except in the rising walk, where the feed gets later than any margin: there holes come only until the walk
     first reached its maximum (each rebuilds the margin), none after, and their length is the rise less the
-    margin plus a margin each; the delay from then on flat (what the drain played out added back), nothing lost.
+    margin plus a margin each; and the step's one hole at its first 40 ms step (the start's one margin less the
+    test device's 40 ms start buffer, M6b); the delay from then on flat (what the drain played out added back),
+    nothing lost.
   - the drain (B-179; B-249's catch-up until M6; MR_302M_CATCH_RUNS runs, 3): a late start (the first 0.8 s of the feed at once), a
     400 ms spike for 1 s, rising then falling (30 ms, 30-200 ms over 10 s, 30 ms from 40 s): nothing lost, holes
     only at the spike or on the rise, back to the target (the feed, the device, two segments, the margin and a
@@ -34,9 +36,11 @@ sync=false sink), into mrtestaudiosink, whose device counts the frames it plays 
     a flush into the sink (150 s), outq held 0.6 s then READY and back (260 s), and the same with a 1.5 s input gap
     20 s on (100 s), the gap alone (c40, 150 s), and outq held 0.6 s then a flush into the sink below it (c40,
     330 s): no hole and no refill after the event's own, the drain in `warm-up` after it (not after a gap: it resets
-    nothing), the end at the target and not below the feed, the device and the margin (before c40 the gap kept its
-    length, what outq held past a flush stayed, and the reading crept after a flush), after the gap alone at most
-    20 ms over the reading before it, no device stall but the device's own.
+    nothing), the end at the target and not below the feed and the margin (the test device's 40 ms start buffer
+    comes out of the one margin, M6b), the drain removing nothing below the feed, the device and the margin (before
+    c40 the gap kept its length, what outq held past a flush stayed, and the reading crept after a flush), after the
+    gap alone at most 20 ms over the reading before it plus the 40 ms the start's margin lost to the device, no
+    device stall but the device's own.
   - drift: an hour of a device 100 ppm fast, and an hour 100 ppm slow, a tone stamped at house rate: no hole, no
     underrun, no refill after the start, the render lateness's level the same at the end as after 2 min and its
     p1-p99 within 2 ms and max-min within 20 (B-166). `MR_302M_DRIFT_SECS`, `_SPEED` and `_PPM` set the run.
@@ -345,11 +349,16 @@ def one_run(tail, name, seed):
 
 def passes(r):
     """The margin's pass: nothing lost beyond 1 ms; no hole after the start, or (rising) none after the walk first
-    reached its maximum and no more hole time than the rise less one margin plus a margin each; flat after."""
+    reached its maximum and no more hole time than the rise less one margin plus a margin each, or (step) one at its
+    first step; flat after."""
     span = (max(r["lat"]) - min(r["lat"])) if r["lat"] else 99
     ok = not r["err"] and 0 <= r["lost"] <= 48 and span < 5
     if r["name"] == "rising":
         return ok and r["last_hole"] <= r["t_max"] + 1.5 and r["hole_ms"] <= r["rise"] + MARGIN_MS * (r["holes"] - 1) + 20
+    if r["name"] == "step":
+        # M6b: the start's one margin less the test device's 40 ms start buffer leaves 20 ms; the first 40 ms step
+        # passes it once (a hole, then the refill's whole margin: 40 - 20 + 60 ms), none after (sink_margin_ref_test).
+        return ok and r["holes"] <= 1 and r["last_hole"] <= 12 and r["hole_ms"] <= 40 - (MARGIN_MS - 40) + MARGIN_MS + 5
     return ok and r["holes"] == 0
 
 
@@ -599,7 +608,8 @@ if "stalls" in PARTS:
 # READY and back (READY empties outq), a 1.5 s input gap. The drain must see each (the probe's EVENT_FLUSH).
 # gap (c40, D1): a 1.5 s input gap alone; the reading after it must not keep the gap. flush-held (c40, D3): outq held
 # 0.6 s, then the flush into the sink below it, so what outq holds outlives the flush and must be played out.
-FLUSH_SECS = {"devstall": 360, "flush": 260, "ready": 260, "ready-gap": 100, "gap": 150, "flush-held": 400}
+# flush-held drains what outq held from a window after the flush: 430 s since M6b's 60 s window (was 400).
+FLUSH_SECS = {"devstall": 360, "flush": 260, "ready": 260, "ready-gap": 100, "gap": 150, "flush-held": 430}
 _FLUSH_PROFILES = [v for v in os.environ.get("MR_302M_FLUSH_PROFILES",
                                              "devstall,flush,ready,ready-gap,gap,flush-held").split(",")
                    if v]
@@ -745,8 +755,10 @@ if "flushes" in PARTS:
                 _r = flush_run(_name, _seed)
             FLUSH_TABLE.append(_r)
             # The target as the drain's (the feed, the device, two segments, the margin, a buffer) and the 20 ms
-            # under which it does not start; below the feed, the device and the margin the margin was played out.
-            _lo, _hi = _r["late"] + 40 + MARGIN_MS, _r["late"] + 40 + 20 + MARGIN_MS + 10 + 20
+            # under which it does not start. After a start, a flush or READY the test device's 40 ms start buffer
+            # comes out of the one margin (M6b): down to the feed and the margin, the drain removing nothing there.
+            _lo, _hi = _r["late"] + MARGIN_MS, _r["late"] + 40 + 20 + MARGIN_MS + 10 + 20
+            _kept = _r["end"] is not None and (_r["end"] >= _r["late"] + 40 + MARGIN_MS or _r["removed"] <= 5)
             # An input gap resets nothing: the drain's window goes on across it.
             _watch = _name == "gap" or (bool(_r["after"]) and all(a == "warm-up" for a in _r["after"]))
             # Past the first window before the event, so `watching` after it is a reset.
@@ -758,9 +770,10 @@ if "flushes" in PARTS:
             # Every end held (c40): the creep after a flush from outq's src pad was the sink clock's step fit as a rate
             # (D3); after an input gap alone also at most 20 ms over the reading before it (D1).
             _held = True
-            _at_target = not _held or (_r["end"] is not None and _lo <= _r["end"] <= _hi)
+            _at_target = not _held or (_r["end"] is not None and _lo <= _r["end"] <= _hi and _kept)
             if _name == "gap":
-                _at_target = _at_target and _r["pre"] is not None and _r["end"] <= _r["pre"] + 20
+                # The hole's write lands past the 40 ms the start's margin had lost to the device (M6b).
+                _at_target = _at_target and _r["pre"] is not None and _r["end"] <= _r["pre"] + 20 + 40
             _ok = (not _r["err"] and _r["holes"] == 0 and _r["refills_after"] == 0 and _watch and _past and _stall_ok
                    and _at_target and (not _held or _r["cu_end"] != "draining"))
             _ev = {"devstall": "a 3 s device stall", "flush": "a flush into the sink",
