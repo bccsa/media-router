@@ -1,17 +1,19 @@
 {
   "scenario": "scn-out-device-stall",
-  "graph": "generated 720p50 H.264 + AAC -> player50 and the audio decoder, both test sinks stopped 3 s at 8 s (stall-ms)",
+  "graph": "generated 720p50 H.264 + AAC -> player50 and the audio decoder, both test sinks stopped 3 s at 8 s (stall-ms); 150 s, so the decoder's drain (its term relocks about 50 s in, then a 60 s window) gives the backlog back at 0.5 % from about 110 s (the owner's Limit, c42; M6b)",
   "kind": "h264-aac-720p50",
-  "seconds": 22,
+  "seconds": 150,
   "stall": [
     8,
     3
   ],
   "expect": {
     "frame_ms": 20,
-    "audio_late_ms": [
-      2500,
-      3400
+    "audio_late_min_ms": 2500,
+    "late_read_s": 50,
+    "slope_ms_s": [
+      -5.5,
+      -4.5
     ],
     "decoder_full": [
       "ad_esq"

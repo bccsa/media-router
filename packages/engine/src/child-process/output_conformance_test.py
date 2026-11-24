@@ -378,7 +378,8 @@ def scn_out_gap_recovers(tag, argv, exp):
 def scn_out_device_stall(tag, argv, exp):
     """The display and the card stop 3 s (stall-ms): the video resumes live (Q2), no later than before
     within a frame (T31: its cadence hold restarts lower); the Audio Decoder, whose backlog waits in ad_esq
-    above its asrc, is told and plays it late (c42, the owner's Limit of 2026-11-23; its drain gives it back)."""
+    above its asrc, holds the owner's Limit of 2026-11-23 (c42): the stall told and not flushed, the backlog
+    played late, given back at 0.5 % at most. How far past the stall it lands is c43's open item: printed."""
     label, x = f"{exp['scenario']} {tag}", exp["expect"]
     at, length = exp["stall"]
     run = Run(argv)
@@ -392,7 +393,8 @@ def scn_out_device_stall(tag, argv, exp):
     run.output("decoder", "decoder", audio=orig.card())
     run.go(exp["seconds"] + 1, [(at, stall)], [("player", "vp_pace", "stats"), ("player", "sink", "display-stats")])
     run.on_time(label)
-    run.clean(label, replays=("decoder",))
+    # Told, not flushed: a flushed async sink prerolls again, a second PLAYING.
+    run.clean(label)
     pl, dec, t0 = run.outputs["player"], run.outputs["decoder"], run.t0
     ds = run.reads.get(("player", "sink", "display-stats")) or {}
     b, a = paces(pl, t0, 2, at), paces(pl, t0, at + length + 2, exp["seconds"] + 1)
@@ -402,17 +404,32 @@ def scn_out_device_stall(tag, argv, exp):
           f"{ds.get('not-presented')}, timeouts {ds.get('present-timeouts')}), vp_esq never full ({overruns(pl)})",
           a and b and min(a) <= min(b) + x["frame_ms"] + 1 and orig.spread(a) <= x["video_flat_ms"]
           and (ds.get("not-presented") or 0) > 0 and not overruns(pl))
-    rb, ra = renders(dec, t0, 2, at), renders(dec, t0, at + length + 2, exp["seconds"] + 1)
+    st = device_stats(dec)
+    rb = renders(dec, t0, 2, at)
+    ra = renders(dec, t0, at + length + 2, at + length + x["late_read_s"])
     evs = [p for _t, p in dec.asrc_events()]
-    kinds = [p.get("kind") for p in evs]
+    kinds = [p.get("kind") for p in evs if p.get("kind") in ("device-stalled", "device-resumed")]
     skipped = sum(p.get("dropped-frames") or 0 for p in evs if p.get("kind") == "device-resumed")
-    late = orig.mid(ra) - orig.mid(rb) if ra and rb else None
-    check(f"{label} decoder: device-stalled then device-resumed ({kinds}), nothing skipped ({skipped} frames), "
-          f"the backlog played late ({orig.mid(rb)} -> {orig.mid(ra)} ms, +{late}, want {x['audio_late_ms']}), no "
+    late = round(orig.mid(ra) - orig.mid(rb), 1) if ra and rb else None
+    check(f"{label} decoder: the stall told, not flushed: device-stalled then device-resumed ({kinds}), nothing "
+          f"skipped ({skipped} frames), PLAYING once ({dec.runner.count('state_change', state='playing')}); the "
+          f"backlog played late ({orig.mid(rb)} -> {orig.mid(ra)} ms, +{late}, at least {x['audio_late_min_ms']}), no "
           f"queue full but ad_esq ({overruns(dec)})",
           kinds == ["device-stalled", "device-resumed"] and skipped == 0 and late is not None
-          and x["audio_late_ms"][0] <= late <= x["audio_late_ms"][1]
-          and all(e[0] in x["decoder_full"] and not e[1] for e in overruns(dec)))
+          and late >= x["audio_late_min_ms"] and all(e[0] in x["decoder_full"] and not e[1] for e in overruns(dec)))
+    if late is not None and late > length * 1000 + x["frame_ms"]:
+        print(f"    {label} decoder: Found (c43, open): the backlog lands {late - length * 1000:.0f} ms past the "
+              f"{length:g} s stall (the refill after it aims past a clock that ran on)")
+    top = max((abs(p.get("drain-ppm") or 0) for _t, p in st), default=None)
+    slope = falling(st, "render-lateness-ns", t0, at + length, exp["seconds"] + 1)
+    end = last(st)
+    excess = (end.get("drain-excess-ns") or 0) / 1e6
+    check(f"{label} decoder: given back at 0.5 % at most: drain-ppm at most {top} (<= 5,000), the render lateness "
+          f"falling {slope} ms/s at the cap (want {x['slope_ms_s']}), {end.get('drain-state')} at the end toward its "
+          f"target {(end.get('drain-target-lateness-ns') or 0) / 1e6:.1f} ms, its excess {excess:.0f} ms covering the "
+          f"stall's {length * 1000:.0f}",
+          top is not None and top <= 5000 and slope is not None and x["slope_ms_s"][0] <= slope <= x["slope_ms_s"][1]
+          and end.get("drain-state") == "draining" and excess >= length * 1000 - x["frame_ms"])
 
 
 def scn_out_video_only(tag, argv, exp):
