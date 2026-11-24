@@ -923,8 +923,9 @@ def burst_through_mux(argv, exp, arm):
 def scn_out_drain_burst(tag, argv, exp):
     """V-P4-2 and V-P4-12 at CI length through the muxer (p4-20): a 2 s stall of the source or of the muxer's
     runner plays behind, +2 s read within 30 s of the resume at both outputs, the muxer's pace unchanged, then
-    each drains back to its target at 0.5 % once 30 s are sampled (the audio's after its device term locked):
-    the lateness falls 5 ms/s, nothing lost, no underrun, drain drops within 1 in 200 on the 50 Hz display."""
+    each drains back to its target at 0.5 % once its window is sampled (30 s video, 60 s audio after its device
+    term locked): the lateness falls 5 ms/s, nothing lost, no underrun, drain drops within 1 in 200 on the 50 Hz
+    display."""
     at, length = exp["stall"]
     for arm in exp["arms"]:
         # An arm's own bands: a stop of the source reads +2 s less what the running muxer still held.
@@ -965,7 +966,7 @@ def scn_out_drain_burst(tag, argv, exp):
         st = last(ds)
         aslope = falling(ds, "render-lateness-ns", t0, at + length, exp["seconds"])
         starts = [p for _t, p in dec.asrc_events() if p.get("kind") == "drain-start"]
-        check(f"{label} decoder: drains at 0.5 % once its device term locked and 30 s were sampled ({aslope} ms/s, "
+        check(f"{label} decoder: drains at 0.5 % once its device term locked and 60 s were sampled ({aslope} ms/s, "
               f"want {x['slope_ms_s']}; {len(starts)} drain-start), nothing lost (dropped {st.get('dropped-frames')}, "
               f"lost {st.get('lost-frames')}, stalls {st.get('device-stalls')}), no underrun ({st.get('underruns')})",
               aslope is not None and x["slope_ms_s"][0] <= aslope <= x["slope_ms_s"][1] and len(starts) == 1
@@ -1266,7 +1267,7 @@ def scn_out_drain_cpu(tag, argv, exp):
           f"({st.get('drain-raises')}, posted {raised}), margin {st.get('drain-margin-ns', 0) // MS} ms, the reasons "
           f"{why} only load and warm-up",
           (st.get("underruns") or 0) >= x["underruns_min"] and st.get("drain-raises") == 0 and not raised
-          and st.get("drain-margin-ns") == 20 * MS and why.get("load", 0) >= 1 and set(why) <= {"load", "warm-up"})
+          and st.get("drain-margin-ns") == x["margin_ms"] * MS and why.get("load", 0) >= 1 and set(why) <= {"load", "warm-up"})
 
 
 def scn_out_drain_dip(tag, argv, exp):
@@ -1279,7 +1280,8 @@ def scn_out_drain_dip(tag, argv, exp):
     check(f"{label} decoder: underruns {st.get('underruns')}, one raise ({st.get('drain-raises')}; posted {raised}: s, "
           f"length, margin from, to) about 10 s after the dip at {first} s; the others {why}",
           st.get("drain-raises") == 1 and len(raised) == 1 and first + 10 <= raised[0][0] <= first + 13
-          and raised[0][2] == 20 and raised[0][3] == 40 and (st.get("underruns") or 0) == 1 + sum(why.values()))
+          and raised[0][2] == x["margin_ms"] and raised[0][3] == x["raised_ms"]
+          and (st.get("underruns") or 0) == 1 + sum(why.values()))
 
 
 SCENARIOS = {
