@@ -800,8 +800,8 @@ int64_t asrc_sink_silence(int64_t next_sample, int64_t segdone, int64_t sps, int
     if (guard < 0) guard = 0;
     const int64_t c = asrc_sink_consumed(segdone, sps, have_play, play_pos, guard);
     if (next_sample >= 0 && next_sample >= c) return 0;
-    // A start or a flush: the device (a server: its read-ahead) takes its own buffer out of it.
-    const int64_t want = next_sample >= 0 ? margin : margin + std::max(margin, guard);
+    // A start, no clock yet: past the server's read-ahead too, where a hole's write reads it off the clock.
+    const int64_t want = next_sample < 0 && !have_play ? margin + guard : margin;
     const int64_t n = c + want - asrc_sink_write_pos(next_sample, segdone, sps);
     if (n <= 0) return 0;
     return cap > 0 && n > cap ? cap : n;

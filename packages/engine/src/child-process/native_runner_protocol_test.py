@@ -3214,11 +3214,10 @@ def test_decoder_hole():
                     check(f"{label}: the hole drains the ring and the write after it lands past the device: a margin "
                           f"refill ({f0} -> {f1}) or a realign ({r0} realigns before it, {r1} at the end)",
                           isinstance(r0, int) and isinstance(r1, int) and (r1 > r0 or f1 > f0))
-                    # B-249's margin: the start lands two margins ahead of the device, the write after a hole one,
-                    # so what follows may be up to a margin earlier than before, never later.
-                    check(f"{label}: what follows plays at once, no later than before (at most a margin, 60 ms, "
-                          f"earlier): render lateness {late0 / 1e6:.1f} ms before the hole, {late1 / 1e6:.1f} ms after",
-                          late0 and late1 and late0 - 90_000_000 <= late1 <= late0 + 30_000_000)
+                    # B-249: the start and the write after a hole each land one margin ahead (M6b).
+                    check(f"{label}: what follows plays at once, no later than before: render lateness "
+                          f"{late0 / 1e6:.1f} ms before the hole, {late1 / 1e6:.1f} ms after",
+                          late0 and late1 and abs(late1 - late0) <= 30_000_000)
                 else:
                     lost = [e.get("lost-frames") for e in res["events"] if e.get("kind") == "gap"]
                     check(f"{label}: the hole reaches asrc unflagged, as lost time ({kinds}; "

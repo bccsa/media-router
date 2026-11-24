@@ -6,7 +6,9 @@ flight lost) fed a 1 kHz tone's buffers late by
 each profile of gst_302m_late_feed_test.py, five seeds each:
 
   - the margin (60 ms, mrasrc margin-ms): no hole after the start in the field walk (30-70 ms from
-    30), a clean step 30 -> 70 ms and the old walk (from its 300 ms max); in the rising walk (30 ms
+    30) and the old walk (from its 300 ms max); the step 30 -> 70 ms one hole at its first rise, the
+    device's 40 ms start buffer taken from the start's one margin (M6b; none on a one-segment
+    device); in the rising walk (30 ms
     for 10 s, then 30-300 ms) holes only while the lateness reaches past every earlier value by
     more than the margin, none once it reached its maximum; never a frame lost in any;
   - c38's sink end (a 40 ms min-threshold queue, no margin) plays holes and loses frames in the
@@ -154,8 +156,8 @@ def case_rule(rule=None):
           f(3 * SPS + 100, 3, SPS, MARGIN) == 4 * SPS + MARGIN - (3 * SPS + 100))
     check("a write behind the read (the base sink realigns to segdone + 1): silence = the margin",
           f(1 * SPS, 7, SPS, MARGIN) == MARGIN)
-    check("the first write (next -1): twice the margin past the segment in flight",
-          f(-1, 0, SPS, MARGIN) == SPS + 2 * MARGIN and f(-1, 9, SPS, MARGIN) == 2 * MARGIN)
+    check("the first write (next -1): one margin past the segment in flight, as a hole's write (M6b)",
+          f(-1, 0, SPS, MARGIN) == SPS + MARGIN and f(-1, 9, SPS, MARGIN) == MARGIN)
     check("the device clock past a stale segdone moves `consumed`",
           f(5 * SPS, 3, SPS, MARGIN, play_pos=6 * SPS) == 6 * SPS + MARGIN - 5 * SPS)
     check("... a clock behind it does not",
@@ -165,13 +167,13 @@ def case_rule(rule=None):
           and f(7 * SPS, 3, SPS, MARGIN, play_pos=5 * SPS, guard=2 * SPS) == 0)
     check("... no guard without a clock (before the first render)",
           f(5 * SPS, 3, SPS, MARGIN, guard=10 * SPS) == 0)
-    check("a start: the margin plus the larger of the margin and the guard",
-          f(-1, 0, SPS, MARGIN, guard=SPS) == SPS + 2 * MARGIN
+    check("a start (no clock): the margin past the segment in flight and the guard, a server's read-ahead",
+          f(-1, 0, SPS, MARGIN, guard=SPS) == 2 * SPS + MARGIN
           and f(-1, 0, SPS, MARGIN, guard=2 * MARGIN) == SPS + 3 * MARGIN)
-    check("after a flush while the device plays (next -1, a clock): the start's silence past the clock and guard, "
+    check("after a flush while the device plays (next -1, a clock): one margin past the clock and guard, "
           "from where the base sink writes (pulsesink 1.22: frame 0)",
-          f(-1, 0, SPS, MARGIN, play_pos=3_000_000, guard=SPS) == 3_000_000 + SPS + 2 * MARGIN
-          and f(-1, 7, SPS, MARGIN, play_pos=2 * SPS) == 2 * MARGIN)
+          f(-1, 0, SPS, MARGIN, play_pos=3_000_000, guard=SPS) == 3_000_000 + SPS + MARGIN
+          and f(-1, 7, SPS, MARGIN, play_pos=2 * SPS) == MARGIN)
     if rule is not None:
         return
     check("the server's configured latency: tlength less two minreq (60 ms, 10 ms: 40 ms)",
@@ -209,7 +211,7 @@ def case_rule(rule=None):
     m.silence(5 * SPS, 3, SPS)
     m.silence(1 * SPS, 7, SPS)
     check(f"stats count the refills and their silence: {m.stats()}",
-          m.stats() == {"refills": 2, "silence": SPS + 2 * MARGIN + MARGIN})
+          m.stats() == {"refills": 2, "silence": SPS + MARGIN + MARGIN})
     mc = sm.SinkMargin(MARGIN, CAP)
     mc.silence(-1, 0, SPS, 20 * FS, 4 * SPS)
     check(f"... a capped refill counts its capped silence: {mc.stats()}", mc.stats() == {"refills": 1, "silence": CAP})
@@ -232,6 +234,16 @@ def case_profiles(rule=None, verbose=True):
                 check(f"rising seed {seed}: margin: {r39['holes']} holes, all before the walk first reached "
                       f"its max at {tmax:.1f} s ({len(after)} after), 0 lost ({r39['lost']}), "
                       f"delay at the end {r39['delay_ms']:.0f} ms", not after and r39["lost"] == 0)
+            elif name == "step":
+                # The start's one margin less the device's 40 ms start buffer: the first 40 ms step passes the
+                # 20 ms left once, its refill lands the whole margin (M6b); a one-segment device keeps it.
+                small = simulate(late, rule=rule, device_ms=SPS * 1000 // FS)
+                check(f"step seed {seed}: margin: one hole after {START_S:.0f} s, at the first step at 10 s "
+                      f"({r39['holes']} at {[round(h, 2) for h in r39['hole_at']]}), none with a one-segment device "
+                      f"({small['holes']}), 0 lost ({r39['lost']}, {small['lost']}), delay at the end "
+                      f"{r39['delay_ms']:.0f} ms",
+                      r39["holes"] == 1 and 10.0 <= r39["hole_at"][0] <= 10.1 and small["holes"] == 0
+                      and r39["lost"] == 0 and small["lost"] == 0)
             else:
                 check(f"{name} seed {seed}: margin: no hole after {START_S:.0f} s ({r39['holes']}), 0 lost "
                       f"({r39['lost']}), delay at the end {r39['delay_ms']:.0f} ms",
@@ -699,10 +711,9 @@ def _m_from_next(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
     return max(0, c + margin - max(nxt, 0)) if nxt >= 0 and nxt // sps >= segdone else 0
 
 
-def _m_start_single(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
-    """One margin at a start: the device's own buffer comes out of it."""
-    return sm.silence_frames(nxt, segdone, sps, margin, play_pos, guard, cap) if nxt >= 0 else \
-        max(0, (segdone + 1) * sps + margin - sm.base_write_pos(nxt, segdone, sps))
+def _m_start_twice(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
+    """c39-c42's start: a second margin (or the guard), a margin later than a hole's write (M6b)."""
+    return sm.silence_frames(nxt, segdone, sps, margin, play_pos, guard, cap) + (0 if nxt >= 0 else margin)
 
 
 def _m_guard_zero(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
@@ -711,7 +722,7 @@ def _m_guard_zero(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
 
 
 def _m_start_no_guard(nxt, segdone, sps, margin, play_pos=None, guard=0, cap=0):
-    """A start lands twice the margin past `consumed` whatever the guard."""
+    """A start lands one margin past the segment in flight whatever the guard."""
     return sm.silence_frames(nxt, segdone, sps, margin, play_pos, guard, cap) if nxt >= 0 else \
         sm.silence_frames(nxt, segdone, sps, margin, play_pos, 0, cap)
 
@@ -726,7 +737,7 @@ def _g_unaged(residence_ns, push_ns, since_push_ns, seg_ns):
     return residence_ns < seg_ns and push_ns < sm.BLOCKED_NS
 
 
-MUTANTS = {"no-cap": _m_no_cap, "guard-zero": _m_guard_zero, "start-no-guard": _m_start_no_guard, "start-single": _m_start_single, "inflight-ok": _m_inflight_ok, "start-only": _m_start_only, "eager": _m_eager,
+MUTANTS = {"no-cap": _m_no_cap, "guard-zero": _m_guard_zero, "start-no-guard": _m_start_no_guard, "start-twice": _m_start_twice, "inflight-ok": _m_inflight_ok, "start-only": _m_start_only, "eager": _m_eager,
            "from-next": _m_from_next}
 
 

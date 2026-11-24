@@ -3652,8 +3652,8 @@ static void test_sink_margin() {
           asrc_sink_silence(3 * SPS + 100, 3, SPS, M, false, 0, 0) == 4 * SPS + M - (3 * SPS + 100));
     CHECK("a write behind the read (the base sink realigns to segdone + 1): silence = the margin",
           asrc_sink_silence(1 * SPS, 7, SPS, M, false, 0, 0) == M);
-    CHECK("the first write (next -1): twice the margin past the segment in flight",
-          asrc_sink_silence(-1, 0, SPS, M, false, 0, 0) == SPS + 2 * M && asrc_sink_silence(-1, 9, SPS, M, false, 0, 0) == 2 * M);
+    CHECK("the first write (next -1): one margin past the segment in flight, as a hole's write (M6b)",
+          asrc_sink_silence(-1, 0, SPS, M, false, 0, 0) == SPS + M && asrc_sink_silence(-1, 9, SPS, M, false, 0, 0) == M);
     CHECK("the device clock past a stale segdone moves `consumed`",
           asrc_sink_silence(5 * SPS, 3, SPS, M, true, 6 * SPS, 0) == 6 * SPS + M - 5 * SPS);
     CHECK("... a clock behind it does not", asrc_sink_silence(5 * SPS, 3, SPS, M, true, 2 * SPS, 0) == 0);
@@ -3662,13 +3662,13 @@ static void test_sink_margin() {
               asrc_sink_silence(7 * SPS, 3, SPS, M, true, 5 * SPS, 2 * SPS) == 0);
     CHECK("... no guard without a clock (before the first render)",
           asrc_sink_silence(5 * SPS, 3, SPS, M, false, 0, 10 * SPS) == 0);
-    CHECK("a start: the margin plus the larger of the margin and the guard",
-          asrc_sink_silence(-1, 0, SPS, M, false, 0, SPS) == SPS + 2 * M &&
+    CHECK("a start (no clock): the margin past the segment in flight and the guard, a server's read-ahead",
+          asrc_sink_silence(-1, 0, SPS, M, false, 0, SPS) == 2 * SPS + M &&
               asrc_sink_silence(-1, 0, SPS, M, false, 0, 2 * M) == SPS + 3 * M);
-    CHECK("after a flush while the device plays (next -1, a clock): the start's silence past the clock and guard, from "
+    CHECK("after a flush while the device plays (next -1, a clock): one margin past the clock and guard, from "
           "where the base sink writes (pulsesink 1.22: frame 0)",
-          asrc_sink_silence(-1, 0, SPS, M, true, 3000000, SPS) == 3000000 + SPS + 2 * M &&
-              asrc_sink_silence(-1, 7, SPS, M, true, 2 * SPS, 0) == 2 * M);
+          asrc_sink_silence(-1, 0, SPS, M, true, 3000000, SPS) == 3000000 + SPS + M &&
+              asrc_sink_silence(-1, 7, SPS, M, true, 2 * SPS, 0) == M);
     CHECK("the server's configured latency: tlength less two minreq (60 ms, 10 ms: 40 ms)",
           asrc_server_latency(6 * SPS, SPS) == 4 * SPS && asrc_server_latency(SPS, SPS) == 0);
     AsrcSinkGuard g(4 * SPS, 500 * 48);
@@ -3717,7 +3717,7 @@ static void test_sink_margin() {
     m.silence(-1, 0, SPS, false, 0, 0);
     m.silence(5 * SPS, 3, SPS, false, 0, 0);
     m.silence(1 * SPS, 7, SPS, false, 0, 0);
-    CHECK("stats count the refills and their silence", m.refills() == 2 && m.silence_total() == SPS + 2 * M + M);
+    CHECK("stats count the refills and their silence", m.refills() == 2 && m.silence_total() == SPS + M + M);
     AsrcSinkMargin mc(M, CAP);
     mc.silence(-1, 0, SPS, true, 20 * 48000, 4 * SPS);
     CHECK("... a capped refill counts its capped silence", mc.refills() == 1 && mc.silence_total() == CAP);

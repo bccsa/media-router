@@ -121,6 +121,9 @@ there is no in-app switch, and the stored values of the removed settings
 - **It plays what its sources send as it comes,** into the sound card's
   100 ms ring with 60 ms in hand there, as v2.0.0.102 keeps it, instead of
   waiting for a playout offset. A route's Playout Offset no longer moves it.
+  It now starts with those 60 ms in hand too, where v2.0.0.102 started with
+  120, so an Audio Decoder after a muxer is in lip sync with its Video Player
+  from the first frame.
 - **A start skips what its mix held back before it played.** When it mixes
   two or more sources and one is connected but sends nothing yet, the mix waits
   up to 2 s for it; the output now starts live after that wait instead of
