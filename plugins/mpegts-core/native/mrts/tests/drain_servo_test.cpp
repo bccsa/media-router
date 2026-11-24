@@ -504,6 +504,12 @@ void case_window() {
     CHECK("window: min over three buckets", w.min(25 * SEC, &m) && m == 5);
     CHECK("window: the oldest leaves at 30 s", w.min(30 * SEC, &m) && m == 7);
     CHECK("window: empty 30 s after the last", !w.min(60 * SEC, &m));
+    mrts::DrainWindow six(6);
+    six.clear(0);
+    six.add(1 * SEC, 5);
+    six.add(31 * SEC, 9);
+    CHECK("window of six buckets: the oldest stays to 60 s, leaves then",
+          six.min(59 * SEC, &m) && m == 5 && six.min(60 * SEC, &m) && m == 9);
 }
 
 // --- B-240: the raise rule (owner decision 2026-11-13) -------------------------------------------------------
@@ -872,6 +878,29 @@ void case_video_never() {
 
 }  // namespace
 
+// M6b: audio's 60 s window drains a backlog only once 60 s are sampled and still holds a reading 45 s back.
+void case_audio_window() {
+    Link l(DrainServo(false, DrainServo::AUDIO_START_NS, DrainServo::AUDIO_FLOOR_NS, DrainServo::AUDIO_WINDOW_NS),
+           steady(20 * MS), 2 * SEC);
+    Run r{{&l}};
+    r.until(3 * MIN);
+    const auto st = events(l, DrainEvent::Kind::drain_start);
+    int64_t trough[2], excess[2];
+    const int64_t w[2] = {DrainServo::AUDIO_WINDOW_NS, DrainServo::WINDOW_NS};
+    for (int i = 0; i < 2; i++) {
+        DrainServo a(false, DrainServo::AUDIO_START_NS, DrainServo::AUDIO_FLOOR_NS, w[i]);
+        for (int k = 1; k < 1500; k++) {   // 150 s of ticks: 100 ms of slack, 25 ms once at 100 s
+            a.sample(k * TICK, k == 1000 ? 25 * MS : 100 * MS);
+            a.update(k * TICK, 200 * MS, true);
+        }
+        trough[i] = a.trough();
+        excess[i] = a.excess();
+    }
+    CHECK("audio window: a drain starts once 60 s are sampled, not at 30 s", !st.empty() && st[0].first >= 60 * SEC);
+    CHECK("audio window: 45 s after a 25 ms reading the trough still holds it, video's 30 s window not",
+          trough[0] == 25 * MS && excess[0] == 5 * MS && trough[1] == 100 * MS && excess[1] == 80 * MS);
+}
+
 int main() {
     case_window();
     case_backlog();
@@ -904,5 +933,6 @@ int main() {
     case_fall();
     case_seam_floor();
     case_video_never();
+    case_audio_window();
     return test_summary("drain_servo");
 }

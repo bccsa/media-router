@@ -7,11 +7,13 @@
 
 namespace mrts {
 
-// The minimum over 3 buckets of 10 s on the servo's clock, the newest open.
+// The minimum over `buckets` buckets of 10 s on the servo's clock, the newest open.
 class DrainWindow {
   public:
     static constexpr int64_t BUCKET_NS = 10000000000LL;
-    static constexpr int BUCKETS = 3;
+    static constexpr int BUCKETS = 3, MAX_BUCKETS = 6;
+    explicit DrainWindow(int buckets = BUCKETS)
+        : buckets_(buckets < 1 ? 1 : buckets > MAX_BUCKETS ? MAX_BUCKETS : buckets) {}
     void clear(int64_t now);
     void add(int64_t now, int64_t v);
     // False while no bucket holds a sample.
@@ -19,9 +21,10 @@ class DrainWindow {
 
   private:
     void rotate(int64_t now);
+    int buckets_;
     int64_t open_at_ = 0;
-    int64_t mins_[BUCKETS] = {};
-    bool have_[BUCKETS] = {};   // oldest first, the last open
+    int64_t mins_[MAX_BUCKETS] = {};
+    bool have_[MAX_BUCKETS] = {};   // oldest first, the last open
     int n_ = 1;
 };
 
@@ -48,7 +51,8 @@ const char* drain_event_name(DrainEvent::Kind k);
 class DrainServo {
   public:
     static constexpr int64_t SEC = 1000000000LL, MS = 1000000LL;
-    static constexpr int64_t WINDOW_NS = DrainWindow::BUCKETS * DrainWindow::BUCKET_NS;
+    static constexpr int64_t WINDOW_NS = DrainWindow::BUCKETS * DrainWindow::BUCKET_NS;   // video's W
+    static constexpr int64_t AUDIO_WINDOW_NS = 6 * DrainWindow::BUCKET_NS;                // audio's (M6b)
     static constexpr int64_t TAU_NS = 30 * SEC;
     static constexpr int64_t DMAX_PPB = 5000000;   // 0.5 %, the owner's (9 Nov)
     static constexpr int64_t SLEW_DEN = 2000;      // 500 ppm/s
@@ -61,14 +65,16 @@ class DrainServo {
     static constexpr int64_t GROUP_STALE_NS = 10 * SEC, RISE_CAP_NS = SEC;
     static constexpr int64_t GROUP_ALONE_NS = -3600 * SEC;   // alone; any other target, even <= 0, groups
     static constexpr int64_t AUDIO_START_NS = 20 * MS, AUDIO_FLOOR_NS = 20 * MS;
-    // B-240: an audio starvation judged C after its end; Q quiet before it; S6's band; S4's allowance; S6 reads the
-    // trough 1-2 s before the start.
-    static constexpr int64_t CONFIRM_NS = 10 * SEC, QUIET_NS = WINDOW_NS, LIMIT_BAND_NS = ENGAGE_NS;
+    // B-240: an audio starvation judged C after its end (Q, quiet before it, is the window); S6's band; S4's
+    // allowance; S6 reads the trough 1-2 s before the start.
+    static constexpr int64_t CONFIRM_NS = 10 * SEC, LIMIT_BAND_NS = ENGAGE_NS;
     static constexpr int64_t KEEP_UP_NS = 20 * MS, SETTLE_NS = SEC;
 
     enum class State { warm_up, idle, draining, rising };
 
-    explicit DrainServo(bool video = false, int64_t start_ns = AUDIO_START_NS, int64_t floor_ns = AUDIO_FLOOR_NS);
+    // window_ns: W, the trough's, the warm-up's and the holds' (whole 10 s buckets, at most 60 s).
+    explicit DrainServo(bool video = false, int64_t start_ns = AUDIO_START_NS, int64_t floor_ns = AUDIO_FLOOR_NS,
+                        int64_t window_ns = WINDOW_NS);
 
     // A slack sample: content ready before it was needed (below 0 reads 0).
     void sample(int64_t now, int64_t slack_ns);
@@ -106,6 +112,7 @@ class DrainServo {
     bool capped() const { return capped_; }
     bool started() const { return started_; }
     int64_t group() const { return group_; }
+    int64_t window() const { return window_; }
 
   private:
     // What an audio episode's start saw, and its end (B-240).
@@ -120,11 +127,12 @@ class DrainServo {
     void outage(int64_t now, int64_t length);
     bool trough_at(int64_t now, int64_t* out);
     void count(int64_t now, UnderrunReason r, int64_t length);
-    static bool first_reason(const Episode& ep, UnderrunReason* r);
+    bool first_reason(const Episode& ep, UnderrunReason* r) const;
     void judge(int64_t now, const Episode& ep, int64_t render_ns);
 
     bool video_;
     int64_t floor_, margin_;
+    int64_t window_;   // W, and Q
     bool have_learned_ = false;
     int64_t learned_ = 0;
     DrainWindow slack_, queue_;

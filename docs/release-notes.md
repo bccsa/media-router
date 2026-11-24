@@ -256,8 +256,9 @@ there is no in-app switch, and the stored values of the removed settings
 - **Lip sync between a Video Player and an audio output fed straight from the
   same input** (no muxer between) is not there at the start: each plays on
   arrival, so the video can lead by up to the source's own lead (often 0.3 to
-  1 s on a network input). After about 30 s of measuring, the earlier output
-  slows by up to 0.5 % until it is level, about 3.5 minutes per second of
+  1 s on a network input). After about 30 s of measuring (a minute when the
+  earlier output is the audio one), the earlier output slows by up to 0.5 %
+  until it is level, about 3.5 minutes per second of
   difference, at most 1 s. This holds for outputs that play early too (a
   network input with no Ingest Offset). For lip sync from the first frame,
   route both through a muxer. Two audio outputs with no Video Player in the

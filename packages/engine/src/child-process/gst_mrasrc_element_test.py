@@ -1632,7 +1632,7 @@ else:
           and _sk["calibrations"] == 0 and 0 <= _rs.get("start", -1) <= START_REALIGNS and _sk["resyncs"] == _rs["start"])
 
     # B-179: the drain. A live source that stalled 1.5 s at its start, then plays on: the backlog fills the
-    # prefill (1 s) and waits upstream; once the term is locked and 30 s sampled, it drains at up to 0.5 %.
+    # prefill (1 s) and waits upstream; once the term is locked and 60 s sampled (M6b), it drains at up to 0.5 %.
     def live_feeder(cap, held_s):
         """appsrc as a live source: content running time p pushed at clock running time max(p, held_s)."""
         def feed(p, stop):
@@ -1654,7 +1654,7 @@ else:
     _DRAIN_DESC = ("appsrc name=src format=time is-live=true block=true max-bytes=1000000 caps={caps} ! "
                    f"mrasrc name=asrc device-sink=sink ! {_PREFILL} ! mrtestaudiosink name=sink ppm=0 "
                    "device-ns=40000000 sync=false buffer-time=100000 latency-time=10000")
-    _speed, _secs = 4, 150
+    _speed, _secs = 4, 180
     print(f"\n--- B-179: a 1.5 s backlog drains at 0.5 % (the prefill full, a {_speed}x clock, {_secs} s) ---")
     _dt, _ring = Capture(channels=2), {}
 
@@ -1667,7 +1667,7 @@ else:
     _ev, _stats, _errors, _lost, _p = clock_run(
         _DRAIN_DESC.format(caps=_dt.caps()), _speed, _secs,
         actions=((60, lambda p, now: _at60.setdefault("u", p.get_by_name("sink").get_property("underruns"))),
-                 (120, _ring_on)), feed=live_feeder(_dt, 1.5))
+                 (150, _ring_on)), feed=live_feeder(_dt, 1.5))
     _sk = {k: _p.get_by_name("sink").get_property(k) for k in ("underruns", "renders")}
     _st = sdict(_p.get_by_name("asrc").get_property("stats"))
     _p.set_state(Gst.State.NULL)
@@ -1675,10 +1675,10 @@ else:
     _locked = next((t for t, s in _stats if s["state"] == "locked"), None)
     _t0 = _start[0][0] if _start else None
     _full = next((t for t, s in _stats if _t0 and t >= _t0 and s["drain-ppm"] >= 5000), None)
-    check(f"one drain-start, after the term locked ({_locked}) and 30 s sampled ({_t0}), the fill at its "
+    check(f"one drain-start, after the term locked ({_locked}) and 60 s sampled ({_t0}), the fill at its "
           f"ceiling then: the prefill's 1 s and the ring ({_start[0][1].get('excess-ns', 0) / MS if _start else 0:.0f} ms "
           f"of excess; the stats post the lock up to 2 s late)", len(_start) == 1 and _locked is not None
-          and _t0 >= _locked + 28
+          and _t0 >= _locked + 58
           and _start[0][1]["excess-ns"] >= 900 * MS)
     check(f"drain-ppm at 5,000 within 12 s of the warm-up's end ({(_full - _t0) if _full and _t0 else -1:.1f} s)",
           _full is not None and _full - _t0 <= 12)
@@ -1708,28 +1708,28 @@ else:
         a.set_property("group-target-ns", _gt["own"] + 100 * MS)
         _gt["last"] = now
 
-    _acts = [(t, _group) for t in range(80, 140, 2)]
-    # At 4x the thin live fill starves now and then on its own, and a starvation's 30 s hold stops the rise:
+    _acts = [(t, _group) for t in range(110, 170, 2)]
+    # At 4x the thin live fill starves now and then on its own, and a starvation's 60 s hold stops the rise:
     # a run that failed with one is the harness's, run again (three in a row fail).
     for _try in range(3):
         _gt.clear()
-        _ev, _stats, _errors, _lost, _p = clock_run(_DRAIN_DESC.format(caps=Capture(channels=2).caps()), 4, 200,
+        _ev, _stats, _errors, _lost, _p = clock_run(_DRAIN_DESC.format(caps=Capture(channels=2).caps()), 4, 230,
                                                     actions=_acts, feed=live_feeder(Capture(channels=2), 0))
         _p.set_state(Gst.State.NULL)
-        _rise = [s for t, s in _stats if 82 <= t <= 140]
-        _r0 = next((s["render-lateness-ns"] for t, s in _stats if t >= 80), 0)
-        _r1 = next((s["render-lateness-ns"] for t, s in reversed(_stats) if t <= 140), 0)
-        _alone = [s for t, s in _stats if t >= _gt.get("last", 138) + 12]
-        _starved = max((s["underruns"] + s["drain-outages"] for t, s in _stats if t <= 140), default=0)
+        _rise = [s for t, s in _stats if 112 <= t <= 170]
+        _r0 = next((s["render-lateness-ns"] for t, s in _stats if t >= 110), 0)
+        _r1 = next((s["render-lateness-ns"] for t, s in reversed(_stats) if t <= 170), 0)
+        _alone = [s for t, s in _stats if t >= _gt.get("last", 168) + 12]
+        _starved = max((s["underruns"] + s["drain-outages"] for t, s in _stats if t <= 170), default=0)
         _ok = bool(_rise and min(s["drain-ppm"] for s in _rise) >= -5000 and min(s["drain-ppm"] for s in _rise) < -1000
                    and 75 * MS <= _r1 - _r0 <= 125 * MS and any(s["drain-state"] == "rising" for s in _rise)
                    and all(s["group-target-ns"] == _gt["own"] + 100 * MS for s in _rise[3:]))
         if _ok or not _starved:
             break
-        print(f"RETRY it rises: the fill starved {_starved} times by 140 s (the harness's), the rise "
+        print(f"RETRY it rises: the fill starved {_starved} times by 170 s (the harness's), the rise "
               f"{(_r1 - _r0) / MS:+.1f} ms")
     check(f"it rises: drain-ppm down to {min((s['drain-ppm'] for s in _rise), default=0):+.0f} (>= -5,000), the render "
-          f"lateness up {(_r1 - _r0) / MS:+.1f} ms of the 100 (+-25), state rising (starvations by 140 s: {_starved}; "
+          f"lateness up {(_r1 - _r0) / MS:+.1f} ms of the 100 (+-25), state rising (starvations by 170 s: {_starved}; "
           f"run {_try + 1})", _ok)
     check(f"not refreshed for 10 s, the target is dropped: alone again, delta never below 0 from 12 s after the "
           f"last refresh ({len(_alone)} posts)", _alone and all(s["drain-ppm"] >= 0 for s in _alone) and not _errors)
@@ -1755,33 +1755,33 @@ else:
                 i += BUF
         return feed
 
-    # A 2x clock: the device term locks about 50 s in, the drain is warm 30 s later; at 4x the thin live fill
+    # A 2x clock: the device term locks about 50 s in, the drain is warm 60 s later (M6b); at 4x the thin live fill
     # starves now and then on its own.
-    print("\n--- B-240: one 150 ms starvation on a steady stream at its margin: one raise, 10 s after it (2x, 125 s) ---")
+    print("\n--- B-240: one 150 ms starvation on a steady stream at its margin: one raise, 10 s after it (2x, 155 s) ---")
     # The fill sits at the margin (20 ms), so a late harness thread starves it too: one before the hold makes it
     # warm-up, one after adds to the render lateness (load). A run that failed with a second starvation is the
     # harness's, run again (three in a row fail).
     for _try in range(3):
-        _ev, _stats, _errors, _lost, _p = clock_run(_DRAIN_DESC.format(caps=Capture(channels=2).caps()), 2, 125,
-                                                    feed=held_feeder(Capture(channels=2), [(100, 0.15)]))
+        _ev, _stats, _errors, _lost, _p = clock_run(_DRAIN_DESC.format(caps=Capture(channels=2).caps()), 2, 155,
+                                                    feed=held_feeder(Capture(channels=2), [(130, 0.15)]))
         _st = sdict(_p.get_by_name("asrc").get_property("stats"))
         _p.set_state(Gst.State.NULL)
         _ur = kinds(_ev, "underrun")
         _why = {k[10:]: v for k, v in _st.items() if k.startswith("underruns-") and v}
-        _ok = bool(not _errors and len(_ur) == 1 and 109 <= _ur[0][0] <= 113 and _ur[0][1]["from-ns"] == 20 * MS
-                   and _ur[0][1]["margin-ns"] == 40 * MS and _ur[0][1]["steady-ns"] >= 30 * S
+        _ok = bool(not _errors and len(_ur) == 1 and 139 <= _ur[0][0] <= 143 and _ur[0][1]["from-ns"] == 20 * MS
+                   and _ur[0][1]["margin-ns"] == 40 * MS and _ur[0][1]["steady-ns"] >= 60 * S
                    and _st.get("underruns", 0) >= 1 and _st.get("drain-raises") == 1)
         if _ok or (_st.get("underruns") or 0) < 2:
             break
         print(f"RETRY one raise: {_st.get('underruns')} underruns, the others the harness's ({_why})")
-    check(f"one underrun, one raise at about 110 s ({[(round(t, 1), e.get('length-ns', 0) // MS, e.get('from-ns', 0) // MS, e.get('margin-ns', 0) // MS, e.get('steady-ns', 0) // S) for t, e in _ur]}: "
+    check(f"one underrun, one raise at about 140 s ({[(round(t, 1), e.get('length-ns', 0) // MS, e.get('from-ns', 0) // MS, e.get('margin-ns', 0) // MS, e.get('steady-ns', 0) // S) for t, e in _ur]}: "
           f"time, length, margin from, to, steady s; a follow-on starvation inside its hold is warm-up), the stats agree (underruns {_st.get('underruns')}, raises "
           f"{_st.get('drain-raises')}, margin {_st.get('drain-margin-ns', 0) // MS} ms, the others {_why}; run {_try + 1})",
           _ok)
 
-    print("\n--- B-240: a 60 s load (the source held 150 ms every 3 s, falling behind each time): no raise (2x, 180 s) ---")
-    _holds = [(100 + 3 * k, 0.15) for k in range(20)]
-    _ev, _stats, _errors, _lost, _p = clock_run(_DRAIN_DESC.format(caps=Capture(channels=2).caps()), 2, 180,
+    print("\n--- B-240: a 60 s load (the source held 150 ms every 3 s, falling behind each time): no raise (2x, 210 s) ---")
+    _holds = [(130 + 3 * k, 0.15) for k in range(20)]
+    _ev, _stats, _errors, _lost, _p = clock_run(_DRAIN_DESC.format(caps=Capture(channels=2).caps()), 2, 210,
                                                 feed=held_feeder(Capture(channels=2), _holds))
     _st = sdict(_p.get_by_name("asrc").get_property("stats"))
     _p.set_state(Gst.State.NULL)
