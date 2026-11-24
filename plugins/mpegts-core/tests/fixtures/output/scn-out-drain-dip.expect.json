@@ -1,15 +1,19 @@
 {
   "scenario": "scn-out-drain-dip",
-  "graph": "generated 720p50 H.264 + AAC -> the audio decoder (mrtestaudiosink) alone; its input held 150 ms at 130 s (steady, at its margin: its drain is warm about 115 s in, the term's lock about 55 s in and the 60 s window, M6b) and at 145 s (inside that one's hold, if it starves at all): one raise, 10 s after the 130 s dip, from the 60 ms sink margin to 120 ms (max(2 m, m + 20)); any other underrun counted by reason (B-240, B3's rhythm compressed)",
+  "graph": "generated 720p50 H.264 + AAC -> the audio decoder (mrtestaudiosink) alone; its input held 150 ms at 20 s (the device runs dry, then the backlog lands on the refilled margin: about 110 ms over it), which its drain plays down to its 60 ms margin from about 115 s (the term's lock about 55 s in and the 60 s window) to about 215 s (0.5 %, then the law's 30 s tail); then, a window after, its input held 150 ms at 290 s (a steady stream at its margin) and at 305 s (inside that one's hold, if it starves at all): one raise, 10 s after the 290 s dip, from the 60 ms sink margin to 120 ms (max(2 m, m + 20)); any other underrun counted by reason (B-240, B3's rhythm compressed; M6b)",
   "kind": "h264-aac-720p50",
-  "seconds": 160,
+  "seconds": 320,
   "dips": [
-    130,
-    145
+    290,
+    305
   ],
   "expect": {
     "hold_ms": 150,
     "margin_ms": 60,
     "raised_ms": 120
-  }
+  },
+  "prime_hold": [
+    20,
+    0.15
+  ]
 }
