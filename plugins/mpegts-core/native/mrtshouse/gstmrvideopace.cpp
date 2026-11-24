@@ -622,10 +622,13 @@ static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 running
 }
 
 
-static GstFlowReturn vp_push_unpaced(GstMrVideoPace* self, GstBuffer* buf, gint64 base) {
+/* Unpaced; clocked (a display presenting nothing), the message still goes every 2 s: the engine reads
+ * display-presenting false from it, and keeps the pace's rows (fix B). */
+static GstFlowReturn vp_push_unpaced(GstMrVideoPace* self, GstBuffer* buf, gint64 base, const gint64* now) {
     self->unpaced++;
     self->have_free = FALSE;
     vp_publish(self, base);
+    if (now) vp_report(self, *now);
     return gst_pad_push(self->srcpad, buf);
 }
 
@@ -640,12 +643,12 @@ static GstFlowReturn vp_chain(GstPad*, GstObject* parent, GstBuffer* buf) {
     /* Untimed, before PLAYING (a preroll) or while the display presents nothing: as it comes. */
     if (!clocked || !self->pace || !GST_CLOCK_TIME_IS_VALID(running) ||
         running > (guint64)G_MAXINT64)
-        return vp_push_unpaced(self, buf, base);
+        return vp_push_unpaced(self, buf, base, clocked ? &now : NULL);
     vp_update_display(self, now);
     if (self->display->outage) {
         self->dsnap->member = false;   // presents nothing: no target to its group (M14)
         self->pace->set_drain(0);
-        return vp_push_unpaced(self, buf, base);
+        return vp_push_unpaced(self, buf, base, &now);
     }
 
     const GstClockTime bdur = GST_BUFFER_DURATION(buf);

@@ -1100,12 +1100,68 @@ def case_drain_late():
           and st["underruns"] == sum(st["underruns-" + r] for r in ("drain", "after-drain", "video")))
 
 
+def case_group_step():
+    """Fix B (V-P4-5 from the first frame): grouped in its warm-up 240 ms above its own target, the pace
+    steps there at once (the cadence held, no frame dropped), its published target its own; an output off
+    3 s meanwhile still posts its message (display-presenting false), and presenting again it is back at the
+    group's target within a refresh of the engine's (2 s) where it would have restarted at its own."""
+    if not HAVE_SINKS:
+        skip("group-step", f"{TESTVIDEO} not built (make native-test)")
+        return
+    rig = Rig(sink="mrtestvideosink name=out period-ns=20000000 async=false",
+              props="refresh-mhz=50000 backlog-queue=bq", pre=BQ).start()
+    t0 = rig.now() + 50 * MS
+    feeder = rig.play([tuple(p) for p in live(22 * 50, 50, 1, t0 - LATENCY)])
+    time.sleep(1.5)
+    own = rig.stats()["drain-target-lateness-ns"]
+    group = own + 240 * MS
+    stop = threading.Event()
+
+    def engine():                                  # the engine's refresh: P every 2 s
+        while not stop.is_set():
+            rig.vp.set_property("group-target-ns", group)
+            stop.wait(2.0)
+
+    eng = threading.Thread(target=engine, daemon=True)
+    set_at = rig.now()
+    eng.start()
+    time.sleep(3.0)
+    published = rig.stats()["drain-target-lateness-ns"]
+    rig.out.set_property("stall-ms", 5000)
+    off_at = rig.now()
+    time.sleep(5.2)
+    back_at = rig.now()
+    time.sleep(6.0)
+    stop.set()
+    feeder.join(15)
+    st = rig.stats()
+    rig.stop()
+    late = [(tt, tt - p) for p, tt in rig.left]
+    before = [ms for tt, ms in late if set_at - S <= tt < set_at]
+    stepped = [ms for tt, ms in late if set_at + 600 * MS <= tt < off_at]
+    after = [ms for tt, ms in late if back_at + 2.5 * S <= tt]
+    off_msgs = [m for t, m in rig.messages if off_at + 2 * S <= t < back_at]
+    mid = lambda v: sorted(v)[len(v) // 2] if v else None  # noqa: E731
+    check(f"group-step: grouped 240 ms above its own target in its warm-up, the cadence steps there at once "
+          f"(release lateness {mid(before) and mid(before) / MS:.0f} -> {mid(stepped) and mid(stepped) / MS:.0f} ms "
+          f"within 0.6 s), no frame dropped ({st['rate-drops']} rate, {st['drain-drops']} drain drops), its "
+          f"published target its own ({own / MS:.0f} -> {published / MS:.0f} ms)",
+          before and stepped and abs(mid(stepped) - mid(before) - 240 * MS) <= P50
+          and st["rate-drops"] == 0 and st["drain-drops"] == 0 and abs(published - own) <= P50)
+    check(f"group-step: an output off 5 s still posts its message ({len(off_msgs)} in its last 3 s off, "
+          f"display-presenting false), and presenting again it is back at the group's target "
+          f"({mid(after) and mid(after) / MS:.0f} ms, want {mid(stepped) and mid(stepped) / MS:.0f} +- a frame)",
+          off_msgs and all(m["display-presenting"] is False for m in off_msgs) and after and stepped
+          and abs(mid(after) - mid(stepped)) <= P50)
+
+
 CASES = {"pacing": case_pacing, "base-time": case_base_time, "flush": case_flush,
          "ready": case_ready, "gap": case_gap, "dmabuf": case_dmabuf, "nominal": case_nominal,
          "measured": case_measured, "drift": case_drift, "kms": case_kms, "outage": case_outage,
          "capped": case_capped, "keeps-up": case_keeps_up, "kms-wait": case_kms_wait,
          "properties": case_properties, "clock-rule": case_clock_rule,
-         "runners": case_runners, "drain": case_drain, "drain-late": case_drain_late}
+         "runners": case_runners, "drain": case_drain, "drain-late": case_drain_late,
+         "group-step": case_group_step}
 
 
 if __name__ == "__main__":

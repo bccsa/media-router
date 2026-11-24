@@ -77,11 +77,16 @@ Draft: Phase 5 is being built. Lines are added as its parts land.
 - **Keep the Trust links of one programme within 1 s of each other.** Past
   that, the outputs follow each other within 1 s only, and their Latency
   target row says so: "in sync with Video Player within 1 s only: the links
-  differ by 1.4 s".
+  differ by 1.4 s". Where a link carries a whole programme of its own (its
+  video and its audio), that link keeps its own lip sync first: each link
+  plays in sync on its own, and the row says "each link on its own: the
+  links differ by 1.3 s".
 - **A Video Player starts at its group's latency**: at a start, and when its
   display shows it again, it holds its picture once to the group's target
   (up to 1 s), so its audio and video are in sync from the first seconds
-  rather than after a minute and a half.
+  rather than after a minute and a half. A player whose display shows
+  nothing (an output switched off, or a second player covered by another on
+  the same display) says "Display not presenting (output off?)".
 - **Send the components of one programme from the same sources on every
   link, or in one link**, for them to stay in step at the receiver: a muxed
   programme on one link and an audio-only output of part of it on another
