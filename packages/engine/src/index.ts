@@ -291,6 +291,7 @@ export { linkStreamPorts, portsFromDump, StreamPortLinker } from './audio/stream
 export type { StreamLinkSpec, StreamLinkResult, StreamLinkDeps } from './audio/streamPortLinks.js';
 export { DeviceWatchdog } from './plugins/DeviceWatchdog.js';
 export type { DeviceWatchdogOptions, DeviceWatchdogPipeWire } from './plugins/DeviceWatchdog.js';
+export { OwnPaModules } from './plugins/ownPaModules.js';
 export {
     PIPEWIRE_CAPTURE_STALL_MS,
     PIPEWIRE_NOT_ANSWERING,

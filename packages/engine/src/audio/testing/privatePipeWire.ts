@@ -392,3 +392,129 @@ export class MonitorRecorder {
         await this.rec.destroy();
     }
 }
+
+/** `pw-cli` on `pw`; '' when it fails. */
+const pwCli = (pw: PrivatePipeWire, args: string[]) =>
+    new Promise<string>((resolve) =>
+        execFile('pw-cli', args, { env: pw.childEnv(), timeout: 3000 }, (err, out) =>
+            resolve(err ? '' : String(out)),
+        ),
+    );
+
+const pwDump = (pw: PrivatePipeWire) =>
+    new Promise<Array<Record<string, any>>>((resolve) =>
+        execFile(
+            'pw-dump',
+            [],
+            { env: pw.childEnv(), timeout: 5000, maxBuffer: 1 << 26 },
+            (err, out) => {
+                try {
+                    resolve(err ? [] : JSON.parse(String(out)));
+                } catch {
+                    resolve([]);
+                }
+            },
+        ),
+    );
+
+/**
+ * WirePlumber's part for the engine's own nodes (v104 B1), which this PipeWire runs without:
+ * the ports of every MR_PW_ null sink pipewire-pulse makes (a session manager configures them),
+ * and every stream linked to its `target.object`: a playback stream into the sink, a capture
+ * stream (pulsesrc on `<sink>.monitor`, pipewiresrc with stream.capture.sink, a loopback's) from
+ * its monitor. Streams with no MR_PW_ target are left to `linkPlaybackStreams`. Returns the stop.
+ */
+export function linkOwnNodes(pw: PrivatePipeWire, periodMs = 250): () => Promise<void> {
+    let running = true;
+    const loop = (async () => {
+        while (running) {
+            const objs = await pwDump(pw);
+            const nodes = objs.filter((o) => o.type === 'PipeWire:Interface:Node');
+            const ports = objs.filter((o) => o.type === 'PipeWire:Interface:Port');
+            const props = (o: Record<string, any>) => o.info?.props ?? {};
+            const portsOf = (id: number, dir: 'input' | 'output', monitor?: boolean) =>
+                ports
+                    .filter(
+                        (p) =>
+                            props(p)['node.id'] === id &&
+                            p.info?.direction === dir &&
+                            (monitor === undefined || !!props(p)['port.monitor'] === monitor),
+                    )
+                    .map((p) => ({ id: Number(p.id), name: String(props(p)['port.name']) }))
+                    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+            const byName = new Map(nodes.map((n) => [String(props(n)['node.name']), n]));
+            for (const n of nodes) {
+                const p = props(n);
+                const name = String(p['node.name'] ?? '');
+                if (!name.startsWith('MR_PW_') || p['media.class'] !== 'Audio/Sink') continue;
+                if (portsOf(n.id, 'input').length) continue;
+                const ch = Number(p['audio.channels'] ?? 2);
+                const pos =
+                    ch === 2
+                        ? '"FL", "FR"'
+                        : Array.from({ length: ch }, (_, i) => `"AUX${i}"`).join(', ');
+                await pwCli(pw, [
+                    'set-param',
+                    String(n.id),
+                    'PortConfig',
+                    `{ "direction": "Input", "mode": "dsp", "monitor": true, "format": { "mediaType": "audio", "mediaSubtype": "raw", "format": "F32P", "rate": 48000, "channels": ${ch}, "position": [ ${pos} ] } }`,
+                ]);
+            }
+            // pipewire-pulse's own streams (a loopback's) come unconfigured, one port: dsp, as a
+            // session manager sets them.
+            for (const n of nodes) {
+                const p = props(n);
+                const cls = String(p['media.class'] ?? '');
+                const dir =
+                    cls === 'Stream/Output/Audio'
+                        ? 'output'
+                        : cls === 'Stream/Input/Audio'
+                          ? 'input'
+                          : null;
+                const ch = Number(p['audio.channels'] ?? 2);
+                if (!dir || !String(p['target.object'] ?? '').startsWith('MR_PW_')) continue;
+                if (portsOf(n.id, dir).length >= ch) continue;
+                await pwCli(pw, [
+                    'set-param',
+                    String(n.id),
+                    'PortConfig',
+                    `{ "direction": "${dir === 'output' ? 'Output' : 'Input'}", "mode": "dsp", "format": { "mediaType": "audio", "mediaSubtype": "raw", "format": "F32P", "rate": 48000, "channels": ${ch}, "position": [ "FL", "FR" ] } }`,
+                ]);
+            }
+            // By port id: every runner's stream node is called mr-gst-runner.
+            const linked = new Set(
+                objs
+                    .filter((o) => o.type === 'PipeWire:Interface:Link')
+                    .map((l) => `${l.info?.['output-port-id']}>${l.info?.['input-port-id']}`),
+            );
+            const link = async (from: { id: number }, to: { id: number }) => {
+                if (!linked.has(`${from.id}>${to.id}`))
+                    await pw.tool('pw-link', [String(from.id), String(to.id)]);
+            };
+            for (const n of nodes) {
+                const p = props(n);
+                const cls = String(p['media.class'] ?? '');
+                const target = String(p['target.object'] ?? p['node.target'] ?? '');
+                const sinkName = target.replace(/\.monitor$/, '');
+                const sink = byName.get(sinkName);
+                if (!sinkName.startsWith('MR_PW_') || !sink) continue;
+                if (cls === 'Stream/Output/Audio') {
+                    const outs = portsOf(n.id, 'output');
+                    const ins = portsOf(sink.id, 'input');
+                    for (let i = 0; i < Math.min(outs.length, ins.length); i++)
+                        await link(outs[i], ins[i]);
+                } else if (cls === 'Stream/Input/Audio') {
+                    const mons = portsOf(sink.id, 'output', true);
+                    const ins = portsOf(n.id, 'input');
+                    for (let i = 0; i < Math.min(mons.length, ins.length); i++)
+                        await link(mons[i], ins[i]);
+                }
+            }
+            await sleep(periodMs);
+        }
+    })();
+    return async () => {
+        running = false;
+        await loop;
+    };
+}

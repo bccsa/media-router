@@ -1,5 +1,6 @@
 import {
     GstPluginBase,
+    OwnPaModules,
     INGEST_OFFSET_KEY,
     IngestTimingReporter,
     PIPEWIRE_SRC_MIN_BUFFERS,
@@ -101,16 +102,10 @@ export class AudioEncoderModule extends GstPluginBase {
         this.config.sampleRate = rate;
 
         // Create a named null-sink — audio sources loopback into this
-        if (this.services?.pipeWire) {
-            this.paModuleId = await this.services.pipeWire.loadNullSink(
-                this.services.instanceId,
-                channels,
-                rate,
-                this.services.instanceId,
-            );
-            // Force 100% volume — PulseAudio's stream-restore may remember 0% from a previous session
-            await this.services.pipeWire.setSinkVolume(this.pwNodeName, 100);
-        }
+        await this.loadNullSink();
+        // A PipeWire restart takes the null sink with it: the watchdog makes it and the pipeline
+        // again (v104 B1). Before the pipeline, so a stream failing as it starts is its loss too.
+        this.startDeviceWatchdog(true, true);
 
         await super.onStart();
         this.updateStatusData();
@@ -118,6 +113,45 @@ export class AudioEncoderModule extends GstPluginBase {
         // Poll udpsink bytes-served every 2s for live throughput stats.
         this.throughput.start();
         this.ingestTiming.start();
+    }
+
+    /** Its null sink, kept by name for a rebuild (v104 B1). */
+    private readonly ownSinks = new OwnPaModules(
+        () => this.services?.pipeWire,
+        () => this.services?.instanceId ?? '',
+    );
+
+    private async loadNullSink(): Promise<void> {
+        const channels = (this.config.channels as number) ?? 2;
+        const rate = (this.config.sampleRate as number) ?? 48000;
+        this.paModuleId = await this.ownSinks.nullSink(
+            this.services?.instanceId ?? '',
+            channels,
+            rate,
+        );
+    }
+
+    /** Its own null sink, watched for a PipeWire restart or a lost stream (v104 B1). */
+    protected getWatchedDeviceName(): string | null {
+        return this.services?.instanceId ? this.pwNodeName : null;
+    }
+
+    /** PipeWire restarted or the stream died: the pipeline down, the null sink unloaded by name. */
+    protected async onDeviceDisconnected(): Promise<void> {
+        try {
+            await super.onStop();
+        } catch {
+            /* already stopped */
+        }
+        await this.ownSinks.unloadAll();
+    }
+
+    /** PipeWire answers again: the null sink and the pipeline made again, and the pw-links into
+     *  the sink re-made: they died with the old node. */
+    protected async onDeviceReconnected(): Promise<void> {
+        await this.loadNullSink();
+        await super.onStart();
+        await this.services?.mediaRouter?.reexecuteIncomingPwLinks?.(this.services.instanceId);
     }
 
     /** Output-bitrate poller on the udpsink. */
@@ -155,6 +189,8 @@ export class AudioEncoderModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
+        await this.stopDeviceWatchdog();
+        this.ownSinks.clear();
         this.throughput.stop();
         this.ingestTiming.stop();
         await super.onStop();

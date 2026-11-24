@@ -1,4 +1,9 @@
-import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
+import {
+    GstPluginBase,
+    OwnPaModules,
+    type PipelineDescription,
+    type ModuleServices,
+} from '@media-router/engine';
 
 /**
  * N-1 Mix-Minus Audio Mixer.
@@ -73,49 +78,10 @@ export class N1MixerModule extends GstPluginBase {
             throw new Error('PipeWire not available');
         }
 
-        const pw = this.services.pipeWire;
         const instanceId = this.services.instanceId;
         this.pairCount = (this.config.pairCount as number) ?? 4;
-
         this.log.info({ pairCount: this.pairCount }, 'Starting N-1 mixer');
-
-        // 1. Create N input null-sinks
-        for (let i = 0; i < this.pairCount; i++) {
-            await pw.loadNullSink(`${instanceId}_in_${i}`, 2, 48000, instanceId);
-            await pw.setSinkVolume(`MR_PW_${instanceId}_in_${i}`, 100);
-        }
-
-        // 2. Create N output null-sinks (mix buses)
-        for (let i = 0; i < this.pairCount; i++) {
-            await pw.loadNullSink(`${instanceId}_out_${i}`, 2, 48000, instanceId);
-            await pw.setSinkVolume(`MR_PW_${instanceId}_out_${i}`, 100);
-        }
-
-        // 3. Wait for all sinks to appear
-        for (let i = 0; i < this.pairCount; i++) {
-            await pw.waitForSink(`MR_PW_${instanceId}_in_${i}`);
-            await pw.waitForSink(`MR_PW_${instanceId}_out_${i}`);
-        }
-
-        // 4. Create N*(N-1) internal loopbacks (skip self)
-        // Pace loopback creation to avoid overwhelming PipeWire
-        let loopbackCount = 0;
-        for (let out = 0; out < this.pairCount; out++) {
-            for (let inp = 0; inp < this.pairCount; inp++) {
-                if (inp === out) continue; // The N-1 exclusion
-                const connId = `${instanceId}_n1_${inp}_to_${out}`;
-                const source = `MR_PW_${instanceId}_in_${inp}.monitor`;
-                const sink = `MR_PW_${instanceId}_out_${out}`;
-                await pw.loadLoopback(connId, source, sink, 2, 48000, instanceId, 5);
-                loopbackCount++;
-                // Brief pause every 8 loopbacks to let PipeWire settle
-                if (loopbackCount % 8 === 0) {
-                    await new Promise((r) => setTimeout(r, 100));
-                }
-            }
-        }
-
-        this.log.info({ loopbackCount }, 'Created internal loopbacks');
+        const loopbackCount = await this.bringUpGraph();
 
         // Set running state
         this.running = true;
@@ -135,9 +101,81 @@ export class N1MixerModule extends GstPluginBase {
         );
 
         this.log.info({ pairCount: this.pairCount, loopbackCount }, 'N-1 mixer started');
+        // A PipeWire restart takes the whole graph with it: the watchdog makes it again.
+        this.startDeviceWatchdog(true, true);
+    }
+
+    /** Its null sinks and loopbacks, kept by name for a rebuild (v104 B1). */
+    private readonly own = new OwnPaModules(
+        () => this.services?.pipeWire,
+        () => this.services?.instanceId ?? '',
+    );
+
+    /** The N input and N output null sinks and the N*(N-1) loopbacks between them. */
+    private async bringUpGraph(): Promise<number> {
+        const pw = this.services!.pipeWire!;
+        const instanceId = this.services!.instanceId;
+        // 1. Create N input null-sinks
+        for (let i = 0; i < this.pairCount; i++) {
+            await this.own.nullSink(`${instanceId}_in_${i}`);
+        }
+
+        // 2. Create N output null-sinks (mix buses)
+        for (let i = 0; i < this.pairCount; i++) {
+            await this.own.nullSink(`${instanceId}_out_${i}`);
+        }
+
+        // 3. Wait for all sinks to appear
+        for (let i = 0; i < this.pairCount; i++) {
+            await pw.waitForSink(`MR_PW_${instanceId}_in_${i}`);
+            await pw.waitForSink(`MR_PW_${instanceId}_out_${i}`);
+        }
+
+        // 4. Create N*(N-1) internal loopbacks (skip self)
+        // Pace loopback creation to avoid overwhelming PipeWire
+        let loopbackCount = 0;
+        for (let out = 0; out < this.pairCount; out++) {
+            for (let inp = 0; inp < this.pairCount; inp++) {
+                if (inp === out) continue; // The N-1 exclusion
+                const connId = `${instanceId}_n1_${inp}_to_${out}`;
+                const source = `MR_PW_${instanceId}_in_${inp}.monitor`;
+                const sink = `MR_PW_${instanceId}_out_${out}`;
+                await this.own.loopback(connId, source, sink, 2, 48000, 5);
+                loopbackCount++;
+                // Brief pause every 8 loopbacks to let PipeWire settle
+                if (loopbackCount % 8 === 0) {
+                    await new Promise((r) => setTimeout(r, 100));
+                }
+            }
+        }
+
+        this.log.info({ loopbackCount }, 'Created internal loopbacks');
+        return loopbackCount;
+    }
+
+    /** Its first input null sink, watched for a PipeWire restart (v104 B1). */
+    protected getWatchedDeviceName(): string | null {
+        return this.services?.instanceId ? `MR_PW_${this.services.instanceId}_in_0` : null;
+    }
+
+    /** PipeWire restarted: its null sinks and loopbacks unloaded by name. */
+    protected async onDeviceDisconnected(): Promise<void> {
+        await this.own.unloadAll();
+    }
+
+    /** PipeWire answers again: the graph made again, and the pw-links into and out of it re-made:
+     *  they died with the old nodes. */
+    protected async onDeviceReconnected(): Promise<void> {
+        await this.bringUpGraph();
+        this.running = true;
+        const id = this.services?.instanceId ?? '';
+        await this.services?.mediaRouter?.reexecuteIncomingPwLinks?.(id);
+        await this.services?.mediaRouter?.reexecuteOutgoingPwLinks?.(id);
     }
 
     async onStop(): Promise<void> {
+        await this.stopDeviceWatchdog();
+        this.own.clear();
         // PipeWire resources (null-sinks + loopbacks) are cleaned up automatically
         // by ModuleInstance.stop() → pipeWire.releaseAll(instanceId)
 
