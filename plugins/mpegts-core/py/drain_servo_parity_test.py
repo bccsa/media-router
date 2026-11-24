@@ -5,7 +5,7 @@ drain_servo.py's, line for line, on
 
   - the suite's sequences: drain_servo_test.py's cases as a recording servo writes them;
   - 120 random ones (seeded): slack and queue samples, starvation episodes of 0.1 to 3 s, late
-    frames 0 to 400 ms late, clears, breaks, group targets (fresh, stale, below 0 or alone) and updates with
+    frames 0 to 400 ms late, clears, breaks, unsteps (fix B), group targets (fresh, stale, below 0 or alone) and updates with
     and without a lock, over 5 to 40 min with gaps in the ticks.
 
 Every underrun event carries its reason, every raise its evidence, every state line the counts by
@@ -54,6 +54,10 @@ class Recorded(ds.DrainServo):
     def sample(self, now, slack_ns):
         self._w({"op": "sample", "now": now, "slack": slack_ns})
         super().sample(now, slack_ns)
+
+    def unstep(self):
+        self._w({"op": "unstep"})
+        super().unstep()
 
     def queue_level(self, now, level_ns):
         self._w({"op": "queue", "now": now, "level": level_ns})
@@ -135,6 +139,8 @@ def random_ops(seed):
             ops.append({"op": "clear", "now": t})
         if k == 98:
             ops.append({"op": "break"})
+        if video and k == 96:
+            ops.append({"op": "unstep"})
         if k >= 90 or not r.int(0, 20):
             group = ds.GROUP_ALONE_NS if k == 99 else render + r.int(-300, 1500) * MS
             ops.append({"op": "group", "now": t, "target": group})

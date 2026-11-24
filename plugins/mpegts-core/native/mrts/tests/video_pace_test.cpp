@@ -862,6 +862,22 @@ void test_drain() {
               b.slack_ns == -40 * MS);
 }
 
+// 23. Fix B: step(ns) moves the cadence ns later at once; nothing before the first frame, no late count.
+void test_step() {
+    VideoPace pace;
+    pace.set_display(P50, DisplaySource::measured);
+    pace.step(240 * MS);
+    std::set<int64_t> before, after;
+    for (int k = 0; k < 10; k++) before.insert(pace.on_frame(k * P50, P50, k * P50 + LATENCY, false).release_ns - k * P50);
+    pace.step(240 * MS);
+    for (int k = 10; k < 60; k++) after.insert(pace.on_frame(k * P50, P50, k * P50 + LATENCY, false).release_ns - k * P50);
+    const PaceSummary s = pace.take();
+    CHECK("23 a step before the first frame does nothing: released at their input lateness",
+          before == std::set<int64_t>{LATENCY});
+    CHECK("23 step(240 ms): every frame after it 240 ms later, on the content cadence, not late, no drop",
+          after == std::set<int64_t>{LATENCY + 240 * MS} && s.late == 0 && s.rate_drops == 0 && s.released == 60);
+}
+
 void (*const CASES[])() = {test_50p_on_60hz,         test_60p_on_50hz,
                            test_60_on_5994,          test_50p_on_slow_display_measured,
                            test_50p_on_matched_display, test_slow_display_nominal,
@@ -872,7 +888,7 @@ void (*const CASES[])() = {test_50p_on_60hz,         test_60p_on_50hz,
                            test_stamp_jitter,        test_slow_presenting_display,
                            test_kms_every_other_refresh, test_display_rate,
                            test_keeps_up_as_before,  test_hiccup_window,
-                           test_drain};
+                           test_drain,               test_step};
 
 }  // namespace
 

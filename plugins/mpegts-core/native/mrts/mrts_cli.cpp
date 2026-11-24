@@ -2082,6 +2082,10 @@ bool pace_op(const Json& op, VideoPace* pace, DisplayRate* rate,
         int64_t ppb = 0;
         if (!op_i64(op, "ppb", &ppb, err)) return false;
         pace->set_drain(ppb);
+    } else if (k == "step") {
+        int64_t ns = 0;
+        if (!op_i64(op, "ns", &ns, err)) return false;
+        pace->step(ns);
     } else if (k == "frame") {
         int64_t pts = 0, dur = 0, arrival = 0;
         bool discont = false, held = false;
@@ -2434,6 +2438,8 @@ bool drain_op(const Json& op, DrainServo* s, std::string* err) {
         s->clear(now);
     } else if (k == "break") {
         s->epoch_break();
+    } else if (k == "unstep") {
+        s->unstep();
     } else if (k == "group") {
         if (!op_i64(op, "now", &now, err) || !op_i64(op, "target", &v, err)) return false;
         s->set_group(now, v);

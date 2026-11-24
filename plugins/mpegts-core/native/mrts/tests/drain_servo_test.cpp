@@ -901,6 +901,99 @@ void case_audio_window() {
           trough[0] == 25 * MS && excess[0] == 5 * MS && trough[1] == 100 * MS && excess[1] == 80 * MS);
 }
 
+// Fix B's model (the reference's start_run): render 150 ms plus every start step, 10 ms of slack, the
+// backlog queue holding the steps; the group from `at` on, `group2` after a clear at `clear_at`.
+struct StartRun {
+    std::vector<std::pair<int64_t, int64_t>> steps;
+    int64_t first = 0, target = 0, ppb = 0, drained = 0;
+    std::vector<std::pair<int64_t, int64_t>> trace;   // (t, published target)
+    DrainServo::State state = DrainServo::State::warm_up;
+};
+
+StartRun start_run(bool video, int64_t group, int64_t at = 5 * SEC, int64_t until = 50 * SEC, int64_t clear_at = -1,
+                   int64_t group2 = 0, int64_t dip_at = -1, int64_t dip_ms = 0, bool unstep = false,
+                   bool can = true, bool queue_holds = true, int64_t drop_at = -1, int64_t drop_to = 0) {
+    DrainServo s(video, 20 * MS, 20 * MS);
+    StartRun r;
+    int64_t held = 0, t = 0;
+    while (t < until) {
+        t += TICK;
+        if (t == clear_at) {
+            s.clear(t);
+            if (unstep) {
+                s.unstep();
+                held = 0;
+            }
+            group = group2;
+        }
+        s.sample(t, 10 * MS);
+        if (video) s.queue_level(t, queue_holds ? std::max<int64_t>(0, held - s.drained()) : 0);
+        if (t == drop_at) group = drop_to;
+        if (t >= at) s.set_group(t, group);
+        s.update(t, 150 * MS + held - s.drained() - (t == dip_at ? dip_ms * MS : 0), can);
+        r.trace.push_back({t, s.target()});
+        for (const DrainEvent& e : s.take_events())
+            if (e.kind == DrainEvent::Kind::step) {
+                r.steps.push_back({e.at, e.value});
+                held += e.value;
+            }
+        if (t == at + SEC || t == clear_at + 2 * SEC) r.first = s.target();
+    }
+    r.target = s.target();
+    r.ppb = s.ppb();
+    r.drained = s.drained();
+    r.state = s.state();
+    return r;
+}
+
+// 32. Fix B (V-P4-5 from the first frame): a video start at its group's target, once per warm-up.
+void case_start_step() {
+    using P = std::vector<std::pair<int64_t, int64_t>>;
+    const StartRun st = start_run(true, 390 * MS), cap = start_run(true, 1500 * MS), small = start_run(true, 165 * MS),
+                   audio = start_run(false, 390 * MS), late = start_run(true, 390 * MS, 35 * SEC),
+                   again = start_run(true, 390 * MS, 5 * SEC, 80 * SEC, 60 * SEC, 500 * MS),
+                   low = start_run(true, 390 * MS, 5 * SEC, 50 * SEC, -1, 0, 5 * SEC, 200),
+                   early = start_run(true, 390 * MS, TICK),
+                   caps = start_run(true, 390 * MS, 5 * SEC, 20 * SEC, 10 * SEC, 390 * MS),
+                   flush = start_run(true, 390 * MS, 5 * SEC, 20 * SEC, 10 * SEC, 390 * MS, -1, 0, true);
+    CHECK("start step: one step of 240 ms at the group's first update", st.steps == P{{5 * SEC, 240 * MS}});
+    CHECK("start step: its published target its own meanwhile and once warm, neither draining nor rising after it",
+          st.first == 150 * MS && iabs64(st.target - 150 * MS) <= 10 * MS && st.ppb == 0 &&
+              st.state == DrainServo::State::idle);
+    CHECK("start step: past the 1 s cap it steps to T + 1 s", cap.steps == P{{5 * SEC, SEC}});
+    CHECK("start step: none for 15 ms, for audio, nor for a group seen first once warm",
+          small.steps.empty() && audio.steps.empty() && late.steps.empty() && late.ppb < 0);
+    CHECK("start step: a clear arms it again, a second after it",
+          again.steps == P{{5 * SEC, 240 * MS}, {61 * SEC, 110 * MS}});
+    CHECK("start step: one render reading 200 ms low at the group's first update does not make it overshoot, and a "
+          "group from the first update waits a second of readings",
+          low.steps == P{{5 * SEC, 240 * MS}} && early.steps == P{{11 * TICK, 240 * MS}});
+    bool late_ok = true;
+    for (int64_t at : {15 * SEC, 27 * SEC})
+        for (bool holds : {true, false}) {   // the backlog queue holds the step, or a decoder's own queue does
+            const StartRun lr = start_run(true, 390 * MS, at, 90 * SEC, -1, 0, -1, 0, false, true, holds);
+            int64_t dev = 0;
+            for (const auto& p : lr.trace)
+                if (p.first >= at + SEC) dev = std::max(dev, iabs64(p.second - 150 * MS));
+            late_ok = late_ok && lr.steps == P{{at, 240 * MS}} && dev <= 10 * MS;
+        }
+    const StartRun blind = start_run(true, 390 * MS, 5 * SEC, 50 * SEC, -1, 0, -1, 0, false, false);
+    bool down_ok = true;   // the group back at its own at 40 s: it drains the step, seen or not
+    for (bool holds : {true, false}) {
+        const StartRun d = start_run(true, 390 * MS, 5 * SEC, 150 * SEC, -1, 0, -1, 0, false, true, holds, 40 * SEC,
+                                     150 * MS);
+        down_ok = down_ok && iabs64(d.trace.back().second - 150 * MS) <= 10 * MS && d.drained >= 220 * MS &&
+                  d.drained <= 250 * MS;
+    }
+    CHECK("start step: a group first seen at 15 s / 27 s steps there and its published target stays its own to 90 s; "
+          "no display rate, no step; the group back at its own at 40 s, it drains the step",
+          late_ok && blind.steps.empty() && down_ok);
+    CHECK("start step: a clear in the warm-up (new caps) keeps the step out of its published target and takes none "
+          "again; after an unstep (its cadence restarted) it steps again, its own target published",
+          caps.steps == P{{5 * SEC, 240 * MS}} && caps.first == 150 * MS &&
+              flush.steps == P{{5 * SEC, 240 * MS}, {11 * SEC, 240 * MS}} && flush.first == 150 * MS);
+}
+
 int main() {
     case_window();
     case_backlog();
@@ -934,5 +1027,6 @@ int main() {
     case_seam_floor();
     case_video_never();
     case_audio_window();
+    case_start_step();
     return test_summary("drain_servo");
 }

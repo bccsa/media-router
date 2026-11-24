@@ -55,6 +55,12 @@ void VideoPace::set_display(int64_t period_ns, DisplaySource source) {
 
 void VideoPace::set_drain(int64_t ppb) { drain_ = std::min(DRAIN_MAX_PPB, std::max(-DRAIN_MAX_PPB, ppb)); }
 
+void VideoPace::step(int64_t ns) {
+    if (!have_prev_) return;
+    prev_release_ += ns;
+    prev_slot0_ += ns;
+}
+
 // Δ' = Δ·1e9 / (1e9 + δ), to the nearest ns.
 int64_t VideoPace::drained(int64_t d) const {
     if (!drain_ || d <= 0) return d;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { ModuleManager, DRAIN_GROUP_REFRESH_MS } from './ModuleManager.js';
+import { ModuleManager, DRAIN_GROUP_REFRESH_MS, DRAIN_SOON_MS } from './ModuleManager.js';
 import { PluginLoader } from '../plugins/PluginLoader.js';
 import type { PluginModule } from '../plugins/PluginModule.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
@@ -105,5 +105,23 @@ describe('ModuleManager: the A/V groups', () => {
         const tick = vi.spyOn((manager as any).drainGroups, 'tick');
         await vi.advanceTimersByTimeAsync(DRAIN_GROUP_REFRESH_MS * 3);
         expect(tick).not.toHaveBeenCalled();
+    });
+});
+
+describe('ModuleManager: a first published target refreshes the groups at once (fix B)', () => {
+    it('drainChanged refreshes within DRAIN_SOON_MS, several calls coalesce, not waiting for the 2 s', async () => {
+        vi.useFakeTimers();
+        const { manager, vp, dec } = rig();
+        await manager.startModule('vp');
+        await manager.startModule('dec');
+        vp.apply.mockClear();
+        const soon = (manager as unknown as { drainSoon(): void }).drainSoon.bind(manager);
+        soon();
+        soon();
+        vi.advanceTimersByTime(DRAIN_SOON_MS);
+        expect(vp.apply).toHaveBeenCalledTimes(1);
+        expect(vp.apply).toHaveBeenLastCalledWith(-110_000_000, { with: ['DEC'] });
+        expect(DRAIN_SOON_MS).toBeLessThan(DRAIN_GROUP_REFRESH_MS);
+        await manager.destroyAll();
     });
 });

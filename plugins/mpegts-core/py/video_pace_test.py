@@ -64,6 +64,10 @@ class Recorded(vp.VideoPace):
         self.sink.write(vp.line({"op": "drain", "ppb": ppb}) + "\n")
         super().set_drain(ppb)
 
+    def step(self, ns):
+        self.sink.write(vp.line({"op": "step", "ns": ns}) + "\n")
+        super().step(ns)
+
     def on_frame(self, pts_ns, dur_ns, arrival_ns, discont, held=False):
         self.sink.write(vp.line({"op": "frame", "pts": pts_ns, "dur": dur_ns, "arrival": arrival_ns,
                                   "discont": int(discont), "held": int(held)}) + "\n")
@@ -771,6 +775,23 @@ def test_drain():
           " past it (40 ms, its slack -40 ms)",
           early == 15 * MS and pace.last_late_by == 40 * MS and pace.last_slack == -40 * MS)
 
+def test_step():
+    """23. Fix B: step(ns) moves the cadence ns later at once: the next frame leaves ns past its slot
+    and holds it, the content cadence after it; nothing before the first frame, no late count."""
+    pace = new_pace("step")
+    pace.set_display(P50, "measured")
+    pace.step(240 * MS)                                    # before the first frame: nothing
+    rel = [pace.on_frame(k * P50, P50, k * P50 + LATENCY, False)[0] - k * P50 for k in range(10)]
+    pace.step(240 * MS)
+    rel += [pace.on_frame(k * P50, P50, k * P50 + LATENCY, False)[0] - k * P50 for k in range(10, 60)]
+    s = pace.take()
+    check("23 a step before the first frame does nothing: released at their input lateness (%s ms)"
+          % sorted({r // MS for r in rel[:10]}), set(rel[:10]) == {LATENCY})
+    check("23 step(240 ms): every frame after it 240 ms later, on the content cadence (%s ms), not late, "
+          "no drop" % sorted({r // MS for r in rel[10:]}),
+          set(rel[10:]) == {LATENCY + 240 * MS} and s.late == 0 and s.rate_drops == 0 and s.released == 60)
+
+
 # --- the replay format (the reference's own) ------------------------------------------------
 
 def test_replay_format():
@@ -787,6 +808,9 @@ def test_replay_format():
     pace = Recorded(calls, outputs, "replay-rate")              # held frames and the display rate
     rate = RecordedRate(calls, outputs)
     drive_rate(pace, rate, live(cadence(2100, 60, 1), P60), KmsWait(DSI, 0), prior=DSI)
+    pace.step(120 * MS)
+    drive_rate(pace, rate, [(2100 * P60 + k * P60, P60, 2100 * P60 + k * P60 + LATENCY, False, False)
+                            for k in range(30)], KmsWait(DSI, 0), prior=DSI)
     rate.restart()
     rate.period()
     pace.take()
@@ -809,7 +833,7 @@ CASES = (test_50p_on_60hz, test_60p_on_50hz, test_60_on_5994, test_50p_on_slow_d
          test_60p_on_slow_50hz, test_foreign_clock_source, test_faster_display_banks_one_frame,
          test_stamp_jitter, test_slow_presenting_display, test_kms_every_other_refresh,
          test_display_rate, test_keeps_up_as_before, test_hiccup_window, test_drain,
-         test_replay_format)
+         test_replay_format, test_step)
 
 # (name, the case it must fail, video_pace.py text, its replacement). The first six are the
 # brief's (p4-3a), the next nine B-161's, then p4-3c's (B-175) with B-179's three among them.
@@ -867,6 +891,7 @@ MUTANTS = (
     ("every push read as the sink's pace", 19,
      "if pressed and self.prev_return is not None and returned_ns > self.prev_return:",
      "if self.prev_return is not None and returned_ns > self.prev_return:"),
+    ("the step lost (fix B)", 23, "        self.prev_release += ns\n        self.prev_slot0 += ns\n", "        pass\n"),
 )
 
 

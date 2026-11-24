@@ -437,6 +437,218 @@ describe('DrainGroupLoop: Trust keys (p5-20)', () => {
     });
 });
 
+describe('DrainGroupLoop: one sender over two links of different latency (fix B, DEV-104 blocker 2)', () => {
+    // r104rx on .156: SRT (120 ms) and RIST (1 s) from one sender, both Trust, each to a Video Player
+    // and an Audio Decoder; the members' own latencies as measured there (4/rx.jsonl, fb-diag1).
+    const links = [
+        e('srt-in', 'vp-srt'),
+        e('srt-in', 'dec-srt'),
+        e('rist-in', 'vp-rist'),
+        e('rist-in', 'dec-rist'),
+    ];
+    const keys = keyed({ 'srt-in': TL_A, 'rist-in': TL_A });
+    const OWN: Record<string, number> = {
+        'vp-srt': 220,
+        'dec-srt': 700,
+        'vp-rist': 1150,
+        'dec-rist': 1535,
+    };
+
+    /** Each member as its element plays it, every 2 s refresh: it publishes its own target and moves
+     *  toward min(P, own + 1 s) at 0.5 % (10 ms a refresh); a player steps there at once the first
+     *  time it is grouped (its start). `covered`: the ids whose display presents nothing until
+     *  `shownAt` s: no target published, unpaced at its own latency, the group target not followed. */
+    function play(seconds: number, covered: string[] = [], shownAt = Infinity) {
+        const render: Record<string, number> = { ...OWN };
+        const stepped = new Set<string>();
+        const target: Record<string, number> = {};
+        const at = (t: number, id: string) => !covered.includes(id) || t >= shownAt;
+        let t = 0;
+        const members = (): DrainMember[] =>
+            Object.keys(OWN).map((id) => ({
+                id,
+                anchor: id.startsWith('vp'),
+                name: id,
+                ...(at(t, id) ? { publishedMs: OWN[id] } : {}),
+                renderMs: render[id],
+                apply: (ns: number) => {
+                    target[id] = ns === DRAIN_GROUP_ALONE_NS ? OWN[id] : ns / 1e6;
+                },
+            }));
+        const loop = new DrainGroupLoop({ members, edges: () => links, keyOf: keys, log: vi.fn() });
+        const av: Array<{ t: number; srt: number; rist: number; dec: number }> = [];
+        for (t = 2; t <= seconds; t += 2) {
+            loop.tick();
+            for (const id of Object.keys(OWN)) {
+                if (!at(t, id)) {
+                    render[id] = OWN[id];
+                    continue;
+                }
+                const goal = Math.min(target[id] ?? OWN[id], OWN[id] + 1000);
+                if (id.startsWith('vp') && !stepped.has(id) && target[id] !== undefined) {
+                    stepped.add(id);
+                    render[id] = goal;
+                } else render[id] += Math.max(-10, Math.min(10, goal - render[id]));
+            }
+            av.push({
+                t,
+                srt: render['vp-srt'] - render['dec-srt'],
+                rist: render['vp-rist'] - render['dec-rist'],
+                dec: render['dec-srt'],
+            });
+        }
+        return av;
+    }
+
+    it('every player visible: each link in lip sync from the first refresh (within 45 ms) for 10 min', () => {
+        const av = play(600);
+        const worst = (k: 'srt' | 'rist') => Math.max(...av.map((r) => Math.abs(r[k])));
+        // One group of four would hold the SRT player at its own + 1 s (1220 ms) while its decoder rose to
+        // the RIST link's 1535 ms: SRT A/V -315 ms and falling.
+        expect(worst('srt')).toBeLessThanOrEqual(45);
+        expect(worst('rist')).toBeLessThanOrEqual(45);
+    });
+
+    it("the device's shape: the SRT player covered (presents nothing), its decoder is not raised toward the RIST link; shown again, in sync at once", () => {
+        const av = play(600, ['vp-srt'], 300);
+        const covered = av.filter((r) => r.t < 300);
+        // Before the fix the decoder rose 700 -> 1535 ms with the RIST link: A/V -480 -> -1315 ms, growing
+        // (DEV-104: -411 at 8 s, -1223 at 600 s).
+        expect(Math.max(...covered.map((r) => r.dec))).toBeLessThanOrEqual(OWN['dec-srt'] + 45);
+        expect(Math.min(...covered.map((r) => r.srt))).toBeGreaterThanOrEqual(-480 - 45);
+        const shown = av.filter((r) => r.t >= 302);
+        expect(Math.max(...shown.map((r) => Math.abs(r.srt)))).toBeLessThanOrEqual(45);
+        expect(Math.max(...av.map((r) => Math.abs(r.rist)))).toBeLessThanOrEqual(45);
+    });
+
+    it('split by link: each link a group of its own, the rows name it, logged once; joined again within 900 ms', () => {
+        const mk = (id: string, ms: number) => member(id, id.startsWith('vp'), ms);
+        const ms: Record<string, number> = {
+            'vp-srt': 220,
+            'dec-srt': 700,
+            'vp-rist': 1150,
+            'dec-rist': 1535,
+        };
+        const m = Object.fromEntries(Object.keys(ms).map((id) => [id, mk(id, ms[id])]));
+        const log = vi.fn();
+        const loop = new DrainGroupLoop({
+            members: () => Object.keys(ms).map((id) => ({ ...m[id].m, publishedMs: ms[id] })),
+            edges: () => links,
+            keyOf: keys,
+            log,
+        });
+        loop.tick();
+        expect(m['vp-srt'].applied.at(-1)).toEqual([700e6, { with: ['DEC-SRT'], linksMs: 1315 }]);
+        expect(m['dec-rist'].applied.at(-1)).toEqual([
+            1535e6,
+            { with: ['VP-RIST'], linksMs: 1315 },
+        ]);
+        expect(log).toHaveBeenCalledTimes(1);
+        expect(log.mock.calls[0][0]).toContain('each link in sync on its own');
+        ms['vp-srt'] = 580; // 955 ms apart: still split (within 1 s, not within 900 ms)
+        loop.tick();
+        expect(m['vp-srt'].applied.at(-1)?.[1]).toMatchObject({ linksMs: 955 });
+        ms['vp-srt'] = 640; // 895 ms: one group of four again
+        loop.tick();
+        expect(m['vp-srt'].applied.at(-1)).toEqual([
+            1535e6,
+            { with: ['VP-RIST', 'DEC-SRT', 'DEC-RIST'] },
+        ]);
+        expect(log).toHaveBeenCalledTimes(2);
+        expect(log.mock.calls[1][0]).toContain('in sync across the links again');
+    });
+
+    it("a staggered start (the RIST decoder has no reading yet): held by link, no player told the other link's target (review B1)", () => {
+        // .156's start order: the RIST player publishes one refresh before the RIST decoder has a row.
+        const ticks: Array<Record<string, { pub?: number; render?: number }>> = [
+            {
+                'vp-srt': { pub: 280, render: 280 },
+                'dec-srt': { pub: 757, render: 757 },
+                'vp-rist': { pub: 1184, render: 1184 },
+                'dec-rist': {},
+            },
+            {
+                'vp-srt': { pub: 280, render: 757 },
+                'dec-srt': { pub: 757, render: 757 },
+                'vp-rist': { pub: 1184, render: 1184 },
+                'dec-rist': { pub: 1558, render: 1558 },
+            },
+        ];
+        let cur = ticks[0];
+        const got: Record<string, Array<[number, unknown]>> = {};
+        const log = vi.fn();
+        const loop = new DrainGroupLoop({
+            members: () =>
+                Object.keys(cur).map((id) => ({
+                    id,
+                    anchor: id.startsWith('vp'),
+                    name: id.toUpperCase(),
+                    ...(cur[id].pub !== undefined ? { publishedMs: cur[id].pub } : {}),
+                    ...(cur[id].render !== undefined ? { renderMs: cur[id].render } : {}),
+                    apply: (ns: number, view: unknown) => (got[id] ??= []).push([ns, view]),
+                })),
+            edges: () => links,
+            keyOf: keys,
+            log,
+        });
+        loop.tick();
+        expect(got['vp-srt'][0]).toEqual([757e6, { with: ['DEC-SRT'], withRenderMs: [757] }]);
+        expect(got['vp-rist'][0]).toEqual([1184e6, { with: ['DEC-RIST'] }]);
+        expect(log).not.toHaveBeenCalled();
+        cur = ticks[1];
+        loop.tick();
+        expect(got['vp-srt'][1]).toEqual([
+            757e6,
+            { with: ['DEC-SRT'], withRenderMs: [757], linksMs: 1278 },
+        ]);
+        expect(Math.max(...got['vp-srt'].map(([ns]) => ns))).toBe(757e6);
+        expect(log).toHaveBeenCalledTimes(1);
+    });
+
+    it('one Trust link whose members are more than 1 s apart is not reported as split: one capped group (review F2)', () => {
+        const vp = member('vp', true, 200);
+        const dec = member('dec', false, 1300);
+        const log = vi.fn();
+        new DrainGroupLoop({
+            members: () => [vp.m, dec.m],
+            edges: () => [e('srt-in', 'vp'), e('srt-in', 'dec')],
+            keyOf: keys,
+            log,
+        }).tick();
+        expect(vp.applied[0]).toEqual([1300e6, { with: ['DEC'], spreadMs: 1100 }]);
+        expect(log).not.toHaveBeenCalled();
+    });
+
+    it('a link with no programme of its own (video over SRT, audio over RIST) stays one capped group (p5-20 E5)', () => {
+        const vp = member('vp', true, 1500);
+        const out = member('out302', false, 100);
+        new DrainGroupLoop({
+            members: () => [vp.m, out.m],
+            edges: () => [e('srt-in', 'vp'), e('rist-in', 'out302', A302)],
+            keyOf: keys,
+            log: vi.fn(),
+        }).tick();
+        expect(out.applied[0]).toEqual([1500e6, { with: ['VP'], spreadMs: 1400 }]);
+    });
+
+    it('a member a split leaves alone is told so: the RIST decoder with no RIST player', () => {
+        const ms: Record<string, number> = { 'vp-srt': 220, 'dec-srt': 700, 'dec-rist': 1535 };
+        const m = Object.fromEntries(
+            Object.keys(ms).map((id) => [id, member(id, id.startsWith('vp'), ms[id])]),
+        );
+        const loop = new DrainGroupLoop({
+            members: () => Object.values(m).map((x) => x.m),
+            edges: () => links.filter((x) => x.sinkModuleId !== 'vp-rist'),
+            keyOf: keys,
+            log: vi.fn(),
+        });
+        loop.tick();
+        loop.tick();
+        expect(m['vp-srt'].applied.at(-1)).toEqual([700e6, { with: ['DEC-SRT'], linksMs: 1315 }]);
+        expect(m['dec-rist'].applied).toEqual([[DRAIN_GROUP_ALONE_NS, { linksMs: 1315 }]]);
+    });
+});
+
 class Member extends GstPluginBase {
     buildPipeline(): PipelineDescription | null {
         return null;

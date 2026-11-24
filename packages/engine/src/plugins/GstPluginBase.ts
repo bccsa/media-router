@@ -145,6 +145,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             return clock ? houseClockFields(clock.epoch(), clock.state()) : null;
         },
         egressWarnings: (text) => this.onEgressWarnings(text),
+        drainPublished: () => this.services?.drainChanged?.(),
     });
 
     /** Which input an aligner watch serves (WI-P2-13): `{ tap }`, `{ label }` of its own, or

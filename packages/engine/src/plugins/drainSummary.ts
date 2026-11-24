@@ -44,6 +44,7 @@ export function drainSummary(
     if (grouped) Object.assign(d, groupSync(nowMs, group!));
     if (grouped && group!.spreadMs !== undefined) d.groupSpreadMs = group!.spreadMs;
     if (group?.neither?.length) d.neither = true;
+    if (group?.linksMs !== undefined) d.groupLinksMs = group.linksMs;
     if (video?.drainDropsPerMin !== undefined) d.drainDropsPerMin = video.drainDropsPerMin;
     return d;
 }
@@ -93,7 +94,8 @@ function about(seconds: number): string {
 /** `95 ms (measured), now 2.41 s · draining at 0.50 % (about 7 min) · in sync with Video Player`;
  *  out of sync (B-241): `4.50 s ahead of Video Player (held 1 s above its own target)`,
  *  `rising to Video Player's latency at 0.20 %`, `2.10 s behind Audio Decoder`; links apart by
- *  more than the rise cap (p5-20): `in sync with Video Player within 1 s only: the links differ by 1.4 s`. */
+ *  more than the rise cap (p5-20): `in sync with Video Player within 1 s only: the links differ by 1.4 s`;
+ *  a link of its own (fix B): `in sync with Audio Decoder · each link on its own: the links differ by 1.3 s`. */
 export function latencyTargetText(d: DrainSummary): string {
     if (d.notMeasured) return 'not measured (no display rate)';
     const parts = [`${msOrS(d.targetMs)} (measured), now ${msOrS(d.nowMs)}`];
@@ -117,7 +119,11 @@ export function latencyTargetText(d: DrainSummary): string {
         if (d.ppm < 0) parts.push(`rising to its group at ${pct} %`);
         if (off) parts.push(off);
     }
+    const links =
+        d.groupLinksMs !== undefined &&
+        `each link on its own: the links differ by ${(d.groupLinksMs / 1000).toFixed(1)} s`;
     if (d.neither) parts.push('in sync with neither (two programmes)');
+    else if (links && !d.groupWith?.length) parts.push(links);
     else if (d.groupWith?.length && d.groupSpreadMs !== undefined)
         parts.push(
             `in sync with ${d.groupWith.join(', ')} within 1 s only: the links differ by ${(d.groupSpreadMs / 1000).toFixed(1)} s`,
@@ -126,6 +132,7 @@ export function latencyTargetText(d: DrainSummary): string {
         parts.push(
             `${d.groupUnjudged ? 'grouped with' : 'in sync with'} ${d.groupWith.join(', ')}`,
         );
+    if (links && d.groupWith?.length && !d.neither) parts.push(links);
     return parts.join(' · ');
 }
 

@@ -25,6 +25,17 @@ window clear (a relock, a stall's flush, caps, a flush, PAUSED), nor while an ep
 W after an audio starvation or an outage (its zeros are in the window). A sample below 0 (content that was late) reads
 0: the slack is what was early.
 
+The start step (fix B, V-P4-5 from the first frame). Video, before its window is first warm after
+the start or a clear, a second of updates since, grouped, with a display rate (`can`), with its
+goal min(P, T + 1 s) at least 20 ms above its render lateness (the highest of the last 0.5-1 s: one low reading, a display term
+read on another cadence, never makes it overshoot): one step to the goal at once, an event ("step", now, the step) the element applies to its
+cadence (the frame on screen stays up that much longer); once per warm-up. Its published target
+leaves the step out: T = L - s while not warm; once warm E = max(F - m, s), s what it holds (the
+trough may see the step or not: a decoder's own queue can hold it), so T = L - E and the drain can
+take the step back down; s falls as it drains, and stays across a clear
+(the cadence still holds it), until unstep() (the element's cadence restarted, the step gone with
+it). Audio never steps.
+
 The margin. Audio starts at its 20 ms floor (the live fill sits at the prefill's delay line: no
 ring margin to keep), video at its floor, 1 frame; ceiling 500 ms. Only a steady audio starvation
 the margin limited raises it (B-240, owner decision 2026-11-13): one of at most 250 ms is judged
@@ -52,10 +63,10 @@ Run as a script it replays a sequence (the format `mrts_cli drain` reads):
 one JSON object per line: {"op":"config","video":0|1,"start":ns,"floor":ns,"window":ns} starts a new servo
 (other keys are labels), {"op":"sample","now":ns,"slack":ns}, {"op":"queue","now":ns,"level":ns},
 {"op":"starve","now":ns,"on":0|1}, {"op":"late","now":ns,"by":ns}, {"op":"clear","now":ns},
-{"op":"break"}, {"op":"group","now":ns,"target":ns} and {"op":"update","now":ns,"render":ns,
+{"op":"break"}, {"op":"unstep"}, {"op":"group","now":ns,"target":ns} and {"op":"update","now":ns,"render":ns,
 "can":0|1}. Each update prints its events, then one state line (keys in this order):
 {"event":kind,"at":ns,"value":ns} (drain-start: the command; drain-done: drained so far;
-underrun: the episode's length; raise: the new margin; outage: its length) and
+underrun: the episode's length; raise: the new margin; outage: its length; step: the start step) and
 {"ppb":n,"excess":ns,"margin":ns,"learned":ns,"trough":ns,"target":ns,"drained":ns,"raises":n,
 "underruns":n,"outages":n,"state":s,"capped":0|1,"reasons":[n,...]} (learned -1 before any raise;
 reasons: the counts in REASONS' order). An underrun event carries its "reason" (raised, or the
@@ -94,6 +105,7 @@ CONFIRM_NS = 10 * SEC                 # C: an audio starvation is judged this lo
 LIMIT_BAND_NS = ENGAGE_NS             # S6: its start trough within the margin +- this, both edges in
 KEEP_UP_NS = 20 * MS                  # S4: render lateness may grow by the episode's length + this
 SETTLE_NS = SEC                       # S6 reads the trough 1-2 s before the start: not the fill's own descent
+STEP_LOOK_NS = SEC                    # fix B: the start step reads the highest render of the last 0.5-1 s
 REASONS = ("drain", "after-drain", "video", "warm-up", "input", "load", "not-margin")
 
 
@@ -178,6 +190,10 @@ class DrainServo:
         self.settled = None         # the trough 1-2 s ago (S6), and the newer one waiting its turn
         self.next_trough = None
         self.next_at = None
+        self.step_armed = True      # video: a start step is still to come in this warm-up (fix B)
+        self.stepped = 0            # the start step taken in this warm-up, left out of T until warm
+        self.hi = self.hi_prev = None   # the highest render lateness in this half second, and the last
+        self.hi_at = 0
 
     def _touch(self, now):
         if self.started:
@@ -334,9 +350,16 @@ class DrainServo:
         self.hold_until = None
         self.broken_at = now
         self.settled = self.next_trough = self.next_at = None
+        self.step_armed = True      # the cadence keeps a step taken: `stepped` stays until unstep()
+        self.hi = self.hi_prev = None
+        self.hi_at = now
         for ep in self.pending:     # judged at once: S3's, unless an earlier test fails first
             self._count(now, self._first_reason(ep) or "input", ep["length"])
         self.pending = []
+
+    def unstep(self):
+        """The element's cadence restarted (a flush, its display presenting again): no step held."""
+        self.stepped = 0
 
     def epoch_break(self):
         self.brk = True
@@ -354,6 +377,7 @@ class DrainServo:
         if self.ppb > 0:
             acc = self.ppb * dt + self.drained_rem
             self.drained += acc // SEC
+            self.stepped = max(0, self.stepped - acc // SEC)   # a held step drains with the rest
             self.drained_rem = acc % SEC
         if self.ppb != 0:           # delta held its value until now
             self.nonzero_at = now
@@ -371,13 +395,31 @@ class DrainServo:
         warm = (bool(can) and trough is not None and now - self.warm_from >= self.window
                 and (self.hold_until is None or now >= self.hold_until))
         self.trough = trough if trough is not None else 0
+        # A step the cadence holds is excess it can drain, whether or not the trough sees it (a decoder's own
+        # queue can hold it): E = max(F - m, s) once warm (fix B).
         excess = trough - self.margin if warm else 0
+        if warm and self.stepped:
+            excess = max(excess, self.stepped)
         self.excess = excess
-        t_now = render_ns - max(excess, 0)
+        if warm:                    # no step once warm
+            self.step_armed = False
+        t_now = render_ns - max(excess, 0) - (0 if warm else self.stepped)
         if self.ppb >= 0:
             self.held = t_now
         self.target = self.held if self.ppb < 0 else t_now
         grouped = self.group > GROUP_ALONE_NS and now - self.group_at <= GROUP_STALE_NS
+        if self.hi is None or now - self.hi_at >= STEP_LOOK_NS // 2:
+            self.hi_prev, self.hi, self.hi_at = self.hi, render_ns, now
+        else:
+            self.hi = max(self.hi, render_ns)
+        if (self.video and self.step_armed and grouped and can and not warm
+                and now - self.warm_from >= STEP_LOOK_NS):
+            hi = self.hi if self.hi_prev is None else max(self.hi, self.hi_prev)
+            step = min(self.group, t_now + RISE_CAP_NS) - hi
+            if step >= ENGAGE_NS:
+                self.step_armed = False
+                self.stepped += step
+                self.events.append(("step", now, step))
         self.capped = False
         if not warm or self.episode_at is not None:
             cmd = 0
@@ -466,6 +508,8 @@ def replay(lines, out):
             s.clear(op["now"])
         elif k == "break":
             s.epoch_break()
+        elif k == "unstep":
+            s.unstep()
         elif k == "group":
             s.set_group(op["now"], op["target"])
         elif k == "update":

@@ -23,6 +23,7 @@ const char* drain_event_name(DrainEvent::Kind k) {
         case DrainEvent::Kind::underrun: return "underrun";
         case DrainEvent::Kind::raise: return "raise";
         case DrainEvent::Kind::outage: return "outage";
+        case DrainEvent::Kind::step: return "step";
     }
     return "";
 }
@@ -295,6 +296,9 @@ void DrainServo::clear(int64_t now) {
     have_broken_ = true;
     broken_at_ = now;
     have_settled_ = have_next_ = have_next_at_ = false;
+    step_armed_ = true;   // the cadence keeps a step taken: stepped_ stays until unstep()
+    have_hi_ = have_hi_prev_ = false;
+    hi_at_ = now;
     // Judged at once: S3's, unless an earlier test fails first.
     for (const Episode& ep : pending_) {
         UnderrunReason r = UnderrunReason::input;
@@ -318,6 +322,7 @@ int64_t DrainServo::update(int64_t now, int64_t render_ns, bool can) {
     if (ppb_ > 0) {
         const __int128 acc = (__int128)ppb_ * dt + drained_rem_;
         drained_ += (int64_t)(acc / SEC);
+        stepped_ = std::max<int64_t>(0, stepped_ - (int64_t)(acc / SEC));   // a held step drains with the rest
         drained_rem_ = (int64_t)(acc % SEC);
     }
     if (ppb_ != 0) {   // delta held its value until now
@@ -347,12 +352,34 @@ int64_t DrainServo::update(int64_t now, int64_t render_ns, bool can) {
     }
     const bool warm = can && have && now - warm_from_ >= window_ && (!have_hold_ || now >= hold_until_);
     trough_ = have ? trough : 0;
-    const int64_t excess = warm ? trough - margin_ : 0;
+    // A step the cadence holds is excess it can drain, whether or not the trough sees it (a decoder's own
+    // queue can hold it): E = max(F - m, s) once warm (fix B).
+    const int64_t excess = !warm ? 0 : stepped_ ? std::max(trough - margin_, stepped_) : trough - margin_;
     excess_ = excess;
-    const int64_t t_now = render_ns - std::max<int64_t>(excess, 0);
+    if (warm) step_armed_ = false;   // no step once warm
+    const int64_t t_now = render_ns - std::max<int64_t>(excess, 0) - (warm ? 0 : stepped_);
     if (ppb_ >= 0) held_ = t_now;
     target_ = ppb_ < 0 ? held_ : t_now;
     const bool grouped = group_ > GROUP_ALONE_NS && now - group_at_ <= GROUP_STALE_NS;
+    if (!have_hi_ || now - hi_at_ >= STEP_LOOK_NS / 2) {
+        have_hi_prev_ = have_hi_;
+        hi_prev_ = hi_;
+        hi_ = render_ns;
+        have_hi_ = true;
+        hi_at_ = now;
+    } else {
+        hi_ = std::max(hi_, render_ns);
+    }
+    // Fix B: a video start at its group's target, once per warm-up (the step is the element's to apply).
+    if (video_ && step_armed_ && grouped && can && !warm && now - warm_from_ >= STEP_LOOK_NS) {
+        const int64_t hi = have_hi_prev_ ? std::max(hi_, hi_prev_) : hi_;
+        const int64_t step = std::min(group_, t_now + RISE_CAP_NS) - hi;
+        if (step >= ENGAGE_NS) {
+            step_armed_ = false;
+            stepped_ += step;
+            events_.push_back(DrainEvent{DrainEvent::Kind::step, now, step});
+        }
+    }
     capped_ = false;
     int64_t cmd;
     if (!warm || in_episode_) {
