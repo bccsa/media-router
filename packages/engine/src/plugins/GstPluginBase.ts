@@ -1304,9 +1304,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     /**
      * Start the watchdog. Pass `initiallyConnected=false` when the device
      * was missing at start time — the next tick where the device is
-     * present then triggers `onDeviceReconnected` to drive setup.
+     * present then triggers `onDeviceReconnected` to drive setup. `ownNode`: the watched name is
+     * the module's own null sink, rebuilt by `onDeviceReconnected` once PipeWire answers.
      */
-    protected startDeviceWatchdog(initiallyConnected = true): void {
+    protected startDeviceWatchdog(initiallyConnected = true, ownNode = false): void {
         if (this.deviceWatchdog) return;
         if (!this.services?.pipeWire) return;
         this.deviceWatchdog = new DeviceWatchdog({
@@ -1317,6 +1318,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             onReconnect: () => this.onDeviceReconnected(),
             onHealthChange: (h, m) => this.setHealth(h, m),
             onClear: () => this.setVuData([]),
+            ownNode,
         });
         this.deviceWatchdog.start(initiallyConnected);
     }

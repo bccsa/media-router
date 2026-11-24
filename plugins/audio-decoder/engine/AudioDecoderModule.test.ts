@@ -211,6 +211,62 @@ describe('AudioDecoderModule.buildPipeline', () => {
         const desc = module.buildPipeline({});
         expect(desc!.restartOnError).toBe(true);
     });
+
+    it("names its sink as its PipeWire stream: a loss there is the watchdog's, not the runner's (v104 B1)", () => {
+        const { module } = makeModule();
+        module.probeResult = { codec: 'opus' };
+        expect(module.buildPipeline({})!.pipeWireElements).toEqual(['sink']);
+    });
+});
+
+/** v104 B1: a PipeWire restart takes the null sink with it; the watchdog makes it and the pipeline again. */
+describe('AudioDecoderModule after a PipeWire restart (v104 B1)', () => {
+    it('watches its own null sink: not listed, rebuilt once PipeWire answers', () => {
+        const { module } = makeModule();
+        expect(module.getWatchedDeviceName()).toBe('MR_PW_dec-1');
+    });
+
+    it('torn down: the pipeline stopped, its null sink unloaded by name; rebuilt: the sink made again in its format, the pipeline started, its pw-links out re-made', async () => {
+        const { module } = makeModule();
+        const calls: string[] = [];
+        const pipeWire = {
+            loadNullSink: vi.fn(async (...a: unknown[]) => {
+                calls.push(`load ${a.slice(0, 3).join(' ')}`);
+                return 77;
+            }),
+            setSinkVolume: vi.fn(async () => {}),
+            unloadModule: vi.fn(async (id: number, name: string) => {
+                calls.push(`unload ${id} ${name}`);
+            }),
+        };
+        const reexecuteOutgoingPwLinks = vi.fn(async (id: string) => {
+            calls.push(`relink ${id}`);
+        });
+        module.services.pipeWire = pipeWire;
+        module.services.mediaRouter.reexecuteOutgoingPwLinks = reexecuteOutgoingPwLinks;
+        module.sinkFormat = { channels: 6, rate: 44100 };
+        module.paModuleId = 41;
+        const base = Object.getPrototypeOf(AudioDecoderModule.prototype);
+        const stop = vi.spyOn(base, 'onStop').mockImplementation(async () => {
+            calls.push('stop');
+        });
+        const start = vi.spyOn(base, 'onStart').mockImplementation(async () => {
+            calls.push('start');
+        });
+        await module.onDeviceDisconnected();
+        expect(module.paModuleId).toBeNull();
+        await module.onDeviceReconnected();
+        expect(calls).toEqual([
+            'stop',
+            'unload 41 MR_PW_dec-1',
+            'load dec-1 6 44100',
+            'start',
+            'relink dec-1',
+        ]);
+        expect(module.paModuleId).toBe(77);
+        stop.mockRestore();
+        start.mockRestore();
+    });
 });
 
 /** House-clock part 4.1 (WI-P4-7, B-168): no playout offset, no trim, no shedder, no relaunch. */

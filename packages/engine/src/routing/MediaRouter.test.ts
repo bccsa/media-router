@@ -281,9 +281,7 @@ describe('MediaRouter', () => {
         expect(single).toBeDefined();
         expect(single!.port).toBe(ep!.port);
         expect(single!.streamType).toBe('audio/302m');
-        expect(single!.socketPath).toBe(
-            busEdgeSocketPath(ep!.port, 'atx:out-0-aout:audio-in'),
-        );
+        expect(single!.socketPath).toBe(busEdgeSocketPath(ep!.port, 'atx:out-0-aout:audio-in'));
 
         const all = router.getModuleBusSources('aout');
         expect(all).toHaveLength(1);
@@ -731,9 +729,7 @@ describe('MediaRouter', () => {
 
         // pw-link edge removed (record gone → next re-apply re-executes it),
         // and its handle was torn down (pwUnlinkByName only runs in teardown).
-        expect(router.getConnections().map((c) => c.id)).toEqual([
-            'enc:mpegts-out-srt:mpegts-in',
-        ]);
+        expect(router.getConnections().map((c) => c.id)).toEqual(['enc:mpegts-out-srt:mpegts-in']);
         expect(pipeWire.pwUnlinkByName).toHaveBeenCalled();
 
         // The mpegts/bus edge sourced by 'enc' is left intact — bus handles
@@ -801,6 +797,67 @@ describe('MediaRouter', () => {
         pipeWire.pwLink.mockClear();
         await router.reexecuteOutgoingPwLinks('out');
         expect(pipeWire.pwLink).not.toHaveBeenCalled();
+    });
+
+    it("v104 F1: a re-link that fails while the other end is not back is made by that end's own re-link, either order", async () => {
+        for (const [first, second] of [
+            ['out', 'dec'],
+            ['dec', 'out'],
+        ] as const) {
+            const back = { dec: true, out: true };
+            const pipeWire = {
+                pwUnlinkAllBetween: vi.fn().mockResolvedValue(undefined),
+                // A node not back has no ports: the executor's poll fails the execute.
+                listPorts: vi.fn((node: string) =>
+                    Promise.resolve(
+                        back[node.startsWith('dec') ? 'dec' : 'out'] ? [`${node}:port_FL`] : [],
+                    ),
+                ),
+                pwLink: vi.fn().mockResolvedValue(1),
+                pwUnlinkByName: vi.fn().mockResolvedValue(undefined),
+                pwUnlink: vi.fn().mockResolvedValue(undefined),
+            };
+            const moduleGetter = (id: string) =>
+                id === 'dec'
+                    ? {
+                          running: true,
+                          getPipeWireNodeForPort: () => undefined,
+                          getPipeWireNodes: () => ({ source: 'dec.monitor' }),
+                      }
+                    : id === 'out'
+                      ? {
+                            running: true,
+                            getPipeWireNodeForPort: () => undefined,
+                            getPipeWireNodes: () => ({ sink: 'out' }),
+                        }
+                      : undefined;
+            const r = new MediaRouter();
+            r.setDependencies(pipeWire as any, moduleGetter as any);
+            r.registerPorts('dec', [
+                { id: 'audio-out', direction: 'output', streamType: 'audio/pcm', label: 'Out' },
+            ]);
+            r.registerPorts('out', [
+                { id: 'audio-in', direction: 'input', streamType: 'audio/pcm', label: 'In' },
+            ]);
+            await r.createConnection('dec', 'audio-out', 'out', 'audio-in');
+            pipeWire.pwLink.mockClear();
+            // PipeWire restarted: `first` rebuilds while `second` is still down.
+            back[second] = false;
+            const relink = (id: string) =>
+                id === 'out'
+                    ? r.reexecuteIncomingPwLinks('out')
+                    : r.reexecuteOutgoingPwLinks('dec');
+            vi.useFakeTimers();
+            const p = relink(first);
+            await vi.runAllTimersAsync();
+            await p;
+            vi.useRealTimers();
+            expect(pipeWire.pwLink).not.toHaveBeenCalled();
+            back[second] = true;
+            await relink(second);
+            expect(pipeWire.pwLink).toHaveBeenCalled();
+            expect(r.getConnections()).toHaveLength(1);
+        }
     });
 
     it('createConnection throws (not silently drops) when pw-link ports never appear — so the cascade re-link retries', async () => {

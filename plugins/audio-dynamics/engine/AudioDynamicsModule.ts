@@ -1,5 +1,6 @@
 import {
     GstPluginBase,
+    OwnPaModules,
     findLadspaElement,
     pulsePinnedStreamProps,
     type PipelineDescription,
@@ -58,6 +59,10 @@ const LIVE_PROP_MAPS: Record<
     },
 };
 
+/** Its PipeWire streams: a failure of one is a lost stream its watchdog rebuilds with the null
+ *  sinks, not one the runner restarts into sinks that are gone (v104 B1). */
+const PW_ELEMENTS = ['pwout', 'pwprog', 'pwsc'];
+
 export class AudioDynamicsModule extends GstPluginBase {
     protected liveUpdatableParams = [
         'threshold',
@@ -112,18 +117,61 @@ export class AudioDynamicsModule extends GstPluginBase {
             }
         }
 
-        for (const name of ['prog', 'sc', 'out']) {
-            await pw.loadNullSink(`${instanceId}_${name}`, 2, 48000, instanceId);
-            await pw.setSinkVolume(`MR_PW_${instanceId}_${name}`, 100);
-        }
-        for (const name of ['prog', 'sc', 'out']) {
-            await pw.waitForSink(`MR_PW_${instanceId}_${name}`);
-        }
-
+        await this.loadNullSinks();
+        // A PipeWire restart takes the null sinks with it: the watchdog makes them and the
+        // pipeline again (v104 B1). Before the pipeline, so a stream failing as it starts is its loss too.
+        this.startDeviceWatchdog(true, true);
         await super.onStart();
         // A PipeWire-graph module: its timing is the latency PipeWire reports (§9.5).
         this.timing.watchPipeWire([`MR_PW_${instanceId}_out`]);
         if (this.mode !== 'ducker') this.startMeterPoll();
+    }
+
+    /** Its three null sinks, kept by name for a rebuild (v104 B1). */
+    private readonly ownSinks = new OwnPaModules(
+        () => this.services?.pipeWire,
+        () => this.services?.instanceId ?? '',
+    );
+
+    private async loadNullSinks(): Promise<void> {
+        const pw = this.services!.pipeWire!;
+        const instanceId = this.services!.instanceId;
+        for (const name of ['prog', 'sc', 'out']) {
+            await this.ownSinks.nullSink(`${instanceId}_${name}`);
+        }
+        for (const name of ['prog', 'sc', 'out']) {
+            await pw.waitForSink(`MR_PW_${instanceId}_${name}`);
+        }
+    }
+
+    /** Its output null sink, watched for a PipeWire restart or a lost stream (v104 B1). */
+    protected getWatchedDeviceName(): string | null {
+        return this.services?.instanceId ? `MR_PW_${this.services.instanceId}_out` : null;
+    }
+
+    /** PipeWire restarted or a stream died: the pipeline down, the null sinks unloaded by name. */
+    protected async onDeviceDisconnected(): Promise<void> {
+        try {
+            await super.onStop();
+        } catch {
+            /* already stopped */
+        }
+        await this.ownSinks.unloadAll();
+    }
+
+    /** PipeWire answers again: the null sinks and the pipeline made again, and the pw-links into
+     *  and out of them re-made: they died with the old nodes. */
+    protected async onDeviceReconnected(): Promise<void> {
+        // A rebuild that failed part-way left its sinks (and maybe a runner): gone first, so a
+        // retry never makes a second one of the same name (v104 F3).
+        if (this.childProcess || this.ownSinks.hasAny()) await this.onDeviceDisconnected();
+        await this.loadNullSinks();
+        await super.onStart();
+        const id = this.services?.instanceId ?? '';
+        // The base's stop ended the timing watch: its PipeWire latency row again (v104 F4).
+        this.timing.watchPipeWire([`MR_PW_${id}_out`]);
+        await this.services?.mediaRouter?.reexecuteIncomingPwLinks?.(id);
+        await this.services?.mediaRouter?.reexecuteOutgoingPwLinks?.(id);
     }
 
     /**
@@ -144,6 +192,8 @@ export class AudioDynamicsModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
+        await this.stopDeviceWatchdog();
+        this.ownSinks.clear();
         if (this.meterTimer) {
             clearInterval(this.meterTimer);
             this.meterTimer = null;
@@ -229,7 +279,7 @@ export class AudioDynamicsModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         // No max-lateness: inert at sync=false, and the runners set -1 on every sink (B-173).
         const outSink =
-            `pulsesink device=MR_PW_${instanceId}_out sync=false slave-method=0 ` +
+            `pulsesink device=MR_PW_${instanceId}_out name=pwout sync=false slave-method=0 ` +
             `processing-deadline=100000000 buffer-time=50000 ${pulsePinnedStreamProps()}`;
 
         if (this.mode === 'ducker') return this.buildDuckerPipeline(config, instanceId, outSink);
@@ -247,17 +297,18 @@ export class AudioDynamicsModule extends GstPluginBase {
     ): PipelineDescription {
         const parts = [
             // Program path: onPluginEvent rides `duckvol`; `outlevel` feeds the VU meter
-            `pulsesrc device=MR_PW_${instanceId}_prog.monitor ${pulsePinnedStreamProps()} ! audioconvert ! ` +
+            `pulsesrc device=MR_PW_${instanceId}_prog.monitor name=pwprog ${pulsePinnedStreamProps()} ! audioconvert ! ` +
                 `volume name=duckvol ! ` +
                 `level name=outlevel post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000 ! ` +
                 outSink,
             // Sidechain detector: fast level readings key the envelope (reported, not VU)
-            `pulsesrc device=MR_PW_${instanceId}_sc.monitor ${pulsePinnedStreamProps()} ! audioconvert ! ` +
+            `pulsesrc device=MR_PW_${instanceId}_sc.monitor name=pwsc ${pulsePinnedStreamProps()} ! audioconvert ! ` +
                 `level name=sclevel post-messages=true interval=15000000 ! fakesink sync=false`,
         ];
         return {
             pipeline: parts.join(' '),
             restartOnError: true,
+            pipeWireElements: PW_ELEMENTS,
             busReports: [{ element: 'sclevel', structure: 'level' }],
         };
     }
@@ -281,8 +332,8 @@ export class AudioDynamicsModule extends GstPluginBase {
 
         const stereoCaps = 'audio/x-raw,format=F32LE,channels=2,rate=48000';
         const parts = [
-            `pulsesrc device=MR_PW_${instanceId}_prog.monitor ${pulsePinnedStreamProps()} ! ${stereoCaps},channel-mask=(bitmask)0x3 ! deinterleave name=dp`,
-            `pulsesrc device=MR_PW_${instanceId}_sc.monitor ${pulsePinnedStreamProps()} ! ${stereoCaps},channel-mask=(bitmask)0x3 ! deinterleave name=ds`,
+            `pulsesrc device=MR_PW_${instanceId}_prog.monitor name=pwprog ${pulsePinnedStreamProps()} ! ${stereoCaps},channel-mask=(bitmask)0x3 ! deinterleave name=dp`,
+            `pulsesrc device=MR_PW_${instanceId}_sc.monitor name=pwsc ${pulsePinnedStreamProps()} ! ${stereoCaps},channel-mask=(bitmask)0x3 ! deinterleave name=ds`,
             [
                 'interleave name=il',
                 'audioconvert',
@@ -300,6 +351,7 @@ export class AudioDynamicsModule extends GstPluginBase {
         return {
             pipeline: parts.join(' '),
             restartOnError: true,
+            pipeWireElements: PW_ELEMENTS,
         };
     }
 
@@ -347,7 +399,11 @@ export class AudioDynamicsModule extends GstPluginBase {
                 element: this.mode === 'gate' ? 'LSP Sidechain Gate' : 'LSP Sidechain Compressor',
             });
             if (grDb < -1) {
-                this.setBadge('gr', { icon: 'activity', text: `${grDb.toFixed(0)} dB`, color: '#f59e0b' });
+                this.setBadge('gr', {
+                    icon: 'activity',
+                    text: `${grDb.toFixed(0)} dB`,
+                    color: '#f59e0b',
+                });
             } else {
                 this.clearBadge('gr');
             }

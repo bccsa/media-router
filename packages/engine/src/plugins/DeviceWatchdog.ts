@@ -39,6 +39,9 @@ export interface DeviceWatchdogOptions {
     onClear?: () => void;
     /** Poll interval in ms. Default 2000. */
     pollMs?: number;
+    /** The device is the module's own node (a null sink), not listed, gone with PipeWire and made
+     *  again by `onReconnect`: a lost one rebuilds once PipeWire answers. */
+    ownNode?: boolean;
 }
 
 /**
@@ -203,7 +206,7 @@ export class DeviceWatchdog {
             // First: right after a restart the device is often not listed yet, and is no unplug.
             if (this.restarted(current)) return this.disconnectLost(PIPEWIRE_RESTARTED);
             // A list nobody answers is unknown, not an unplug: a dead stream reports itself.
-            if (present === false && answered) {
+            if (!this.opts.ownNode && present === false && answered) {
                 this.connected = false;
                 this.opts.onHealthChange('error', 'Device disconnected');
                 this.opts.onClear?.();
@@ -223,8 +226,10 @@ export class DeviceWatchdog {
             const leftMs = Math.max(0, this.loss.notBefore - Date.now());
             this.opts.onHealthChange('warning', lossWarning(PIPEWIRE_RESTARTED, leftMs));
         }
-        // Only PipeWire's own answer starts a rebuild, never a list it gave before it stopped.
-        if (!present || !answered || (this.loss && Date.now() < this.loss.notBefore)) return;
+        // Only PipeWire's own answer starts a rebuild, never a list it gave before it stopped. An
+        // own node is not listed: that answer is enough.
+        const back = answered && (present || this.opts.ownNode === true);
+        if (!back || (this.loss && Date.now() < this.loss.notBefore)) return;
         // Only flip `connected` after a successful reconnect — a throw
         // leaves it false so the next tick retries (e.g. the device
         // returned but format wasn't probeable yet).

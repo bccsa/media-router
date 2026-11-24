@@ -119,8 +119,9 @@ export class AudioOutput302mModule extends GstPluginBase {
         // recover on an engine restart — same rationale as audio-output).
         if (await this.startWaitsForDevice(this.deviceName)) return;
         await this.readDeviceChannels();
-        await super.onStart();
+        // Before the pipeline, so a sink failing as it starts is the watchdog's loss (v104 minor 1).
         this.startDeviceWatchdog();
+        await super.onStart();
     }
 
     async onStop(): Promise<void> {
