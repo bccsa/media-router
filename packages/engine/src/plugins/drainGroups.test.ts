@@ -558,6 +558,67 @@ describe('DrainGroupLoop: one sender over two links of different latency (fix B,
         expect(log.mock.calls[1][0]).toContain('in sync across the links again');
     });
 
+    it("a staggered start (the RIST decoder has no reading yet): held by link, no player told the other link's target (review B1)", () => {
+        // .156's start order: the RIST player publishes one refresh before the RIST decoder has a row.
+        const ticks: Array<Record<string, { pub?: number; render?: number }>> = [
+            {
+                'vp-srt': { pub: 280, render: 280 },
+                'dec-srt': { pub: 757, render: 757 },
+                'vp-rist': { pub: 1184, render: 1184 },
+                'dec-rist': {},
+            },
+            {
+                'vp-srt': { pub: 280, render: 757 },
+                'dec-srt': { pub: 757, render: 757 },
+                'vp-rist': { pub: 1184, render: 1184 },
+                'dec-rist': { pub: 1558, render: 1558 },
+            },
+        ];
+        let cur = ticks[0];
+        const got: Record<string, Array<[number, unknown]>> = {};
+        const log = vi.fn();
+        const loop = new DrainGroupLoop({
+            members: () =>
+                Object.keys(cur).map((id) => ({
+                    id,
+                    anchor: id.startsWith('vp'),
+                    name: id.toUpperCase(),
+                    ...(cur[id].pub !== undefined ? { publishedMs: cur[id].pub } : {}),
+                    ...(cur[id].render !== undefined ? { renderMs: cur[id].render } : {}),
+                    apply: (ns: number, view: unknown) => (got[id] ??= []).push([ns, view]),
+                })),
+            edges: () => links,
+            keyOf: keys,
+            log,
+        });
+        loop.tick();
+        expect(got['vp-srt'][0]).toEqual([757e6, { with: ['DEC-SRT'], withRenderMs: [757] }]);
+        expect(got['vp-rist'][0]).toEqual([1184e6, { with: ['DEC-RIST'] }]);
+        expect(log).not.toHaveBeenCalled();
+        cur = ticks[1];
+        loop.tick();
+        expect(got['vp-srt'][1]).toEqual([
+            757e6,
+            { with: ['DEC-SRT'], withRenderMs: [757], linksMs: 1278 },
+        ]);
+        expect(Math.max(...got['vp-srt'].map(([ns]) => ns))).toBe(757e6);
+        expect(log).toHaveBeenCalledTimes(1);
+    });
+
+    it('one Trust link whose members are more than 1 s apart is not reported as split: one capped group (review F2)', () => {
+        const vp = member('vp', true, 200);
+        const dec = member('dec', false, 1300);
+        const log = vi.fn();
+        new DrainGroupLoop({
+            members: () => [vp.m, dec.m],
+            edges: () => [e('srt-in', 'vp'), e('srt-in', 'dec')],
+            keyOf: keys,
+            log,
+        }).tick();
+        expect(vp.applied[0]).toEqual([1300e6, { with: ['DEC'], spreadMs: 1100 }]);
+        expect(log).not.toHaveBeenCalled();
+    });
+
     it('a link with no programme of its own (video over SRT, audio over RIST) stays one capped group (p5-20 E5)', () => {
         const vp = member('vp', true, 1500);
         const out = member('out302', false, 100);

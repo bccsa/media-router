@@ -905,12 +905,14 @@ void case_audio_window() {
 // backlog queue holding the steps; the group from `at` on, `group2` after a clear at `clear_at`.
 struct StartRun {
     std::vector<std::pair<int64_t, int64_t>> steps;
-    int64_t first = 0, target = 0, ppb = 0;
+    int64_t first = 0, target = 0, ppb = 0, drained = 0;
+    std::vector<std::pair<int64_t, int64_t>> trace;   // (t, published target)
     DrainServo::State state = DrainServo::State::warm_up;
 };
 
 StartRun start_run(bool video, int64_t group, int64_t at = 5 * SEC, int64_t until = 50 * SEC, int64_t clear_at = -1,
-                   int64_t group2 = 0, int64_t dip_at = -1, int64_t dip_ms = 0, bool unstep = false) {
+                   int64_t group2 = 0, int64_t dip_at = -1, int64_t dip_ms = 0, bool unstep = false,
+                   bool can = true, bool queue_holds = true, int64_t drop_at = -1, int64_t drop_to = 0) {
     DrainServo s(video, 20 * MS, 20 * MS);
     StartRun r;
     int64_t held = 0, t = 0;
@@ -925,9 +927,11 @@ StartRun start_run(bool video, int64_t group, int64_t at = 5 * SEC, int64_t unti
             group = group2;
         }
         s.sample(t, 10 * MS);
-        if (video) s.queue_level(t, held);
+        if (video) s.queue_level(t, queue_holds ? std::max<int64_t>(0, held - s.drained()) : 0);
+        if (t == drop_at) group = drop_to;
         if (t >= at) s.set_group(t, group);
-        s.update(t, 150 * MS + held - (t == dip_at ? dip_ms * MS : 0), true);
+        s.update(t, 150 * MS + held - s.drained() - (t == dip_at ? dip_ms * MS : 0), can);
+        r.trace.push_back({t, s.target()});
         for (const DrainEvent& e : s.take_events())
             if (e.kind == DrainEvent::Kind::step) {
                 r.steps.push_back({e.at, e.value});
@@ -937,6 +941,7 @@ StartRun start_run(bool video, int64_t group, int64_t at = 5 * SEC, int64_t unti
     }
     r.target = s.target();
     r.ppb = s.ppb();
+    r.drained = s.drained();
     r.state = s.state();
     return r;
 }
@@ -963,6 +968,26 @@ void case_start_step() {
     CHECK("start step: one render reading 200 ms low at the group's first update does not make it overshoot, and a "
           "group from the first update waits a second of readings",
           low.steps == P{{5 * SEC, 240 * MS}} && early.steps == P{{11 * TICK, 240 * MS}});
+    bool late_ok = true;
+    for (int64_t at : {15 * SEC, 27 * SEC})
+        for (bool holds : {true, false}) {   // the backlog queue holds the step, or a decoder's own queue does
+            const StartRun lr = start_run(true, 390 * MS, at, 90 * SEC, -1, 0, -1, 0, false, true, holds);
+            int64_t dev = 0;
+            for (const auto& p : lr.trace)
+                if (p.first >= at + SEC) dev = std::max(dev, iabs64(p.second - 150 * MS));
+            late_ok = late_ok && lr.steps == P{{at, 240 * MS}} && dev <= 10 * MS;
+        }
+    const StartRun blind = start_run(true, 390 * MS, 5 * SEC, 50 * SEC, -1, 0, -1, 0, false, false);
+    bool down_ok = true;   // the group back at its own at 40 s: it drains the step, seen or not
+    for (bool holds : {true, false}) {
+        const StartRun d = start_run(true, 390 * MS, 5 * SEC, 150 * SEC, -1, 0, -1, 0, false, true, holds, 40 * SEC,
+                                     150 * MS);
+        down_ok = down_ok && iabs64(d.trace.back().second - 150 * MS) <= 10 * MS && d.drained >= 220 * MS &&
+                  d.drained <= 250 * MS;
+    }
+    CHECK("start step: a group first seen at 15 s / 27 s steps there and its published target stays its own to 90 s; "
+          "no display rate, no step; the group back at its own at 40 s, it drains the step",
+          late_ok && blind.steps.empty() && down_ok);
     CHECK("start step: a clear in the warm-up (new caps) keeps the step out of its published target and takes none "
           "again; after an unstep (its cadence restarted) it steps again, its own target published",
           caps.steps == P{{5 * SEC, 240 * MS}} && caps.first == 150 * MS &&

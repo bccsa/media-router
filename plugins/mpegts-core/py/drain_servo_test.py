@@ -868,7 +868,8 @@ def case_audio_window():
     ]
 
 
-def start_run(video, group, at=5 * SEC, until=50 * SEC, clear_at=None, group2=None, dip=None, unstep=False):
+def start_run(video, group, at=5 * SEC, until=50 * SEC, clear_at=None, group2=None, dip=None, unstep=False,
+              can=True, queue_holds=True, drop=None):
     """Fix B's model: a servo on 100 ms ticks whose render lateness is 150 ms plus every start step taken
     (the pace holds the cadence by it, the backlog queue holds it), 10 ms of slack; the group target from
     `at` on (`group2` after `clear_at`, where the window clears). (steps, the published target at
@@ -876,6 +877,7 @@ def start_run(video, group, at=5 * SEC, until=50 * SEC, clear_at=None, group2=No
     `unstep`: the clear restarts the cadence too (the steps gone, the render back at 150 ms)."""
     s = DrainServo(video, 20 * MS, 20 * MS)
     steps, held, t, first = [], 0, 0, None
+    s.trace = []
     while t < until:
         t += TICK
         if clear_at is not None and t == clear_at:
@@ -886,10 +888,13 @@ def start_run(video, group, at=5 * SEC, until=50 * SEC, clear_at=None, group2=No
             group = group2
         s.sample(t, 10 * MS)
         if video:
-            s.queue_level(t, held)
+            s.queue_level(t, max(0, held - s.drained) if queue_holds else 0)
+        if drop and t == drop[0]:
+            group = drop[1]
         if t >= at:
             s.set_group(t, group)
-        s.update(t, 150 * MS + held - (dip[1] * MS if dip and t == dip[0] else 0), True)
+        s.update(t, 150 * MS + held - s.drained - (dip[1] * MS if dip and t == dip[0] else 0), can)
+        s.trace.append((t, s.target))
         for e in s.take_events():
             if e[0] == "step":
                 steps.append((e[1], e[2]))
@@ -897,6 +902,28 @@ def start_run(video, group, at=5 * SEC, until=50 * SEC, clear_at=None, group2=No
         if t == at + SEC or (clear_at is not None and t == clear_at + 2 * SEC):
             first = s.target
     return steps, first, s
+
+
+def start_late_checks():
+    """Review F1, F5: a group first seen 15 s or 27 s into the warm-up steps, and the published target stays
+    its own once warm, whether the backlog queue holds the step or not (a decoder's own queue can); no
+    display rate (`can` false): no step."""
+    devs = {}
+    for at in (15 * SEC, 27 * SEC):
+        for holds in (True, False):     # the backlog queue holds the step, or a decoder's own queue does
+            st, _f, s = start_run(True, 390 * MS, at=at, until=90 * SEC, queue_holds=holds)
+            devs[(at // SEC, holds)] = (st, max(abs(v - 150 * MS) for t, v in s.trace if t >= at + SEC) // MS)
+    blind, _f, _s = start_run(True, 390 * MS, can=False)
+    # The group falls to the player's own once it is warm: it drains the step back down, seen or not.
+    down = {}
+    for holds in (True, False):
+        _st, _f, s = start_run(True, 390 * MS, until=150 * SEC, queue_holds=holds, drop=(40 * SEC, 150 * MS))
+        down[holds] = (s.drained // MS, s.trace[-1][1] // MS)
+    return (f"start step: a group first seen at 15 s / 27 s steps there and its published target stays its own to "
+            f"90 s (steps, max |T - own| ms: {devs}); no display rate, no step ({blind}); the group back at its own "
+            f"at 40 s, it drains the step (drained, T ms: {down})",
+            all(st == [(k[0] * SEC, 240 * MS)] and d <= 10 for k, (st, d) in devs.items()) and blind == []
+            and all(220 <= dr <= 250 and abs(t - 150) <= 10 for dr, t in down.values()))
 
 
 def case_start_step():
@@ -927,6 +954,7 @@ def case_start_step():
         (f"start step: one render reading 200 ms low at the group's first update does not make it overshoot ({low}), "
          f"and a group from the first update waits a second of readings ({early})",
          low == [(5 * SEC, 240 * MS)] and early == [(11 * TICK, 240 * MS)]),
+        start_late_checks(),
         (f"start step: a clear in the warm-up (new caps) keeps the step out of its published target ({caps_t}) and "
          f"takes none again ({caps}); after an unstep (its cadence restarted) it steps again, its own target "
          f"published ({flush_t}, {flush})",
@@ -1252,6 +1280,18 @@ def m_clear_drops_step():
     return lambda: setattr(DrainServo, "clear", old)
 
 
+def m_step_dropped_warm():
+    old = DrainServo.update
+
+    def update(self, now, render, can):
+        r = old(self, now, render, can)
+        if self.state != "warm-up":
+            self.stepped = 0
+        return r
+    DrainServo.update = update
+    return lambda: setattr(DrainServo, "update", old)
+
+
 def m_step_in_target():
     old = DrainServo.update
 
@@ -1308,6 +1348,7 @@ MUTANTS = [
     ("the start step left in the published target (fix B)", m_step_in_target, "start_step"),
     ("the start step on one render reading (fix B)", m_step_one_reading, "start_step"),
     ("a clear forgetting the step the cadence holds (fix B)", m_clear_drops_step, "start_step"),
+    ("the step dropped from the published target at warm (review F1)", m_step_dropped_warm, "start_step"),
 ]
 
 

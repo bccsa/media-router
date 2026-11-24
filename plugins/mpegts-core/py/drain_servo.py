@@ -26,11 +26,13 @@ W after an audio starvation or an outage (its zeros are in the window). A sample
 0: the slack is what was early.
 
 The start step (fix B, V-P4-5 from the first frame). Video, before its window is first warm after
-the start or a clear, a second of updates since, grouped, with its goal min(P, T + 1 s) at least
-20 ms above its render lateness (the highest of the last 0.5-1 s: one low reading, a display term
+the start or a clear, a second of updates since, grouped, with a display rate (`can`), with its
+goal min(P, T + 1 s) at least 20 ms above its render lateness (the highest of the last 0.5-1 s: one low reading, a display term
 read on another cadence, never makes it overshoot): one step to the goal at once, an event ("step", now, the step) the element applies to its
 cadence (the frame on screen stays up that much longer); once per warm-up. Its published target
-leaves the step out until the window is warm (from then the trough holds it), across a clear too
+leaves the step out: T = L - s while not warm; once warm E = max(F - m, s), s what it holds (the
+trough may see the step or not: a decoder's own queue can hold it), so T = L - E and the drain can
+take the step back down; s falls as it drains, and stays across a clear
 (the cadence still holds it), until unstep() (the element's cadence restarted, the step gone with
 it). Audio never steps.
 
@@ -375,6 +377,7 @@ class DrainServo:
         if self.ppb > 0:
             acc = self.ppb * dt + self.drained_rem
             self.drained += acc // SEC
+            self.stepped = max(0, self.stepped - acc // SEC)   # a held step drains with the rest
             self.drained_rem = acc % SEC
         if self.ppb != 0:           # delta held its value until now
             self.nonzero_at = now
@@ -392,13 +395,15 @@ class DrainServo:
         warm = (bool(can) and trough is not None and now - self.warm_from >= self.window
                 and (self.hold_until is None or now >= self.hold_until))
         self.trough = trough if trough is not None else 0
+        # A step the cadence holds is excess it can drain, whether or not the trough sees it (a decoder's own
+        # queue can hold it): E = max(F - m, s) once warm (fix B).
         excess = trough - self.margin if warm else 0
+        if warm and self.stepped:
+            excess = max(excess, self.stepped)
         self.excess = excess
-        t_now = render_ns - max(excess, 0)
-        if warm:                    # the window holds a start step from here: no step after it
+        if warm:                    # no step once warm
             self.step_armed = False
-            self.stepped = 0
-        t_now -= self.stepped
+        t_now = render_ns - max(excess, 0) - (0 if warm else self.stepped)
         if self.ppb >= 0:
             self.held = t_now
         self.target = self.held if self.ppb < 0 else t_now
@@ -407,7 +412,8 @@ class DrainServo:
             self.hi_prev, self.hi, self.hi_at = self.hi, render_ns, now
         else:
             self.hi = max(self.hi, render_ns)
-        if self.video and self.step_armed and grouped and not warm and now - self.warm_from >= STEP_LOOK_NS:
+        if (self.video and self.step_armed and grouped and can and not warm
+                and now - self.warm_from >= STEP_LOOK_NS):
             hi = self.hi if self.hi_prev is None else max(self.hi, self.hi_prev)
             step = min(self.group, t_now + RISE_CAP_NS) - hi
             if step >= ENGAGE_NS:

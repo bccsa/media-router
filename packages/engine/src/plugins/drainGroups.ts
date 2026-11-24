@@ -225,6 +225,7 @@ export class DrainGroupLoop {
      *  within the 1 s rise cap. Past it, a link that carries a programme of its own (a player and
      *  what plays with it) keeps its own lip sync first: the group splits by link, its members
      *  grouped by their ingest modules as p4-18 groups them, and what no link groups drains alone.
+     *  Until every member has a reading, a group of several links is held by link (B1).
      *  The spread reads each member's published target, else its render lateness (a player whose
      *  display presents nothing publishes none). Joined again within the cap less 100 ms. */
     private byLinks(
@@ -246,19 +247,32 @@ export class DrainGroupLoop {
             const keyed = live.some((m) =>
                 [...busOrigins(m.id, edges)].some((o) => keyOf(o) !== o),
             );
+            // By link: each ingest's own groups (p4-18's rule); a split needs two of them, or one and a
+            // member it leaves alone (one Trust link spread past the cap stays one capped group).
+            const links = keyed ? drainGroups(live, edges).groups : [];
+            const lone = live.filter((m) => !links.some((g) => g.includes(m.id)));
+            if (!(links.length >= 2 || (links.length === 1 && lone.length > 0))) {
+                groups.push({ ids });
+                continue;
+            }
+            // Until every member has a reading the spread is not known: held by link, no joint
+            // target (a player would step to another link's latency and never come back, B1).
+            if (own.length < live.length) {
+                for (const sub of links) groups.push({ ids: sub });
+                if (this.split.has(sig)) split.add(sig);
+                continue;
+            }
             const past = this.split.has(sig)
                 ? spread > DRAIN_RISE_CAP_MS - DRAIN_LINKS_REJOIN_MS
                 : spread > DRAIN_RISE_CAP_MS;
-            const links = keyed && past ? drainGroups(live, edges).groups : [];
-            if (!links.length) {
+            if (!past) {
                 groups.push({ ids });
                 continue;
             }
             split.add(sig);
             const linksMs = Math.round(spread);
             for (const sub of links) groups.push({ ids: sub, linksMs });
-            for (const m of live)
-                if (!links.some((g) => g.includes(m.id))) linksAlone.set(m.id, linksMs);
+            for (const m of lone) linksAlone.set(m.id, linksMs);
         }
         for (const sig of split) if (!this.split.has(sig)) this.logLinks(sig, byId, true);
         for (const sig of this.split) if (!split.has(sig)) this.logLinks(sig, byId, false);
