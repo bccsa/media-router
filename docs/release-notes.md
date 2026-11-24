@@ -117,7 +117,7 @@ there is no in-app switch, and the stored values of the removed settings
   late, never lost (the playout offset used to hide small delays). Burn-in
   on Video Transcoder still waits for its subtitles, as in v2.0.0.102.
 
-**When a display or a sound card stops, the output skips and comes back live**
+**When a display or a sound card stops**
 
 - **A display that stops showing frames** (a monitor switched off or
   unplugged): Video Player shows "Display not presenting (output off?)", the
@@ -125,8 +125,7 @@ there is no in-app switch, and the stored values of the removed settings
   again the player is live, not late by the outage.
 - **A sound card that stops taking sound** (HDMI audio suspended, a USB
   device removed): Audio Decoder and Audio Output (302M) show "Audio device
-  stalled — nothing plays until it takes audio again, then it plays live"
-  about a second after it stopped (counted in **Device stalls**). Audio
+  stalled — nothing plays until it takes audio again" about a second after it stopped (counted in **Device stalls**). Audio
   Output (302M) skips what arrives meanwhile and plays live again within
   about a second of the card taking sound; Audio Decoder keeps what waited
   (up to about 5 s), plays it late and catches up by itself, as in
@@ -244,7 +243,7 @@ there is no in-app switch, and the stored values of the removed settings
 - **New warnings, which only warn: nothing is dropped.** "Display not
   presenting (output off?)" while Video Player's display shows nothing (a
   monitor off or unplugged); "Audio device stalled — nothing plays until it
-  takes audio again, then it plays live" while an audio output's card stops
+  takes audio again" while an audio output's card stops
   taking sound; and on any module whose queue fills, "Queue <input> full at
   <n> ms — content lost at capacity" or, for a queue that holds rather than
   drops, "<queue> holding <n> ms at capacity — nothing lost, the queues before

@@ -2263,7 +2263,7 @@ the aligners' `input-absent` and `aligner-full` warnings
   presenting (output off?)`, while the pace reads `display-presenting`
   false: 0008's `not-presented` or `present-timeouts` rising),
   `device-stalled` (`Audio device stalled — nothing plays until it takes
-  audio again, then it plays live`, from `device-stalled` to
+  audio again`, from `device-stalled` to
   `device-resumed`), and `queue-full` for every module, from the runners'
   `queue_overrun` (B-170): a leaky queue `Queue <input> full at <ms> ms —
   content lost at capacity` (the bus input it serves by its label, else the

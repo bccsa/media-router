@@ -321,9 +321,8 @@ export function asrcWarningText(ppm: number, label?: string): string {
     );
 }
 
-/** A device term that stopped taking audio (B-166's stall rule: skip, then play live). */
-export const DEVICE_STALLED_TEXT =
-    'Audio device stalled — nothing plays until it takes audio again, then it plays live';
+/** A device term that stopped taking audio (B-166's stall rule; the Audio Decoder plays its backlog late, c42). */
+export const DEVICE_STALLED_TEXT = 'Audio device stalled — nothing plays until it takes audio again';
 
 /** `+23.4 ppm`, `−12.1 ppm` (one decimal, a true minus sign), `0.0 ppm`. */
 export function signedPpm(ppm: number): string {

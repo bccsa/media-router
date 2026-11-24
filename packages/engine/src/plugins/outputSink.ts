@@ -6,7 +6,7 @@
 export const OUTPUT_RING_US = 100_000;
 
 /** `mrasrc margin-ms` (B-249): a write the device can no longer play (a hole), or the first, lands this far
- *  ahead of it (twice at a start), so a feed may get this much later again without a hole. */
+ *  ahead of it (a start past the sink guard too, M6b), so a feed may get this much later again without a hole. */
 export const OUTPUT_MARGIN_MS = 60;
 
 /** The queue's element name: the queue watch and the tests find it by it. */

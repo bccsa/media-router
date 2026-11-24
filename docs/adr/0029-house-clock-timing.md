@@ -3970,7 +3970,7 @@ Phase 3 ships as v2.0.0.102).
 - **Warnings, which only warn**: `queue-full` (two texts by `leaky`, S15),
   `display-not-presenting` ("Display not presenting (output off?)", from the
   pace's `display-presenting`, S31) and `device-stalled` ("Audio device
-  stalled — nothing plays until it takes audio again, then it plays live"),
+  stalled — nothing plays until it takes audio again"),
   which takes the place of the 302M output's late "Plays nothing" (T24).
 - **A runner that stops answering** (B-246, F-6): while a module's pipeline
   plays, the engine asks its runner `get_throughput` every 5 s with a 3 s
