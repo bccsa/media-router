@@ -148,6 +148,9 @@ export class AudioDecoderModule extends GstPluginBase {
     /** PipeWire answers again: the null sink made again, the pipeline started on the stream it
      *  probed, and the pw-links out of its monitor re-made: they died with the old node. */
     protected async onDeviceReconnected(): Promise<void> {
+        // A rebuild that failed part-way left its sink (and maybe a runner): gone first, so a
+        // retry never makes a second one of the same name (v104 F3).
+        if (this.childProcess || this.paModuleId !== null) await this.onDeviceDisconnected();
         await this.loadNullSink();
         await super.onStart();
         await this.services?.mediaRouter?.reexecuteOutgoingPwLinks?.(this.services.instanceId);

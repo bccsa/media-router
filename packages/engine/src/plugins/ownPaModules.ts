@@ -62,6 +62,11 @@ export class OwnPaModules {
         }
     }
 
+    /** Any made and not unloaded since? */
+    hasAny(): boolean {
+        return this.modules.length > 0;
+    }
+
     /** Forget them (the module's stop releases them through ownership tracking). */
     clear(): void {
         this.modules = [];

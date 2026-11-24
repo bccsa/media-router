@@ -162,9 +162,14 @@ export class AudioDynamicsModule extends GstPluginBase {
     /** PipeWire answers again: the null sinks and the pipeline made again, and the pw-links into
      *  and out of them re-made: they died with the old nodes. */
     protected async onDeviceReconnected(): Promise<void> {
+        // A rebuild that failed part-way left its sinks (and maybe a runner): gone first, so a
+        // retry never makes a second one of the same name (v104 F3).
+        if (this.childProcess || this.ownSinks.hasAny()) await this.onDeviceDisconnected();
         await this.loadNullSinks();
         await super.onStart();
         const id = this.services?.instanceId ?? '';
+        // The base's stop ended the timing watch: its PipeWire latency row again (v104 F4).
+        this.timing.watchPipeWire([`MR_PW_${id}_out`]);
         await this.services?.mediaRouter?.reexecuteIncomingPwLinks?.(id);
         await this.services?.mediaRouter?.reexecuteOutgoingPwLinks?.(id);
     }

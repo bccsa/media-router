@@ -149,8 +149,13 @@ export class AudioEncoderModule extends GstPluginBase {
     /** PipeWire answers again: the null sink and the pipeline made again, and the pw-links into
      *  the sink re-made: they died with the old node. */
     protected async onDeviceReconnected(): Promise<void> {
+        // A rebuild that failed part-way left its sinks (and maybe a runner): gone first, so a
+        // retry never makes a second one of the same name (v104 F3).
+        if (this.childProcess || this.ownSinks.hasAny()) await this.onDeviceDisconnected();
         await this.loadNullSink();
         await super.onStart();
+        // The base's stop cleared the status: the encoder and bus cards again (v104 F4).
+        this.updateStatusData();
         await this.services?.mediaRouter?.reexecuteIncomingPwLinks?.(this.services.instanceId);
     }
 

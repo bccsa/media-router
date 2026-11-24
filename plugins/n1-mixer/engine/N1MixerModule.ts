@@ -81,6 +81,9 @@ export class N1MixerModule extends GstPluginBase {
         const instanceId = this.services.instanceId;
         this.pairCount = (this.config.pairCount as number) ?? 4;
         this.log.info({ pairCount: this.pairCount }, 'Starting N-1 mixer');
+        // A PipeWire restart takes the whole graph with it: the watchdog makes it again. Before
+        // the graph, so a restart while it is being made is caught too (v104 review minor 4).
+        this.startDeviceWatchdog(true, true);
         const loopbackCount = await this.bringUpGraph();
 
         // Set running state
@@ -101,8 +104,6 @@ export class N1MixerModule extends GstPluginBase {
         );
 
         this.log.info({ pairCount: this.pairCount, loopbackCount }, 'N-1 mixer started');
-        // A PipeWire restart takes the whole graph with it: the watchdog makes it again.
-        this.startDeviceWatchdog(true, true);
     }
 
     /** Its null sinks and loopbacks, kept by name for a rebuild (v104 B1). */
@@ -166,6 +167,9 @@ export class N1MixerModule extends GstPluginBase {
     /** PipeWire answers again: the graph made again, and the pw-links into and out of it re-made:
      *  they died with the old nodes. */
     protected async onDeviceReconnected(): Promise<void> {
+        // A rebuild that failed part-way left some of its graph: gone first, so a retry never
+        // makes a second sink or loopback of the same name (v104 F3).
+        await this.own.unloadAll();
         await this.bringUpGraph();
         this.running = true;
         const id = this.services?.instanceId ?? '';
