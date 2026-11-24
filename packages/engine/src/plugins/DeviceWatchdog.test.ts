@@ -536,3 +536,64 @@ describe('DeviceWatchdog: no answer from PipeWire is an unknown device (B-207)',
         await wd.stop();
     });
 });
+
+describe("DeviceWatchdog: the module's own node (v104 B1, the Audio Decoder's null sink)", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    /** Never listed (the listing leaves out MR_PW_ nodes); gone with PipeWire. */
+    const ownNodeWatchdog = () => {
+        const made = lossWatchdog({ ownNode: true });
+        made.pw.present = false;
+        return made;
+    };
+
+    it('never listed is no unplug; a PipeWire restart tears down and rebuilds once PipeWire answers', async () => {
+        const { wd, pw, onDisconnect, onReconnect, onHealthChange } = ownNodeWatchdog();
+        wd.start();
+        await wd.tick();
+        await wd.tick();
+        expect(onDisconnect).not.toHaveBeenCalled();
+        expect(onHealthChange).not.toHaveBeenCalled();
+        pw.cookie = 'b2';
+        await wd.tick();
+        expect(onDisconnect).toHaveBeenCalledOnce();
+        expect(onHealthChange).toHaveBeenLastCalledWith(
+            'warning',
+            'PipeWire restarted — rebuilding the stream once PipeWire and the device are back',
+        );
+        await wd.tick();
+        expect(onReconnect).toHaveBeenCalledOnce();
+        expect(onHealthChange).toHaveBeenLastCalledWith('ok');
+        await wd.tick();
+        expect(onDisconnect).toHaveBeenCalledOnce();
+        await wd.stop();
+    });
+
+    it('a lost stream waits for PipeWire to answer, then rebuilds', async () => {
+        const { wd, pw, onReconnect } = ownNodeWatchdog();
+        wd.start();
+        await wd.tick();
+        pw.up = false;
+        await wd.lose('PipeWire stream failed (Disconnected)');
+        await wd.tick();
+        await wd.tick();
+        expect(onReconnect).not.toHaveBeenCalled();
+        pw.up = true;
+        pw.cookie = 'b2';
+        await wd.tick();
+        expect(onReconnect).toHaveBeenCalledOnce();
+        expect(wd.isConnected()).toBe(true);
+        await wd.stop();
+    });
+
+    it('without ownNode the same never-listed name waits for good: the field defect', async () => {
+        const { wd, pw, onReconnect } = lossWatchdog();
+        pw.present = false;
+        wd.start(false);
+        await wd.tick();
+        await wd.tick();
+        expect(onReconnect).not.toHaveBeenCalled();
+        await wd.stop();
+    });
+});

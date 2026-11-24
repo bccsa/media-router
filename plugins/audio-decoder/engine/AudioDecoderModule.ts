@@ -43,6 +43,8 @@ export class AudioDecoderModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled'];
     /** Probed stream info — plugin decides what to do with it. */
     private probeResult: ProbeResult | null = null;
+    /** The null sink's format, resolved at the start: a rebuild after PipeWire makes it again. */
+    private sinkFormat = { channels: 2, rate: 48000 };
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
@@ -84,7 +86,30 @@ export class AudioDecoderModule extends GstPluginBase {
         );
 
         // 3. Create null-sink with resolved channel count
+        this.sinkFormat = { channels, rate };
+        await this.loadNullSink();
+
+        // 4. Update config and notify UI if changed
+        if (channels !== storedCh) {
+            this.emitConfigUpdate({ channels });
+        }
+
+        await super.onStart();
+        // A PipeWire restart takes the null sink with it: the watchdog makes it and the pipeline again.
+        this.startDeviceWatchdog(true, true);
+    }
+
+    async onStop(): Promise<void> {
+        await this.stopDeviceWatchdog();
+        this.paModuleId = null;
+        await super.onStop();
+        this.probeResult = null;
+        // PipeWire cleanup is automatic via ownership tracking
+    }
+
+    private async loadNullSink(): Promise<void> {
         if (this.services?.pipeWire) {
+            const { channels, rate } = this.sinkFormat;
             this.paModuleId = await this.services.pipeWire.loadNullSink(
                 this.services.instanceId,
                 channels,
@@ -94,19 +119,37 @@ export class AudioDecoderModule extends GstPluginBase {
             // Force 100% volume — PulseAudio's stream-restore may remember 0% from a previous session
             await this.services.pipeWire.setSinkVolume(this.pwNodeName, 100);
         }
-
-        // 4. Update config and notify UI if changed
-        if (channels !== storedCh) {
-            this.emitConfigUpdate({ channels });
-        }
-
-        await super.onStart();
     }
 
-    async onStop(): Promise<void> {
-        await super.onStop();
-        this.probeResult = null;
-        // PipeWire cleanup is automatic via ownership tracking
+    /** Its own null sink, watched for a PipeWire restart or a lost stream (B-195). */
+    protected getWatchedDeviceName(): string | null {
+        return this.services?.instanceId ? this.pwNodeName : null;
+    }
+
+    /** PipeWire restarted or the stream died: the pipeline down, the null sink unloaded by name
+     *  (after a restart its old ID can be another module's). */
+    protected async onDeviceDisconnected(): Promise<void> {
+        try {
+            await super.onStop();
+        } catch {
+            /* already stopped */
+        }
+        if (this.paModuleId !== null && this.services?.pipeWire) {
+            try {
+                await this.services.pipeWire.unloadModule(this.paModuleId, this.pwNodeName);
+            } catch {
+                /* ignore — best-effort cleanup */
+            }
+            this.paModuleId = null;
+        }
+    }
+
+    /** PipeWire answers again: the null sink made again, the pipeline started on the stream it
+     *  probed, and the pw-links out of its monitor re-made: they died with the old node. */
+    protected async onDeviceReconnected(): Promise<void> {
+        await this.loadNullSink();
+        await super.onStart();
+        await this.services?.mediaRouter?.reexecuteOutgoingPwLinks?.(this.services.instanceId);
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
@@ -206,6 +249,9 @@ export class AudioDecoderModule extends GstPluginBase {
         return {
             pipeline,
             restartOnError: true,
+            // A failure of the sink is a lost PipeWire stream: the watchdog rebuilds it with its
+            // null sink, not the runner into a sink that is gone (v104 B1).
+            pipeWireElements: ['sink'],
             timingSink: { element: 'sink', kind: 'audio' },
         };
     }
