@@ -3594,8 +3594,9 @@ reference (OQ-1); nothing at runtime imports `ts_timeline`.
 After Phase 4 no output waits for a playout offset. Every presentation sink
 runs `sync=false`: Video Player releases each frame through `mrvideopace` on
 the content's own cadence, never before it arrives, and Audio Decoder and
-Audio Output (302M) push into a 40 ms prefill and a 100 ms card ring while
-their `mrasrc` follows the card's clock read on a timer. Nothing in the chain
+Audio Output (302M) keep a 60 ms margin in a 100 ms card ring (B-249,
+merged in by M6) while their `mrasrc` follows the card's clock read on a
+timer. Nothing in the chain
 drops a buffer for being late (P11): the runners switch QoS and late-drop off
 on every sink, decoder and transform, the leaky queues behind decoders are
 non-leaky, and the one leaky queue left on an output's path is the bus
@@ -3632,17 +3633,24 @@ Phase 3 ships as v2.0.0.102).
     leaky 1 s ES queue, `sync=true max-lateness=1 s` and `ts-offset` are gone.
   - Audio Decoder: `<bus ingress> ! mrtsdemux media=audio ! queue name=ad_esq
     leaky=0 (5 s) ! <decoder> ! audioconvert ! mrlateness name=lat_render !
-    mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink ! … ! queue
-    name=prefill min-threshold-time=40 ms ! pulsesink name=sink sync=false
-    buffer-time=100000` (B-168).
+    mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink margin-ms=60
+    upstream-queue=ad_esq ! … ! pulsesink name=sink sync=false
+    buffer-time=100000` (B-168; no queue before the sink since M6).
   - Audio Output (302M): the fan-in's continuation `! mrlateness
-    name=lat_render ! audioconvert ! mrasrc name=outasrc device-sink=sink ! …
-    [! placement] ! queue name=prefill … ! pulsesink sync=false
-    buffer-time=100000` (B-167); B-62's `identity name=live_upstream
+    name=lat_render ! audioconvert ! mrasrc name=outasrc device-sink=sink
+    margin-ms=60 ! … [! placement] ! queue name=outq leaky=0 (1 s, no
+    threshold) ! pulsesink sync=false buffer-time=100000` (B-167, B-249); B-62's `identity name=live_upstream
     sync=true`, `ts-offset`, `max-lateness` and `slave-method` are gone.
   - `lat_render` sits before `mrasrc` on the audio outputs, where PTS is
-    still content time (S4). The 40 ms prefill and the 100 ms ring are engine
+    still content time (S4). The 60 ms margin and the 100 ms ring are engine
     constants (`outputSink.ts`, OQ-31, E7), no setting.
+  - **The margin** (B-249): `mrasrc`'s probe on the sink's pad puts silence
+    before a write the device can no longer play, or the first after a start
+    or a flush, so it lands one margin past the first frame the device can
+    still play (at a start, with no clock: past the segment in flight and a
+    server's read-ahead, the sink guard; M6b). A write still ahead is never
+    touched. `outq` holds what waits for the 302M's sink and adds no
+    delay.
 - **Q1 (2026-10-26), "Play on arrival".** The picture never waits for a
   subtitle or an offset: a late subtitle on a Video Player shows from when it
   arrives, its overlay's `cueLate` the cue path's lateness, reported and not
@@ -3657,8 +3665,8 @@ Phase 3 ships as v2.0.0.102).
   against the owner's "we never should have packets dropping" (2026-10-08);
   the answer covers device stops only.
 - **What a stall costs.** Content held up upstream plays late by the stall's
-  length when it comes (S10, Q17): at content rate through the drain's 30 s
-  warm-up, then back down at most 0.5 % faster (the latency drain, below), or
+  length when it comes (S10, Q17): at content rate through the drain's
+  warm-up (its window: 30 s video, 60 s audio), then back down at most 0.5 % faster (the latency drain, below), or
   at the next gap (the gap rule, below). Nothing is dropped to catch up.
 - **The launch catch-up stays** (B-206, E28): a 302M output's runner skips,
   once, what its inputs' ingress queued before the launch played and, since
@@ -3675,10 +3683,11 @@ Phase 3 ships as v2.0.0.102).
   lateness by −10 to +12 ms where the base sink realigns. Keeping the ring fed
   across a hole would avoid that loss, but a feeder on a 100 ms timer over a
   100 ms ring must push silence ahead of content it cannot tell from a
-  delivery stall, and after a realign the ring holds about a segment (the
-  prefill is a delay line, not margin: B-167 P2), so a feed would collapse
-  the ring's margin to the feeder's timing; that is the trade the veto rests
-  on. A stall's length stays as lateness with or without a feed.
+  delivery stall, and after a realign the ring holds about a segment, so a
+  feed would collapse the ring's margin to the feeder's timing; that is the
+  trade the veto rests on. A stall's length stays as lateness with or
+  without a feed. Since B-249 the write after a hole gets the margin's
+  silence first, so the margin is rebuilt after every hole.
 
 ### `mrvideopace`: video paced to its display (WI-P4-3, B-161, B-162, B-175; OQ-32)
 
@@ -3830,12 +3839,14 @@ Phase 3 ships as v2.0.0.102).
 - **The device-stall rule (Q2).** Read on the render, never the clock (a
   removed PipeWire node blocked the render while the clock ran on, B-165
   D4): `device-stalled` when for 1 s the sink took nothing while more than
-  100 ms waited past the prefill; the timer then flushes downstream (FLUSH
+  100 ms waited past the sink; the timer then flushes downstream (FLUSH
   from `mrasrc`'s src pad unblocks the sink) and keeps flushing every 500 ms;
   `device-resumed` once the sink took 200 ms since a flush, with one more
   flush, so live input plays. Counted: `device-stalls` and the frames
-  dropped. The prefill makes the rule live (B-166 F5); the 200 ms resume holds
-  for the 100 ms ring only (F4).
+  dropped. What waits counts `upstream-queue` (B-249, c40-c42): where the
+  backlog waits above the element (the Audio Decoder's `ad_esq`), the stall
+  is told and not flushed, and the backlog plays late (the owner's Limit,
+  2026-11-23). The 200 ms resume holds for the 100 ms ring only (F4).
 - **Render lateness** is now less the content time of the sample at the
   card's position, from a map of each buffer's write position to its content
   time (B-165 D5): exact wherever a sample is heard, and a buffer written
@@ -3859,13 +3870,13 @@ Phase 3 ships as v2.0.0.102).
 |---|---|---|---|
 | Capacity: hold a stall's backlog until it drains or a gap | `vp_esq`, `ad_esq` (compressed, after the demux); the aligners' FIFOs (Phase 2) | 5 s, `tsQueueByteCap(5000)` (ADR-0015), `leaky=0` | Blocks upstream; the bus ingress fills next; `queue-full` "… holding <ms> ms at capacity — nothing lost, the queues before it fill next" (B-177) |
 | Capacity backstop: keep a stuck consumer from wedging its producer | The bus ingress (`buildBusSrc`) on every consumer; the producer's fan-out branch on every edge (the runners' own, in no module string) | 5 s, 40 MB, `leaky=2` (OQ-30) | Leaks from the head; `queue-full` "Queue <input> full at <ms> ms — content lost at capacity"; a resource fault, not a lateness policy |
-| Prefill | `prefill` (both audio outputs) | `min-threshold-time` 40 ms, 1 s | A delay line, not ring margin: it releases only what is above 40 ms (B-167 P2); behind a stall it holds the backlog the decoder's path leaves |
-| Device ring | pulsesink `buffer-time` | 100 ms | Back-pressure into the prefill |
+| Before the sink | `outq` (Audio Output (302M) only; the Audio Decoder has none) | 1 s, no threshold | Blocks `mrasrc`; holds what the sink cannot take yet and adds no delay (B-249) |
+| Device ring | pulsesink `buffer-time` | 100 ms, a 60 ms margin kept in it (`margin-ms`) | Back-pressure into `outq`, or into `mrasrc` on the Audio Decoder |
 | Decode-ahead | the Video Transcoder's raw-frame buffer after its decoder, its decoder-pool queues | Buffer (raw, floored at 100 ms); 4 buffers | Blocks the shared decode: every rendition falls behind with a slow encoder (B-173, E8) |
 
 - **The image's patched queue (B-68)**: a drained queue starts its level
   afresh, so a backstop that drained after a stall does not read its old
-  level as fullness, and the prefill holds its 40 ms again after it drains.
+  level as fullness.
   "About 10 s of stall before content is lost" (5 s capacity plus 5 s
   backstop) holds on that queue only (S35); measured as built, the bus
   ingress loses at capacity about 6 s into a stall on the 302M single arm and
@@ -3892,7 +3903,7 @@ Phase 3 ships as v2.0.0.102).
   decoder's `qos` says, so no QoS event may reach an avdec.
 - **The queue watch** (B-182's shed count grown, E29): every GstQueue whose
   `leaky` is not 0 but the Video Player's probe tap `vp_probeq` (B-248), and
-  those named `vp_esq`, `ad_esq` and `prefill`, counts
+  those named `vp_esq`, `ad_esq` and `outq`, counts
   its `overrun`s into episodes (1 s quiet ends one; reported once open at
   10 s, at its end and at a stop), one `queue_overrun` an episode naming the
   bus input upstream (the first `unixfdsrc` through sink and ghost pads), its
@@ -4026,12 +4037,15 @@ Phase 3 ships as v2.0.0.102).
 - **The law** (`mrts::DrainServo`; its reference `py/drain_servo.py` first):
   the slack is content that was ready before it was needed (audio: the frames
   `mrasrc` pushed that the card has not played, lowest just before each push,
-  less the prefill's delay; video: a frame's drained slot less its arrival,
-  plus the 30 s minimum of `vp_esq`'s level); the trough F is its minimum over
-  three 10 s buckets (CoDel's standing-queue test, used to speed up, never to
-  drop). E = F − margin; δ = clamp(E / 30 s, 0, 0.5 %), slewed at 0.05 %/s,
-  engaged at 20 ms and let go at 5 ms; nothing drains until 30 s were sampled
-  after a window clear, nor while an audio starvation runs or for 30 s after.
+  read past what the device can no longer play, plus `upstream-queue`'s level
+  (M6); video: a frame's drained slot less its arrival,
+  plus the window's minimum of `vp_esq`'s level); the trough F is its minimum
+  over the window, 10 s buckets, three for video and six for audio (M6b: a
+  30 s window played away room a later rise needed; CoDel's standing-queue
+  test, used to speed up, never to drop). E = F − margin; δ = clamp(E / 30 s, 0, 0.5 %), slewed at 0.05 %/s,
+  engaged at 20 ms and let go at 5 ms; nothing drains until a window was
+  sampled after a window clear, nor while an audio starvation runs or for a
+  window after. Audio's margin starts at and never goes under `margin-ms`.
 - **The learned margin.** It starts at its floor (audio 20 ms, video 1
   frame), ceiling 500 ms. An audio starvation (the sink's own underflow, or
   the slack under −30 ms on two ticks) of at most 250 ms is judged 10 s after
@@ -4360,11 +4374,11 @@ ignored (OQ-29, OQ-33), held absent by `removedTimingSettings.test.ts`.
   verified; its 18 findings and the carried minors fixed or recorded in row
   B-177 (an A/V group of early outputs now held together; a single label jump
   through a held queue no longer a queue-full warning).
-- **The prefill's 40 ms** (OQ-31: revisited from V-P4-4's data before
-  release): a GstQueue's `min-threshold-time` is a delay line, so the 40 ms
-  adds latency and no ring margin; DEV-P4c1 measures the sink's fill and the
-  underrun rate at a 2048 quantum (MR-019, T27), then the owner decides
-  whether the 40 ms stays or the margin is made real at the sink.
+- **The prefill's 40 ms** (OQ-31): answered by B-249, merged in by M6: the
+  margin is real at the sink (60 ms, `margin-ms`) and the prefill is gone
+  (`outq` on the 302M, nothing on the Audio Decoder). DEV-P4c1 still
+  measures the sink's fill and the underrun rate at a 2048 quantum (MR-019,
+  T27).
 - **For the owner**: the engineering choices of rows B-160 to B-175 and
   B-179, each recorded for the veto, and the items marked above (the cadence
   hold, the two-origin Video Player rule, the drain's owner-level items);
