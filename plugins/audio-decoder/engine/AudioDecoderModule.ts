@@ -94,9 +94,10 @@ export class AudioDecoderModule extends GstPluginBase {
             this.emitConfigUpdate({ channels });
         }
 
-        await super.onStart();
-        // A PipeWire restart takes the null sink with it: the watchdog makes it and the pipeline again.
+        // A PipeWire restart takes the null sink with it: the watchdog makes it and the pipeline
+        // again. Before the pipeline, so a sink failing as it starts is the watchdog's too.
         this.startDeviceWatchdog(true, true);
+        await super.onStart();
     }
 
     async onStop(): Promise<void> {

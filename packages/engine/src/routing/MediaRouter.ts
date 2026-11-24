@@ -583,6 +583,9 @@ export class MediaRouter {
                 const newHandle = await this.executor?.execute(conn);
                 if (newHandle) this.handles.set(conn.id, newHandle);
             } catch (err) {
+                // The other end is not back yet (its ports not within the executor's poll):
+                // keep the edge a pw-link, so that end's own re-link makes it (v104 F1).
+                if (handle) this.handles.set(conn.id, handle);
                 log.error(
                     { err, connectionId: conn.id },
                     'Failed to re-execute pw-link after node rebuild',
