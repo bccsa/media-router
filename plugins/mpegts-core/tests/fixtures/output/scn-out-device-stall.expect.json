@@ -10,6 +10,7 @@
   "expect": {
     "frame_ms": 20,
     "audio_late_min_ms": 2500,
+    "audio_late_max_ms": 8000,
     "late_read_s": 50,
     "slope_ms_s": [
       -5.5,

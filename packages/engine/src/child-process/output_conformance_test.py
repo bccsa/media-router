@@ -413,10 +413,12 @@ def scn_out_device_stall(tag, argv, exp):
     late = round(orig.mid(ra) - orig.mid(rb), 1) if ra and rb else None
     check(f"{label} decoder: the stall told, not flushed: device-stalled then device-resumed ({kinds}), nothing "
           f"skipped ({skipped} frames), PLAYING once ({dec.runner.count('state_change', state='playing')}); the "
-          f"backlog played late ({orig.mid(rb)} -> {orig.mid(ra)} ms, +{late}, at least {x['audio_late_min_ms']}), no "
-          f"queue full but ad_esq ({overruns(dec)})",
+          f"backlog played late ({orig.mid(rb)} -> {orig.mid(ra)} ms, +{late}, {x['audio_late_min_ms']} to "
+          f"{x['audio_late_max_ms']}: the stall, at most it and ad_esq's cap), no queue full but ad_esq "
+          f"({overruns(dec)})",
           kinds == ["device-stalled", "device-resumed"] and skipped == 0 and late is not None
-          and late >= x["audio_late_min_ms"] and all(e[0] in x["decoder_full"] and not e[1] for e in overruns(dec)))
+          and x["audio_late_min_ms"] <= late <= x["audio_late_max_ms"]
+          and all(e[0] in x["decoder_full"] and not e[1] for e in overruns(dec)))
     if late is not None and late > length * 1000 + x["frame_ms"]:
         print(f"    {label} decoder: Found (c43, open): the backlog lands {late - length * 1000:.0f} ms past the "
               f"{length:g} s stall (the refill after it aims past a clock that ran on)")
@@ -1272,7 +1274,7 @@ def scn_out_drain_group_jitter(tag, argv, exp):
 
 def decoder_drain(tag, argv, exp, holds):
     """The audio decoder alone on a generated feed, its input held at `holds` [(s, length)] (the content waits,
-    none lost): its device stats at the end, the raise events it posted."""
+    none lost): its device stats at the end, the raise events it posted, its reasons, its drain-starts (s)."""
     run = av_run(argv, dict(exp, seconds=exp["seconds"]), knobs=rig.Knobs(silence=[(a, n, "hold") for a, n in holds]),
                  keys=("decoder",))
     run.on_time(f"{exp['scenario']} {tag}")
@@ -1281,7 +1283,9 @@ def decoder_drain(tag, argv, exp, holds):
     st = last(device_stats(dec))
     raised = [(round((t - run.t0) / S, 1), p.get("length-ns", 0) // MS, p.get("from-ns", 0) // MS,
                p.get("margin-ns", 0) // MS) for t, p in dec.asrc_events() if p.get("kind") == "underrun"]
-    return st, raised, {k[10:]: v for k, v in st.items() if k.startswith("underruns-") and v}
+    starts = [round((t - run.t0) / S, 1) for t, p in dec.asrc_events() if p.get("kind") == "drain-start"]
+    posts = [((t - run.t0) / S, p) for t, p in device_stats(dec)]
+    return st, raised, {k[10:]: v for k, v in st.items() if k.startswith("underruns-") and v}, (starts, posts)
 
 
 def scn_out_drain_cpu(tag, argv, exp):
@@ -1291,7 +1295,7 @@ def scn_out_drain_cpu(tag, argv, exp):
     label, x = f"{exp['scenario']} {tag}", exp["expect"]
     at, n = exp["load"]
     holds = [(at + 3 * k, x["hold_ms"][0] / 1000 + k * x["hold_ms"][1] / 1000) for k in range(n)]
-    st, raised, why = decoder_drain(tag, argv, exp, holds)
+    st, raised, why, _ = decoder_drain(tag, argv, exp, holds)
     check(f"{label} decoder: {st.get('underruns')} underruns ({st.get('drain-outages')} outages), no raise "
           f"({st.get('drain-raises')}, posted {raised}), margin {st.get('drain-margin-ns', 0) // MS} ms, the reasons "
           f"{why} only load and warm-up",
@@ -1300,15 +1304,26 @@ def scn_out_drain_cpu(tag, argv, exp):
 
 
 def scn_out_drain_dip(tag, argv, exp):
-    """B-240, B3's rhythm compressed: the decoder's input held briefly twice; the first dip on a steady stream at its
-    margin raises it (once, 10 s after it, its evidence posted), the next inside that one's hold does not; any
-    other underrun (the shared host's) is counted by its reason."""
+    """B-240, B3's rhythm compressed: an early hold (`prime_hold`) whose backlog lands on the refilled margin and which
+    the drain plays down to the margin, then, a window after, the decoder's input held briefly twice; the first dip on a steady stream
+    at its margin raises it (once, 10 s after it, its evidence posted), the next inside that one's hold does not;
+    any other underrun (the shared host's) is counted by its reason. Without the drain (one margin at a start,
+    M6b) the trough sits a push under the margin and S6 never holds."""
     label, x = f"{exp['scenario']} {tag}", exp["expect"]
-    st, raised, why = decoder_drain(tag, argv, exp, [(a, x["hold_ms"] / 1000) for a in exp["dips"]])
+    holds = [tuple(exp["prime_hold"])] + [(a, x["hold_ms"] / 1000) for a in exp["dips"]]
+    st, raised, why, (starts, posts) = decoder_drain(tag, argv, exp, holds)
     first = exp["dips"][0]
-    check(f"{label} decoder: underruns {st.get('underruns')}, one raise ({st.get('drain-raises')}; posted {raised}: s, "
+    # The precondition: the trough at the margin, idle, before the dip, the drain that put it there a window before.
+    pre = [p for s_, p in posts if first - 4 <= s_ < first]
+    at_margin = bool(pre) and all(abs((p.get("fill-trough-ns") or 0) - (p.get("drain-margin-ns") or 0)) <= 20 * MS
+                                  and p.get("drain-state") == "idle" for p in pre)
+    tr = [round((p.get("fill-trough-ns") or 0) / 1e6, 1) for p in pre]
+    check(f"{label} decoder: at its margin before the dip (trough {tr} ms against "
+          f"{(pre[-1].get('drain-margin-ns') or 0) / 1e6 if pre else None}, idle; drain-starts at {starts} before "
+          f"{first - 60} s), underruns {st.get('underruns')}, one raise ({st.get('drain-raises')}; posted {raised}: s, "
           f"length, margin from, to) about 10 s after the dip at {first} s; the others {why}",
-          st.get("drain-raises") == 1 and len(raised) == 1 and first + 10 <= raised[0][0] <= first + 13
+          at_margin and len(starts) >= 1 and all(s_ < first - 60 for s_ in starts)
+          and st.get("drain-raises") == 1 and len(raised) == 1 and first + 10 <= raised[0][0] <= first + 13
           and raised[0][2] == x["margin_ms"] and raised[0][3] == x["raised_ms"]
           and (st.get("underruns") or 0) == 1 + sum(why.values()))
 
