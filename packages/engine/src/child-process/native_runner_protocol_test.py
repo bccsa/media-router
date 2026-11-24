@@ -677,11 +677,16 @@ def test_presentation_formula():
                                    " max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0"
                                    " ! mrlateness name=lat_render reference=running-time"
                                    " ! fakesink name=sink sync=false qos=true max-lateness=20000000"})
-            check(f"E {tag}: consumer PLAYING",
-                  cons.wait_event(ev_is("state_change", state="playing"), timeout=8) is not None)
+            # The waits are for its start, not its timing: on the loaded test-gate VM the native consumer's start
+            # took past 8 s (c41's and c42's base records, M6's p4 gate) or its first tap post past 5 s (M6b).
+            t_start = time.monotonic()
+            playing = cons.wait_event(ev_is("state_change", state="playing"), timeout=20)
+            t_playing = time.monotonic()
+            check(f"E {tag}: consumer PLAYING ({t_playing - t_start:.1f} s after the start)", playing is not None)
             render = cons.wait_event(lambda e: e.get("event") == "plugin_event"
-                                     and e.get("channel") == "mrlateness:lat_render", timeout=5)
-            check(f"E {tag}: the render tap reports (mrlateness:lat_render)", render is not None)
+                                     and e.get("channel") == "mrlateness:lat_render", timeout=15)
+            check(f"E {tag}: the render tap reports (mrlateness:lat_render, {time.monotonic() - t_playing:.1f} s "
+                  "after PLAYING; it posts 2 s after its first buffer)", render is not None)
             time.sleep(1.0)
             cons.pump()
             upto, now = len(cons.logs), clock.get_time()
