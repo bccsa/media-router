@@ -44,7 +44,7 @@ const MIXER = 'mixin';
  *
  * TIMING (house-clock part 4.1, B-167, B-249). It plays as soon as it can: content-time inputs, the
  * non-leaky `outq` and a `sync=false` sink on a 100 ms ring (`outputSink.ts`); no playout offset, no
- * trim. `outasrc` keeps a 60 ms margin in the sink's ring (120 ms at a start) and rebuilds it after a
+ * trim. `outasrc` keeps a 60 ms margin in the sink's ring (from the start, past the sink guard) and rebuilds it after a
  * hole (B-249); its drain plays what is held past its target back down (B-179). A launch skips its
  * inputs' outage and what its mix queued before it first played (B-206, B-167).
  *
