@@ -252,6 +252,7 @@ def random_ops(out):
         gap_threshold = r.pick((vp.GAP_THRESHOLD_NS, 100 * MS, 60 * MS, SEC))
         pace = vt.Recorded(out, None, "random-%d" % i, gap_threshold)
         rd = Rnd(5000 + i)   # B-179's drains, drawn apart so the earlier runs stay as they were
+        rs = Rnd(9000 + i)   # fix B's start steps, apart again
         frames = random_frames(r, r.int(1500, 5000), num, den)
         if r.chance(40):
             rate = vt.RecordedRate(out, None)
@@ -261,6 +262,8 @@ def random_ops(out):
             while at < len(frames):
                 if rd.chance(40):
                     pace.set_drain(rd.int(-6000, 6000) * 1000)
+                if rs.chance(25):
+                    pace.step(rs.int(0, 1000) * MS)
                 chunk = frames[at:at + r.int(200, len(frames))]
                 vt.drive_rate(pace, rate, chunk, display, prior)
                 at += len(chunk)
@@ -281,6 +284,8 @@ def random_ops(out):
             pace.set_display(given, source)
             if rd.chance(40):
                 pace.set_drain(rd.int(-6000, 6000) * 1000)
+            if rs.chance(25):
+                pace.step(rs.int(0, 1000) * MS)
             chunk = frames[at:at + r.int(200, len(frames))]
             vt.drive(pace, chunk, display)
             at += len(chunk)

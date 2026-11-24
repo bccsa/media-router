@@ -1,10 +1,15 @@
 {
   "scenario": "scn-out-av-after-mux",
-  "graph": "generated 720p50 H.264 + AAC -> the muxer (one input) -> player50 and the audio decoder on its bus tee",
+  "graph": "generated 720p50 H.264 + AAC -> the muxer (one input) -> player50 and the audio decoder on its bus tee, the rig playing the engine's group every 2 s",
   "kind": "h264-aac-720p50",
   "seconds": 20,
+  "arms": [
+    {"name": "plain"},
+    {"name": "device", "card_extra": "device-ns=250000000"}
+  ],
   "expect": {
-    "settle_s": 5,
+    "first_s": 6,
+    "settle_s": 8,
     "av_ms": 45,
     "flat_ms": 22,
     "video_flat_ms": 41

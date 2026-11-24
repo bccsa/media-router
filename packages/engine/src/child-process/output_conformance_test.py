@@ -570,30 +570,53 @@ def scn_out_capacity(tag, argv, exp):
 
 def scn_out_av_after_mux(tag, argv, exp):
     """H.264 + AAC through the real muxer string, then the player and the audio decoder on its bus
-    tee: video and audio reach the display and the card within V-P4-5's bound of each other."""
-    label, x = f"{exp['scenario']} {tag}", exp["expect"]
-    run = Run(argv)
-    rel = rig.generated(exp["kind"], exp["seconds"] + 2)
-    run.producer("feed", ["mx0"], ts=lambda t0: orig.at_house(rel, t0), stop_s=exp["seconds"])
-    run.output("mux", "mux1")
-    run.output("player", "player50", video=orig.display())
-    run.output("decoder", "decoder", audio=orig.card())
-    run.go(exp["seconds"] + 1, (), [("player", "vp_pace", "stats"), ("player", "sink", "display-stats")],
-           lead_ms=5000, before=["mux"])
-    run.on_time(label)
-    run.clean(label)
-    pl, dec, t0 = run.outputs["player"], run.outputs["decoder"], run.t0
-    v = paces(pl, t0, x["settle_s"], exp["seconds"] + 1)
-    a = renders(dec, t0, x["settle_s"], exp["seconds"] + 1)
-    skew = orig.mid(v) - orig.mid(a) if v and a else None
-    check(f"{label}: video {orig.mid(v)} ms and audio {orig.mid(a)} ms late at their devices after the muxer: "
-          f"A/V {skew} ms (within ±{x['av_ms']}), each flat ({orig.spread(v)}, {orig.spread(a)} ms; within "
-          f"{x['video_flat_ms']}, {x['flat_ms']})",
-          skew is not None and abs(skew) <= x["av_ms"] and orig.spread(v) <= x["video_flat_ms"]
-          and orig.spread(a) <= x["flat_ms"])
-    pl.reads = {"pace": run.reads.get(("player", "vp_pace", "stats")),
-                "display": run.reads.get(("player", "sink", "display-stats"))}
-    video_ok(f"{label} player", pl, x)
+    tee, the rig playing the engine's group (P = the max every 2 s): video and audio reach the display
+    and the card within V-P4-5's bound of each other from the first seconds. Each arm: `card_extra`
+    gives the card a latency of its own (the `device` arm: 250 ms, a Pi's decoder on its HDMI card
+    plays ~240 ms after its player, DEV-104 3b), so only the group puts them in sync: the player
+    starts at the group's target (fix B). MR_DRAIN_MUTANT=ignore: the group target never set."""
+    for arm in exp["arms"]:
+        label, x = f"{exp['scenario']} {arm['name']} {tag}", exp["expect"]
+        run = Run(argv)
+        rel = rig.generated(exp["kind"], exp["seconds"] + 2)
+        run.producer("feed", ["mx0"], ts=lambda t0, rel=rel: orig.at_house(rel, t0), stop_s=exp["seconds"])
+        run.output("mux", "mux1")
+        run.output("player", "player50", video=orig.display())
+        run.output("decoder", "decoder", audio=orig.card(extra=arm.get("card_extra", "")))
+        role = GroupRole(run, [("player", "vp_pace"), ("decoder", "asrc")],
+                         ignore=os.environ.get("MR_DRAIN_MUTANT") == "ignore")
+        run.go(exp["seconds"] + 1, [(t, role) for t in range(2, exp["seconds"], 2)],
+               [("player", "vp_pace", "stats"), ("player", "sink", "display-stats")], lead_ms=5000, before=["mux"])
+        run.on_time(label)
+        run.clean(label)
+        pl, dec, t0 = run.outputs["player"], run.outputs["decoder"], run.t0
+        # Each 2 s from first_s: the medians of the posts in it (each output posts every 2 s).
+        bins = []
+        for b in range(x["first_s"], exp["seconds"], 2):
+            v, a = paces(pl, t0, b, b + 2), renders(dec, t0, b, b + 2)
+            if v and a:
+                bins.append((b, round(orig.mid(v) - orig.mid(a), 1)))
+        worst = max(bins, key=lambda r: abs(r[1])) if bins else None
+        print(f"    {label}: the group's P (s, ms) {[(round((t - t0) / S, 1), round(p / 1e6)) for t, p in role.p]}; "
+              f"A/V by 2 s {bins}; the player's steps (GST_DEBUG=mrtshouse:4) "
+              f"{[l.split('at once: ')[-1] for l in pl.runner.logs if 'at its group' in l]}")
+        if os.environ.get("MR_AVMUX_TRACE"):
+            for t, p in pl.paces():
+                print(f"      pace {round((t - t0) / S, 1)} s: present {p.get('present-lateness-ns', 0) // MS}, "
+                      f"{p.get('drain-state')} {p.get('drain-ppm')} ppm, excess {p.get('drain-excess-ns', 0) // MS}, "
+                      f"trough {p.get('fill-trough-ns', 0) // MS}, target {p.get('drain-target-lateness-ns', 0) // MS}, "
+                      f"group {p.get('group-target-ns', 0) // MS}, hold {p.get('mean-hold-ns', 0) // MS}")
+        v = paces(pl, t0, x["settle_s"], exp["seconds"] + 1)
+        a = renders(dec, t0, x["settle_s"], exp["seconds"] + 1)
+        check(f"{label}: video {orig.mid(v)} ms and audio {orig.mid(a)} ms late at their devices after the muxer: "
+              f"A/V within ±{x['av_ms']} in every 2 s from {x['first_s']} s (worst {worst}; first {bins[:2]}), "
+              f"each flat from {x['settle_s']} s ({orig.spread(v)}, {orig.spread(a)} ms; within "
+              f"{x['video_flat_ms']}, {x['flat_ms']})",
+              len(bins) >= (exp["seconds"] - x["first_s"]) // 2 - 1 and abs(worst[1]) <= x["av_ms"]
+              and orig.spread(v) <= x["video_flat_ms"] and orig.spread(a) <= x["flat_ms"])
+        pl.reads = {"pace": run.reads.get(("player", "vp_pace", "stats")),
+                    "display": run.reads.get(("player", "sink", "display-stats"))}
+        video_ok(f"{label} player", pl, x)
 
 
 def scn_asrc_out_drift(tag, argv, exp):

@@ -868,6 +868,73 @@ def case_audio_window():
     ]
 
 
+def start_run(video, group, at=5 * SEC, until=50 * SEC, clear_at=None, group2=None, dip=None, unstep=False):
+    """Fix B's model: a servo on 100 ms ticks whose render lateness is 150 ms plus every start step taken
+    (the pace holds the cadence by it, the backlog queue holds it), 10 ms of slack; the group target from
+    `at` on (`group2` after `clear_at`, where the window clears). (steps, the published target at
+    at + 1 s, the last state). `dip`: (t, ms) one update's render lateness that much low (a stale display term);
+    `unstep`: the clear restarts the cadence too (the steps gone, the render back at 150 ms)."""
+    s = DrainServo(video, 20 * MS, 20 * MS)
+    steps, held, t, first = [], 0, 0, None
+    while t < until:
+        t += TICK
+        if clear_at is not None and t == clear_at:
+            s.clear(t)
+            if unstep:
+                s.unstep()
+                held = 0
+            group = group2
+        s.sample(t, 10 * MS)
+        if video:
+            s.queue_level(t, held)
+        if t >= at:
+            s.set_group(t, group)
+        s.update(t, 150 * MS + held - (dip[1] * MS if dip and t == dip[0] else 0), True)
+        for e in s.take_events():
+            if e[0] == "step":
+                steps.append((e[1], e[2]))
+                held += e[2]
+        if t == at + SEC or (clear_at is not None and t == clear_at + 2 * SEC):
+            first = s.target
+    return steps, first, s
+
+
+def case_start_step():
+    """32. Fix B (V-P4-5 from the first frame): video grouped in its warm-up 240 ms above its render
+    lateness steps to the group at once, once, and publishes its own target meanwhile and after; past
+    the cap it steps to T + 1 s; a clear arms it again; under 20 ms, audio, or a group first seen once
+    warm: no step (that one slews)."""
+    st, first, s = start_run(True, 390 * MS)
+    cap, _f, _s = start_run(True, 1500 * MS)
+    small, _f, _s = start_run(True, 165 * MS)
+    audio, _f, _s = start_run(False, 390 * MS)
+    late, _f, sl = start_run(True, 390 * MS, at=35 * SEC)
+    again, _f, sa = start_run(True, 390 * MS, until=80 * SEC, clear_at=60 * SEC, group2=500 * MS)
+    low, _f, _s = start_run(True, 390 * MS, dip=(5 * SEC, 200))
+    caps, caps_t, _s = start_run(True, 390 * MS, until=20 * SEC, clear_at=10 * SEC, group2=390 * MS)
+    flush, flush_t, _s = start_run(True, 390 * MS, until=20 * SEC, clear_at=10 * SEC, group2=390 * MS, unstep=True)
+    early, _f, _s = start_run(True, 390 * MS, at=TICK)
+    return [
+        (f"start step: one step of 240 ms at the group's first update ({st})", st == [(5 * SEC, 240 * MS)]),
+        (f"start step: its published target its own meanwhile ({first}) and once warm ({s.target}), "
+         f"neither draining nor rising after it ({s.ppb} ppb, {s.state})",
+         first == 150 * MS and abs(s.target - 150 * MS) <= 10 * MS and s.ppb == 0 and s.state == "idle"),
+        (f"start step: past the 1 s cap it steps to T + 1 s ({cap})", cap == [(5 * SEC, SEC)]),
+        (f"start step: none for 15 ms ({small}), for audio ({audio}), nor for a group seen first once warm "
+         f"({late}: it rises, {sl.ppb} ppb)", small == [] and audio == [] and late == [] and sl.ppb < 0),
+        (f"start step: a clear arms it again, a second after it ({again})",
+         again == [(5 * SEC, 240 * MS), (61 * SEC, 110 * MS)]),
+        (f"start step: one render reading 200 ms low at the group's first update does not make it overshoot ({low}), "
+         f"and a group from the first update waits a second of readings ({early})",
+         low == [(5 * SEC, 240 * MS)] and early == [(11 * TICK, 240 * MS)]),
+        (f"start step: a clear in the warm-up (new caps) keeps the step out of its published target ({caps_t}) and "
+         f"takes none again ({caps}); after an unstep (its cadence restarted) it steps again, its own target "
+         f"published ({flush_t}, {flush})",
+         caps == [(5 * SEC, 240 * MS)] and caps_t == 150 * MS
+         and flush == [(5 * SEC, 240 * MS), (11 * SEC, 240 * MS)] and flush_t == 150 * MS),
+    ]
+
+
 CASES = {
     "backlog": case_backlog, "steady": case_steady, "steady_raise": case_steady_raise,
     "step": case_step, "starve": case_starve, "dip": case_dip, "creep": case_creep,
@@ -878,6 +945,7 @@ CASES = {
     "drain_timing": case_drain_timing, "keep_up": case_keep_up, "spacing": case_spacing, "band": case_band,
     "hold_state": case_hold_state, "input": case_input, "fall": case_fall,
     "seam_floor": case_seam_floor, "video_never": case_video_never, "audio_window": case_audio_window,
+    "start_step": case_start_step,
 }
 
 
@@ -1150,6 +1218,51 @@ def m_s6_now():
     return _patch(DrainServo, "starve", starve)
 
 
+def m_no_start_step():
+    old_init, old_clear = DrainServo.__init__, DrainServo.clear
+
+    def init(self, *a, **k):
+        old_init(self, *a, **k)
+        self.step_armed = False
+
+    def clear(self, now):
+        old_clear(self, now)
+        self.step_armed = False
+    DrainServo.__init__, DrainServo.clear = init, clear
+    return lambda: (setattr(DrainServo, "__init__", old_init), setattr(DrainServo, "clear", old_clear))
+
+
+def m_step_one_reading():
+    old = DrainServo.update
+
+    def update(self, now, render, can):
+        self.hi = None              # the highest of this reading alone
+        return old(self, now, render, can)
+    DrainServo.update = update
+    return lambda: setattr(DrainServo, "update", old)
+
+
+def m_clear_drops_step():
+    old = DrainServo.clear
+
+    def clear(self, now):
+        old(self, now)
+        self.stepped = 0
+    DrainServo.clear = clear
+    return lambda: setattr(DrainServo, "clear", old)
+
+
+def m_step_in_target():
+    old = DrainServo.update
+
+    def update(self, now, render, can):
+        r = old(self, now, render, can)
+        self.stepped = 0
+        return r
+    DrainServo.update = update
+    return lambda: setattr(DrainServo, "update", old)
+
+
 MUTANTS = [
     ("the trough as a mean", m_mean, "steady"),
     ("no slew", lambda: _patch(ds, "SLEW_DEN", 1), "backlog"),
@@ -1191,6 +1304,10 @@ MUTANTS = [
     ("B4's drain-time video raise kept (B-256)", m_b4_kept, "video_late"),
     ("B4's drain-time video raise kept (B-256)", m_b4_kept, "video_never"),
     ("B4's drain-time video raise kept (B-256)", m_b4_kept, "seam_floor"),
+    ("no start step (fix B)", m_no_start_step, "start_step"),
+    ("the start step left in the published target (fix B)", m_step_in_target, "start_step"),
+    ("the start step on one render reading (fix B)", m_step_one_reading, "start_step"),
+    ("a clear forgetting the step the cadence holds (fix B)", m_clear_drops_step, "start_step"),
 ]
 
 

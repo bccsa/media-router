@@ -85,6 +85,9 @@ export interface ModuleServices extends EngineServices {
     /** This module's sender timeline id over the routing now (p5-20, 16 hex digits): an egress
      *  writer's `timeline-id` at build. Absent in test harnesses. */
     timelineId?: () => string;
+    /** A drain member published its first target (a start, a return): the engine refreshes its A/V
+     *  groups now (fix B). Absent in test harnesses. */
+    drainChanged?: () => void;
 }
 
 /**

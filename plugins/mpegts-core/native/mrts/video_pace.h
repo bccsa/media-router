@@ -54,6 +54,9 @@ class VideoPace {
     // The drain's rate (B-179): the cadence on Δ' = Δ·1e9 / (1e9 + δ), clamped to +-0.5 %.
     void set_drain(int64_t ppb);
     int64_t drain() const { return drain_; }
+    // The cadence ns later at once (fix B): the drain servo's start step to its group's target; nothing
+    // before the first frame.
+    void step(int64_t ns);
     // Counters since construction and the mean hold since the last take, which restarts it.
     PaceSummary take();
     // The same without restarting the mean hold (the element's stats between its messages).

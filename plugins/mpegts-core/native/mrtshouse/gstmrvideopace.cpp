@@ -154,7 +154,7 @@ struct _GstMrVideoPace {
     gboolean have_offset;
     gchar* backlog_name;              // object lock
     GstElement* backlog;
-    gboolean have_queue_read, clear_pending;
+    gboolean have_queue_read, clear_pending, unstep_pending;
     gint64 queue_read_at;
     std::atomic<gint64> group_target;
     std::atomic<guint64> group_seq;
@@ -251,7 +251,9 @@ static void vp_restart_pace(GstMrVideoPace* self) {
     self->pace->set_display(was.display_period, was.display_source);
     self->have_kept = FALSE;
     self->have_free = FALSE;
+    self->have_offset = FALSE;    // the display's term is the old cadence's: read again (fix B)
     self->clear_pending = TRUE;   // the drain's window again (B-179)
+    self->unstep_pending = TRUE;  // and any start step gone with the cadence (fix B)
 }
 
 static gint64 vp_prior_ns(GstMrVideoPace* self) {
@@ -533,19 +535,26 @@ static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 running
                      bool have_free, gint64 free_at) {
     const gint64 tc = self->pace->content_period();
     // Another frame rate (past 1 %: a median flipping between tick values is not): margins in its frames.
+    gint64 carry = 0;   // a start step the cadence still holds goes with it (fix B)
     if (self->drain && tc > 0 && std::llabs(tc - self->drain_period) * 100 > self->drain_period) {
+        carry = self->drain->stepped();
         delete self->drain;
         self->drain = NULL;
     }
     if (!self->drain) {
         if (tc <= 0) return;
         self->drain = new mrts::DrainServo(true, tc, tc);
+        self->drain->carry_step(carry);
         self->drain_period = tc;
     }
     mrts::DrainServo& s = *self->drain;
     if (self->clear_pending) {
         self->clear_pending = FALSE;
         s.clear(now);
+    }
+    if (self->unstep_pending) {   // the cadence restarted: no step held (fix B)
+        self->unstep_pending = FALSE;
+        s.unstep();
     }
     if (discont) s.epoch_break();
     const guint64 seq = self->group_seq.load();
@@ -587,6 +596,11 @@ static void vp_drain(GstMrVideoPace* self, const PaceDecision& d, gint64 running
                             (gint64)e.value / GST_MSECOND);
         else if (e.kind == mrts::DrainEvent::Kind::underrun)   // a video late release never raises (B-256)
             GST_DEBUG_OBJECT(self, "late release, no raise: %s", mrts::underrun_reason_name(e.reason));
+        else if (e.kind == mrts::DrainEvent::Kind::step) {   // fix B: a start at its group's target
+            self->pace->step(e.value);
+            GST_INFO_OBJECT(self, "at its group's target at once: the cadence %" G_GINT64_FORMAT " ms later",
+                            (gint64)e.value / GST_MSECOND);
+        }
     }
     Snapshot& t = *self->dsnap;
     t.drain_ppb = self->pace->drain();
@@ -750,6 +764,7 @@ static void vp_start(GstMrVideoPace* self) {
     self->common.reset();
     /* The drain keeps its margin across a start; its window starts again, the backlog queue found anew. */
     self->clear_pending = TRUE;
+    self->unstep_pending = TRUE;   // a new pace holds no start step (fix B)
     self->have_queue_read = FALSE;
     gst_clear_object(&self->backlog);
     GST_OBJECT_LOCK(self);
@@ -955,7 +970,7 @@ static void gst_mrvideopace_init(GstMrVideoPace* self) {
     self->have_offset = FALSE;
     self->backlog_name = NULL;
     self->backlog = NULL;
-    self->have_queue_read = self->clear_pending = FALSE;
+    self->have_queue_read = self->clear_pending = self->unstep_pending = FALSE;
     self->queue_read_at = 0;
     new (&self->group_target) std::atomic<gint64>(mrts::DrainServo::GROUP_ALONE_NS);
     new (&self->group_seq) std::atomic<guint64>(0);

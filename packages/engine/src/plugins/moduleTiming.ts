@@ -127,6 +127,9 @@ export interface ModuleTimingHost {
     houseClock?(): HouseClockFields | null;
     /** The egress writer's warnings (WI-P5-10), null when none: on a change and every tick. */
     egressWarnings?(text: string | null): void;
+    /** Its drain published a target where it had none (a start, a return): the engine's A/V groups
+     *  are refreshed now, not at their next 2 s, so a player steps to its group at once (fix B). */
+    drainPublished?(): void;
 }
 
 const EMPTY: TimingPublication = { sections: [], data: {}, badge: null, netTime: null };
@@ -141,6 +144,8 @@ export class ModuleTiming {
     private drainWas: { state: DrainSummary['state']; capped: boolean } | undefined;
     private pub: TimingPublication = EMPTY;
     private last: ModuleTimingSummary | null = null;
+    /** Its drain published a target at the last publish (fix B). */
+    private published = false;
     private timer: ReturnType<typeof setInterval> | null = null;
     private pwTimer: ReturnType<typeof setInterval> | null = null;
     private pwGen = 0;
@@ -339,6 +344,7 @@ export class ModuleTiming {
         const had = visible(this.pub);
         this.pub = EMPTY;
         this.last = null;
+        this.published = false;
         // The demuxes' first: what the module shows only loses parts, never shows an old one.
         this.host.streamWarnings?.([]);
         this.host.queueFull?.(null);
@@ -358,6 +364,9 @@ export class ModuleTiming {
         const egress = this.egress.summary(now, this.host.houseClock?.());
         if (egress) s.egress = egress;
         this.logDrain(s.drain);
+        const published = s.drain?.publishedMs !== undefined;
+        if (published && !this.published) this.host.drainPublished?.();
+        this.published = published;
         if (timingChanged(this.last, s)) {
             const next = timingPublication(s);
             const show = visible(next) || visible(this.pub);

@@ -34,11 +34,11 @@ constexpr int UNDERRUN_REASONS = 7;   // the counted ones, `raised` apart (the r
 const char* underrun_reason_name(UnderrunReason r);
 
 struct DrainEvent {
-    enum class Kind { drain_start, drain_done, underrun, raise, outage };
+    enum class Kind { drain_start, drain_done, underrun, raise, outage, step };
     Kind kind;
     int64_t at;
     // drain_start: the command (ns); drain_done: drained so far; underrun, outage: the episode's length (a
-    // video underrun 0); raise: the new margin.
+    // video underrun 0); raise: the new margin; step: the start step (fix B), the element's to apply.
     int64_t value;
     UnderrunReason reason = UnderrunReason::raised;   // underrun
     // raise: the margin that underran, the episode's length, its start trough, how long it was steady.
@@ -69,6 +69,7 @@ class DrainServo {
     // allowance; S6 reads the trough 1-2 s before the start.
     static constexpr int64_t CONFIRM_NS = 10 * SEC, LIMIT_BAND_NS = ENGAGE_NS;
     static constexpr int64_t KEEP_UP_NS = 20 * MS, SETTLE_NS = SEC;
+    static constexpr int64_t STEP_LOOK_NS = SEC;   // fix B: the start step reads the highest render of 0.5-1 s
 
     enum class State { warm_up, idle, draining, rising };
 
@@ -87,6 +88,11 @@ class DrainServo {
     void late(int64_t now, int64_t by_ns);
     // A window clear (a relock, a stall's flush, caps, a flush, PAUSED): warm-up again, delta 0.
     void clear(int64_t now);
+    // Fix B: the element's cadence restarted (a flush, its display presenting again): no start step held.
+    // A clear keeps it (the cadence still holds the step); a servo made anew for another frame rate takes it.
+    void unstep() { stepped_ = 0; }
+    void carry_step(int64_t ns) { stepped_ = ns; }
+    int64_t stepped() const { return stepped_; }
     // A DISCONT or GAP: the next update steps delta to its command.
     void epoch_break() { brk_ = true; }
     bool break_pending() const { return brk_; }
@@ -158,6 +164,10 @@ class DrainServo {
     int64_t render_ = 0;                       // the last update's render lateness
     bool have_settled_ = false, have_next_ = false, have_next_at_ = false;
     int64_t settled_ = 0, next_trough_ = 0, next_at_ = 0;   // S6's trough 1-2 s ago, and the newer
+    bool step_armed_ = true;   // video: a start step is still to come in this warm-up (fix B)
+    int64_t stepped_ = 0;      // the start step taken in this warm-up, left out of T until warm
+    bool have_hi_ = false, have_hi_prev_ = false;   // the highest render lateness in this half second, the last
+    int64_t hi_ = 0, hi_prev_ = 0, hi_at_ = 0;
 };
 
 const char* drain_state_name(DrainServo::State s);

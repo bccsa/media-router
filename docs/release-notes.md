@@ -78,6 +78,10 @@ Draft: Phase 5 is being built. Lines are added as its parts land.
   that, the outputs follow each other within 1 s only, and their Latency
   target row says so: "in sync with Video Player within 1 s only: the links
   differ by 1.4 s".
+- **A Video Player starts at its group's latency**: at a start, and when its
+  display shows it again, it holds its picture once to the group's target
+  (up to 1 s), so its audio and video are in sync from the first seconds
+  rather than after a minute and a half.
 - **Send the components of one programme from the same sources on every
   link, or in one link**, for them to stay in step at the receiver: a muxed
   programme on one link and an audio-only output of part of it on another

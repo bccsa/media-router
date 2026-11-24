@@ -78,7 +78,10 @@ decimates δ of the frames, `drain_drops`: a shadow lag at δ = 0 runs beside th
 it would not make counts there, not in `rate_drops` (a later drop of the shadow's that the real one
 does not make pays one back); at δ = 0 the shadow is the real lag. The sink's wait (the display a
 period behind, above) is read on the cadence at δ = 0, put back on the real one at each drop and each
-release not held: the drain's own lead is the lag's to foresee. δ < 0 lengthens the slots. Each
+release not held: the drain's own lead is the lag's to foresee. δ < 0 lengthens the slots.
+step(ns) (fix B, V-P4-5 from the first frame): the cadence, real and at δ = 0, moves ns later at once,
+so the next frame's slot is that much later (the frame on screen stays up the longer); before the
+first frame it does nothing. The drain servo asks for it once at a start, to its group's target. Each
 frame leaves `last_late_by` (arrival - slot', None unless late) and `last_slack` (slot' - arrival,
 None for a first, collapsed or sink-late frame) for the drain servo.
 
@@ -92,7 +95,7 @@ Run as a script it replays a recorded sequence (the format `mrts_cli pace` reads
     video_pace.py seq.jsonl|-
 one JSON object per line: {"op":"config","gap_threshold":ns} starts a new pace and display rate
 (other keys, such as the suite's "case", are labels), {"op":"display","period":ns,"source":s},
-{"op":"gap"}, {"op":"drain","ppb":n}, {"op":"frame","pts":ns,"dur":ns,"arrival":ns,"discont":0|1,"held":0|1} ("held"
+{"op":"gap"}, {"op":"drain","ppb":n}, {"op":"step","ns":n}, {"op":"frame","pts":ns,"dur":ns,"arrival":ns,"discont":0|1,"held":0|1} ("held"
 may be left out: 0), {"op":"take"}, {"op":"feedback","pairs":[[ns,seq],...]},
 {"op":"returns","times":[ns,...],"prior":ns}, and the display rate's {"op":"rate_prior",
 "period":ns}, {"op":"rate_refresh","period":ns}, {"op":"rate_push","returned":ns,"pressed":0|1},
@@ -149,6 +152,13 @@ class VideoPace:
 
     def set_drain(self, ppb):
         self.drain = max(-DRAIN_MAX_PPB, min(DRAIN_MAX_PPB, ppb))
+
+    def step(self, ns):
+        """The cadence ns later at once (fix B): the drain servo's start step to its group's target."""
+        if self.prev_pts is None:
+            return
+        self.prev_release += ns
+        self.prev_slot0 += ns
 
     def _drained(self, d):
         """Δ' = Δ·1e9 / (1e9 + δ), to the nearest ns."""
@@ -468,6 +478,8 @@ def replay(lines, out):
             pace.on_gap()
         elif kind == "drain":
             pace.set_drain(op["ppb"])
+        elif kind == "step":
+            pace.step(op["ns"])
         elif kind == "frame":
             release, drop = pace.on_frame(op["pts"], op["dur"], op["arrival"], bool(op["discont"]),
                                           bool(op.get("held", 0)))

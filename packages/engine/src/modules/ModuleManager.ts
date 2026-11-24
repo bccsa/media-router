@@ -19,6 +19,8 @@ const log = createLogger('ModuleManager');
 /** The A/V groups' refresh (WI-P4-18): each member's target is taken every 2 s, the timing
  *  summaries' own interval; an element holds a target 10 s. */
 export const DRAIN_GROUP_REFRESH_MS = 2000;
+/** A member's first published target refreshes the groups this soon (fix B). */
+export const DRAIN_SOON_MS = 50;
 
 /**
  * Manages all module instances.
@@ -113,6 +115,7 @@ export class ModuleManager extends EventEmitter {
                       ...(this.houseClock ? { houseClock: this.houseClock } : {}),
                       instanceId,
                       timelineId: () => this.timelineIdOf(instanceId),
+                      drainChanged: () => this.drainSoon(),
                   }
                 : undefined;
 
@@ -178,6 +181,19 @@ export class ModuleManager extends EventEmitter {
             });
         }
         return out;
+    }
+
+    private drainSoonTimer: ReturnType<typeof setTimeout> | null = null;
+
+    /** A member's first published target: the groups refreshed in a moment (several coalesce),
+     *  so a player steps to its group within a second of it, not at the next 2 s (fix B). */
+    private drainSoon(): void {
+        if (this.drainSoonTimer || !this.mediaRouter) return;
+        this.drainSoonTimer = setTimeout(() => {
+            this.drainSoonTimer = null;
+            this.refreshDrainGroups();
+        }, DRAIN_SOON_MS);
+        this.drainSoonTimer.unref?.();
     }
 
     /** One refresh of the A/V groups and the egress timeline ids now (the timer's; tests). */
@@ -252,6 +268,8 @@ export class ModuleManager extends EventEmitter {
     async destroyAll(): Promise<void> {
         if (this.drainTimer) clearInterval(this.drainTimer);
         this.drainTimer = null;
+        if (this.drainSoonTimer) clearTimeout(this.drainSoonTimer);
+        this.drainSoonTimer = null;
         const promises = Array.from(this.modules.values()).map((m) => m.destroy());
         await Promise.allSettled(promises);
         this.modules.clear();

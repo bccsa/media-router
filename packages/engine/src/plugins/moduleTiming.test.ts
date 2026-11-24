@@ -1241,3 +1241,57 @@ describe('the queue-full warning and the display log (WI-P4-12)', () => {
         t.stop(false);
     });
 });
+
+describe('a drain member publishing its first target (fix B)', () => {
+    afterEach(() => vi.useRealTimers());
+
+    const pace = (member: boolean) => ({
+        released: 50,
+        'content-fps-x100': 5000,
+        'refresh-ns': 20_000_000,
+        'refresh-source': 'measured',
+        'present-lateness-ns': 150_000_000,
+        'display-presenting': member,
+        'drain-ppm': 0,
+        'drain-excess-ns': 0,
+        'drain-margin-ns': 20_000_000,
+        'drain-learned-ns': -1,
+        'fill-trough-ns': 0,
+        'drained-ns': 0,
+        'drain-target-lateness-ns': 150_000_000,
+        'group-target-ns': -3_600_000_000_000,
+        'drain-state': 'warm-up',
+        'drain-member': member,
+        'drain-rate-known': true,
+    });
+
+    it('tells the host once when the target first appears, again after it was gone or a stop', () => {
+        vi.useFakeTimers();
+        const host = {
+            emit: vi.fn(),
+            getProperty: async () => undefined,
+            busSources: () => [],
+            drainPublished: vi.fn(),
+        };
+        const t = new ModuleTiming(host);
+        t.start({ pipeline: 'mrvideopace name=vp_pace backlog-queue=vp_esq ! fakesink' });
+        vi.advanceTimersByTime(2000);
+        expect(host.drainPublished).not.toHaveBeenCalled();
+        t.onEvent('mrvideopace:vp_pace', pace(true));
+        vi.advanceTimersByTime(2000);
+        t.onEvent('mrvideopace:vp_pace', pace(true));
+        vi.advanceTimersByTime(2000);
+        expect(host.drainPublished).toHaveBeenCalledTimes(1);
+        t.onEvent('mrvideopace:vp_pace', pace(false)); // its display presents nothing: no target
+        vi.advanceTimersByTime(2000);
+        t.onEvent('mrvideopace:vp_pace', pace(true)); // presenting again
+        vi.advanceTimersByTime(2000);
+        expect(host.drainPublished).toHaveBeenCalledTimes(2);
+        t.stop(false);
+        t.start({ pipeline: 'mrvideopace name=vp_pace backlog-queue=vp_esq ! fakesink' });
+        t.onEvent('mrvideopace:vp_pace', pace(true));
+        vi.advanceTimersByTime(2000);
+        expect(host.drainPublished).toHaveBeenCalledTimes(3);
+        t.stop(false);
+    });
+});
