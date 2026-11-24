@@ -1757,24 +1757,25 @@ else:
 
     # A 2x clock: the device term locks about 50 s in, the drain is warm 60 s later (M6b); at 4x the thin live fill
     # starves now and then on its own.
-    print("\n--- B-240: one 150 ms starvation on a steady stream at its margin: one raise, 10 s after it (2x, 155 s) ---")
+    print("\n--- B-240: one 150 ms starvation on a steady stream at its margin: one raise, 10 s after it (2x, 175 s) ---")
     # The fill sits at the margin (20 ms), so a late harness thread starves it too: one before the hold makes it
     # warm-up, one after adds to the render lateness (load). A run that failed with a second starvation is the
-    # harness's, run again (three in a row fail).
+    # harness's, run again (three in a row fail). The hold 38 s after the warm-up: a late harness's excess is given
+    # back first (at 18 s a drain still running counted it `drain`, M6b's p5 run).
     for _try in range(3):
-        _ev, _stats, _errors, _lost, _p = clock_run(_DRAIN_DESC.format(caps=Capture(channels=2).caps()), 2, 155,
-                                                    feed=held_feeder(Capture(channels=2), [(130, 0.15)]))
+        _ev, _stats, _errors, _lost, _p = clock_run(_DRAIN_DESC.format(caps=Capture(channels=2).caps()), 2, 175,
+                                                    feed=held_feeder(Capture(channels=2), [(150, 0.15)]))
         _st = sdict(_p.get_by_name("asrc").get_property("stats"))
         _p.set_state(Gst.State.NULL)
         _ur = kinds(_ev, "underrun")
         _why = {k[10:]: v for k, v in _st.items() if k.startswith("underruns-") and v}
-        _ok = bool(not _errors and len(_ur) == 1 and 139 <= _ur[0][0] <= 143 and _ur[0][1]["from-ns"] == 20 * MS
+        _ok = bool(not _errors and len(_ur) == 1 and 159 <= _ur[0][0] <= 163 and _ur[0][1]["from-ns"] == 20 * MS
                    and _ur[0][1]["margin-ns"] == 40 * MS and _ur[0][1]["steady-ns"] >= 60 * S
                    and _st.get("underruns", 0) >= 1 and _st.get("drain-raises") == 1)
         if _ok or (_st.get("underruns") or 0) < 2:
             break
         print(f"RETRY one raise: {_st.get('underruns')} underruns, the others the harness's ({_why})")
-    check(f"one underrun, one raise at about 140 s ({[(round(t, 1), e.get('length-ns', 0) // MS, e.get('from-ns', 0) // MS, e.get('margin-ns', 0) // MS, e.get('steady-ns', 0) // S) for t, e in _ur]}: "
+    check(f"one underrun, one raise at about 160 s ({[(round(t, 1), e.get('length-ns', 0) // MS, e.get('from-ns', 0) // MS, e.get('margin-ns', 0) // MS, e.get('steady-ns', 0) // S) for t, e in _ur]}: "
           f"time, length, margin from, to, steady s; a follow-on starvation inside its hold is warm-up), the stats agree (underruns {_st.get('underruns')}, raises "
           f"{_st.get('drain-raises')}, margin {_st.get('drain-margin-ns', 0) // MS} ms, the others {_why}; run {_try + 1})",
           _ok)
