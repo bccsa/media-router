@@ -3275,16 +3275,16 @@ def _klv_pes(data, ref_ns, pid=0x180):
 
 
 def _overlay_owed(pes):
-    """The show and clear lines the overlay owes `pes`, by its rules alone: a copy within 2.5 s of
-    its payload's last copy is a re-send; a cue shows from its PES time plus its start until its
-    end or the next cue, a clear clears. [(house ns, 'show'|'clear', text)]."""
+    """The show and clear lines the overlay owes `pes`, by its rules alone: a copy of its payload
+    on the same PES time is a duplicate (MR-062: no re-send gap); a cue shows from its PES time plus
+    its start until its end or the next cue, a clear clears. [(house ns, 'show'|'clear', text)]."""
     sys.path.insert(0, os.path.join(_PLUGINS, "subtitle-core", "py"))
     import subtitle_klv  # noqa: E402
     last, out, shown = {}, [], None          # shown: (text, end ns)
     for t, payload in pes:
         rel, prev = subtitle_klv.decode_cue(payload), last.get(payload)
         last[payload] = t
-        if rel is None or (prev is not None and t - prev <= 2_500_000_000):
+        if rel is None or prev == t:
             continue
         start, end, text = t + rel[0] * 1_000_000, t + rel[1] * 1_000_000, rel[2]
         if shown and shown[1] <= start:
@@ -3393,6 +3393,8 @@ _TTX_FIXTURES = ("cap-occ-1080i-h264-aac-ttx", "cap-occ-1080i-h264-21aac-ttx")
 _TTX_LEAD_NS = 400_000_000          # each chunk sent this far ahead of its newest PES, as a producer's bus does
 # The bridge's cue trace (subtitle_pay._on_text_sample): label, start (house ms), late (ms).
 _TTX_CUE_LINE = re.compile(r"\[subtitle_bridge\] cue (.+?) start=(-?[\d.]+) late=(-?\d+) ")
+# The bridge's keepalive KLV (subtitle_klv.KEEPALIVE): the cue key, an empty value.
+_KLV_KEEPALIVE = bytes.fromhex("060e2b34020501010e0e4d525355423100")
 
 
 def _ttx_only(data, pid=0x20):
@@ -3455,7 +3457,8 @@ def _ttx_reference(pes, pages):
 
 
 def _ttx_consumer(edge, pid, clock, got):
-    """A bus consumer on `edge` pinned to the house clock: (PES PTS, buffer PTS) of each `pid` PES."""
+    """A bus consumer on `edge` pinned to the house clock: (PES PTS, buffer PTS, keepalive?) of
+    each `pid` PES; a keepalive is the bridge's KLV key with an empty value (MR-062)."""
     sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
     import ts_psi  # noqa: E402
     c = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
@@ -3467,7 +3470,9 @@ def _ttx_consumer(edge, pid, clock, got):
         buf = info.get_buffer()
         for pkt in ts_psi.iter_packets(buf.extract_dup(0, buf.get_size())):
             if pkt[1] & 0x40 and ts_psi.ts_pid(pkt) == pid:
-                got.append((ts_psi.read_pes_pts(pkt), buf.pts))
+                pl = pkt[ts_psi.payload_offset(pkt):]
+                keep = (pl[4] << 8 | pl[5]) == 25 and pl[9 + pl[8]:9 + pl[8] + 17] == _KLV_KEEPALIVE
+                got.append((ts_psi.read_pes_pts(pkt), buf.pts, keep))
         return Gst.PadProbeReturn.OK
 
     c.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
@@ -3551,19 +3556,31 @@ def test_ttx_formula():
         pes = _ttx_pes(b"".join(c for c, _at in chunks), now0)
         ref = _ttx_reference(pes, pages)
         want = {e["label"]: ref[p] for e, p in zip(pay, pages)}
-        got = {label: [pts for pts, _b in v] for label, v in egress.items()}
+        got = {label: [pts for pts, _b, keep in v if not keep] for label, v in egress.items()}
         shown = ({k: v for k, v in got.items() if v}, {k: v for k, v in want.items() if v})
         check(f"ttx-formula {fx}: each cue on the bus carries its teletext PES PTS, 0 ticks, the PES that "
               f"completed its page ({shown[0]} of {shown[1]})",
               got == want and sum(map(len, want.values())) >= 1 and None not in sum(want.values(), []))
         house = {pts: ns for pts, ns, _p in pes}
-        stamps = [(b - house[pts]) for v in egress.values() for pts, b in v if pts in house]
+        stamps = [(b - house[pts]) for v in egress.values() for pts, b, keep in v if pts in house and not keep]
         lines = sorted((float(m.group(2)), m.group(1)) for m in map(_TTX_CUE_LINE.search, seen) if m)
         cue_ms = sorted((house[pts] / 1e6, label) for label, v in want.items() for pts in v)
         check(f"ttx-formula {fx}: the egress stamps each cue PES − 1 h, and the bridge's cue line starts it at "
               f"its teletext PES time, to the µs ({lines})",
               len(stamps) == len(cue_ms) and all(abs(s) <= 11_112 for s in stamps) and len(lines) == len(cue_ms)
               and all(label == w and abs(start - ms) < 0.001 for (start, label), (ms, w) in zip(lines, cue_ms)))
+        # MR-062: every page's egress carries keepalives on teletext PES times, >= 1 s of PES
+        # time past the send before, the wire PES PTS never stepping back; cues are sent once.
+        keeps = {label: [pts for pts, _b, keep in v if keep] for label, v in egress.items()}
+        spaced = all(keep_ is False or b - a >= 90_000 for v in egress.values()
+                     for (a, _x, _k), (b, _y, keep_) in zip(v, v[1:]))
+        keep_stamps = [(b - house[pts]) for v in egress.values() for pts, b, keep in v if keep and pts in house]
+        check(f"ttx-formula {fx}: keepalives on every page's egress, each on a teletext PES time, 1 s of PES "
+              f"time past the last send, stamped PES − 1 h; the wire PES PTS never steps back; no cue twice ({keeps})",
+              all(keeps.values()) and all(pts in house for v in keeps.values() for pts in v) and spaced
+              and len(keep_stamps) == sum(map(len, keeps.values())) and all(abs(s) <= 11_112 for s in keep_stamps)
+              and all([p for p, _b, _k in v] == sorted(p for p, _b, _k in v) for v in egress.values())
+              and all(len(v) == len(set(v)) for v in got.values()))
 
 
 

@@ -228,6 +228,9 @@ export interface SubtitlePayRunnerConfig {
     pid: number;
     /** How long a cue stays up when the source never sends a clear (ms). */
     holdMs: number;
+    /** Element whose sink pad carries the source PES: its time drives the
+     *  empty-value keepalive, one per second of PES time (MR-062). */
+    pesProbe?: string;
     /** Operator label for status events (page number, language). */
     label?: string;
 }

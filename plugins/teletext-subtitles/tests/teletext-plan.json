@@ -13,56 +13,64 @@
             "appsrc": "subsrc_0",
             "pid": 384,
             "holdMs": 8000,
-            "label": "nor 692"
+            "label": "nor 692",
+            "pesProbe": "ttx_0"
           },
           {
             "appsink": "ttxsink_1",
             "appsrc": "subsrc_1",
             "pid": 385,
             "holdMs": 8000,
-            "label": "deu 150"
+            "label": "deu 150",
+            "pesProbe": "ttx_1"
           },
           {
             "appsink": "ttxsink_2",
             "appsrc": "subsrc_2",
             "pid": 386,
             "holdMs": 8000,
-            "label": "nld 695"
+            "label": "nld 695",
+            "pesProbe": "ttx_2"
           },
           {
             "appsink": "ttxsink_3",
             "appsrc": "subsrc_3",
             "pid": 387,
             "holdMs": 8000,
-            "label": "eng 888"
+            "label": "eng 888",
+            "pesProbe": "ttx_3"
           },
           {
             "appsink": "ttxsink_4",
             "appsrc": "subsrc_4",
             "pid": 388,
             "holdMs": 8000,
-            "label": "fra 600"
+            "label": "fra 600",
+            "pesProbe": "ttx_4"
           },
           {
             "appsink": "ttxsink_5",
             "appsrc": "subsrc_5",
             "pid": 389,
             "holdMs": 8000,
-            "label": "spa 610"
+            "label": "spa 610",
+            "pesProbe": "ttx_5"
           },
           {
             "appsink": "ttxsink_6",
             "appsrc": "subsrc_6",
             "pid": 390,
             "holdMs": 8000,
-            "label": "ron 620"
+            "label": "ron 620",
+            "pesProbe": "ttx_6"
           },
           {
             "appsink": "ttxsink_7",
             "appsrc": "subsrc_7",
             "pid": 391,
             "holdMs": 8000,
-            "label": "pol 630"
+            "label": "pol 630",
+            "pesProbe": "ttx_7"
           }
         ]
       }

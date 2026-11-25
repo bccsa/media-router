@@ -177,3 +177,34 @@ group, the cue path's measured lateness (`mralignwatch aligner=burnin`), in
 place of `subtitleDelayMs`; a consumer no longer reads a cue's time from a
 bus stamp, so a hop that stamps a private PES at arrival no longer moves it;
 and with no stamp model, no timing PID has to be learnt first.
+
+## Amendment 2026-11-25 — no cue re-sends; a keepalive on the source PES time (MR-062)
+
+The producer re-sent a live cue every 2 s on its start PTS until it ended. Since
+ADR-0029 Phase 3 a burn-in reads its cue pads through a sparse `mralignwatch`
+of the pace group, which took each re-send as the cue arriving late by its age:
+up to the hold (30 s on NO-OCC-Gate01), so the pace rose to its 4 s ceiling and
+swung, and the transcoders and the muxers and outputs behind them moved by
+seconds.
+
+Now:
+- **A cue is sent once.** `PayState.resend`, the bridge's timer, `RESEND_MS`,
+  the appsrc's `StartGate` and the consumer's `is_resend` / `RESEND_GAP_MS`
+  rule are deleted. The consumer keeps its same-start dedupe (a duplicated PES).
+  A late joiner or a lost packet waits for the next cue.
+- **A keepalive.** A buffer probe on each teletext decoder's sink (`pesProbe` in
+  the pay spec) sends one chunk when the teletext PES time has advanced ≥ 1 s
+  past the last send, cue or keepalive: the cue layout, PES PTS = that PES time
+  (the mapping a cue's start uses, with `cue_start`'s house-now fallback), and
+  the KLV key with an empty value, which `decode_cue` and `decodeSubtitleKlv`
+  read as no cue. No timer: a dead source sends nothing and reads absent.
+- **One floor.** Cues and keepalives share one floor, stamped, packed and pushed
+  under the PayState lock on the decoder's streaming thread, so the wire PES
+  PTS never steps back and the PCR advances with it.
+
+Consequences: the sparse watch sees the cue path's real lateness every second
+(about -34 ms on the gate), never a cue's age; the subtitle input stays present
+between cues. Cue streams do not cross boxes of different versions (owner,
+2026-11-25), so no v104 producer feeds a consumer without the gap rule. Not
+done: a native watch guard against repeated sparse PTS (muxer and mixed-version
+routes), recommended by the review. Wire format: unchanged for cues.

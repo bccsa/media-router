@@ -119,6 +119,7 @@ describe('buildPipeline', () => {
                 pid: 0x180,
                 holdMs: 5000,
                 label: 'eng 888',
+                pesProbe: 'ttx_0',
             },
             {
                 appsink: 'ttxsink_1',
@@ -126,6 +127,7 @@ describe('buildPipeline', () => {
                 pid: 0x181,
                 holdMs: 5000,
                 label: 'nor 692',
+                pesProbe: 'ttx_1',
             },
         ]);
         // Cues start at their teletext PES time, the formula demux's PTS: no retime, so

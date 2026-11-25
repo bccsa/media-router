@@ -830,14 +830,14 @@ def klv_pes(data, ref_ns, pid=0x180):
 
 
 def overlay_owed(pes, subtitle_klv):
-    """The show and clear lines the overlay owes `pes` by its rules (burnin-formula's): a copy within
-    2.5 s of its payload's last is a re-send; a cue shows from its PES time plus its start until its
-    end or the next cue; a clear clears. [(house ns, 'show' | 'clear', text)]."""
+    """The show and clear lines the overlay owes `pes` by its rules (burnin-formula's): a copy of its
+    payload on the same PES time is a duplicate (MR-062: no re-send gap); a cue shows from its PES
+    time plus its start until its end or the next cue; a clear clears. [(house ns, 'show' | 'clear', text)]."""
     seen, out, shown = {}, [], None
     for t, payload in pes:
         rel, prev = subtitle_klv.decode_cue(payload), seen.get(payload)
         seen[payload] = t
-        if rel is None or (prev is not None and t - prev <= 2_500_000_000):
+        if rel is None or prev == t:
             continue
         start, end, text = t + rel[0] * MS, t + rel[1] * MS, rel[2]
         if shown and shown[1] <= start:

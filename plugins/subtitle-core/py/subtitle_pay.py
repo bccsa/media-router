@@ -1,15 +1,16 @@
 """Producer half of the subtitle bridge (`pay`): cue text from an appsink →
 one packed TS chunk per cue into a `video/mpegts` appsrc, PES PTS = the cue's
 content time (the text's PTS: its source PES time, which the formula demux put
-on it), re-sent every RESEND_MS while live. ADR-0016 amendment 2026-10-09;
-docs/research/subtitle-content-time-20261009.md.
+on it), sent once. A probe on the decoder's sink (`pesProbe`) sends an
+empty-value keepalive per KEEPALIVE_MS of source PES time. ADR-0016 amendments
+2026-10-09 and 2026-11-25 (MR-062); docs/research/subtitle-content-time-20261009.md.
 """
 import os
 
 import subtitle_klv
 import subtitle_pack
 import subtitle_runtime as rt
-from subtitle_cues import PayState, StartGate, wire_cue
+from subtitle_cues import PayState, wire_cue
 
 try:  # diagnostics only: a missing trace module must never take the cue path down
     import subtitle_egress_trace
@@ -32,15 +33,21 @@ def clean_text(data):
 
 
 def pack_cue(packer, cue):
-    """The TS chunk for every send of `cue` (PES on its start, `0 --> hold`)."""
+    """The TS chunk for `cue` (PES on its start, `0 --> hold`)."""
     pes_ms, rel = wire_cue(cue)
     return packer.cue_chunk(subtitle_pack.pes_ticks(pes_ms), subtitle_klv.encode_cue(*rel))
+
+
+def pack_keepalive(packer, pes_ms):
+    """A keepalive's TS chunk: the cue layout, an empty KLV value, PES at `pes_ms`."""
+    return packer.cue_chunk(subtitle_pack.pes_ticks(pes_ms), subtitle_klv.KEEPALIVE)
 
 
 # --- pay entries ------------------------------------------------------------------
 
 def install_pay(pipe, spec):
-    """One subtitle stream: appsink (cue text) → PayState → appsrc. → entry."""
+    """One subtitle stream: appsink (cue text) and the `pesProbe` element's sink
+    (source PES, keepalives) → PayState → appsrc. → entry."""
     _, Gst = rt.gst()
     sink = pipe.get_by_name(spec.get("appsink", ""))
     src = pipe.get_by_name(spec.get("appsrc", ""))
@@ -49,12 +56,15 @@ def install_pay(pipe, spec):
         return None
     packer = subtitle_pack.KlvTsPacker(int(spec.get("pid", 0x180)))
     label = spec.get("label") or spec.get("appsrc")
-    entry = {
-        "pipe": pipe, "src": src, "label": label, "gate": StartGate(),
-        "pay": PayState(int(spec.get("holdMs", 8000)), lambda cue: pack_cue(packer, cue)),
-        "egress": egress_trace(label, Gst),
-    }
-    src.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, _on_pay_out, entry)
+    entry = {"pipe": pipe, "src": src, "label": label, "egress": egress_trace(label, Gst)}
+    entry["pay"] = PayState(int(spec.get("holdMs", 8000)), lambda cue: pack_cue(packer, cue),
+                            lambda t: pack_keepalive(packer, t),
+                            lambda t, chunk, cue: push_chunk(entry, t, chunk, cue))
+    probe = pipe.get_by_name(spec["pesProbe"]) if spec.get("pesProbe") else None
+    if probe is not None:
+        probe.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, _on_source_pes, entry)
+    else:
+        rt.warn(f"{label}: no source PES probe ({spec.get('pesProbe')}), no keepalives")
     sink.set_property("emit-signals", True)
     sink.set_property("sync", False)
     sink.set_property("max-buffers", 8)
@@ -74,14 +84,19 @@ def egress_trace(label, Gst):
         return None
 
 
-def _on_pay_out(_pad, info, entry):
-    """appsrc src (its one streaming thread): drop a chunk older than one out."""
+def _on_source_pes(_pad, info, entry):
+    """Decoder sink (the cue callback's streaming thread, ahead of it): a
+    keepalive on this PES's time once it is KEEPALIVE_MS past the last send."""
     _, Gst = rt.gst()
     buf = info.get_buffer()
-    if buf is None or buf.pts == Gst.CLOCK_TIME_NONE or entry["gate"].admit(buf.pts):
-        return Gst.PadProbeReturn.OK
-    rt.trace(f"egress {entry['label']} dropped a stale re-send (start={buf.pts // 1_000_000})")
-    return Gst.PadProbeReturn.DROP
+    try:
+        now = rt.house_now_ms(entry["pipe"]) if buf is not None else None
+        sent = entry["pay"].keepalive(rt.pts_ms(buf, Gst), now) if now is not None else None
+        if sent is not None and sent[1]:
+            rt.warn(f"{entry['label']}: PES time off house-now — keepalives on arrival")
+    except Exception as exc:  # noqa: BLE001 — a keepalive must never stop the decoder
+        rt.warn(f"keepalive failed ({exc})")
+    return Gst.PadProbeReturn.OK
 
 
 def _on_text_sample(sink, entry):
@@ -96,11 +111,10 @@ def _on_text_sample(sink, entry):
         if now is None:
             return Gst.FlowReturn.OK
         pts = rt.pts_ms(buf, Gst)
-        cue, chunk, count, warn = entry["pay"].new_cue(text, pts, now)
+        cue, count, warn = entry["pay"].new_cue(text, pts, now)       # pushed under its lock
         if warn:
             off = "missing" if pts is None else f"{pts - now:+.0f} ms off"
             rt.warn(f"{entry['label']}: cue time {off} house-now — cues start on arrival")
-        push_chunk(entry, cue, chunk)
         late = int(round(now - cue.start))
         rt.trace(f"cue {entry['label']} start={cue.start:.3f} late={late} "
                  f"text={text.replace(chr(10), ' / ')[:60]!r}")
@@ -111,30 +125,17 @@ def _on_text_sample(sink, entry):
     return Gst.FlowReturn.OK
 
 
-def push_chunk(entry, cue, chunk):
-    """One cue's TS into the appsrc, buffer PTS = its start (outside any lock)."""
+def push_chunk(entry, pes_ms, chunk, cue=None):
+    """One chunk into the appsrc, buffer PTS = its PES time; `cue` None = a
+    keepalive (not egress-traced). Called under the PayState lock."""
     _, Gst = rt.gst()
     buf = Gst.Buffer.new_wrapped(chunk)
-    buf.pts = int(cue.start * 1e6)
+    buf.pts = int(pes_ms * 1e6)
     buf.dts = buf.pts
     buf.duration = Gst.CLOCK_TIME_NONE
-    if entry["egress"] is not None:
+    if cue is not None and entry["egress"] is not None:
         try:
-            entry["egress"].pushed(cue.start, entry["src"])
+            entry["egress"].pushed(pes_ms, entry["src"])
         except Exception:  # noqa: BLE001 — diagnostics only
             pass
     entry["src"].emit("push-buffer", buf)
-
-
-def resend(entries):
-    """The RESEND_MS timer: re-send every entry's live cue (same PES bytes)."""
-    for entry in entries:
-        now = rt.house_now_ms(entry["pipe"])
-        if now is None:
-            continue
-        try:
-            again = entry["pay"].resend(now)
-            if again is not None:
-                push_chunk(entry, *again)
-        except Exception as exc:  # noqa: BLE001
-            rt.warn(f"cue re-send failed ({exc})")

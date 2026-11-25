@@ -47,6 +47,9 @@ check("decode key only", k.decode_cue(k.KEY) is None)
 check("decode truncated", k.decode_cue(k.encode_cue(*VECTOR)[:30]) is None)
 check("json carousel ignored", k.decode_cue(b'{"v":1,"streams":[]}') is None)
 check("bad utf8", k.decode_cue(k.KEY + bytes([2, 0xFF, 0xFE])) is None)
+check("keepalive: the key with an empty value, a subtitle KLV that decodes to no cue (MR-062)",
+      k.KEEPALIVE.hex() == "060e2b34020501010e0e4d525355423100" and k.is_subtitle_klv(k.KEEPALIVE)
+      and k.decode_cue(k.KEEPALIVE) is None and k.klv_span(k.KEEPALIVE + b"\x00") == k.KEEPALIVE)
 try:
     k.encode_cue(0, 1, "y" * 5000)
     check("oversize raises", False)

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """The runner-facing plumbing on a fake GStreamer: `subtitle_bridge.install`
 with pay and overlay, the pay path without the egress-trace module, the producer's
-cue PES PTS (its teletext PES PTS, no retime), the consumer's install (no demux
-probe), cue PTS, re-sends, pad add/remove and the burn-in's cue watch, the egress
-trace's env gate, packet walk and bookkeeping, the `show` trace, the text helper.
+cue PES PTS (its teletext PES PTS, no retime), its keepalives off the decoder's
+sink probe (MR-062: wire PTS, PCR, CCs; the overlay ignores them), the consumer's
+install (no demux probe), cue PTS, duplicated PES, pad add/remove and the burn-in's
+cue watch, the egress trace's env gate, packet walk and bookkeeping, the `show`
+trace, the text helper.
 """
 import importlib
 import os
@@ -18,7 +20,7 @@ import subtitle_overlay
 import subtitle_pack as sp
 import subtitle_pay
 import subtitle_runtime
-from subtitle_testlib import check, packets, pes
+from subtitle_testlib import check, packets, pes, use_mpegts_core
 
 NS = types.SimpleNamespace
 
@@ -171,14 +173,121 @@ for t_ns, text in zip(ns, [b"Hello", b"", b"Two\nlines", b"Bye"]):
     subtitle_pay._on_text_sample(appsink, entry)        # teletextdec's text: its PES's PTS
 check("producer: each cue's PES PTS is its teletext PES PTS, 0 ticks whatever its ms remainder",
       [subtitle_egress_trace.klv_pes_ticks(b.data) for b in appsrc.pushed] == [[t] for t in ttx])
-subtitle_pay.resend([entry])
-check("producer: a live cue's re-send repeats its PES PTS",
-      len(appsrc.pushed) == 5 and subtitle_egress_trace.klv_pes_ticks(appsrc.pushed[4].data) == [ttx[3]]
-      and appsrc.pushed[4].pts == appsrc.pushed[3].pts)
-check("producer: each cue starts at its content time, late by its arrival (house now 50 s), no warning",
+check("producer: each cue is pushed once, nothing re-sends it (MR-062)",
+      len(appsrc.pushed) == 4 and not hasattr(subtitle_pay, "resend")
+      and subtitle_bridge.state().keys() == {"pay", "overlay"})
+check("producer: a pay spec without a PES probe warns that it sends no keepalives",
+      [w["message"] for w in warnings] == ["subtitle bridge: eng 888: no source PES probe (None), no keepalives"])
+del warnings[:]
+check("producer: each cue starts at its content time, late by its arrival (house now 50 s), no other warning",
       [(e["startMs"], e["lateMs"]) for e in events] == [(n / 1e6, round(50_000 - n / 1e6)) for n in ns]
       and warnings == [])
 subtitle_runtime.configure(None, None)
+subtitle_bridge.clear()
+
+# --- producer keepalives off the decoder's sink probe, end to end (MR-062) --------
+class ClockPipe(FakePipe):
+    now_ms = 50_000.0
+
+    def get_clock(self):
+        return NS(get_time=lambda: int(self.now_ms * 1_000_000))
+
+
+def klv_of(chunk):
+    """The KLV a chunk's one PES carries (PES header stripped)."""
+    use_mpegts_core()
+    import ts_psi
+    body = b"".join(p[ts_psi.payload_offset(p):] for p in ts_psi.iter_packets(chunk) if ts_psi.ts_pid(p) == 0x180)
+    return body[9 + body[8]:6 + int.from_bytes(body[4:6], "big")]
+
+
+def pcr_of(chunk):
+    use_mpegts_core()
+    import ts_psi
+    return next((ts_psi.read_pcr(p) for p in ts_psi.iter_packets(chunk) if ts_psi.read_pcr(p) is not None), None)
+
+
+warnings = []
+subtitle_runtime.configure(warnings.append, None)
+ttx0, ksink, ksrc = FakeElement("teletextdec", "ttx_0"), FakeElement("appsink", "s"), FakeElement("appsrc", "a")
+kpipe = ClockPipe(ttx_0=ttx0, s=ksink, a=ksrc)
+subtitle_bridge.install(kpipe, {"pay": [{"appsink": "s", "appsrc": "a", "pid": 0x180, "holdMs": 30_000,
+                                         "label": "eng 888", "pesProbe": "ttx_0"}]}, None)
+kentry = subtitle_bridge.state()["pay"][0]
+probe = ttx0.pads["sink"].probes
+check("keepalive: one buffer probe on the decoder's sink pad, none on the appsrc",
+      [(p[0], p[1]) for p in probe] == [(FakeGst.PadProbeType.BUFFER, subtitle_pay._on_source_pes)]
+      and probe[0][2] is kentry and ksrc.pads == {})
+
+
+def ttx_pes(t_ms, cue=None):
+    """One teletext PES at t_ms through the probe (house now t + 34 ms), then its text, if any."""
+    kpipe.now_ms = t_ms + 34
+    info = NS(get_buffer=lambda: FakeBuffer(b"\x10" * 46, int(t_ms * 1_000_000)))
+    assert subtitle_pay._on_source_pes(ttx0.pads["sink"], info, kentry) == FakeGst.PadProbeReturn.OK
+    if cue is not None:
+        ksink.sample = NS(get_buffer=lambda: FakeBuffer(cue + b"\n\x00", int(t_ms * 1_000_000)))
+        subtitle_pay._on_text_sample(ksink, kentry)
+
+
+for t in range(45_000, 75_000, 40):
+    ttx_pes(float(t), {46_000: b"Held", 72_000: b""}.get(t))
+wire = [(b.pts / 1e6, klv_of(b.data)) for b in ksrc.pushed]
+kinds = ["k" if k == klv.KEEPALIVE else klv.decode_cue(k)[2] for _, k in wire]
+check("keepalive: a held cue (30 s) and its clear are each sent once; a keepalive every 1 s of PES time between",
+      kinds.count("Held") == 1 and kinds.count("") == 1 and kinds.count("k") == 30
+      and [t for t, k in wire if k == klv.KEEPALIVE] == [float(t) for t in range(45_000, 75_000, 1000)])
+ticks = [subtitle_egress_trace.klv_pes_ticks(b.data)[0] for b in ksrc.pushed]
+pcrs = [pcr_of(b.data) for b in ksrc.pushed]
+check("keepalive: the wire PES PTS is the buffer PTS + 1 h, non-decreasing; the PCR advances with it",
+      ticks == [sp.pes_ticks(t) for t, _ in wire] and ticks == sorted(ticks)
+      and [p for p in pcrs if p is not None] == sorted({(x - sp.PCR_LAG_TICKS) * 300 for x in ticks})
+      and pcrs[0] is not None and all(p is None for p, (t, k) in zip(pcrs, wire) if k != klv.KEEPALIVE))
+ccs = [p[3] & 0x0F for b in ksrc.pushed for p in [b.data[376:564]]]
+check("keepalive: CCs run on across keepalives and cues", ccs == [n % 16 for n in range(len(ccs))])
+check("keepalive: no warning on a stamp-aligned feed", warnings == [])
+n = len(ksrc.pushed)
+kpipe.now_ms = 90_000.0
+ksink.sample = NS(get_buffer=lambda: FakeBuffer(b"After\n\x00", int(89_000 * 1_000_000)))
+subtitle_pay._on_text_sample(ksink, kentry)             # the teletext stopped: only a late page
+check("keepalive: none while no teletext PES reaches the probe", len(ksrc.pushed) == n + 1)
+bad = NS(get_buffer=lambda: None)
+check("keepalive: a probe call without a buffer passes and sends nothing",
+      subtitle_pay._on_source_pes(ttx0.pads["sink"], bad, kentry) == FakeGst.PadProbeReturn.OK
+      and len(ksrc.pushed) == n + 1)
+kpipe.now_ms = 100_000.0
+off = NS(get_buffer=lambda: FakeBuffer(b"", int(500_000 * 1_000_000)))   # PTS 400 s off house-now
+subtitle_pay._on_source_pes(ttx0.pads["sink"], off, kentry)
+check("keepalive: a PES time off house-now falls back to now, warned once",
+      ksrc.pushed[-1].pts == 100_000 * 1_000_000 and klv_of(ksrc.pushed[-1].data) == klv.KEEPALIVE
+      and [w["message"] for w in warnings] == [
+          "subtitle bridge: eng 888: PES time off house-now — keepalives on arrival"])
+kentry["pay"].pack_keepalive = lambda t: 1 / 0
+kpipe.now_ms = 102_000.0
+subtitle_pay._on_source_pes(ttx0.pads["sink"], NS(get_buffer=lambda: FakeBuffer(b"", FakeGst.CLOCK_TIME_NONE)), kentry)
+check("keepalive: a failure warns and never stops the decoder",
+      warnings[-1]["message"] == "subtitle bridge: keepalive failed (division by zero)")
+subtitle_runtime.configure(None, None)
+
+# Tests 7 and 9: the producer's chunks into the overlay: keepalives ignored, show and clear hold.
+ov_demux, ov_el = FakeElement("mrtsdemux", "subdemux"), FakeElement("textoverlay", "ov")
+ov_pipe = ClockPipe(subdemux=ov_demux, ov=ov_el)
+subtitle_bridge.install(ov_pipe, {"overlay": {"demux": "subdemux", "overlay": "ov"}}, None)
+ov_st = subtitle_bridge.state()["overlay"]
+ov_reader = FakeElement("appsink")
+for t, data in wire:
+    ov_pipe.now_ms = t + 300
+    ov_reader.sample = NS(get_buffer=lambda d=data, t=t: FakeBuffer(d, int(t * 1_000_000)))
+    subtitle_overlay._on_cue_sample(ov_reader, ov_st)
+vpad = ov_el.pads["video_sink"]
+shown = []
+for f in range(45_000, 75_000, 40):
+    ov_pipe.now_ms = f + 500.0
+    subtitle_overlay._on_video_frame(vpad, NS(get_buffer=lambda f=f: FakeBuffer(b"", f * 1_000_000)), ov_st)
+    if not shown or shown[-1][1] != ov_el.props.get("text"):
+        shown.append((f, ov_el.props.get("text")))
+check("overlay: keepalives never queue; the held cue shows on its frame and clears on its clear's",
+      ov_st["cues"].count == 2 and shown == [(45_000, None), (46_000, "Held"), (72_000, "")])
 subtitle_bridge.clear()
 
 # --- egress trace: off by default, its bookkeeping ------------------------------
@@ -256,17 +365,20 @@ far = klv.encode_cue(0, 1000, "Far")
 cue_in(far, 90_000_000.0)
 check("overlay: a PTS far from house now anchors on arrival",
       cues.pending[0] == sc.Cue(50_000.0, 51_000.0, "Far", subtitle_overlay.klv_key(far), "now", 50_000.0))
-# The re-send case: one cue's copies, each a demuxed buffer of its own.
+# One cue's copies, each a demuxed buffer of its own; keepalives in between (MR-062).
 re = klv.encode_cue(0, 3000, "Re")
 cue_in(re, 52_000.0)
-cue_in(re, 52_000.0)                                    # this release's re-send: the same PES again
-cue_in(re, 53_040.0)                                    # an older producer's: the cue on a later PES PTS
-cue_in(re + b"\x00\x00", 54_080.0)                      # bytes a demuxer appended after the triplet
+cue_in(klv.KEEPALIVE, 52_000.0)
+cue_in(re, 52_000.0)                                    # the same PES again (a duplicating hop)
+cue_in(re + b"\x00\x00", 52_000.0)                      # bytes a demuxer appended after the triplet
+cue_in(klv.KEEPALIVE + b"\x00", 53_000.0)
+cue_in(re, 53_040.0)                                    # the same text on a new PES: a new cue (K6)
 cue_in(klv.encode_cue(0, 3000, "Next"), 54_100.0)
-check("overlay: re-sends of a cue queue it once, whatever their PTS or trailing bytes; the next cue queues",
+check("overlay: a duplicated PES queues once, whatever its trailing bytes; keepalives never queue; "
+      "the same text on a new PES time and the next cue queue",
       [(c.start, c.text) for c in cues.pending] == [(50_000.0, "Far"), (50_650.0, "Hi"), (52_000.0, "Re"),
-                                                    (54_100.0, "Next")]
-      and subtitle_overlay.klv_key(re + b"\x00\x00") == subtitle_overlay.klv_key(re))
+                                                    (53_040.0, "Re"), (54_100.0, "Next")]
+      and cues.count == 5 and subtitle_overlay.klv_key(re + b"\x00\x00") == subtitle_overlay.klv_key(re))
 
 # --- consumer readers across pad add/remove; the show trace -------------------
 added, removed = demux.signals["pad-added"][0], demux.signals["pad-removed"][0]

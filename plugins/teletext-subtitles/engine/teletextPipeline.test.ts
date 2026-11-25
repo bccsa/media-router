@@ -65,9 +65,29 @@ describe('teletext pipeline', () => {
                 pid: 0x180,
                 holdMs: 4500,
                 label: 'eng 888',
+                pesProbe: 'ttx_0',
             },
-            { appsink: 'ttxsink_1', appsrc: 'subsrc_1', pid: 0x181, holdMs: 4500, label: 'Norsk' },
+            {
+                appsink: 'ttxsink_1',
+                appsrc: 'subsrc_1',
+                pid: 0x181,
+                holdMs: 4500,
+                label: 'Norsk',
+                pesProbe: 'ttx_1',
+            },
         ]);
         expect(r.sinkNames).toEqual(['busout_40300', 'busout_40301']);
+    });
+
+    it("names each page's decoder as its keepalive probe: the teletext PES ahead of it (MR-062)", () => {
+        const r = buildPipeline({ input: { port: 5004 }, outputs, cueHoldMs: 4500 })!;
+        for (const [i, pay] of r.subtitlePay.entries()) {
+            expect(pay.pesProbe).toBe(`ttx_${i}`);
+            expect(r.pipeline).toMatch(
+                new RegExp(
+                    `queue ! teletextdec name=${pay.pesProbe} [^!]*! text/x-raw,format=utf-8 ! appsink name=${pay.appsink}`,
+                ),
+            );
+        }
     });
 });

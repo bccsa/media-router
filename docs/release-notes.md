@@ -92,6 +92,19 @@ Draft: Phase 5 is being built. Lines are added as its parts land.
   programme on one link and an audio-only output of part of it on another
   name two timelines, and the receiving box keeps them apart.
 
+**v2.0.0.104 hotfix: burned-in subtitles no longer delay the video (MR-062)**
+
+- **Teletext Subtitles sends each cue once**, and once a second a small
+  keepalive that carries no text, so its output stays live between cues and
+  goes absent when the teletext stops. It no longer repeats a held cue every
+  2 s.
+- **A Video Transcoder burning in these subtitles** no longer takes those
+  repeats for late subtitles: its output stays at its normal delay instead of
+  swinging by up to 4 s, and the muxers and SRT/RIST outputs behind it stop
+  warning "Egress delay unstable".
+- **A receiver that starts while a cue is up** shows the next cue, not the one
+  already on screen. Update every box of a subtitle route together.
+
 ## v2.0.0.103 — house-clock timing, Phase 4
 
 Phase 4 of the house-clock timing work: every output now plays what it

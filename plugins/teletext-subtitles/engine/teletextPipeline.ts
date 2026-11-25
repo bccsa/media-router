@@ -11,6 +11,8 @@
  * appsrc: page text in, KLV-wrapped WebVTT cue out, stamped with the page's
  * content time: teletextdec's text carries the PTS the formula demux gives the
  * teletext PES, its PES time on the house timeline (house-clock WI-P3-8).
+ * A probe on each decoder's sink (`pesProbe`) sends a keepalive on that PES
+ * time every second of teletext, so the stream reads live between cues (MR-062).
  *
  * `teletextdec` decodes ONE page per instance, so the teletext ES is tee'd to
  * one decoder per configured page — decode cost is text, negligible. The demux
@@ -70,6 +72,10 @@ export function appsrcName(index: number): string {
     return `subsrc_${index}`;
 }
 
+export function decoderName(index: number): string {
+    return `ttx_${index}`;
+}
+
 export function buildPipeline(input: TeletextPipelineInputs): TeletextPipelineResult {
     const bus = { port: input.input.port, socketPath: input.input.socketPath, jitterMs: 200 };
     // Leaky: a report-only tap must shed, never back-pressure the demux branch.
@@ -83,7 +89,7 @@ export function buildPipeline(input: TeletextPipelineInputs): TeletextPipelineRe
     const decoders = input.outputs
         .map(
             (o, i) =>
-                `t. ! queue ! teletextdec name=ttx_${i} page=${o.page.page} subtitles-mode=true ` +
+                `t. ! queue ! teletextdec name=${decoderName(i)} page=${o.page.page} subtitles-mode=true ` +
                 `subtitles-template="%s\n" ! text/x-raw,format=utf-8 ! appsink name=${appsinkName(i)}`,
         )
         .join(' ');
@@ -110,6 +116,7 @@ export function buildPipeline(input: TeletextPipelineInputs): TeletextPipelineRe
             pid: subtitleStreamPid(i),
             holdMs: input.cueHoldMs,
             label: pageLabel(o.page),
+            pesProbe: decoderName(i),
         })),
         sinkNames: input.outputs.map((o) => `busout_${o.port}`),
     };

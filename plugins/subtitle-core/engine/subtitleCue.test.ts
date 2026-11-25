@@ -102,6 +102,13 @@ describe('KLV triplet', () => {
         expect(decodeSubtitleKlv(bad)).toBeUndefined();
     });
 
+    it("the producer's keepalive (key + empty value) is a subtitle KLV but no cue (MR-062)", () => {
+        const keepalive = Uint8Array.from([...SUBTITLE_KLV_KEY, 0]);
+        expect(Buffer.from(keepalive).toString('hex')).toBe('060e2b34020501010e0e4d525355423100');
+        expect(isSubtitleKlv(keepalive)).toBe(true);
+        expect(decodeSubtitleKlv(keepalive)).toBeUndefined();
+    });
+
     it('refuses oversized cues', () => {
         expect(() => encodeSubtitleKlv({ startMs: 0, endMs: 1, text: 'y'.repeat(5000) })).toThrow(
             /too large/,

@@ -1,17 +1,15 @@
 """Cue logic of the subtitle bridge: pure helpers plus the two thread-shared
-states, each under one lock — `PayState` (producer: the live cue, packed under
-the lock; pushes outside it, `StartGate` drops a re-send that lost its race)
-and `OverlayCues` (consumer: cues queued by start, promoted per video frame).
-ADR-0016 amendment 2026-10-09. Pure stdlib.
+states, each under one lock — `PayState` (producer: each cue and keepalive
+stamped, packed and pushed under the lock, on one shared floor) and
+`OverlayCues` (consumer: cues queued by start, promoted per video frame).
+ADR-0016 amendments 2026-10-09 and 2026-11-25 (MR-062). Pure stdlib.
 """
 import bisect
 import threading
-from collections import OrderedDict, namedtuple
+from collections import namedtuple
 
-RESEND_MS = 2000
-# An arrival-anchored copy of a held cue this soon after its last copy is a re-send.
-RESEND_GAP_MS = RESEND_MS + 500
-ARRIVALS_MAX = 64
+# A keepalive goes out once the source PES time is this far past the last send (MR-062).
+KEEPALIVE_MS = 1000
 FRAME_TIME_TOLERANCE_MS = 10_000
 QUEUE_MAX = 16
 SAME_START_MS = 1.0
@@ -31,7 +29,7 @@ def make_cue(start_ms, text, hold_ms):
 def cue_start(pts_ms, now_ms, floor_ms=None):
     """(start_ms, from_pts): the text buffer's PTS (its content time) when it
     is within FRAME_TIME_TOLERANCE_MS of house-now, else now; never below
-    `floor_ms` (the previous cue's start), so the KLV PES PTS never steps back."""
+    `floor_ms` (the last cue start or keepalive sent), so the KLV PES PTS never steps back."""
     if pts_ms is not None and now_ms is not None and abs(pts_ms - now_ms) <= FRAME_TIME_TOLERANCE_MS:
         start, from_pts = pts_ms, True
     else:
@@ -50,9 +48,8 @@ def relative_cue(cue, pes_ms):
 
 
 def wire_cue(cue):
-    """(PES PTS ms, relative block) for EVERY send of `cue`: the PES sits on
-    the cue's start and the block is `0 --> (end − start)`, so a re-send is a
-    byte-identical repeat on the same PTS."""
+    """(PES PTS ms, relative block) for the one send of `cue`: the PES sits on
+    the cue's start and the block is `0 --> (end − start)`."""
     return cue.start, relative_cue(cue, cue.start)
 
 
@@ -79,12 +76,6 @@ def cue_t0(pts_ms, now_ms):
     return t, ("pts" if pts_ms is not None and t == pts_ms else "now")
 
 
-def is_resend(key, last_key, gap_ms):
-    """A copy of the last cue with this payload, within a re-send gap of it —
-    whatever its t0 source (a restamping hop moves a re-send's start)."""
-    return key is not None and key == last_key and gap_ms is not None and gap_ms <= RESEND_GAP_MS
-
-
 def decide(cue, shown, t_ms):
     """What the overlay should do for a frame at house time t_ms.
     Returns ("show", text), ("clear", None) or None (no change).
@@ -100,57 +91,47 @@ def decide(cue, shown, t_ms):
 
 
 class PayState:
-    """One subtitle stream's producer state: the live cue, the last start (the
-    floor), counters. `pack(cue)` builds its TS chunk (CCs advance)."""
+    """One subtitle stream's producer state: the floor (the last PES time sent,
+    cue or keepalive) and counters. `pack(cue)` / `pack_keepalive(pes_ms)` build
+    a TS chunk (CCs, PCR advance); `push(pes_ms, chunk, cue)` sends it. Stamp,
+    pack and push happen under one lock, so the wire never steps back (MR-062)."""
 
-    def __init__(self, hold_ms, pack):
+    def __init__(self, hold_ms, pack, pack_keepalive, push):
         self.lock = threading.Lock()
-        self.hold_ms, self.pack = hold_ms, pack
-        self.current = None
-        self.last_start = None
+        self.hold_ms, self.pack, self.pack_keepalive, self.push = hold_ms, pack, pack_keepalive, push
+        self.floor = None
         self.count = 0
+        self.keepalives = 0
         self.fallback_warned = False
 
+    def _warn_once(self, from_pts):
+        warn = not from_pts and not self.fallback_warned
+        self.fallback_warned = self.fallback_warned or warn
+        return warn
+
     def new_cue(self, text, pts_ms, now_ms):
-        """→ (cue, chunk, count, warn_fallback) for a fresh text sample."""
+        """A fresh text sample, sent once → (cue, count, warn_fallback)."""
         with self.lock:
-            start, from_pts = cue_start(pts_ms, now_ms, self.last_start)
-            warn = not from_pts and not self.fallback_warned
-            self.fallback_warned = self.fallback_warned or warn
+            start, from_pts = cue_start(pts_ms, now_ms, self.floor)
+            warn = self._warn_once(from_pts)
             cue = make_cue(start, text, self.hold_ms)
-            self.last_start = cue.start
-            self.current = cue if text else None
+            self.push(cue.start, self.pack(cue), cue)
+            self.floor = cue.start
             self.count += 1
-            return cue, self.pack(cue), self.count, warn
+            return cue, self.count, warn
 
-    def resend(self, now_ms):
-        """→ (cue, chunk) to re-send, or None (no live cue / it has ended)."""
+    def keepalive(self, pts_ms, now_ms):
+        """A source PES at `pts_ms`: → (pes_ms, warn_fallback) when a keepalive
+        went out (PES time >= KEEPALIVE_MS past the floor), else None."""
         with self.lock:
-            cue = self.current
-            if cue is None:
+            t, from_pts = cue_start(pts_ms, now_ms, self.floor)
+            if t is None or (self.floor is not None and t < self.floor + KEEPALIVE_MS):
                 return None
-            if now_ms >= cue.end:
-                self.current = None
-                return None
-            return cue, self.pack(cue)
-
-
-class StartGate:
-    """Cue starts leaving the appsrc never step back: a chunk older than one
-    already out (a re-send that lost its race) is dropped."""
-
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.high = None
-        self.dropped = 0
-
-    def admit(self, start):
-        with self.lock:
-            if self.high is not None and start < self.high:
-                self.dropped += 1
-                return False
-            self.high = start
-            return True
+            warn = self._warn_once(from_pts)
+            self.push(t, self.pack_keepalive(t), None)
+            self.floor = t
+            self.keepalives += 1
+            return t, warn
 
 
 class OverlayCues:
@@ -163,25 +144,14 @@ class OverlayCues:
         self.current = None
         self.shown = None
         self.count = 0
-        self.arrivals = OrderedDict()       # key -> arrival (ms) of its last copy
 
-    def add(self, cue, now_ms=None):
-        """Queue `cue` (a Cue) arriving at `now_ms`; False for a re-send: the same
-        start as a held copy, or (clears aside — they are never re-sent) a
-        same-payload copy within a re-send gap. A re-send never moves the held cue."""
+    def add(self, cue):
+        """Queue `cue` (a Cue); False for a copy of a held one (same payload and
+        start: a duplicated PES), which never moves the held cue."""
         with self.lock:
-            last = self.arrivals.get(cue.key)
-            gap = None if now_ms is None or last is None else now_ms - last
-            if now_ms is not None:
-                self.arrivals[cue.key] = now_ms
-                self.arrivals.move_to_end(cue.key)
-                while len(self.arrivals) > ARRIVALS_MAX:
-                    self.arrivals.popitem(last=False)
             for held in [self.current] + self.pending:
                 if held is not None and held.key == cue.key and abs(held.start - cue.start) < SAME_START_MS:
                     return False
-            if cue.text and is_resend(cue.key, cue.key if last is not None else None, gap):
-                return False
             i = bisect.bisect_right([c.start for c in self.pending], cue.start)
             self.pending.insert(i, cue)
             if len(self.pending) > self.max_pending:
@@ -193,7 +163,7 @@ class OverlayCues:
         while self.pending and self.pending[0].start <= t_ms:
             cue = self.pending.pop(0)
             if self.current is not None and cue.start < self.current.start:
-                continue                    # older than the one shown: late re-send
+                continue                    # older than the one shown: never back
             nxt = self.pending[0] if self.pending else None
             if nxt is not None and nxt.start <= t_ms and cue.end <= t_ms:
                 continue                    # over and superseded: never on screen

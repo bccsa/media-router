@@ -12,11 +12,14 @@ Wire layout of the KLV value (UTF-8):
 Times are RELATIVE TO THE CARRYING PES, in ms (ADR-0016 as amended
 2026-09-16): `00:00:00.000 --> 00:00:03.800` means "show from this PES's time
 for 3.8 s". They are never house-clock absolutes — those cannot cross to a
-box with another clock. Empty text = CLEAR cue.
+box with another clock. Empty text = CLEAR cue. An empty VALUE (no timing
+line) is the producer's keepalive, which no consumer decodes as a cue.
 """
 import hashlib
 
 KEY = bytes.fromhex("060e2b34020501010e0e4d5253554231")
+# The producer's keepalive (MR-062): the key with an empty value; decode_cue → None.
+KEEPALIVE = KEY + b"\x00"
 MAX_VALUE_BYTES = 4096
 PID_BASE = 0x180
 

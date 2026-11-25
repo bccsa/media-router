@@ -12,7 +12,7 @@ from subtitle_cues import OverlayCues, absolute_cue, cue_t0, frame_time
 
 
 def klv_key(payload):
-    """A cue's dedupe key: its KLV triplet's hash (a re-send repeats the triplet)."""
+    """A cue's dedupe key: its KLV triplet's hash (a duplicated PES repeats it)."""
     return subtitle_klv.payload_key(subtitle_klv.klv_span(payload))
 
 
@@ -107,12 +107,12 @@ def _on_cue_sample(sink, st):
     buf = smp.get_buffer()
     data = rt.map_bytes(buf)
     rel = subtitle_klv.decode_cue(data)
-    if rel is None:
+    if rel is None:                         # a keepalive (empty value) or not a cue
         return Gst.FlowReturn.OK
     now = rt.house_now_ms(st["pipe"])
     t0, source = cue_t0(rt.pts_ms(buf, Gst), now)
     if t0 is not None:
-        st["cues"].add(absolute_cue(rel, t0)._replace(key=klv_key(data), src=source, at=now), now)
+        st["cues"].add(absolute_cue(rel, t0)._replace(key=klv_key(data), src=source, at=now))
     return Gst.FlowReturn.OK
 
 

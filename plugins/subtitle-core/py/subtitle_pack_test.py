@@ -83,7 +83,7 @@ check("pack: mrts_cli dump reads the cue back (PID 0x180, sid 0xBD, its PTS, the
 c2 = k.cue_chunk(sp.pes_ticks(1000), hello)
 pes2, _pmt2, cnt2 = dump(c2)
 p1, p2 = c1[376:564], c2[376:564]
-check("pack: re-send = same PES PTS + KLV, no PCR (it did not advance), CC advanced",
+check("pack: a second chunk on the same PES PTS (a cue on its keepalive's PES): no PCR, CC advanced",
       ts_psi.read_pcr(p1) is not None and ts_psi.read_pcr(p2) is None
       and klv_pes_ticks(c2) == klv_pes_ticks(c1) and pes_of(pes2) == pes_of(pes1) and clean(cnt2)
       and (p2[3] & 0x0F) == ((p1[3] & 0x0F) + 1) % 16 and (c2[3] & 0x0F) == ((c1[3] & 0x0F) + 1) % 16)
@@ -94,6 +94,20 @@ check("pack: multi-packet cue round-trips, CC continuous, last packet stuffed",
       len(c3) % 188 == 0 and pes_of(pes3) == [unit(0x181, sp.pes_ticks(2000), big_k)]
       and [m["pcrPid"] for m in pmt3] == [0x181] and clean(cnt3)
       and [p[3] & 0x0F for p in ts_psi.iter_packets(c3) if ts_psi.ts_pid(p) == 0x181] == [0, 1, 2])
+ka = sp.KlvTsPacker(0x180)
+seq = [ka.cue_chunk(sp.pes_ticks(ms), body) for ms, body in
+       ((1000, klv.KEEPALIVE), (2000, klv.KEEPALIVE), (2000, hello), (3010, klv.KEEPALIVE))]
+pes_k, _pmt_k, cnt_k = dump(b"".join(seq))
+check("pack: keepalives (MR-062) = the cue layout, 7 packets, a 17-byte KLV (key + empty value) on its PES time",
+      all(len(c) == 7 * 188 for c in seq) and len(klv.KEEPALIVE) == 17
+      and pes_of(pes_k) == [unit(0x180, sp.pes_ticks(1000), klv.KEEPALIVE),
+                            unit(0x180, sp.pes_ticks(2000), klv.KEEPALIVE),
+                            unit(0x180, sp.pes_ticks(2000), hello),
+                            unit(0x180, sp.pes_ticks(3010), klv.KEEPALIVE)])
+pcrs = [ts_psi.read_pcr(p) for c in seq for p in ts_psi.iter_packets(c) if ts_psi.ts_pid(p) == 0x180]
+check("pack: keepalives and cues share CCs and the PCR, which advances with each new PES time",
+      clean(cnt_k) and pcrs == [(sp.pes_ticks(ms) - sp.PCR_LAG_TICKS) * 300 if ms else None
+                                for ms in (1000, 2000, None, 3010)])
 check("pack: wraps the 33-bit PTS", sp.pes_ticks(100_000_000) == (100_000_000 + 3_600_000) * 90 % (1 << 33))
 house_stamper, house_now = IdentityStamp(), 1_768_000_000_000_000
 packer = sp.KlvTsPacker(0x180)
