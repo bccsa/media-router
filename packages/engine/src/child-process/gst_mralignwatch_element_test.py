@@ -3105,6 +3105,190 @@ if GstCheck is not None:
     check(f"a gap push held 400 ms downstream, the input absent: no freeze ({stops[:1]})",
           held and not stops)
 
+# (M) MR-065: a burn-in transcoder's video into mpegtsmux, 40 ms access units with no duration (as
+# mrtsdemux's video pads), beside a 302M input on time. A short stall's in-flight backlog is
+# discarded without lifting the pace; a later return, a long absence or audio still lift it (B-81).
+H264_AU = "video/x-h264,stream-format=(string)byte-stream,alignment=(string)au"
+
+
+def _video(i, plan, dur=None):
+    """Input i's 40 ms access units: plan [(k0, k1, lag_ms)], unit k at content k x 40 ms + lag; a
+    callable in the plan runs there."""
+    def go():
+        for step in plan:
+            if callable(step):
+                step()
+                continue
+            k0, k1, lag = step
+            for k in range(k0, k1):
+                r.sleep_until(r.at(k * 40 + lag))
+                b = Gst.Buffer.new_wrapped(b"\x00\x00\x00\x01\x09\xf0" + k.to_bytes(4, "big") * 8)
+                b.pts = r.at(k * 40)
+                if dur is not None:
+                    b.duration = dur
+                r.srcs[i].emit("push-buffer", b)
+    return go
+
+
+def _run_video(plan, end_ms=6000):
+    """Input 0 the video by `plan`, input 1 302M on time to `end_ms`: (EOS seen, pace reads)."""
+    global r
+    r = Rig("mpegtsmux", [{"caps": H264_AU}, {}])
+    poll = Poller(r, 0)
+    r.run({0: [("call", _video(0, plan)), ("eos",)], 1: [("rt", 0, end_ms // 10, 0), ("eos",)]})
+    eos = r.wait(lambda: r.eos_at is not None)
+    return eos, poll.stop()
+
+
+def _kept_from(i, ms):
+    return [x for x in r.released(i) if x[2] >= r.at(ms)]
+
+
+def _reached(reads, ns, from_ms):
+    """Content ms at which the pace first read `ns` or more, from content `from_ms` on."""
+    t = [c for c, p in reads if c >= r.at(from_ms) and p >= ns]
+    return in_ms(t[0] - r.t0) if t else None
+
+
+print("\n--- mpegtsmux: (M1) a short stall of a video without durations: its backlog lifts no pace ---")
+# 300 ms late; at content 3 s its producer's 600 ms in flight come 200 ms later (silent 240 ms,
+# absent past W 120 ms), then a 200 ms hole in its content and on at 300 ms again (the gate's splice).
+eos, reads = _run_video([(0, 75, 300), (75, 90, 500), (95, 150, 300)])
+check(f"short stall: absent once, its in-flight backlog stale ({r.prop(0, 'stale-buffers')} units), "
+      f"the pace stays at its 300 ms (max {in_ms(max(p for _c, p in reads))} ms, target "
+      f"{in_ms(r.prop(0, 'pace-target'))} ms)",
+      r.prop(0, "absences") == 1 and r.prop(0, "stale-buffers") >= 10
+      and max(p for _c, p in reads) <= 300 * MS + SLACK and r.prop(0, "pace-target") <= 300 * MS + SLACK)
+check(f"short stall: what follows the hole goes out ({len(_kept_from(0, 3800))} of 55 units); EOS, no error",
+      len(_kept_from(0, 3800)) >= 50 and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (M2) back steadily 300 ms later after a short stall, no durations: the pace follows ---")
+# The HIGH case of the review: a duration-less input must not stay discarded. The window is 1 s
+# of running time, so the pace starts rising then, and slews (B-80).
+eos, reads = _run_video([(0, 75, 300), (75, 200, 600)], end_ms=8000)
+up = _reached(reads, 570 * MS, 3000)
+check(f"later after a short stall: the pace reaches its 600 ms (at content {up} ms, by 6.5 s); "
+      f"absent once", up is not None and up <= 6500 and r.prop(0, "absences") == 1)
+check(f"later after a short stall: released again ({len(_kept_from(0, 6000))} of 50 units from 6 s); "
+      f"EOS, no error", len(_kept_from(0, 6000)) >= 45 and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (M3) a video 300 ms late from its start: no window, the pace as before ---")
+eos, reads = _run_video([(0, 100, 300)], end_ms=4000)
+up = _reached(reads, 270 * MS, 0)
+check(f"start: the pace reaches its 300 ms by content 1.5 s (at {up} ms); EOS, no error",
+      up is not None and up <= 1500 and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (M4) the same stall twice within 10 s: the second backlog counts ---")
+# A flapping input gets one window: the second stall's 200 ms is its lateness (B-81).
+eos, reads = _run_video([(0, 50, 300), (50, 65, 500), (70, 100, 300), (100, 115, 500), (120, 200, 300)],
+                        end_ms=8000)
+check(f"two stalls 2 s apart: absent twice, the first moves no pace, the second lifts it toward "
+      f"500 ms (target {in_ms(r.prop(0, 'pace-target'))} ms)",
+      r.prop(0, "absences") == 2 and max(p for c, p in reads if c < r.at(3900)) <= 300 * MS + SLACK
+      and r.prop(0, "pace-target") >= 450 * MS)
+check("two stalls: EOS, no error", eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (M5) the same stall on a 302M input: its replay counts as before (B-81) ---")
+r = Rig("mpegtsmux", [{}, {}])
+r.run({0: [("rt", 0, 300, 300), ("rt", 300, 360, 500), ("rt", 380, 600, 300), ("eos",)],
+       1: [("rt", 0, 600, 0), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+check(f"302M stall: absent once, the target takes its 500 ms (got {in_ms(r.prop(0, 'pace-target'))} ms); "
+      f"EOS, no error", r.prop(0, "absences") == 1 and r.prop(0, "pace-target") >= 450 * MS
+      and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (M6) a blip that keeps nothing out, then a stall 7 s later: no pace either time ---")
+# The blip: 200 ms of content missing, back early (nothing stale): its window keeps nothing out and
+# so leaves the next one free (B-258); the stall 7 s on is the gate's splice.
+eos, reads = _run_video([(0, 25, 300), (30, 50, 250), (50, 200, 300), (200, 215, 500), (220, 260, 300)],
+                        end_ms=10400)
+check(f"blip then stall: absent twice, the pace stays at its 300 ms (max {in_ms(max(p for _c, p in reads))} "
+      f"ms, target {in_ms(r.prop(0, 'pace-target'))} ms); EOS, no error",
+      r.prop(0, "absences") == 2 and max(p for _c, p in reads) <= 300 * MS + SLACK
+      and r.prop(0, "pace-target") <= 300 * MS + SLACK and eos and not r.errors)
+r.stop()
+
+_seen = {}
+
+
+def _note(key):
+    def go():
+        _seen[key] = r.prop(0, "backlog-window")
+    return go
+
+
+def _sink_event(make):
+    """Sends make() into input 0's watch, made then: the rig is the case's own."""
+    def go():
+        r.aws[0].get_static_pad("sink").send_event(make())
+    return go
+
+
+print("\n--- mpegtsmux: (M7) a short absence ended by a GAP: no window, its backlog counts (B-81) ---")
+_seen.clear()
+eos, reads = _run_video([(0, 75, 300), lambda: r.sleep_until(r.at(3000 + 500)),
+                         _sink_event(lambda: Gst.Event.new_gap(r.at(3000), 40 * MS)), _note("gap"),
+                         (76, 90, 500), (95, 150, 300)])
+check(f"GAP rejoin: no window after it ({_seen.get('gap')}), the target takes its 500 ms "
+      f"({in_ms(r.prop(0, 'pace-target'))} ms); EOS, no error",
+      _seen.get("gap") is False and r.prop(0, "pace-target") >= 450 * MS and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (M8) a flush ends an open window ---")
+_seen.clear()
+eos, reads = _run_video([(0, 75, 300), (75, 80, 500), _note("open"),
+                         _sink_event(Gst.Event.new_flush_start),
+                         _sink_event(lambda: Gst.Event.new_flush_stop(True)), _note("flushed")], end_ms=3400)
+check(f"flush: the window open on the rejoin ({_seen.get('open')}), closed by the flush "
+      f"({_seen.get('flushed')})", _seen.get("open") is True and _seen.get("flushed") is False)
+r.stop()
+
+
+def _pause_play():
+    r.pipe.set_state(Gst.State.PAUSED)
+    r.pipe.get_state(2 * S)
+    _seen["paused"] = r.prop(0, "backlog-window")
+    r.pipe.set_state(Gst.State.PLAYING)
+
+
+print("\n--- mpegtsmux: (M9) PLAYING -> PAUSED ends an open window ---")
+_seen.clear()
+eos, reads = _run_video([(0, 75, 300), (75, 80, 500), _note("open"), _pause_play], end_ms=3400)
+check(f"pause: the window open on the rejoin ({_seen.get('open')}), closed by the pause "
+      f"({_seen.get('paused')})", _seen.get("open") is True and _seen.get("paused") is False)
+r.stop()
+
+print("\n--- mpegtsmux: (M10) a GAP rejoin while a used window is open closes it ---")
+# The window opened at 3.5 s and kept the backlog out; a second absence ended by a GAP at 3.9 s
+# must close it, so the 680 ms of stale content that follows counts (B-81; over the 0.5 s span).
+_seen.clear()
+eos, reads = _run_video([(0, 75, 300), (75, 80, 500), _note("open"), lambda: r.sleep_until(r.at(3900)),
+                         _sink_event(lambda: Gst.Event.new_gap(r.at(3360), 40 * MS)), _note("gap"),
+                         (85, 102, 520), (106, 160, 300)], end_ms=6600)
+check(f"GAP rejoin in an open window: open ({_seen.get('open')}), closed by the GAP rejoin "
+      f"({_seen.get('gap')}), what follows lifts the target ({in_ms(r.prop(0, 'pace-target'))} ms); "
+      f"EOS, no error", _seen.get("open") is True and _seen.get("gap") is False
+      and r.prop(0, "pace-target") >= 450 * MS and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (M11) an absence of 560 ms while a used window is open closes it ---")
+# Silent from 3.66 s, absent from about 3.78 s, back at about 4.34 s: inside the first window's
+# 1 s, but no stall: the window closes and the 740 ms late content counts (B-81).
+_seen.clear()
+eos, reads = _run_video([(0, 75, 300), (75, 80, 500), _note("open"), (90, 92, 740), _note("back"),
+                         (92, 110, 740), (115, 200, 300)], end_ms=8000)
+check(f"long absence in an open window: open ({_seen.get('open')}), closed on the return "
+      f"({_seen.get('back')}), absent twice, the target takes its 740 ms "
+      f"({in_ms(r.prop(0, 'pace-target'))} ms); EOS, no error",
+      _seen.get("open") is True and _seen.get("back") is False and r.prop(0, "absences") == 2
+      and r.prop(0, "pace-target") >= 650 * MS and eos and not r.errors)
+r.stop()
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILURE(S) in gst_mralignwatch_element_test.py")

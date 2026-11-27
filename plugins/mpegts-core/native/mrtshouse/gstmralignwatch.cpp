@@ -54,6 +54,7 @@ enum {
     PROP_PASSES,
     PROP_FADES,
     PROP_ANCHOR,
+    PROP_BACKLOG_WINDOW,
 };
 
 #define DEFAULT_SILENCE_FACTOR 3.0
@@ -82,6 +83,12 @@ static const gint64 TAIL_MIN_NS = GST_MSECOND;
 /* A task wake this late is our own process standing still (a stop, a starved box): held, not
  * silence, and what comes after it is a burst (p4-20). */
 static const gint64 FREEZE_NS = mrts::PaceGroup::FREEZE_NS;
+/* A video input absent < REJOIN_SHORT_NS: for REJOIN_BACKLOG_NS of running time its stale arrivals
+ * are a stall's in-flight backlog, no lateness of its own (MR-065, B-258); one window that kept
+ * any out per REJOIN_REARM_NS, else B-81. */
+static const gint64 REJOIN_SHORT_NS = 500 * GST_MSECOND;
+static const gint64 REJOIN_BACKLOG_NS = GST_SECOND;
+static const gint64 REJOIN_REARM_NS = 10 * GST_SECOND;
 /* Untimed buffers add no time level: past this many items the FIFO is full anyway (R9). */
 static const size_t ITEMS_MAX = 32768;
 
@@ -134,6 +141,7 @@ struct Snap {
     guint64 absences = 0, stale_buffers = 0, stale_time = 0, gaps = 0, level_time = 0,
             level_bytes = 0, full_count = 0, passes = 0, fall_after = 0, fades = 0;
     gint64 anchor = 0, anchor_was = 0;
+    bool backlog_window = false;
 };
 
 /* The run's state, under `lock`; reset at each start (READY -> PAUSED). */
@@ -156,6 +164,11 @@ struct Run {
      * move of its anchor until its first timed data that is kept goes out: the others never wait
      * for content behind the gaps (B-80, B-205). */
     bool catching_up = false;
+    /* MR-065: video caps; an absence that may open a backlog window, from when; the window's end
+     * (0: none), whether it kept anything out yet, and when the last one that did. */
+    bool video = false;
+    bool backlog_armed = false, backlog_used = false;
+    gint64 absent_at = 0, backlog_until = 0, backlog_at = -REJOIN_REARM_NS - 1;
     /* What the group re-anchored this input by (B-205): its arrivals are timed past it, and the
      * segment downstream is upstream's moved by it. 0: on the house timeline. */
     gint64 anchor = 0;
@@ -413,6 +426,7 @@ static Snap aw_snap(GstMrAlignWatch* self) {
     s.fall_after = r.fall_after;
     s.silence_limit = aw_limit(self);
     s.absences = r.absences;
+    s.backlog_window = r.backlog_until != 0;
     s.stale_buffers = r.stale_buffers;
     s.stale_time = r.stale_time;
     s.gaps = r.gaps;
@@ -574,8 +588,8 @@ static void aw_burst_check(Run& r, const Item& it, gint64 now) {
     if (now >= r.burst_until || caught_up || own) r.burst = false;
 }
 
-/* Under the lock: an arrival (data or a GAP) at `now`. */
-static void aw_arrival(GstMrAlignWatch* self, gint64 now, guint* pending) {
+/* Under the lock: an arrival (data, or a GAP with `gap`) at `now`. */
+static void aw_arrival(GstMrAlignWatch* self, gint64 now, guint* pending, bool gap = false) {
     Run& r = *self->run;
     if (r.stall_hold) aw_burst(r, now);   // the common stall it was held over ends
     r.stall_hold = false;
@@ -595,7 +609,18 @@ static void aw_arrival(GstMrAlignWatch* self, gint64 now, guint* pending) {
     if (r.upstream_blocked) r.blocked_since = now;
     r.eos_held = false;   // data after a held EOS: the stream started again, a rejoin
     if (r.state == AwState::present) return;
-    if (r.state == AwState::absent) r.discont = true;   // a rejoin is placed by PTS
+    if (r.state == AwState::absent) {
+        r.discont = true;   // a rejoin is placed by PTS
+        /* Back from a short stall on data: its backlog window opens; any other rejoin closes an
+         * open one (MR-065). */
+        if (r.backlog_armed && !gap && now - r.absent_at < REJOIN_SHORT_NS) {
+            r.backlog_until = now + REJOIN_BACKLOG_NS;
+            r.backlog_used = false;
+        } else {
+            r.backlog_until = 0;
+        }
+        r.backlog_armed = false;
+    }
     r.state = AwState::present;
     *pending |= MSG_STATE;
     GST_INFO_OBJECT(self, "input %s present", r.input.c_str());
@@ -762,6 +787,19 @@ static GstFlowReturn aw_discard(GstMrAlignWatch* self, GstMiniObject* obj, guint
     return GST_FLOW_OK;
 }
 
+/* Under the lock: a stale arrival in its rejoin's backlog window (running time, so with or without
+ * durations), within the pace ceiling (B-205): a stall's in-flight backlog (MR-065). The first one
+ * kept out uses the window up for REJOIN_REARM_NS. */
+static bool aw_rejoin_backlog(Run& r, gint64 now, gint64 lateness) {
+    if (r.backlog_until && now >= r.backlog_until) r.backlog_until = 0;
+    if (!r.backlog_until || !r.catching_up || aw_past(lateness)) return false;
+    if (!r.backlog_used) {
+        r.backlog_used = true;
+        r.backlog_at = now;
+    }
+    return true;
+}
+
 /* Data in. Takes `obj` (a buffer, or a list with `is_list`). */
 static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, bool is_list) {
     guint pending = 0;
@@ -828,10 +866,12 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
             r.stale_time += (guint64)(e - s);
             stale_spans.emplace_back(s, e);
         }
-        /* Observed all the same, oldest first, each at its own lateness (B-81). */
+        /* Observed all the same, oldest first, each at its own lateness (B-81); a rejoin's
+         * in-flight backlog is not (MR-065). */
         if (clocked)
             for (auto s = stale_spans.rbegin(); s != stale_spans.rend(); ++s)
-                aw_observe(self, now, now - s->first, &pending);
+                if (!aw_rejoin_backlog(r, now, now - s->first))
+                    aw_observe(self, now, now - s->first, &pending);
         it.obj = GST_MINI_OBJECT_CAST(l);
         if (dropped) {
             r.discont = true;
@@ -851,8 +891,11 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
         }
         if (clocked && it.timed) aw_observe(self, now, it.lateness, &pending, &it);
     } else {
-        /* Observed all the same (B-81), before its stale test: a move of the anchor places it. */
-        if (clocked && it.timed) aw_observe(self, now, it.lateness, &pending, &it);
+        /* Observed all the same (B-81), before its stale test: a move of the anchor places it.
+         * A rejoin's in-flight backlog is discarded unobserved (MR-065). */
+        const bool backlog = it.timed && clocked && r.planner.stale(it.start, it.end) &&
+                             aw_rejoin_backlog(r, now, it.lateness);
+        if (clocked && it.timed && !backlog) aw_observe(self, now, it.lateness, &pending, &it);
         /* The one drop (R21): what ends before the horizon, whose time already went out as
          * silence or this input's own content: a rejoin's backlog, a move's overlap (B-205). */
         if (it.timed && r.planner.stale(it.start, it.end)) {
@@ -864,6 +907,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
             return aw_discard(self, obj, pending);
         }
     }
+    if (it.timed) r.backlog_until = 0;   // kept: the rejoin's backlog is over (MR-065)
     if (!is_list && it.timed && it.end > it.start) r.unit_ns = it.end - it.start;
     it.bytes = is_list ? gst_buffer_list_calculate_size(GST_BUFFER_LIST_CAST(it.obj))
                        : gst_buffer_get_size(GST_BUFFER_CAST(it.obj));
@@ -980,7 +1024,7 @@ static gboolean aw_take_event(GstMrAlignWatch* self, GstEvent* event) {
             if (clocked) {
                 it.arrived = now;
                 aw_thaw(self, now);
-                aw_arrival(self, now, &pending);
+                aw_arrival(self, now, &pending, true);
                 aw_burst_check(r, it, now);
             }
             if (r.sparse) {
@@ -1034,6 +1078,8 @@ static gboolean aw_sink_event(GstPad* pad, GstObject* parent, GstEvent* event) {
             r.fade_in_left = 0;
             r.tail.reset();
             r.catching_up = false;   // nothing is stale after a flush
+            r.backlog_armed = false;
+            r.backlog_until = 0;
             r.pace_run = false;
             r.burst = r.resume_next = r.stall_hold = false;
             r.quiet_started = false;
@@ -1509,6 +1555,11 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
                 GstCaps* caps = NULL;
                 gst_event_parse_caps(ev, &caps);
                 aw_pcm_caps(self, caps);
+                {
+                    const GstStructure* st =
+                        caps && gst_caps_get_size(caps) ? gst_caps_get_structure(caps, 0) : nullptr;
+                    r.video = st && g_str_has_prefix(gst_structure_get_name(st), "video/");
+                }
                 if (r.caps_primed) {
                     /* The first caps after primed ones go only if they differ: on a pad with a
                      * stream, mpegtsmux answers a CAPS by resending PAT and PMT. */
@@ -1697,6 +1748,9 @@ static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
             PaceRegistry::global().mute(r.member);
             r.state = AwState::absent;
             r.catching_up = true;
+            /* A video input that was in the pace, no window lately: a stall may follow (MR-065). */
+            r.backlog_armed = r.video && r.pace_run && now - r.backlog_at > REJOIN_REARM_NS;
+            r.absent_at = now;
             r.pace_run = false;
             r.absences++;
             *pending |= MSG_STATE;
@@ -2043,6 +2097,8 @@ static GstStateChangeReturn aw_change_state(GstElement* element, GstStateChange 
             g_mutex_lock(&self->lock);
             self->run->quiet_started = false;
             self->run->pace_run = false;   // the clock stops: no stretch spans the pause
+            self->run->backlog_armed = false;   // no stall spans it either (MR-065)
+            self->run->backlog_until = 0;
             aw_wake(self);
             g_mutex_unlock(&self->lock);
             break;
@@ -2149,6 +2205,7 @@ static void aw_get_property(GObject* object, guint prop_id, GValue* value, GPara
             case PROP_PASSES: g_value_set_uint64(value, s.passes); break;
             case PROP_FADES: g_value_set_uint64(value, s.fades); break;
             case PROP_ANCHOR: g_value_set_int64(value, s.anchor); break;
+            case PROP_BACKLOG_WINDOW: g_value_set_boolean(value, s.backlog_window); break;
             default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec); break;
         }
         return;
@@ -2415,6 +2472,11 @@ static void gst_mralignwatch_class_init(GstMrAlignWatchClass* klass) {
                            "ceiling: its running time moved this much later (less than 0: "
                            "earlier), so it plays late; 0 once within 3 s of house time.",
                            G_MININT64, G_MAXINT64, 0, ro));
+    g_object_class_install_property(
+        gobject_class, PROP_BACKLOG_WINDOW,
+        g_param_spec_boolean("backlog-window", "Backlog window",
+                             "A rejoin's backlog window is open (MR-065): until kept data, its 1 s, "
+                             "a flush or a pause.", FALSE, ro));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */
     MrtsHouseCommon::install(gobject_class);
 
