@@ -90,5 +90,5 @@ export function setup() {
         return { s, mirror, sync };
     };
     const stored = () => configStore.getProfile('e1', 'default') as any;
-    return { configStore, engineManager, online, bus, writes, calls, sock, ops, track, stored };
+    return { configStore, engineManager, online, bus, runtime, writes, calls, sock, ops, track, stored };
 }

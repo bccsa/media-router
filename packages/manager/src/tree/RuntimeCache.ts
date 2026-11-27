@@ -72,7 +72,7 @@ export class RuntimeCache {
         }
     }
 
-    /** Ids can be re-added (undo); lift their tombstones. */
+    /** Ids re-added (undo) or in a newly activated profile; lift their tombstones. */
     clearModuleTombstones(engineId: string, moduleIds: string[]): void {
         const tombstones = this.removed.get(engineId);
         if (!tombstones) return;
