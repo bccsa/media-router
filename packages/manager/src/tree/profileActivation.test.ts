@@ -1,11 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { activateProfile } from './profileActivation.js';
 
-function setup(opts: { online?: boolean; running?: Record<string, boolean> } = {}) {
+function setup(opts: { online?: boolean; running?: Record<string, boolean>; modules?: Record<string, string[]> } = {}) {
     let active = 'a';
     const running = opts.running ?? { a: true, b: true };
+    const modulesOf = (name: string) => Object.fromEntries((opts.modules?.[name] ?? []).map((id) => [id, {}]));
     const configStore = {
-        getProfile: vi.fn((_e: string, name: string) => (name in running ? { modules: {}, running: running[name] } : undefined)),
+        getProfile: vi.fn((_e: string, name: string) => (name in running ? { modules: modulesOf(name), running: running[name] } : undefined)),
         getEngine: vi.fn(() => ({ active_profile: active })),
         setActiveProfile: vi.fn((_e: string, name: string) => (active = name)),
     } as any;
@@ -44,6 +45,13 @@ describe('activateProfile', () => {
         expect(configStore.setActiveProfile).toHaveBeenCalledWith('e1', 'b');
         expect(engineManager.sendToEngine).not.toHaveBeenCalled();
         expect(engineCommands.sendCommand).not.toHaveBeenCalled();
+    });
+
+    it("lifts the new profile's tombstones and purges the ids it drops (MR-067)", () => {
+        const { deps, runtime } = setup({ modules: { a: ['m1', 'm3'], b: ['m1', 'm4'] } });
+        activateProfile(deps, 'e1', 'b');
+        expect(runtime.clearModuleTombstones).toHaveBeenCalledWith('e1', ['m1', 'm4']);
+        expect(runtime.purgeModuleStates).toHaveBeenCalledWith('e1', ['m3']);
     });
 
     it('an unknown profile is an error', () => {
