@@ -6,13 +6,15 @@ function setup(opts: { online?: boolean; running?: Record<string, boolean> } = {
     const running = opts.running ?? { a: true, b: true };
     const configStore = {
         getProfile: vi.fn((_e: string, name: string) => (name in running ? { modules: {}, running: running[name] } : undefined)),
+        getEngine: vi.fn(() => ({ active_profile: active })),
         setActiveProfile: vi.fn((_e: string, name: string) => (active = name)),
     } as any;
     const engineManager = { isEngineOnline: vi.fn(() => opts.online ?? true), sendToEngine: vi.fn() } as any;
     const engineCommands = { isRunning: vi.fn(() => running[active]), sendCommand: vi.fn() } as any;
     const publisher = { graph: vi.fn() } as any;
-    const deps = { configStore, engineManager, engineCommands, publisher };
-    return { deps, configStore, engineManager, engineCommands, publisher };
+    const runtime = { clearModuleTombstones: vi.fn(), purgeModuleStates: vi.fn() } as any;
+    const deps = { configStore, engineManager, engineCommands, runtime, publisher };
+    return { deps, configStore, engineManager, engineCommands, runtime, publisher };
 }
 
 describe('activateProfile', () => {
