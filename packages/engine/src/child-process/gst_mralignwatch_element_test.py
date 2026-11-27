@@ -317,8 +317,9 @@ class Rig:
         return probe
 
     def add(self, spec, live=False):
-        """One input; `chain`: elements between its appsrc and the element; `live`: added while
-        PLAYING, as bus_input_add does (link first, then run)."""
+        """One input; `chain`: elements between its appsrc and the element; `after`: between the
+        element and the aggregator; `live`: added while PLAYING, as bus_input_add does (link
+        first, then run)."""
         i = len(self.srcs)
         src = Gst.ElementFactory.make("appsrc", f"src{i}")
         for prop, v in (("is-live", True), ("format", Gst.Format.TIME), ("max-bytes", 0)):
@@ -347,12 +348,18 @@ class Rig:
             src.link(aw)
         tmpl = self.agg.get_pad_template("sink_%d" if self.mux else "sink_%u")
         pad = self.agg.request_pad(tmpl, f"sink_{PID0 + i}" if self.mux else f"sink_{i}", None)
-        aw.get_static_pad("src").link(pad)
+        after = Gst.parse_bin_from_description(spec["after"], True) if "after" in spec else None
+        if after is not None:
+            self.pipe.add(after)
+            aw.link(after)
+            after.get_static_pad("src").link(pad)
+        else:
+            aw.get_static_pad("src").link(pad)
         self.srcs.append(src)
         self.aws.append(aw)
         self.pads.append(pad)
         if live:
-            for el in (aw, chain, src):
+            for el in (after, aw, chain, src):
                 if el is not None:
                     el.sync_state_with_parent()
 
@@ -3298,19 +3305,26 @@ BURNIN = "mralignwatch name=bi aligner=burnin input=video seed-lateness=60000000
 HOLD = "queue min-threshold-buffers=16 max-size-buffers=0 max-size-time=0 max-size-bytes=0"
 
 
-def _burnin(plan, end_ms, hold=False, props=None):
+def _burnin(plan, end_ms, hold=False, props=None, member=False):
     """Input 0 the video by `plan` through the burn-in watch (and a chain held by 16 frames, as a
-    decode/encode chain is), input 1 302M on time: (EOS seen, [(clock, pts)] the burn-in pushed)."""
+    decode/encode chain is), input 1 302M on time; `member`: input 2 another burn-in member, heard
+    throughout. (EOS seen, [(clock, pts)] the burn-in pushed)."""
     global r
     chain = BURNIN + (" ! " + HOLD if hold else "")
-    r = Rig("mpegtsmux", [{"caps": H264_AU, "chain": chain, "props": props or {}}, {}])
+    inputs = [{"caps": H264_AU, "chain": chain, "props": props or {}}, {}]
+    if member:
+        inputs.append({"chain": "mralignwatch name=bi2 aligner=burnin input=cue seed-lateness=600000000"})
+    r = Rig("mpegtsmux", inputs)
     out = []
 
     def probe(_pad, info):
         out.append((r.now(), info.get_buffer().pts))
         return Gst.PadProbeReturn.OK
     r.pipe.get_by_name("bi").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, probe)
-    r.run({0: [("call", _video(0, plan)), ("eos",)], 1: [("rt", 0, end_ms // 10, 0), ("eos",)]})
+    plans = {0: [("call", _video(0, plan)), ("eos",)], 1: [("rt", 0, end_ms // 10, 0), ("eos",)]}
+    if member:
+        plans[2] = [("rt", 0, end_ms // 10, 100), ("eos",)]
+    r.run(plans)
     eos = r.wait(lambda: r.eos_at is not None)
     return eos, out
 
@@ -3430,6 +3444,66 @@ check(f"splice: the 302M input's take at the splice (content 3-5 s) {in_ms(after
 check(f"splice: the muxer's video never absent ({r.prop(0, 'absences')}), nothing stale "
       f"({r.prop(0, 'stale-buffers')}); EOS, no error",
       r.prop(0, "absences") == 0 and r.prop(0, "stale-buffers") == 0 and eos and not r.errors)
+r.stop()
+
+print("\n--- burn-in: (S5) back after a 4.6 s outage: at its pace, nothing pulled ---")
+# The hole is measured in content, not from the horizon the gaps moved on; an absence ends
+# what the watch learnt of its step and lead.
+eos, out = _burnin([(0, 75, 100), (190, 300, 100)], 12000)
+bi = r.pipe.get_by_name("bi")
+warm, first, later = _late(out, 1000, 2960), _first_late(out, 7600), _first_late(out, 8600)
+check(f"4.6 s outage: absent ({bi.get_property('absences')}), back at its pace ({in_ms(first)} ms, "
+      f"{in_ms(later)} ms 1 s on, against {in_ms(warm)} ms); EOS, no error",
+      bi.get_property("absences") >= 1 and first is not None and abs(first - warm) <= 15 * MS
+      and later is not None and abs(later - warm) <= 15 * MS and eos and not r.errors)
+r.stop()
+
+print("\n--- burn-in: (S5b) a 600 ms hole while another member is heard: absent, back at its pace ---")
+eos, out = _burnin([(0, 75, 100), (90, 200, 100)], 8000, member=True)
+bi = r.pipe.get_by_name("bi")
+warm, first = _late(out, 1000, 2960), _first_late(out, 3600)
+check(f"600 ms hole, a member heard: absent ({bi.get_property('absences')}), back at its pace "
+      f"({in_ms(first)} ms against {in_ms(warm)} ms); EOS, no error",
+      bi.get_property("absences") >= 1 and first is not None and abs(first - warm) <= 15 * MS
+      and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (S6) S3 through a language route's taginject: gapped, nothing pulled ---")
+# The muxer builds `mralignwatch ! taginject ! mpegtsmux` for a language: the watch feeds the mux.
+r = Rig("mpegtsmux", [{"props": {"silence-floor": 250 * MS}, "after": "taginject tags=language-code=nor"},
+                      {"props": {"seed-lateness": 600 * MS}}])
+r.run({0: [("rt", 0, 300, 100), ("rt", 320, 600, 100), ("eos",)], 1: [("rt", 0, 600, 0), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+hole = [g for g in r.released(0, "gap") if r.at(2990) <= g[2] <= r.at(3010)]
+back = next((t - p for _k, t, p, _f in r.released(0) if p == r.at(3200)), None)
+gap = out_gap(r, 2500, 4500)
+check(f"language route: a GAP from 3.0 s ({len(hole)}), what follows at the pace ({in_ms(back)} ms "
+      f"after its time, not 200 ms ahead), the mux never waits ({in_ms(gap)} ms); PES at their PTS, "
+      f"EOS, no error",
+      hole and back is not None and abs(back - 600 * MS) <= SLACK and gap is not None
+      and gap <= 120 * MS and r.pes_ok(0, list(range(300)) + list(range(320, 600)))
+      and r.pes_ok(1, range(600)) and eos and not r.errors)
+r.stop()
+
+print("\n--- burn-in: (S7) a lone unit between two 200 ms holes: both closed up ---")
+# The step is not learnt across the first hole, so the second is a hole too.
+eos, out = _burnin([(0, 75, 100), (80, 81, 100), (86, 200, 100)], 8000)
+warm, second = _late(out, 1000, 2960), _first_late(out, 3440)
+check(f"lone unit: no pause (longest wait {in_ms(_wait(out, 2500, 4000))} ms), the unit after the "
+      f"second hole 400 ms ahead ({in_ms(second)} ms late against {in_ms(warm)} ms); EOS, no error",
+      _wait(out, 2500, 4000) <= 100 * MS and second is not None
+      and abs(second - (warm - 400 * MS)) <= 25 * MS and eos and not r.errors)
+r.stop()
+
+print("\n--- burn-in: (S8) two 200 ms holes 2 s apart fit under the cap: both closed up ---")
+# 200 ms, ~35 ms given back over 44 steps, then 200 ms more: ~365 ms of lead, under 500.
+eos, out = _burnin([(0, 75, 100), (80, 125, 100), (130, 250, 100)], 10000)
+warm, second = _late(out, 1000, 2960), _first_late(out, 5200)
+check(f"two holes under the cap: no pause (longest waits {in_ms(_wait(out, 2500, 4000))}, "
+      f"{in_ms(_wait(out, 4500, 6000))} ms), the lead ~365 ms ({in_ms(second)} ms late against "
+      f"{in_ms(warm)} ms); EOS, no error",
+      _wait(out, 2500, 4000) <= 100 * MS and _wait(out, 4500, 6000) <= 100 * MS
+      and second is not None and abs(second - (warm - 365 * MS)) <= 25 * MS and eos and not r.errors)
 r.stop()
 
 print()

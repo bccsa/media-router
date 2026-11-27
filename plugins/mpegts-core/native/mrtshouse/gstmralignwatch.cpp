@@ -234,9 +234,11 @@ struct Run {
     guint64 fades = 0;              // fade-outs and fade-ins (B-83)
     gint64 unit_ns = 0;             // the last data buffer's duration, a gap piece's toward audio
     gint64 out_start = -1, out_step = 0;   // the last data out's start, its step (B-259)
+    gint64 out_end = -1;            // ...and its end: a hole is measured in content (B-259)
     gint64 pull_ns = 0;             // how far ahead of start + pace its data goes out (B-259)
-    /* What the src pad feeds (task thread only): an audio aggregator takes a GAP whole at the
-     * start of its output block, mpegtsmux takes only a GAP's start (WI-P2-1 F2). */
+    /* What the src pad feeds, learnt by the task thread and written under the lock (the sink
+     * thread reads it): an audio aggregator takes a GAP whole at the start of its output block,
+     * mpegtsmux takes only a GAP's start (WI-P2-1 F2). */
     enum class Down { unknown, audio, mux, other } down = Down::unknown;
     gint64 block_ns = 0;            // the audio aggregator's output block
     /* PCM out (B-83, task thread only): the caps' rate and the last FADE_NS of sound out; the next
@@ -246,6 +248,13 @@ struct Run {
     mrts::PcmTail tail;
     gsize fade_in_left = 0, fade_in_total = 0;
 };
+
+/* Under the lock: what B-259 learnt of the data out is void (an absence, a flush, a re-anchor). */
+static void aw_pull_reset(Run& r) {
+    r.out_start = r.out_end = -1;
+    r.out_step = 0;
+    r.pull_ns = 0;
+}
 
 #define GST_TYPE_MRALIGNWATCH (gst_mralignwatch_get_type())
 G_DECLARE_FINAL_TYPE(GstMrAlignWatch, gst_mralignwatch, GST, MRALIGNWATCH, GstElement)
@@ -719,6 +728,7 @@ static void aw_reanchor(GstMrAlignWatch* self, gint64 anchor, guint* pending, It
     if (cur && cur->timed) aw_shift(*cur, delta);   // timed as what comes next
     r.catching_up = true;
     r.discont = true;
+    aw_pull_reset(r);   // its content moved: no step or lead carries over (B-259)
     aw_wake(self);   // what it queued is due at its new time
     *pending |= MSG_ANCHOR;
     if (was == 0)
@@ -1095,9 +1105,7 @@ static gboolean aw_sink_event(GstPad* pad, GstObject* parent, GstEvent* event) {
             r.fade_in_left = 0;
             r.tail.reset();
             r.catching_up = false;   // nothing is stale after a flush
-            r.out_start = -1;
-            r.out_step = 0;
-            r.pull_ns = 0;
+            aw_pull_reset(r);
             r.backlog_armed = false;
             r.backlog_until = 0;
             r.pace_run = false;
@@ -1249,7 +1257,15 @@ static void aw_sync_segment(GstMrAlignWatch* self, gint64 anchor) {
         aw_push_moved(self, anchor);
 }
 
-/* The element our src pad feeds, through ghost pads (a live branch's bin); NULL: unlinked. */
+/* An element that passes every buffer and event on unchanged, one pad each way. */
+static bool aw_passes_through(GstElement* el) {
+    GstElementFactory* f = gst_element_get_factory(el);
+    const gchar* name = f ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(f)) : NULL;
+    return name && (g_str_equal(name, "taginject") || g_str_equal(name, "identity"));
+}
+
+/* The element our src pad feeds, through ghost pads (a live branch's bin) and pass-through
+ * elements; NULL: unlinked. */
 static GstElement* aw_downstream(GstMrAlignWatch* self) {
     GstPad* pad = gst_pad_get_peer(self->srcpad);
     for (int hop = 0; pad && hop < 16; hop++) {
@@ -1263,8 +1279,16 @@ static GstElement* aw_downstream(GstMrAlignWatch* self) {
             }
         } else {
             GstElement* el = gst_pad_get_parent_element(pad);
-            gst_object_unref(pad);
-            return el;
+            if (!el || !aw_passes_through(el)) {
+                gst_object_unref(pad);
+                return el;
+            }
+            /* A pass-through (a language route's taginject): what it feeds. */
+            if (GstPad* src = gst_element_get_static_pad(el, "src")) {
+                next = gst_pad_get_peer(src);
+                gst_object_unref(src);
+            }
+            gst_object_unref(el);
         }
         gst_object_unref(pad);
         pad = next;
@@ -1273,24 +1297,31 @@ static GstElement* aw_downstream(GstMrAlignWatch* self) {
     return NULL;
 }
 
-/* Task thread, not under the lock: what the src pad feeds, learnt once it feeds something. */
+/* Task thread: what the src pad feeds, learnt once it feeds something. Found outside the lock,
+ * set under it (the only writer is this thread, so its unlocked read here is safe). */
 static void aw_learn_downstream(GstMrAlignWatch* self) {
     Run& r = *self->run;
     if (r.down != Run::Down::unknown) return;
     GstElement* el = aw_downstream(self);
     if (!el) return;
+    Run::Down down = Run::Down::other;
+    gint64 block_ns = 0;
     if (GST_IS_AUDIO_AGGREGATOR(el)) {
         guint64 block = 0;
         g_object_get(el, "output-buffer-duration", &block, NULL);
-        r.block_ns = std::max<gint64>(block ? (gint64)block : DEFAULT_AUDIO_BLOCK, GST_MSECOND);
-        r.down = Run::Down::audio;
-    } else {
-        r.down = GST_IS_AGGREGATOR(el) ? Run::Down::mux : Run::Down::other;
+        block_ns = std::max<gint64>(block ? (gint64)block : DEFAULT_AUDIO_BLOCK, GST_MSECOND);
+        down = Run::Down::audio;
+    } else if (GST_IS_AGGREGATOR(el)) {
+        down = Run::Down::mux;
     }
+    g_mutex_lock(&self->lock);
+    if (down == Run::Down::audio) r.block_ns = block_ns;
+    r.down = down;
+    g_mutex_unlock(&self->lock);
     GST_DEBUG_OBJECT(self, "feeds %s%s", GST_ELEMENT_NAME(el),
-                     r.down == Run::Down::audio ? ", an audio aggregator"
-                     : r.down == Run::Down::mux  ? ", an aggregator"
-                                                 : "");
+                     down == Run::Down::audio ? ", an audio aggregator"
+                     : down == Run::Down::mux  ? ", an aggregator"
+                                               : "");
     gst_object_unref(el);
 }
 
@@ -1638,12 +1669,15 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
     if (hole) r.discont = true;
     if (it.timed) {
         if (aw_data(it)) {
-            const gint64 hole = aw_pull_hole(r, it);
-            r.pull_ns = hole ? r.pull_ns + hole
-                             : std::max<gint64>(r.pull_ns - r.out_step / HOLE_PULL_SLEW, 0);
-            if (r.out_start >= 0 && it.start > r.out_start && it.start - r.out_start < GST_SECOND)
+            const gint64 pulled = aw_pull_hole(r, it);
+            r.pull_ns = pulled ? r.pull_ns + pulled
+                               : std::max<gint64>(r.pull_ns - r.out_step / HOLE_PULL_SLEW, 0);
+            /* The step is not learnt across a hole it closed up, so the next hole is too. */
+            if (!pulled && r.out_start >= 0 && it.start > r.out_start &&
+                it.start - r.out_start < GST_SECOND)
                 r.out_step = it.start - r.out_start;
             r.out_start = it.start;
+            r.out_end = it.end;
         }
         r.planner.emitted(it.end);
         /* Kept timed data from a present input: caught up, its gaps end (B-80). What an absent
@@ -1792,7 +1826,7 @@ static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
             r.catching_up = true;
             /* A video input that was in the pace, no window lately: a stall may follow (MR-065). */
             r.backlog_armed = r.video && r.pace_run && now - r.backlog_at > REJOIN_REARM_NS;
-            r.pull_ns = 0;
+            aw_pull_reset(r);
             r.absent_at = now;
             r.pace_run = false;
             r.absences++;
@@ -1832,7 +1866,8 @@ static gint64 aw_pull_hole(const Run& r, const Item& h) {
     if (!h.timed || !aw_data(h) || r.down != Run::Down::other || r.sparse ||
         r.state != AwState::present || r.out_start < 0 || r.out_step <= 0)
         return 0;
-    const gint64 hole = h.start - std::max(r.out_start + r.out_step, r.planner.horizon_ns());
+    /* Content only: after a catch-up the horizon runs on with the gaps (B-259 review). */
+    const gint64 hole = h.start - std::max(r.out_start + r.out_step, r.out_end);
     return hole > HOLE_GAP_NS && r.pull_ns + hole <= HOLE_PULL_MAX_NS ? hole : 0;
 }
 
