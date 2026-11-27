@@ -2367,9 +2367,10 @@ check(f"hole doubling: the pace stays at the late input's 3.5 s, never doubling 
       f"{max(late_paces, default=0) / MS:.0f} ms from 5 s on)",
       late_paces and max(late_paces) <= 3500 * MS + 300 * MS)
 check(f"hole doubling: the mux keeps sending (longest wait between outputs {in_ms(gap)} ms, "
-      f"content 8-24 s), the held input gapped across each of its holes (absent "
-      f"{r.prop(0, 'absences')} times), EOS, no error",
-      gap is not None and gap <= 500 * MS and r.prop(0, "absences") >= 5 and eos and not r.errors)
+      f"content 8-24 s), the held input gapped across each of its holes ({r.prop(0, 'gaps')} gaps, "
+      f"absent {r.prop(0, 'absences')} times: a hole before queued data is gapped present, "
+      f"B-259), EOS, no error",
+      gap is not None and gap <= 500 * MS and r.prop(0, "gaps") >= 5 and eos and not r.errors)
 r.stop()
 
 print("\n--- mpegtsmux: (B4) a held input with a hole at its head is silent, so gapped ---")
@@ -2390,8 +2391,9 @@ r.run({0: [("call", _jump), ("eos",)], 1: [("rt", 0, 600, 1000), ("eos",)]})
 eos = r.wait(lambda: r.eos_at is not None, 8.0)
 gap = out_gap(r, 1500, 4000)
 check(f"held hole: the mux never waits through it (longest wait between outputs {in_ms(gap)} ms, "
-      f"content 1.5-4 s), input 0 absent over it ({r.prop(0, 'absences')})",
-      gap is not None and gap <= 600 * MS and r.prop(0, "absences") >= 1)
+      f"content 1.5-4 s), input 0 gapped over it ({r.prop(0, 'gaps')} gaps, absent "
+      f"{r.prop(0, 'absences')}: B-259)",
+      gap is not None and gap <= 600 * MS and r.prop(0, "gaps") >= 1)
 check("held hole: both inputs' buffers all written at their PTS, EOS, no error",
       r.pes_ok(0, list(range(100)) + list(range(300, 600))) and r.pes_ok(1, range(600))
       and eos and not r.errors)
@@ -3287,6 +3289,147 @@ check(f"long absence in an open window: open ({_seen.get('open')}), closed on th
       f"({in_ms(r.prop(0, 'pace-target'))} ms); EOS, no error",
       _seen.get("open") is True and _seen.get("back") is False and r.prop(0, "absences") == 2
       and r.prop(0, "pace-target") >= 650 * MS and eos and not r.errors)
+r.stop()
+
+# (S) MR-065 follow-up, B-259: a content hole (the OCC sim's splice) is no stall and no wait. The
+# burn-in's video watch (toward no aggregator, a group of its own, held 600 ms by its cues as on
+# the gate) feeds the muxer's video watch, beside a 302M input on time.
+BURNIN = "mralignwatch name=bi aligner=burnin input=video seed-lateness=600000000"
+HOLD = "queue min-threshold-buffers=16 max-size-buffers=0 max-size-time=0 max-size-bytes=0"
+
+
+def _burnin(plan, end_ms, hold=False, props=None):
+    """Input 0 the video by `plan` through the burn-in watch (and a chain held by 16 frames, as a
+    decode/encode chain is), input 1 302M on time: (EOS seen, [(clock, pts)] the burn-in pushed)."""
+    global r
+    chain = BURNIN + (" ! " + HOLD if hold else "")
+    r = Rig("mpegtsmux", [{"caps": H264_AU, "chain": chain, "props": props or {}}, {}])
+    out = []
+
+    def probe(_pad, info):
+        out.append((r.now(), info.get_buffer().pts))
+        return Gst.PadProbeReturn.OK
+    r.pipe.get_by_name("bi").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, probe)
+    r.run({0: [("call", _video(0, plan)), ("eos",)], 1: [("rt", 0, end_ms // 10, 0), ("eos",)]})
+    eos = r.wait(lambda: r.eos_at is not None)
+    return eos, out
+
+
+def _late(out, a_ms, b_ms):
+    """Median of how late the burn-in pushed its units of content a..b ms (ns)."""
+    return median([t - p for t, p in out if r.at(a_ms) <= p < r.at(b_ms)])
+
+
+def _first_late(out, ms):
+    return next((t - p for t, p in out if p == r.at(ms)), None)
+
+
+def _wait(out, a_ms, b_ms):
+    """The longest wait between two of the burn-in's pushes of content a..b ms (ns)."""
+    ts = [t for t, p in out if r.at(a_ms) <= p < r.at(b_ms)]
+    return max((b - a for a, b in zip(ts, ts[1:])), default=None)
+
+
+print("\n--- burn-in: (S1) a 200 ms hole keeps the frame step, and the lead is given back ---")
+# The gate's splice: units 75-79 (content 3.0-3.2 s) never come. The unit after the hole goes out
+# one step after the last, 200 ms ahead of its pace; that lead falls by 1/50 of each step, ~10 s.
+eos, out = _burnin([(0, 75, 100), (80, 350, 100)], 14000)
+warm, first = _late(out, 1000, 2960), _first_late(out, 3200)
+mid, end = _late(out, 7800, 8200), _late(out, 13400, 14000)
+check(f"200 ms hole: no pause (longest wait {in_ms(_wait(out, 2500, 4000))} ms), the unit after it "
+      f"out 200 ms ahead ({in_ms(first)} ms late against {in_ms(warm)} ms)",
+      _wait(out, 2500, 4000) <= 100 * MS and first is not None and first <= warm - 150 * MS)
+check(f"200 ms hole: the lead given back, ~100 ms at 5 s ({in_ms(mid)} ms late), none at 10 s "
+      f"({in_ms(end)} ms late)",
+      mid is not None and abs(mid - (warm - 100 * MS)) <= 25 * MS
+      and end is not None and abs(end - warm) <= 15 * MS)
+check(f"200 ms hole: the muxer's video never absent ({r.prop(0, 'absences')}), nothing stale "
+      f"({r.prop(0, 'stale-buffers')}); EOS, no error",
+      r.prop(0, "absences") == 0 and r.prop(0, "stale-buffers") == 0 and eos and not r.errors)
+r.stop()
+
+print("\n--- burn-in: (S2) a 600 ms hole waits as before ---")
+eos, out = _burnin([(0, 75, 100), (90, 200, 100)], 8000)
+warm, first = _late(out, 1000, 2960), _first_late(out, 3600)
+check(f"600 ms hole: waited out (longest wait {in_ms(_wait(out, 2500, 4500))} ms), the unit after "
+      f"it at its pace ({in_ms(first)} ms late against {in_ms(warm)} ms); EOS, no error",
+      _wait(out, 2500, 4500) >= 600 * MS and first is not None and abs(first - warm) <= 15 * MS
+      and eos and not r.errors)
+r.stop()
+
+print("\n--- burn-in: (S2b) two holes within 10 s add up to 500 ms at most ---")
+# 280 ms at 2.0 s is closed up; 320 ms at 4.28 s with ~235 ms of lead left would make 555: waited
+# out, the lead it still has kept.
+eos, out = _burnin([(0, 50, 100), (57, 107, 100), (115, 200, 100)], 8000)
+warm, second = _late(out, 1000, 1960), _first_late(out, 4600)
+check(f"two holes: the first closed up (longest wait {in_ms(_wait(out, 1500, 2500))} ms), the "
+      f"second waited out ({in_ms(_wait(out, 4000, 5000))} ms), the lead kept "
+      f"({in_ms(second)} ms late against {in_ms(warm)} ms); EOS, no error",
+      _wait(out, 1500, 2500) <= 100 * MS and _wait(out, 4000, 5000) >= 320 * MS
+      and second is not None and abs(second - (warm - 235 * MS)) <= 25 * MS and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (S3) a present input's hole is gapped at its own time, the mux never waits ---")
+# Input 0 100 ms late under a 600 ms pace, content 3.0-3.2 s missing: its next data is queued, so
+# the hole goes as a GAP at 3.0 s + pace, not after W (250 ms here, as the gate's 121-233 ms).
+r = Rig("mpegtsmux", [{"props": {"silence-floor": 250 * MS}}, {"props": {"seed-lateness": 600 * MS}}])
+r.run({0: [("rt", 0, 300, 100), ("rt", 320, 600, 100), ("eos",)], 1: [("rt", 0, 600, 0), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+hole = [g for g in r.released(0, "gap") if r.at(2990) <= g[2] <= r.at(3010)]
+gap = out_gap(r, 2500, 4500)
+check(f"present hole: a GAP from 3.0 s ({len(hole)}) pushed at the pace "
+      f"({in_ms(hole[0][1] - hole[0][2]) if hole else None} ms after its time), never absent "
+      f"({r.prop(0, 'absences')})",
+      hole and abs(hole[0][1] - hole[0][2] - 600 * MS) <= SLACK and r.prop(0, "absences") == 0)
+check(f"present hole: the mux never waits (longest wait between outputs {in_ms(gap)} ms); both "
+      f"inputs' buffers written at their PTS, EOS, no error",
+      gap is not None and gap <= 120 * MS and r.pes_ok(0, list(range(300)) + list(range(320, 600)))
+      and r.pes_ok(1, range(600)) and eos and not r.errors)
+r.stop()
+
+
+def _pes_late(r, i, a_ms, b_ms):
+    """(content ms, how late it left the mux, ns) of input i's PES of content a..b ms."""
+    with r.lock:
+        out = list(r.out)
+    res = []
+    for t, _p, _n, data, _c in out:
+        for off in range(0, len(data) - 187, 188):
+            p = data[off:off + 188]
+            pid, afc = ((p[1] & 0x1F) << 8) | p[2], (p[3] >> 4) & 3
+            if pid != PID0 + i or not p[1] & 0x40 or not afc & 1:
+                continue
+            h = (p[5 + p[4]:] if afc == 3 else p[4:])[9:14]
+            pts = ((h[0] >> 1) & 7) << 30 | h[1] << 22 | (h[2] >> 1) << 15 | h[3] << 7 | h[4] >> 1
+            rt = r.t0 + (pts - pts90(r.t0)) % WRAP * S // 90000
+            if r.at(a_ms) <= rt < r.at(b_ms):
+                res.append(((rt - r.t0) / MS, t - rt))
+    return res
+
+
+print("\n--- mpegtsmux: (S4) a splice through the burn-in and a 16-frame chain: D_e does not rise ---")
+# The gate's chain: the burn-in watch, a chain held by frame count, the muxer's video watch (W at
+# least 230 ms, as muy0d6's 228) and a 302M input. Before B-259 the burn-in paused for the hole,
+# the chain stopped, and the mux held the 302M input for W: RIST D_e rose (1020 -> 1230).
+_PY = os.path.normpath(os.path.join(_HERE, "..", "..", "..", "..", "plugins", "mpegts-core", "py"))
+sys.path.insert(0, _PY)
+import egress_core as ec  # noqa: E402
+
+eos, out = _burnin([(0, 100, 100), (105, 250, 100)], 10000, hold=True,
+                   props={"silence-floor": 230 * MS})
+late = _pes_late(r, 1, 2000, 9000)
+delay = ec.EgressDelay(ec.EgressConfig())
+raises = [e for _c, lam in late for e in delay.on_pes(lam, ec.EgressDelay.eps_ns(1200))
+          if e[0] == "d-e-raise"]
+# The chain is 640 ms deep: the video's hole at 4.0 s meets the 302M input's content near 3.3 s.
+before = max((lam for c, lam in late if c < 3000), default=None)
+after = max((lam for c, lam in late if 3000 <= c < 5000), default=None)
+check(f"splice: the 302M input's take at the splice (content 3-5 s) {in_ms(after)} ms against "
+      f"{in_ms(before)} ms before, D_e {in_ms(delay.d_e)} ms with no raise ({len(raises)})",
+      before is not None and after is not None and after <= before + 40 * MS and not raises)
+check(f"splice: the muxer's video never absent ({r.prop(0, 'absences')}), nothing stale "
+      f"({r.prop(0, 'stale-buffers')}); EOS, no error",
+      r.prop(0, "absences") == 0 and r.prop(0, "stale-buffers") == 0 and eos and not r.errors)
 r.stop()
 
 print()
