@@ -225,3 +225,17 @@ export function missingRefKeys(derived: DerivedRefs): string[] {
         .filter((r) => !r.readOnly && r.n === undefined)
         .map((r) => r.key);
 }
+
+/**
+ * Stored records, engine-wide, with a dragged place but no tag drawn any more
+ * (its far end moved back, its last link removed): the place is forgotten, so
+ * a tag that comes back sits beside its port. Read-only tags keep theirs.
+ */
+export function stalePositionKeys(
+    editor: EditorLayout | undefined,
+    derived: DerivedRefs,
+): string[] {
+    return Object.entries(editor?.refs ?? {})
+        .filter(([key, ref]) => ref.pos !== undefined && !derived.refs[key])
+        .map(([key]) => key);
+}

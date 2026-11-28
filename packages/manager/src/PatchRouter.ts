@@ -200,7 +200,7 @@ export class PatchRouter {
         };
         ops.forEach((op, index) => {
             const result = isEditorPath(op.path)
-                ? editor.onSenderOp(op, index)
+                ? editor.onSenderOp(op, index, arrays.connections)
                 : dispatchRule(op, {
                       ...base,
                       connections: arrays.connections.snapshot() as Array<Record<string, unknown>>,

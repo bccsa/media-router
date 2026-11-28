@@ -468,7 +468,8 @@ positions. The router stores it and ignores it.
 - **Rules.** Page ids `^pg-[a-z0-9]+$` (never shown); page names trimmed,
   1–40 characters, unique ignoring case; ref names ≤ 40 characters; ref numbers
   unique and below `nextRef`; positions finite; keys hold no `/` or `~`;
-  256 KB at most.
+  256 KB at most, measured on the stored value. A written value is stored as
+  checked: unknown keys in it are dropped.
 
 **Writes.** Editor ops go in the same batch as the engine's module and
 connection ops, so a module add and its page can be one write.
@@ -484,14 +485,16 @@ connection ops, so a module add and its page can be one write.
 | `tagged/<connectionId>` | add / remove |
 
 Anything else is rejected with `not writable`, `invalid page id` or
-`invalid ref key`.
+`invalid ref key`, whoever sends it: a router relaying its local panel's
+patch gets the same rules as a browser.
 
 - **Numbering.** A new `refs/<key>`, or a field write on a ref that does not
   exist yet, is stored as a whole record with `n = nextRef`; any `n` sent is
   ignored. The writer's echo carries the number, and `replace …/editor/nextRef`
   follows as an ordinary op. Numbers are never handed out twice, rollbacks
-  included. A whole replace keeps what of the value is valid and never lowers
-  `nextRef`.
+  included. A whole replace keeps what of the value is valid, drops entries
+  for modules and connections that aren't there, and never lowers `nextRef`.
+  A rollback sends it last, after the restored graph.
 - **Seeding.** A profile without `editor` gets `add …/editor` with the
   defaults just before the first editor op, so no op lands on a missing parent.
   A stored layout that is incomplete or has invalid entries is rewritten with
@@ -500,7 +503,9 @@ Anything else is rejected with `not writable`, `invalid page id` or
   or a remove of a missing path changes nothing and is not rejected: the
   writer alone gets the current value at that path, tagged with its write id
   (`replace`, or `remove` when there is none), and nobody else hears anything.
-  Two browsers adding the same ref end with one number.
+  Two browsers adding the same ref end with one number. A page, ref or
+  `tagged` write about a module or connection that does not exist (deleted
+  meanwhile from another browser) is swallowed the same way, using no number.
 - **Refused batches.** When the batch's result breaks a rule above, all its
   editor ops are rejected, each with the rule's message (`Another page already
   has this name`, `At most 40 characters`, …), and the batch's other ops still

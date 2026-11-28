@@ -23,6 +23,7 @@ vi.mock('@/stores/socket', () => ({
 }));
 
 import { usePages } from './usePages';
+import { PAGE_KEY as KEY } from '@/testing/pagesFixture';
 
 const mod = (id: string, x = 0, y = 0) => ({
     instanceId: id,
@@ -44,7 +45,6 @@ const layout = (): EditorLayout => ({
     nextRef: 2,
 });
 
-const KEY = 'mr.routing.page.eng-1';
 const engine = () => useEngineStore().getEngine('eng-1')!;
 
 beforeEach(() => {

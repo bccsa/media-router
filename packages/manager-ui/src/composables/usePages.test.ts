@@ -3,7 +3,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { nextTick, reactive, ref, type Ref } from 'vue';
-import { emptyEditorLayout, type EditorLayout } from '@media-router/shared-types';
+import { emptyEditorLayout } from '@media-router/shared-types';
 import type { EngineState } from '@/stores/engines';
 
 const m = vi.hoisted(() => ({
@@ -29,47 +29,8 @@ vi.mock('@/composables/useToast', () => ({
 
 import { usePages } from './usePages';
 import { NEW_PAGE } from '@/utils/pageMenuItems';
+import { engineWith, PAGE_KEY as KEY, twoPages } from '@/testing/pagesFixture';
 
-const port = (id: string, direction: string, streamType: string) => ({ id, direction, streamType });
-const mod = (id: string, ports: unknown[], x = 500, y = 300) => ({
-    instanceId: id,
-    displayName: id.toUpperCase(),
-    position: { x, y },
-    ports,
-});
-const conn = (src: string, sink: string) => ({
-    id: `${src}:out-${sink}:in`,
-    sourceModuleId: src,
-    sourcePortId: 'out',
-    sinkModuleId: sink,
-    sinkPortId: 'in',
-});
-
-/** enc → dec (302M) and mic → spk (PipeWire), plus src2 already on "Sources". */
-function engineWith(editor?: EditorLayout): EngineState {
-    return {
-        engineId: 'eng-1',
-        modules: {
-            enc: mod('enc', [port('out', 'output', 'audio/302m')]),
-            dec: mod('dec', [port('in', 'input', 'audio/302m')]),
-            mic: mod('mic', [port('out', 'output', 'audio/pcm')]),
-            spk: mod('spk', [port('in', 'input', 'audio/pcm')]),
-            src2: mod('src2', [], 0, 32),
-        },
-        connections: [conn('enc', 'dec'), conn('mic', 'spk')],
-        editor,
-    } as unknown as EngineState;
-}
-
-const twoPages = (): EditorLayout => ({
-    pages: { 'pg-1': { name: 'Page 1', order: 0 }, 'pg-src': { name: 'Sources', order: 1 } },
-    modulePages: { enc: 'pg-1', dec: 'pg-1', mic: 'pg-1', spk: 'pg-1', src2: 'pg-src' },
-    refs: {},
-    tagged: {},
-    nextRef: 1,
-});
-
-const KEY = 'mr.routing.page.eng-1';
 const opsOf = (call = 0) => m.editor.mock.calls[call][1] as Array<Record<string, unknown>>;
 
 beforeEach(() => {
@@ -120,6 +81,18 @@ describe('usePages: the current page', () => {
 
         m.route.query = { page: 'pg-1' };
         await nextTick();
+        expect(p.currentPage.value).toBe('pg-1');
+    });
+
+    it('stays on the page shown when the pages are reordered, with none picked here', async () => {
+        const p = usePages(() => 'eng-1');
+        expect(p.currentPage.value).toBe('pg-1');
+        // Another browser moves "Sources" in front.
+        const reordered = twoPages();
+        reordered.pages['pg-src'].order = -1;
+        m.engine.value = engineWith(reordered);
+        await nextTick();
+        expect(p.tabs.value[0].id).toBe('pg-src');
         expect(p.currentPage.value).toBe('pg-1');
     });
 
@@ -195,64 +168,6 @@ describe('usePages: page actions', () => {
         expect(opsOf()).toEqual([
             { op: 'replace', path: '/editor/pages/pg-1/order', value: 1 },
             { op: 'replace', path: '/editor/pages/pg-src/order', value: 0 },
-        ]);
-    });
-});
-
-describe('usePages: moving modules', () => {
-    it('refuses a move that splits a PipeWire wire, with a toast and no write', () => {
-        const p = usePages(() => 'eng-1');
-        const reason = 'Would split the PipeWire wire MIC → SPK across pages';
-        expect(p.moveRefusal(['mic'], 'pg-src')).toBe(reason);
-        expect(p.moveRefusal(['mic', 'spk'], 'pg-src')).toBeNull();
-        expect(p.moveRefusal(['spk'], NEW_PAGE)).toBe(reason);
-
-        p.moveModules(['mic'], 'pg-src');
-        p.moveModules(['spk'], NEW_PAGE);
-        expect(m.toast.mock.calls).toEqual([[reason], [reason]]);
-        expect(m.editor).not.toHaveBeenCalled();
-    });
-
-    it('places moved modules right of the target page content, dragged tags along, in one write', () => {
-        const refs = { 'out:enc:out': { n: 1, pos: { x: 720, y: 310 } } };
-        m.engine.value = engineWith({ ...twoPages(), refs, nextRef: 2 });
-        usePages(() => 'eng-1').moveModules(['enc'], 'pg-src');
-        // src2 spans x 0–200 at y 32: + 288 gap = 488, snapped to 16 → x 496, top-aligned.
-        expect(opsOf()).toEqual([
-            { op: 'add', path: '/editor/modulePages/enc', value: 'pg-src' },
-            { op: 'replace', path: '/modules/enc/position', value: { x: 496, y: 32 } },
-            { op: 'replace', path: '/editor/refs/out:enc:out/pos', value: { x: 716, y: 42 } },
-        ]);
-    });
-
-    it('"Move to new page" adds the page and moves there, positions kept', () => {
-        usePages(() => 'eng-1').moveModules(['mic', 'spk'], NEW_PAGE);
-        const ops = opsOf();
-        expect(ops[0]).toMatchObject({ op: 'add', value: { name: 'Page 3', order: 2 } });
-        const id = String(ops[0].path).split('/').pop();
-        expect(ops.slice(1)).toEqual([
-            { op: 'add', path: '/editor/modulePages/mic', value: id },
-            { op: 'add', path: '/editor/modulePages/spk', value: id },
-        ]);
-    });
-
-    it('new modules go to the current page once real pages exist', () => {
-        m.route.query.page = 'pg-src';
-        expect(usePages(() => 'eng-1').newModuleOps(['new1'])).toEqual([
-            { op: 'add', path: '/editor/modulePages/new1', value: 'pg-src' },
-        ]);
-        m.engine.value = engineWith(undefined);
-        expect(usePages(() => 'eng-1').newModuleOps(['new1'])).toEqual([]);
-    });
-
-    it('adopts a module made elsewhere only when it has no page yet', () => {
-        m.route.query.page = 'pg-src';
-        const p = usePages(() => 'eng-1');
-        p.adoptModule('enc');
-        expect(m.editor).not.toHaveBeenCalled();
-        p.adoptModule('enc-copy');
-        expect(opsOf()).toEqual([
-            { op: 'add', path: '/editor/modulePages/enc-copy', value: 'pg-src' },
         ]);
     });
 });

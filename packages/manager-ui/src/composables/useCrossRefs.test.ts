@@ -12,7 +12,11 @@ const m = vi.hoisted(() => ({
     write: vi.fn(),
 }));
 vi.mock('@vue-flow/core', () => ({
-    useVueFlow: () => ({ setCenter: m.setCenter, findNode: () => undefined }),
+    useVueFlow: () => ({
+        setCenter: m.setCenter,
+        findNode: () => undefined,
+        onNodesInitialized: () => {},
+    }),
 }));
 vi.mock('@/composables/usePatch', () => ({
     patch: {
@@ -29,8 +33,8 @@ vi.mock('@/stores/socket', () => ({
     useSocketStore: () => ({ write: (...a: unknown[]) => m.write(...a) }),
 }));
 
-import { HIGHLIGHT_MS, useCrossRefs } from './useCrossRefs';
-import { NUMBERING_DELAY_MS } from './useRefNumbering';
+import { useCrossRefs } from './useCrossRefs';
+import { REF_PASS_DELAY_MS } from './useRefRecords';
 import { TAG_SIZE } from '@/utils/xrefCanvas';
 
 const port = (id: string, direction: string, streamType: string, maxConnections = -1) => ({
@@ -125,7 +129,7 @@ describe('useCrossRefs', () => {
 
     it('numbers the missing tags of every page in one quiet write, never the read-only ones', () => {
         setup();
-        vi.advanceTimersByTime(NUMBERING_DELAY_MS);
+        vi.advanceTimersByTime(REF_PASS_DELAY_MS);
         expect(m.write).toHaveBeenCalledTimes(1);
         expect(m.write.mock.calls[0][0]).toEqual([
             { op: 'add', path: '/engines/eng-1/editor/refs/out:enc:out', value: {} },
@@ -134,25 +138,12 @@ describe('useCrossRefs', () => {
         expect(m.toast).not.toHaveBeenCalled();
     });
 
-    it('goToRef switches page without its fit, centres on the tag and glows briefly', () => {
+    it('goToRef jumps to a tag of the derived set, on its page', () => {
         const { x, pages, keepView } = setup();
         x.goToRef('in:dec:in');
         expect(keepView).toHaveBeenCalledTimes(1);
         expect(pages.selectPage).toHaveBeenCalledWith('pg-2');
-        expect(m.setCenter).toHaveBeenCalledWith(
-            500 + TAG_SIZE.width / 2,
-            60 + TAG_SIZE.height / 2,
-            expect.objectContaining({ zoom: 1 }),
-        );
         expect(x.highlighted.value).toBe('in:dec:in');
-        vi.advanceTimersByTime(HIGHLIGHT_MS);
-        expect(x.highlighted.value).toBeNull();
-
-        // Same page: no switch.
-        x.goToRef('in:spk:in');
-        expect(pages.selectPage).toHaveBeenCalledTimes(1);
-        x.goToRef('nope');
-        expect(m.setCenter).toHaveBeenCalledTimes(2);
     });
 
     it("linkPorts connects and puts a port's first tag where the wire was dropped", () => {

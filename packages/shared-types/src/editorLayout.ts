@@ -111,10 +111,13 @@ export const EditorPageSchema = z.object({
     order: z.number(),
 });
 
+/** A dragged tag's place. */
+export const EditorPosSchema = z.object({ x: z.number(), y: z.number() });
+
 export const EditorRefSchema = z.object({
     n: z.number().int().positive(),
     name: z.string().max(REF_NAME_MAX, `At most ${REF_NAME_MAX} characters`).optional(),
-    pos: z.object({ x: z.number(), y: z.number() }).optional(),
+    pos: EditorPosSchema.optional(),
 });
 
 /** The whole layout, as the manager checks it after every batch of editor writes. */

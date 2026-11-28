@@ -1,5 +1,5 @@
-import { ref, computed, getCurrentInstance, onUnmounted, type ComputedRef } from 'vue';
-import { useVueFlow, type XYPosition } from '@vue-flow/core';
+import { ref, computed, type ComputedRef } from 'vue';
+import type { XYPosition } from '@vue-flow/core';
 // shared-types is CJS: a namespace import is the safe interop (see stores/engines.ts).
 import * as shared from '@media-router/shared-types';
 import type { PatchOp } from '@media-router/shared-types';
@@ -7,7 +7,8 @@ import type { EngineState } from '@/stores/engines';
 import { patch } from '@/composables/usePatch';
 import { useToast } from '@/composables/useToast';
 import { connectPorts, type PortRef } from '@/composables/useGraphConnect';
-import { useRefNumbering } from '@/composables/useRefNumbering';
+import { useRefRecords } from '@/composables/useRefRecords';
+import { useRefJump } from '@/composables/useRefJump';
 import type { Pages } from '@/composables/usePages';
 import {
     deriveRefs,
@@ -19,13 +20,10 @@ import {
 } from '@/utils/crossRefs';
 import { linkCandidates, type LinkOrigin } from '@/utils/crossRefCandidates';
 import { compactPortLabel } from '@/utils/portDisplay';
-import { tagAtDrop, tagPlace, TAG_SIZE } from '@/utils/xrefCanvas';
+import { tagAtDrop } from '@/utils/xrefCanvas';
 import type { DerivedRefs, LinkCandidate, RefNode } from '@/utils/crossRefTypes';
 
 const { refKey } = shared;
-
-/** How long a tag reached through a jump glows, ms. */
-export const HIGHLIGHT_MS = 1600;
 
 export type CrossRefPages = Pick<Pages, 'currentPage' | 'selectPage'>;
 
@@ -57,8 +55,9 @@ export const originOf = (tag: RefNode): LinkOrigin => ({
 
 /**
  * The routing editor's cross-reference tags for one engine (ADR-0030): the
- * tags and wires of the current page, the numbering pass, the jump to a tag,
- * the link picker, and the link, unlink, tag, rename and position writes.
+ * tags and wires of the current page, the tag records pass (useRefRecords),
+ * the jump to a tag (useRefJump), the link picker, and the link, unlink, tag,
+ * rename and position writes.
  * `keepViewOnPageChange` stops the page fit when a jump centres the view.
  */
 export function useCrossRefs(
@@ -67,7 +66,6 @@ export function useCrossRefs(
     pages: CrossRefPages,
     keepViewOnPageChange: () => void = () => {},
 ) {
-    const { setCenter, findNode } = useVueFlow();
     const toast = useToast();
 
     const editor = computed(() => engine.value?.editor);
@@ -84,33 +82,8 @@ export function useCrossRefs(
         const eng = engine.value;
         return eng ? directOnPage(derived.value, eng.connections ?? [], eng.editor, page()) : [];
     });
-    useRefNumbering(engineId, derived);
-
-    // --- Jump ---
-    const highlighted = ref<string | null>(null);
-    let glow: ReturnType<typeof setTimeout> | null = null;
-    if (getCurrentInstance()) onUnmounted(() => glow && clearTimeout(glow));
-
-    /** Show tag `key`: its page, centred, glowing briefly. */
-    function goToRef(key: string) {
-        const tag = derived.value.refs[key];
-        if (!tag) return;
-        if (tag.page !== page()) {
-            keepViewOnPageChange();
-            pages.selectPage(tag.page);
-        }
-        const at = tagPlace(tag, findNode, engine.value?.modules[tag.moduleId]?.position);
-        setCenter(at.x + TAG_SIZE.width / 2, at.y + TAG_SIZE.height / 2, {
-            zoom: 1,
-            duration: 300,
-        });
-        highlighted.value = key;
-        if (glow) clearTimeout(glow);
-        glow = setTimeout(() => {
-            highlighted.value = null;
-            glow = null;
-        }, HIGHLIGHT_MS);
-    }
+    useRefRecords(engineId, derived, () => editor.value);
+    const { highlighted, goToRef } = useRefJump(engine, derived, pages, keepViewOnPageChange);
 
     // --- Linking ---
     const linkPicker = ref<LinkPickerState | null>(null);

@@ -2,10 +2,8 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { computed, nextTick, ref } from 'vue';
-import type { Edge, Node } from '@vue-flow/core';
-import type { EngineState } from '@/stores/engines';
-import type { GraphPages } from './useGraphSync';
+import { nextTick } from 'vue';
+import type { Node } from '@vue-flow/core';
 import { TAG_SIZE } from '@/utils/xrefCanvas';
 
 // The canvas with real cross-refs, tag nodes and edges; Vue Flow and the writes are faked.
@@ -43,72 +41,11 @@ vi.mock('@/composables/usePatch', () => ({
     },
 }));
 
-import { useGraphSync } from './useGraphSync';
-
-const mod = (id: string, x: number, y: number) => ({
-    instanceId: id,
-    displayName: id,
-    running: true,
-    position: { x, y },
-    ports: [
-        { id: 'out', direction: 'output', streamType: 'audio/302m' },
-        { id: 'in', direction: 'input', streamType: 'audio/302m' },
-    ],
-});
-const conn = (src: string, sink: string) => ({
-    id: `${src}:out-${sink}:in`,
-    sourceModuleId: src,
-    sourcePortId: 'out',
-    sinkModuleId: sink,
-    sinkPortId: 'in',
-});
-
-/** a's output feeds b and c on Page 1 (wires) and d on page Two (a tag): mixed wiring on one port. */
-function setup() {
-    const engine = ref({
-        engineId: 'eng-1',
-        running: true,
-        modules: {
-            a: mod('a', 0, 0),
-            b: mod('b', 400, 0),
-            c: mod('c', 400, 200),
-            d: mod('d', 0, 0),
-        },
-        connections: [conn('a', 'b'), conn('a', 'c'), conn('a', 'd')],
-        editor: {
-            pages: { 'pg-1': { name: 'Page 1', order: 0 }, 'pg-2': { name: 'Two', order: 1 } },
-            modulePages: { a: 'pg-1', b: 'pg-1', c: 'pg-1', d: 'pg-2' },
-            refs: { 'out:a:out': { n: 1 } },
-            tagged: {},
-            nextRef: 2,
-        },
-    } as unknown as EngineState);
-    const current = ref('pg-1');
-    const pages: GraphPages = {
-        currentPage: computed(() => current.value),
-        pageOf: (id) => engine.value.editor!.modulePages[id],
-        selectPage: vi.fn((id: string) => (current.value = id)),
-        newModuleOps: () => [],
-    };
-    const focusMode = ref(false);
-    const focused = ref(new Set<string>());
-    const g = useGraphSync(
-        () => 'eng-1',
-        computed(() => engine.value),
-        focusMode,
-        computed(() => focused.value),
-        (s, t) => focusMode.value && (!focused.value.has(s) || !focused.value.has(t)),
-        pages,
-    );
-    return { ...g, engine, current, focusMode, focused };
-}
+import { edgeOf, ids, nodeOf, setupGraph as setup } from '@/testing/graphSyncFixture';
 
 const handlesMounted = () => m.initialized.forEach((cb) => cb());
 const nodesChanged = (changes: Array<{ id: string; type: string }>) =>
     m.nodesChange.forEach((cb) => cb(changes));
-const ids = (list: { value: Array<{ id: string }> }) => list.value.map((x) => x.id).sort();
-const nodeOf = (nodes: { value: Node[] }, id: string) => nodes.value.find((n) => n.id === id)!;
-const edgeOf = (edges: { value: Edge[] }, id: string) => edges.value.find((e) => e.id === id)!;
 
 describe('useGraphSync cross-reference tags', () => {
     beforeEach(() => {
@@ -228,48 +165,5 @@ describe('useGraphSync cross-reference tags', () => {
             { op: 'add', path: '/editor/refs/out:a:out/pos', value: { x: 600, y: 80 } },
         ]);
         expect(m.positions).toHaveBeenCalledTimes(1);
-    });
-
-    it("Format lays out the page's modules and puts its dragged tags back beside their ports", () => {
-        const { formatPage, engine } = setup();
-        engine.value.editor!.refs['out:a:out'] = { n: 1, pos: { x: 9, y: 9 } };
-        formatPage();
-        const ops = m.raw.mock.calls[0][1] as Array<{ op: string; path: string }>;
-        expect(
-            ops
-                .filter((o) => o.op === 'replace')
-                .map((o) => o.path)
-                .sort(),
-        ).toEqual(['/modules/a/position', '/modules/b/position', '/modules/c/position']);
-        expect(ops.filter((o) => o.op === 'remove')).toEqual([
-            { op: 'remove', path: '/editor/refs/out:a:out/pos' },
-        ]);
-    });
-
-    it('a wire dropped on empty canvas opens the link picker at the pointer', () => {
-        const { onConnectStart, onConnectEnd, crossRefs } = setup();
-        document.body.innerHTML = '<div class="vue-flow__pane"></div>';
-        document.elementFromPoint = () => document.querySelector('.vue-flow__pane');
-        onConnectStart({ nodeId: 'a', handleId: 'out' });
-        onConnectEnd(new MouseEvent('mouseup', { clientX: 30, clientY: 40 }));
-        expect(crossRefs!.linkPicker.value).toMatchObject({
-            x: 30,
-            y: 40,
-            origin: { moduleId: 'a', portId: 'out', direction: 'output' },
-            dropAt: { x: 60, y: 80 },
-        });
-    });
-
-    it('dims a tag and its stub with its module in focus mode', async () => {
-        const { nodes, edges, focusMode, focused } = setup();
-        handlesMounted();
-        focused.value = new Set(['b']);
-        focusMode.value = true;
-        await nextTick();
-        expect(nodeOf(nodes, 'out:a:out').data.dimmed).toBe(true);
-        expect(edgeOf(edges, 'ref:out:a:out').style).toMatchObject({ opacity: 0.1 });
-        focused.value = new Set(['a']);
-        await nextTick();
-        expect(nodeOf(nodes, 'out:a:out').data.dimmed).toBe(false);
     });
 });

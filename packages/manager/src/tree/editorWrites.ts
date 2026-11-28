@@ -3,9 +3,10 @@ import { PAGE_ID_PATTERN, isRefKey, type PatchOp } from '@media-router/shared-ty
 const writable = (ok: boolean) => (ok ? null : 'not writable');
 
 /**
- * Op shapes a browser may write under `/engines/<id>/editor` (ADR-0030); `rel`
- * is the path below `editor`. The values are checked by `EditorBatch`
- * (editorRules.ts) once the batch has run; `nextRef` is the manager's own.
+ * Op shapes any sender may write under `/engines/<id>/editor` (ADR-0030): a
+ * browser, or an engine relaying its local panel. `rel` is the path below
+ * `editor`. `EditorBatch` (editorRules.ts) refuses the rest and checks the
+ * values once the batch has run; `nextRef` is the manager's own.
  */
 export function editorOpError(op: PatchOp, rel: readonly string[]): string | null {
     const [record, key, field, ...deeper] = rel;

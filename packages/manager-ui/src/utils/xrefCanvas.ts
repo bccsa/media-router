@@ -16,6 +16,17 @@ export const TAG_GAP = 48;
  * step, so tags beside neighbouring ports never overlap.
  */
 export const TAG_SIZE = { width: 80, height: 18 };
+/**
+ * Room between two modules for an undragged tag on each side (an output tag of
+ * the left one, an input tag of the right one), so neither covers the other's
+ * port: where page moves land modules (crossRefMoves) and Format's column gap
+ * on a page with tags. `tagWidth`: the widest tag's measured width. 288 px by
+ * default, on the 16 px grid.
+ */
+export function tagClearance(tagWidth: number = TAG_SIZE.width): number {
+    return 2 * (TAG_GAP + tagWidth) + 32;
+}
+
 /** A module's size until measured, px (ModuleNode's minimum width). */
 export const MODULE_SIZE = { width: 200, height: 80 };
 /** Where the canvas draws a module that has no stored position. Read-only: copy it for a node. */

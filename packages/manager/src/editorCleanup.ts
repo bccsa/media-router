@@ -1,14 +1,16 @@
 import {
     isPlainObject,
     parseRefKey,
+    parseStoredEditorLayout,
     type EditorLayout,
     type LiveArrayIndex,
     type PatchOp,
 } from '@media-router/shared-types';
 
 // What the routing editor's layout (ADR-0030) loses when a module, connection
-// or port goes, whatever removed it. Pure: the ops returned are profile-relative
-// removes; EditorBatch (editorRules.ts) applies and emits them.
+// or port goes, whatever removed it, and what a whole layout keeps of the
+// graph it lands on. Pure: the ops returned are profile-relative removes;
+// EditorBatch (editorRules.ts) applies and emits them.
 
 export type Keyed = { id?: unknown; sourceModuleId?: unknown; sinkModuleId?: unknown };
 
@@ -76,6 +78,46 @@ export function cleanupFor(
         }
     }
     return [];
+}
+
+/**
+ * `layout` without the entries of modules or connections that don't exist —
+ * what a whole layout written over a graph (a rollback) keeps. Their ref
+ * numbers stay used: nextRef is untouched. Mutates and returns `layout`.
+ */
+export function dropOrphans(
+    layout: EditorLayout,
+    hasModule: (id: string) => boolean,
+    hasConnection: (id: string) => boolean,
+): EditorLayout {
+    for (const id of Object.keys(layout.modulePages)) {
+        if (!hasModule(id)) delete layout.modulePages[id];
+    }
+    for (const key of Object.keys(layout.refs)) {
+        const moduleId = parseRefKey(key)?.moduleId;
+        if (moduleId === undefined || !hasModule(moduleId)) delete layout.refs[key];
+    }
+    for (const id of Object.keys(layout.tagged)) {
+        if (!hasConnection(id)) delete layout.tagged[id];
+    }
+    return layout;
+}
+
+/**
+ * What a rollback restores: the version's layout (defaults without one), less
+ * entries for modules and connections the version lacks; numbers are never
+ * handed out twice.
+ */
+export function restoredEditor(current: unknown, version: Record<string, unknown>): EditorLayout {
+    const layout = parseStoredEditorLayout(version.editor).layout;
+    layout.nextRef = Math.max(layout.nextRef, parseStoredEditorLayout(current).layout.nextRef);
+    const modules = isPlainObject(version.modules) ? version.modules : {};
+    const connections = new Set(idsOf(version.connections));
+    return dropOrphans(
+        layout,
+        (id) => Object.hasOwn(modules, id),
+        (id) => connections.has(id),
+    );
 }
 
 function forgetModule(

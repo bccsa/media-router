@@ -42,9 +42,9 @@ function storePage(engineId: string, pageId: string) {
  *
  * The current page is each viewer's own: `?page=<id>`, else the one last
  * picked for this engine (localStorage), else the first page. A requested
- * page that does not exist (yet, or any more) shows the first page but is
- * kept, so a link still lands once the layout arrives. The canvas
- * (useGraphNodes) fits the view when the page changes.
+ * page that does not exist yet shows the first page but is kept, so a link
+ * still lands once the layout arrives; from then on the page shown is pinned.
+ * The canvas (useGraphNodes) fits the view when the page changes.
  */
 export function usePages(engineId: () => string) {
     const store = useEngineStore();
@@ -70,6 +70,15 @@ export function usePages(engineId: () => string) {
         const id = requested.value;
         return pages.value.some((p) => p.id === id) ? id! : pages.value[0].id;
     });
+    // Once the layout is in, the page shown is pinned: a reorder or a page added
+    // in front (here or in another browser) never switches this viewer away.
+    watch(
+        [currentPage, () => editor.value !== undefined],
+        ([id, loaded]) => {
+            if (loaded && requested.value !== id) requested.value = id;
+        },
+        { immediate: true },
+    );
 
     const tabs = computed<PageTab[]>(() => {
         const counts = new Map<string, number>();

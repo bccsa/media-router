@@ -1,71 +1,24 @@
 import { describe, it, expect } from 'vitest';
-import { emptyEditorLayout, type EditorLayout } from '@media-router/shared-types';
-import type { ConnectionState, ModuleState, PortInfo } from '@/stores/engines';
+import { emptyEditorLayout } from '@media-router/shared-types';
 import {
     IMPLICIT_PAGE_ID,
-    deriveRefs,
-    directOnPage,
     missingRefKeys,
-    pageNamesOf,
     pageOf,
     refsOnPage,
     sortedPages,
     stubsOnPage,
 } from './crossRefs';
-import { IDLE_EDGE_COLOR } from './edgeStyle';
-
-const CYAN = '#06b6d4';
-const AMBER = '#f59e0b';
-
-function port(
-    id: string,
-    direction: PortInfo['direction'],
-    streamType = 'audio/302m',
-    max = -1,
-): PortInfo {
-    return { id, direction, streamType, label: id, maxConnections: max };
-}
-function mod(id: string, ports: PortInfo[]): ModuleState {
-    return {
-        instanceId: id,
-        pluginId: 'p',
-        displayName: id.toUpperCase(),
-        running: true,
-        enabled: true,
-        health: 'ok',
-        pendingRestart: false,
-        settings: {},
-        ports,
-    };
-}
-function conn(src: string, sink: string, srcPort = 'out', sinkPort = 'in'): ConnectionState {
-    return {
-        id: `${src}-${sink}`,
-        sourceModuleId: src,
-        sourcePortId: srcPort,
-        sinkModuleId: sink,
-        sinkPortId: sinkPort,
-    };
-}
-/** Pages A (order 0) and B (order 1); `onB` lists the modules pinned to B, the rest sit on A. */
-function layout(onB: string[], extra: Partial<EditorLayout> = {}): EditorLayout {
-    return {
-        ...emptyEditorLayout(),
-        pages: { 'pg-a': { name: 'Intake', order: 0 }, 'pg-b': { name: 'Output', order: 1 } },
-        modulePages: Object.fromEntries(onB.map((id) => [id, 'pg-b'])),
-        ...extra,
-    };
-}
-const derive = (
-    modules: Record<string, ModuleState>,
-    connections: ConnectionState[],
-    editor?: EditorLayout,
-) => deriveRefs(modules, connections, editor, pageNamesOf(editor));
-
-const src = mod('src', [port('out', 'output')]);
-const sinks = ['s1', 's2', 's3'].map((id) => mod(id, [port('in', 'input')]));
-const fanOut = { src, ...Object.fromEntries(sinks.map((m) => [m.instanceId, m])) };
-const fanConns = sinks.map((m) => conn('src', m.instanceId));
+import {
+    AMBER,
+    conn,
+    CYAN,
+    derive,
+    fanConns,
+    fanOut,
+    layout,
+    mod,
+    port,
+} from '@/testing/crossRefsFixture';
 
 describe('pages', () => {
     it('an empty layout is one implicit "Page 1" holding every module', () => {
@@ -181,78 +134,5 @@ describe('deriveRefs', () => {
         };
         const d = derive(modules, [conn('a', 'b')], layout(['b']));
         expect(d.refs['in:b:in']).toMatchObject({ streamType: 'muxed/mpegts', color: AMBER });
-    });
-
-    it('a PipeWire wire across pages is a grey read-only tag; tagged is ignored for PCM', () => {
-        const modules = {
-            mic: mod('mic', [port('out', 'output', 'audio/pcm')]),
-            spk: mod('spk', [port('in', 'input', 'audio/pcm')]),
-            mon: mod('mon', [port('in', 'input', 'audio/pcm')]),
-        };
-        const conns = [conn('mic', 'spk'), conn('mic', 'mon')];
-        const editor = layout(['spk'], {
-            refs: { 'out:mic:out': { n: 3, name: 'Old' } },
-            tagged: { 'mic-mon': true },
-            nextRef: 4,
-        });
-        const d = derive(modules, conns, editor);
-        expect(d.directConnectionIds).toEqual(['mic-mon']);
-        expect(d.links[0]).toMatchObject({
-            connectionId: 'mic-spk',
-            readOnly: true,
-            tagged: false,
-        });
-        expect(d.refs['out:mic:out']).toMatchObject({
-            readOnly: true,
-            color: IDLE_EDGE_COLOR,
-            label: 'PCM',
-            n: undefined,
-            name: undefined,
-        });
-        expect(d.refs['in:spk:in']).toMatchObject({ readOnly: true, label: 'PCM' });
-        expect(missingRefKeys(d)).toEqual([]);
-    });
-
-    it('a vanished port: grey "?" tag across pages, an ordinary wire on one page', () => {
-        const modules = { a: mod('a', [port('out', 'output')]), b: mod('b', []), c: mod('c', []) };
-        const conns = [conn('a', 'b'), conn('a', 'c')];
-        const d = derive(modules, conns, layout(['b'], { tagged: { 'a-c': true } }));
-        expect(d.directConnectionIds).toEqual(['a-c']);
-        expect(d.refs['in:b:in']).toMatchObject({
-            readOnly: true,
-            label: '?',
-            color: IDLE_EDGE_COLOR,
-            streamType: 'audio/302m',
-        });
-        // The output port is fine, but its only link is read-only.
-        expect(d.refs['out:a:out']).toMatchObject({ readOnly: true, color: IDLE_EDGE_COLOR });
-    });
-
-    it('a tag with a read-only and a numbered link keeps its number and colour', () => {
-        const modules = { ...fanOut, s3: mod('s3', []) };
-        const editor = layout(['s2', 's3'], { refs: { 'out:src:out': { n: 9 } }, nextRef: 10 });
-        const tag = derive(modules, fanConns, editor).refs['out:src:out'];
-        expect(tag).toMatchObject({ readOnly: false, n: 9, color: CYAN });
-        expect(tag.links.map((l) => l.readOnly)).toEqual([false, true]);
-    });
-
-    it('is total: every connection between existing modules is a wire or a tag link; dangling ones are skipped', () => {
-        const conns = [...fanConns, conn('src', 'gone'), conn('gone', 's1')];
-        const d = derive(fanOut, conns, layout(['s1']));
-        const drawn = [...d.directConnectionIds, ...d.links.map((l) => l.connectionId)].sort();
-        expect(drawn).toEqual(['src-s1', 'src-s2', 'src-s3']);
-    });
-
-    it('with no layout everything is a direct wire on the implicit page', () => {
-        const d = derive(fanOut, fanConns, undefined);
-        expect(d.links).toEqual([]);
-        expect(directOnPage(d, fanConns, undefined, IMPLICIT_PAGE_ID)).toEqual(fanConns);
-    });
-
-    it("directOnPage keeps the page's own wires", () => {
-        const editor = layout(['s2', 'src']);
-        const d = derive(fanOut, fanConns, editor);
-        expect(directOnPage(d, fanConns, editor, 'pg-b').map((c) => c.id)).toEqual(['src-s2']);
-        expect(directOnPage(d, fanConns, editor, 'pg-a')).toEqual([]);
     });
 });

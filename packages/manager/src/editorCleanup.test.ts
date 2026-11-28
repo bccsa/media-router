@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { emptyEditorLayout } from '@media-router/shared-types';
 import { engineSenderId } from './PatchRouter.js';
-import { idsOf, pruneRefsForPorts } from './editorCleanup.js';
-import { restoredEditor } from './editorRules.js';
+import { idsOf, pruneRefsForPorts, restoredEditor } from './editorCleanup.js';
 import { harness, profile } from './testing/editorHarness.js';
 
 /** m1 and m2 placed, a ref on each end of c1, c1 drawn as tags. */
@@ -135,11 +134,22 @@ describe('editor helpers', () => {
     });
 
     it("restoredEditor: the version's layout or defaults, nextRef never back", () => {
-        expect(restoredEditor({ nextRef: 7 }, undefined)).toEqual({
+        expect(restoredEditor({ nextRef: 7 }, profile())).toEqual({
             ...emptyEditorLayout(),
             nextRef: 7,
         });
-        expect(restoredEditor({ nextRef: 2 }, placed())).toEqual(placed());
-        expect(restoredEditor({ nextRef: 9 }, placed()).nextRef).toBe(9);
+        expect(restoredEditor({ nextRef: 2 }, profile(placed()))).toEqual(placed());
+        expect(restoredEditor({ nextRef: 9 }, profile(placed())).nextRef).toBe(9);
+    });
+
+    it('restoredEditor drops entries for modules and connections the version lacks', () => {
+        const version = { ...profile(placed()), connections: [] };
+        delete (version.modules as Record<string, unknown>).m2;
+        expect(restoredEditor({ nextRef: 2 }, version)).toEqual({
+            ...placed(),
+            modulePages: { m1: 'pg-a' },
+            refs: { 'out:m1:out-0': { n: 1 }, 'out:m1:out-1': { n: 2 } },
+            tagged: {},
+        });
     });
 });

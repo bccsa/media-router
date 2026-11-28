@@ -4,6 +4,7 @@ import type { MenuItem } from '@/components/common/MrContextMenu.vue';
 import { patch } from '@/composables/usePatch';
 import { buildEdgeMenuItems } from '@/utils/moduleMenuItems';
 import { STUB_EDGE_PREFIX } from '@/utils/crossRefTypes';
+import { PCM } from '@/utils/crossRefs';
 
 /** Cross-reference hooks (ADR-0030); omitted = plain wires only. */
 export interface EdgeMenuRefs {
@@ -75,9 +76,7 @@ export function useEdgeMenu(
         // Channel maps apply to both audio transports: pw-links re-wire per
         // the map; 302m edges render it as an audioconvert mix-matrix in the
         // consumer's decode branch.
-        const items = buildEdgeMenuItems(
-            srcStreamType === 'audio/pcm' || srcStreamType === 'audio/302m',
-        );
+        const items = buildEdgeMenuItems(srcStreamType === PCM || srcStreamType === 'audio/302m');
         // The menu only opens on wires drawn on the page, so both ends share it.
         const taggable =
             !!conn &&

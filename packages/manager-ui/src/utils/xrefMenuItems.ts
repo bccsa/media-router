@@ -1,6 +1,7 @@
 import type { MenuItem } from '@/components/common/MrContextMenu.vue';
 import type { RefLink, RefNode } from '@/utils/crossRefTypes';
 import { menuIcons } from '@/utils/moduleMenuItems';
+import { PCM } from '@/utils/crossRefs';
 
 export interface XrefMenuContext {
     /** Every tag of the engine, keyed by ref key (DerivedRefs.refs). */
@@ -54,7 +55,7 @@ export function counterpartLabel(ref: Pick<RefNode, 'kind'>, link: RefLink, name
 
 // Channel maps apply to both audio transports (as on the wire menu, useEdgeMenu).
 const isAudio = (streamType: string | null | undefined) =>
-    streamType === 'audio/pcm' || streamType === 'audio/302m';
+    streamType === PCM || streamType === 'audio/302m';
 
 const divider: MenuItem = { label: '', action: '', divider: true };
 
@@ -97,7 +98,7 @@ export function buildXrefMenuItems(ref: RefNode, ctx: XrefMenuContext): MenuItem
     const items: MenuItem[] = [];
     if (ref.readOnly) {
         const why =
-            ref.streamType === 'audio/pcm'
+            ref.streamType === PCM
                 ? 'PipeWire wire across pages: move these modules together'
                 : 'Unknown port type: move these modules together';
         items.push({ label: why, action: 'readonly', disabled: true }, divider);

@@ -6,6 +6,7 @@ import { useEngineStore } from '@/stores/engines';
 import { patch } from '@/composables/usePatch';
 import { newModuleInstanceId } from '@/utils/ids';
 import { computeAutoLayout } from '@/utils/autoLayout';
+import { tagClearance, TAG_SIZE } from '@/utils/xrefCanvas';
 import { STUB_EDGE_PREFIX } from '@/utils/crossRefTypes';
 import { useGraphNodes } from '@/composables/useGraphNodes';
 import { useGraphEdges } from '@/composables/useGraphEdges';
@@ -37,7 +38,7 @@ export function useGraphSync(
     pages?: GraphPages,
 ) {
     const engineStore = useEngineStore();
-    const { setCenter, screenToFlowCoordinate } = useVueFlow();
+    const { setCenter, screenToFlowCoordinate, findNode } = useVueFlow();
     const currentPage = pages ? () => pages.currentPage.value : undefined;
     const modules = useGraphNodes(engine, currentPage);
     const { hasInitialFit, activeDrags, fitView, keepViewOnPageChange } = modules;
@@ -164,10 +165,20 @@ export function useGraphSync(
         else fitView({ padding: 0.2 });
     }
 
-    /** Lay out the current page's modules; its dragged tags go back beside their ports. */
+    /**
+     * Lay out the current page's modules; its dragged tags go back beside their
+     * ports, with columns wide enough for a tag on each side.
+     */
     function formatPage() {
         const wires = (edges.value as Edge[]).filter((e) => !e.id.startsWith(STUB_EDGE_PREFIX));
-        const positions = computeAutoLayout(modules.nodes.value as Node[], wires);
+        const tags = crossRefs?.pageRefs.value ?? [];
+        const widest = Math.max(
+            TAG_SIZE.width,
+            ...tags.map((t) => findNode(t.key)?.dimensions?.width ?? 0),
+        );
+        const positions = computeAutoLayout(modules.nodes.value as Node[], wires, {
+            layerGap: tags.length > 0 ? tagClearance(widest) : undefined,
+        });
         const ops: PatchOp[] = Array.from(positions, ([moduleId, value]) => ({
             op: 'replace' as const,
             path: `/modules/${moduleId}/position`,

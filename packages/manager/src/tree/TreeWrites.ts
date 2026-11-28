@@ -10,7 +10,6 @@ import type { TopicBus, TreeCaller } from '@media-router/topic-tree';
 import type { PatchRouter } from '../PatchRouter.js';
 import type { EngineView } from './EngineView.js';
 import type { AdminWrites } from './AdminWrites.js';
-import { editorOpError } from './editorWrites.js';
 
 export interface WriteItem {
     index: number;
@@ -110,7 +109,8 @@ export class TreeWrites {
     private checkConfigOp({ op, path }: WriteItem, checks: ModuleWriteCheck, added: Set<string>): string | null {
         const [, , branch, id, field] = path;
         const depth = path.length - 2;
-        if (branch === 'editor') return editorOpError(op, path.slice(3));
+        // Editor shapes are checked by EditorBatch, for every sender (engines relay local panels).
+        if (branch === 'editor') return null;
         if (branch === 'modules') {
             if (depth === 2) {
                 if (op.op === 'remove') return null;

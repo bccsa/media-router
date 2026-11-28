@@ -52,6 +52,53 @@ describe('manager tree: rollback of the editor layout (ADR-0030)', () => {
         ]);
     });
 
+    it('rollback restores a removed module with its page, the layout landing after the graph', async () => {
+        const { writes, calls, stored, engineManager } = setup();
+        await writes.handle(
+            { socketId: 'x' },
+            [
+                {
+                    op: 'add',
+                    path: '/engines/e1/modules/m2',
+                    value: { pluginId: 'audio-output', displayName: 'Two', settings: {} },
+                },
+                { op: 'add', path: `${E}/pages/pg-a`, value: page('One') },
+                { op: 'add', path: `${E}/pages/pg-b`, value: page('Two', 1) },
+                { op: 'add', path: `${E}/modulePages/m1`, value: 'pg-a' },
+                { op: 'add', path: `${E}/modulePages/m2`, value: 'pg-b' },
+            ],
+            1,
+        );
+        vi.advanceTimersByTime(11 * 60 * 1000);
+        await writes.handle(
+            { socketId: 'x' },
+            [{ op: 'remove', path: '/engines/e1/modules/m2' }],
+            2,
+        );
+        expect(stored().editor.modulePages).toEqual({ m1: 'pg-a' });
+
+        const versions = calls.handle(
+            { socketId: 'x' },
+            '/engines/e1/profiles/default',
+            'history',
+            {},
+        ) as Array<{ id: number; config: string }>;
+        const withM2 = versions.find((v) => 'm2' in JSON.parse(v.config).modules)!;
+        engineManager.sendToEngine.mockClear();
+        calls.handle({ socketId: 'x' }, '/engines/e1/profiles/default', 'rollback', {
+            versionId: withM2.id,
+        });
+        expect(Object.keys(stored().modules)).toEqual(['m1', 'm2']);
+        expect(stored().editor.modulePages).toEqual({ m1: 'pg-a', m2: 'pg-b' });
+        const sent = engineManager.sendToEngine.mock.calls.flatMap(([, , msg]) =>
+            (msg as { ops: Array<{ op: string; path: string }> }).ops.map(
+                (o) => `${o.op} ${o.path}`,
+            ),
+        );
+        expect(sent.indexOf('add /modules/m2')).toBeGreaterThanOrEqual(0);
+        expect(sent.indexOf('add /modules/m2')).toBeLessThan(sent.indexOf('replace /editor'));
+    });
+
     it('rollback of an inactive profile stores the layout with nextRef kept', () => {
         const { configStore, calls } = setup();
         const spare = (nextRef: number) => ({

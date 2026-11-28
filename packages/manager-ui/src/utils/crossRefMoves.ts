@@ -3,7 +3,7 @@ import * as shared from '@media-router/shared-types';
 import type { EditorLayout, PatchOp } from '@media-router/shared-types';
 import type { ConnectionState, ModuleState } from '@/stores/engines';
 import { PCM, pageResolver } from './crossRefs';
-import { DEFAULT_MODULE_POSITION, MODULE_SIZE, TAG_GAP, TAG_SIZE } from './xrefCanvas';
+import { DEFAULT_MODULE_POSITION, MODULE_SIZE, tagClearance } from './xrefCanvas';
 
 const { parseRefKey } = shared;
 
@@ -11,13 +11,8 @@ const { parseRefKey } = shared;
 // where the moved modules land and their dragged tags with them. The op list
 // itself: pageOps.moveModulesOps.
 
-/**
- * Space between the target page's content and the moved group: room for an
- * undragged tag on each side (an output tag of the module on the left, an
- * input tag of the one on the right), so neither covers the other's port.
- * 288 px, on the 16 px grid.
- */
-const GAP = 2 * (TAG_GAP + TAG_SIZE.width) + 32;
+/** Space between the target page's content and the moved group: a tag's room on each side. */
+const GAP = tagClearance();
 const SNAP = 16;
 
 const snap = (v: number) => Math.round(v / SNAP) * SNAP;
