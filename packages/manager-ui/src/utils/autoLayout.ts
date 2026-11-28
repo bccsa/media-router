@@ -12,6 +12,7 @@ export interface LayoutEdge {
 
 const DEFAULT_NODE_WIDTH = 200;
 const DEFAULT_NODE_HEIGHT = 140;
+/** Between columns; a page with cross-reference tags passes a wider one (`opts.layerGap`). */
 const LAYER_GAP = 80;
 const ROW_GAP = 40;
 const SNAP = 16;
@@ -47,7 +48,9 @@ function nodeHeight(n: LayoutNode): number {
 export function computeAutoLayout(
     nodes: LayoutNode[],
     edges: LayoutEdge[],
+    opts: { layerGap?: number } = {},
 ): Map<string, { x: number; y: number }> {
+    const layerGap = opts.layerGap ?? LAYER_GAP;
     if (nodes.length === 0) return new Map();
 
     const successors = new Map<string, string[]>();
@@ -128,7 +131,7 @@ export function computeAutoLayout(
     for (const l of layerKeys) {
         layerX.set(l, cursorX);
         const maxW = Math.max(...byLayer.get(l)!.map(nodeWidth));
-        cursorX += maxW + LAYER_GAP;
+        cursorX += maxW + layerGap;
     }
 
     const newPos = new Map<string, { x: number; y: number }>();

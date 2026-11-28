@@ -18,6 +18,7 @@ export type * from './timeSync.js';
 export { KERNEL_ESTERROR_UNSET_US, ptpErrorText } from './timeSync.js';
 export type * from './moduleTiming.js';
 export * from './ingestTimingSettings.js';
+export * from './editorLayout.js';
 export {
     PatchOpSchema,
     PatchOpsSchema,

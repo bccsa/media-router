@@ -1,9 +1,17 @@
 import { z } from 'zod';
-import { CreateEngineSchema, EngineIdSchema, createLogger, diffConfig, splitPath } from '@media-router/shared-types';
+import {
+    CreateEngineSchema,
+    EngineIdSchema,
+    createLogger,
+    diffConfig,
+    splitPath,
+    type PatchOp,
+} from '@media-router/shared-types';
 import { TreeCallError, type TreeCaller } from '@media-router/topic-tree';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { PatchRouter } from '../PatchRouter.js';
+import { restoredEditor } from '../editorCleanup.js';
 import type { PluginUploadService } from '../services/PluginUploadService.js';
 import { Rollback, args } from './callArgs.js';
 import { ManagerDashboardCalls } from './ManagerDashboardCalls.js';
@@ -141,15 +149,20 @@ export class TreeCalls {
                 if (!version) throw new TreeCallError('Version not found');
                 const current = configStore.getProfile(engineId, name);
                 if (!current) throw new TreeCallError('Profile not found');
-                // Restores the graph and settings; the run intent stays today's.
-                const restored = { ...version, running: current.running };
+                // Restores the graph, settings and editor layout; the run intent stays today's.
+                const editor = restoredEditor(current.editor, version);
+                const restored = { ...version, running: current.running, editor };
                 if (configStore.getEngine(engineId)?.active_profile !== name) {
                     configStore.updateProfileConfig(engineId, name, restored);
                     return {};
                 }
                 // The difference goes out like any edit: live values at once,
-                // restart-required ones pending (UR-MGR-006c).
-                const ops = diffConfig(current, restored);
+                // restart-required ones pending (UR-MGR-006c); the layout as one
+                // replace, last, so it lands on the restored graph.
+                const ops: PatchOp[] = [
+                    ...diffConfig(current, restored),
+                    { op: 'replace', path: '/editor', value: editor },
+                ];
                 const dropped = patchRouter.onPatch(caller.socketId, engineId, ops).map((i) => ops[i].path);
                 if (dropped.length > 0) log.warn({ engineId, profile: name, dropped }, 'Rollback ops not applied');
                 return {};

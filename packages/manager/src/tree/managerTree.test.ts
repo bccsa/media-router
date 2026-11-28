@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { emptyEditorLayout } from '@media-router/shared-types';
 import { setup } from './testing/managerTreeFixture.js';
 
 describe('manager tree (integration)', () => {
@@ -142,8 +143,19 @@ describe('manager tree (integration)', () => {
         expect(stored().modules.m1.settings.volume).toBe(80);
         expect(stored().running).toBe(true);
         // No config push, no start: live values apply, restart-required ones wait (UR-MGR-006c).
+        // The editor layout always goes last, whole (ADR-0030): the version had none.
         expect(engineManager.sendToEngine.mock.calls).toEqual([
-            ['e1', 'patch', { ops: [{ op: 'replace', path: '/modules/m1/settings/volume', value: 80 }] }, { guaranteeDelivery: true }],
+            [
+                'e1',
+                'patch',
+                {
+                    ops: [
+                        { op: 'replace', path: '/modules/m1/settings/volume', value: 80 },
+                        { op: 'replace', path: '/editor', value: emptyEditorLayout() },
+                    ],
+                },
+                { guaranteeDelivery: true },
+            ],
         ]);
         expect(t.sync().engines.e1.modules.m1.settings.volume).toBe(80);
     });

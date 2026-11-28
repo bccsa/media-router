@@ -121,15 +121,6 @@ describe('usePatch', () => {
         expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', expectedOps);
     });
 
-    it('addModule sends an add op with the module value', () => {
-        const moduleData = { pluginId: 'audio-input', displayName: 'Mic 1', settings: {} };
-        patch.addModule('eng-1', 'mod-new', moduleData);
-
-        const expectedOps = [{ op: 'add', path: '/modules/mod-new', value: moduleData }];
-        expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', expectedOps);
-        expect(mockWrite).toHaveBeenCalledWith(atEngine('eng-1', expectedOps));
-    });
-
     it('removeModule sends a remove op', () => {
         patch.removeModule('eng-1', 'mod-1');
 

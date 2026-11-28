@@ -1,8 +1,18 @@
-import { ref, computed, watch, getCurrentInstance, onMounted, onUnmounted, type ComputedRef, type Ref } from 'vue';
+import {
+    ref,
+    computed,
+    watch,
+    getCurrentInstance,
+    onMounted,
+    onUnmounted,
+    type ComputedRef,
+    type Ref,
+} from 'vue';
 import { useVueFlow } from '@vue-flow/core';
 import type { EngineState } from '@/stores/engines';
 import { patch } from '@/composables/usePatch';
 import { useLongPress } from '@/composables/useLongPress';
+import { STUB_EDGE_PREFIX, XREF_NODE_TYPE } from '@/utils/crossRefTypes';
 
 /** Modules and loose connections awaiting delete confirmation. */
 export interface PendingDelete {
@@ -38,7 +48,11 @@ export function useMultiSelect(opts: MultiSelectOptions) {
     const { getSelectedNodes, getSelectedEdges, removeSelectedElements } = useVueFlow();
 
     const selectMode = ref(false);
-    const selectedCount = computed(() => getSelectedNodes.value.length);
+    // Cross-reference tags can be selected but are never deleted or counted here (ADR-0030).
+    const selectedModules = computed(() =>
+        getSelectedNodes.value.filter((n) => n.type !== XREF_NODE_TYPE),
+    );
+    const selectedCount = computed(() => selectedModules.value.length);
     const pendingDelete = ref<PendingDelete | null>(null);
 
     // Leaving select mode drops the selection so nothing stays highlighted.
@@ -47,7 +61,7 @@ export function useMultiSelect(opts: MultiSelectOptions) {
     });
 
     function selectedNodeIds(): string[] {
-        return getSelectedNodes.value.map((n) => n.id);
+        return selectedModules.value.map((n) => n.id);
     }
 
     function requestDelete(modules: string[], edges: string[] = []) {
@@ -108,6 +122,7 @@ export function useMultiSelect(opts: MultiSelectOptions) {
         const gone = new Set(modules);
         // Edges on a deleted module go with it; only loose ones are listed.
         const edges = getSelectedEdges.value
+            .filter((edge) => !edge.id.startsWith(STUB_EDGE_PREFIX))
             .filter((edge) => !gone.has(edge.source) && !gone.has(edge.target))
             .map((edge) => edge.id);
         if (modules.length === 0 && edges.length === 0) return;

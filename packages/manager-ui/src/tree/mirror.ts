@@ -8,7 +8,7 @@ import { useEngineGroupsStore } from '@/stores/engineGroups';
 import { useTreeDataStore } from '@/stores/treeData';
 import type { Device } from '@media-router/shared-types';
 
-const { splitPath, joinPath, parsePattern, overlaps, applyTreeOp, ENGINE_BRANCHES } = shared;
+const { splitPath, joinPath, parsePattern, overlaps, applyTreeOp, ENGINE_BRANCHES, emptyEditorLayout, parseStoredEditorLayout } = shared;
 
 /** Module fields the engine reports at runtime: written in place, no Map rebuild. */
 const RUNTIME_FIELDS = new Set([
@@ -93,6 +93,8 @@ function engineOp(seg: string[], op: TreeOp, appends: Map<string, LogEntry[]>, h
             if (engines.getEngine(engineId)) engines.patchInfo(engineId, { profiles: next });
             return;
         }
+        case 'editor':
+            return editorOp(engineId, rest, op);
         case 'modules':
             return moduleOp(engineId, rest, op);
         case 'connections':
@@ -108,6 +110,25 @@ function patched<T extends object>(base: T, rest: string[], op: PatchOp): T {
     const next = JSON.parse(JSON.stringify(base));
     applyTreeOp(next, { ...op, path: joinPath(rest) });
     return next;
+}
+
+/**
+ * The routing editor's layout (ADR-0030). A whole value goes through the
+ * stored-value parse; leaf ops are the manager's checked writes, applied as
+ * they come (a parse here could drop an optimistic entry still in flight).
+ */
+function editorOp(engineId: string, rest: string[], op: PatchOp): void {
+    const engines = useEngineStore();
+    const engine = engines.getEngine(engineId);
+    if (!engine) return;
+    let editor: EngineState['editor'];
+    if (rest.length > 0) editor = patched(engine.editor ?? emptyEditorLayout(), rest, op);
+    else if (op.op !== 'remove') {
+        const { layout, dropped } = parseStoredEditorLayout(op.value);
+        if (dropped.length > 0) console.warn('[editor] dropped invalid layout entries', dropped);
+        editor = layout;
+    }
+    engines.patchInfo(engineId, { editor });
 }
 
 function infoOp(engineId: string, rest: string[], op: PatchOp): void {
@@ -193,7 +214,7 @@ export function dropUncovered(gone: string[], remaining: string[]): void {
     const dropped = (path: string[]) => was(path) && !still(path);
     for (const engineId of engines.engines.keys()) {
         const at = (b: string) => ['engines', engineId, b];
-        const graph = (['modules', 'connections', 'interlocks', 'profiles'] as const).filter((b) => dropped(at(b)));
+        const graph = (['modules', 'connections', 'interlocks', 'profiles', 'editor'] as const).filter((b) => dropped(at(b)));
         if (graph.length > 0) engines.dropGraph(engineId, graph);
         if (graph.includes('modules')) useVuStore().clear(engineId);
         if (dropped(at('system'))) engines.setSystem(engineId, undefined);

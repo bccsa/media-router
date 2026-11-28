@@ -21,6 +21,7 @@ vi.mock('@vue-flow/core', () => ({
         setCenter: vi.fn(),
         screenToFlowCoordinate: vi.fn(() => ({ x: 0, y: 0 })),
         onNodesInitialized: (cb: () => void) => flow.nodesInitialized.push(cb),
+        onNodesChange: vi.fn(),
         findNode: vi.fn(() => undefined),
     }),
 }));
@@ -37,7 +38,6 @@ vi.mock('@/composables/usePatch', () => ({
     patch: {
         addConnection: vi.fn(),
         removeConnection: vi.fn(),
-        addModule: vi.fn(),
         modulePositions: (...args: unknown[]) => flow.raw(...args),
     },
 }));

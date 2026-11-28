@@ -90,4 +90,61 @@ describe('tree mirror', () => {
         expect(useVuStore().get('e9', 'm1')).toEqual([-6, -7]);
         expect(useLogStore().getEntries('e9')).toHaveLength(1);
     });
+
+    describe('the editor layout (ADR-0030)', () => {
+        const layout = {
+            pages: { 'pg-a': { name: 'Intake', order: 0 } },
+            modulePages: { m1: 'pg-a' },
+            refs: { 'out:m1:out': { n: 1 } },
+            tagged: {},
+            nextRef: 2,
+        };
+
+        it('reads a snapshot through the stored-value parse, dropping invalid entries', () => {
+            const editor = { ...layout, pages: { ...layout.pages, 'not-a-page': { name: 'X', order: 1 } }, extra: 1 };
+            applyTreeOps([{ op: 'add', path: '/engines/e1', value: { ...engineSnapshot, editor } }], hooks);
+            expect(useEngineStore().getEngine('e1')?.editor).toEqual(layout);
+        });
+
+        it('applies leaf ops: a numbered ref echo, the nextRef bump, a page rename', () => {
+            applyTreeOps([{ op: 'add', path: '/engines/e1', value: { ...engineSnapshot, editor: layout } }], hooks);
+            applyTreeOps([
+                { op: 'add', path: '/engines/e1/editor/refs/in:m2:in', value: { n: 2 }, w: 3 },
+                { op: 'replace', path: '/engines/e1/editor/nextRef', value: 3 },
+                { op: 'replace', path: '/engines/e1/editor/pages/pg-a/name', value: 'Main' },
+            ], hooks);
+            const editor = useEngineStore().getEngine('e1')?.editor;
+            expect(editor?.refs['in:m2:in']).toEqual({ n: 2 });
+            expect(editor?.nextRef).toBe(3);
+            expect(editor?.pages['pg-a'].name).toBe('Main');
+        });
+
+        it('a seed after a snapshot without a layout, and a remove', () => {
+            applyTreeOps([{ op: 'add', path: '/engines/e1', value: engineSnapshot }], hooks);
+            expect(useEngineStore().getEngine('e1')?.editor).toBeUndefined();
+            applyTreeOps([{ op: 'add', path: '/engines/e1/editor', value: { pages: {}, modulePages: {}, refs: {}, tagged: {}, nextRef: 1 } }], hooks);
+            expect(useEngineStore().getEngine('e1')?.editor?.nextRef).toBe(1);
+            applyTreeOps([{ op: 'remove', path: '/engines/e1/editor' }], hooks);
+            expect(useEngineStore().getEngine('e1')?.editor).toBeUndefined();
+        });
+
+        it('is dropped with the graph once nothing covers it', () => {
+            applyTreeOps([{ op: 'add', path: '/engines/e1', value: { ...engineSnapshot, editor: layout } }], hooks);
+            dropUncovered(['/engines/e1/editor'], ['/engines/+/info']);
+            expect(useEngineStore().getEngine('e1')?.editor).toBeUndefined();
+        });
+
+        it('an optimistic write gives the store a fresh layout and seeds a missing one', () => {
+            applyTreeOps([{ op: 'add', path: '/engines/e1', value: { ...engineSnapshot, editor: layout } }], hooks);
+            const engines = useEngineStore();
+            const before = engines.getEngine('e1')!.editor!;
+            engines.applyEnginePatch('e1', [{ op: 'add', path: '/editor/modulePages/m2', value: 'pg-a' }]);
+            expect(engines.getEngine('e1')?.editor?.modulePages).toEqual({ m1: 'pg-a', m2: 'pg-a' });
+            expect(before.modulePages).toEqual({ m1: 'pg-a' });
+
+            applyTreeOps([{ op: 'add', path: '/engines/e2', value: engineSnapshot }], hooks);
+            engines.applyEnginePatch('e2', [{ op: 'add', path: '/editor/tagged/c1', value: true }]);
+            expect(engines.getEngine('e2')?.editor).toMatchObject({ tagged: { c1: true }, nextRef: 1 });
+        });
+    });
 });

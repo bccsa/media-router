@@ -33,6 +33,17 @@ describe('computeAutoLayout', () => {
         expect(positions.get('src')!.x).toBeLessThan(positions.get('dst')!.x);
     });
 
+    it('spaces layers by the gap asked for (a page with tags), 80 px by default', () => {
+        const nodes = [n('src'), n('dst')];
+        const gapOf = (opts?: { layerGap?: number }) => {
+            const at = computeAutoLayout(nodes, [e('src', 'dst')], opts);
+            return at.get('dst')!.x - (at.get('src')!.x + 200);
+        };
+        // Within the 16 px grid snap (±8).
+        expect(Math.abs(gapOf() - 80)).toBeLessThanOrEqual(8);
+        expect(Math.abs(gapOf({ layerGap: 288 }) - 288)).toBeLessThanOrEqual(8);
+    });
+
     it('promotes a node to a later layer when it has multiple ancestor depths', () => {
         // a → b → c, and a → c — c should land in layer 2, not layer 1.
         const positions = computeAutoLayout(
@@ -93,10 +104,7 @@ describe('computeAutoLayout', () => {
     it('does not pile cycle members on top of a real source', () => {
         // src is a true source; a ↔ b form a cycle disconnected from src.
         // The cycle should land on later layers, not pile onto src's column.
-        const positions = computeAutoLayout(
-            [n('src'), n('a'), n('b')],
-            [e('a', 'b'), e('b', 'a')],
-        );
+        const positions = computeAutoLayout([n('src'), n('a'), n('b')], [e('a', 'b'), e('b', 'a')]);
         const srcX = positions.get('src')!.x;
         expect(positions.get('a')!.x).not.toBe(srcX);
         expect(positions.get('b')!.x).not.toBe(srcX);

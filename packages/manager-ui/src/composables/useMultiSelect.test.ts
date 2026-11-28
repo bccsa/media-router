@@ -61,7 +61,8 @@ const key = (k: string, target: EventTarget = document.body) => {
 beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     container = document.createElement('div');
-    container.innerHTML = '<div class="vue-flow"><div class="vue-flow__node" tabindex="0"></div></div>';
+    container.innerHTML =
+        '<div class="vue-flow"><div class="vue-flow__node" tabindex="0"></div></div>';
     document.body.appendChild(container);
     blocked = false;
     for (const m of [onEdgeDelete, clear, mockRemoveModules]) m.mockReset();
@@ -93,7 +94,13 @@ describe('useMultiSelect Delete key', () => {
     });
 
     it('lists loose connections with modules, but not edges of deleted modules', () => {
-        const ms = setup(['a'], [['onA', 'a', 'x'], ['loose', 'x', 'y']]);
+        const ms = setup(
+            ['a'],
+            [
+                ['onA', 'a', 'x'],
+                ['loose', 'x', 'y'],
+            ],
+        );
         ms.onKeydown(key('Delete'));
 
         expect(ms.pendingDelete.value).toEqual({ modules: ['a'], edges: ['loose'] });
@@ -199,5 +206,20 @@ describe('useMultiSelect selection clearing', () => {
 
     it('counts the selected modules for the toolbar', () => {
         expect(setup(['a', 'b']).selectedCount.value).toBe(2);
+    });
+
+    it('never counts or deletes cross-reference tags or their stubs', () => {
+        const ms = setup(
+            [],
+            [
+                ['ref:out:b:out', 'b', 'out:b:out'],
+                ['c:out-d:in', 'c', 'd'],
+            ],
+        );
+        flow.nodes.value = [{ id: 'out:b:out', type: 'xref' } as { id: string }];
+        expect(ms.selectedCount.value).toBe(0);
+
+        ms.onKeydown(key('Delete'));
+        expect(ms.pendingDelete.value).toEqual({ modules: [], edges: ['c:out-d:in'] });
     });
 });
