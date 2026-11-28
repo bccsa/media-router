@@ -59,8 +59,16 @@ function contextSettingItems(mod: ModuleState): MenuItem[] {
     return items;
 }
 
+/** `pageItems` (pageMenuItems.ts) go in their own section before Delete. */
+const pageSection = (pageItems: MenuItem[]): MenuItem[] =>
+    pageItems.length > 0 ? [divider, ...pageItems] : [];
+
 /** Right-click menu for one module. */
-export function buildModuleMenuItems(mod: ModuleState | undefined, isFocused: boolean): MenuItem[] {
+export function buildModuleMenuItems(
+    mod: ModuleState | undefined,
+    isFocused: boolean,
+    pageItems: MenuItem[] = [],
+): MenuItem[] {
     const isEnabled = mod?.enabled !== false;
     const items: MenuItem[] = [];
     const settings = mod ? contextSettingItems(mod) : [];
@@ -112,6 +120,7 @@ export function buildModuleMenuItems(mod: ModuleState | undefined, isFocused: bo
                   icon: icons.focus,
                   tooltip: 'Highlight this module in focus mode',
               },
+        ...pageSection(pageItems),
         divider,
         {
             label: 'Delete',
@@ -125,7 +134,11 @@ export function buildModuleMenuItems(mod: ModuleState | undefined, isFocused: bo
 }
 
 /** Right-click menu for a multi-selection (2+ modules). */
-export function buildGroupMenuItems(mods: ModuleState[], allFocused: boolean): MenuItem[] {
+export function buildGroupMenuItems(
+    mods: ModuleState[],
+    allFocused: boolean,
+    pageItems: MenuItem[] = [],
+): MenuItem[] {
     const n = mods.length;
     return [
         { label: `${n} modules selected`, action: '', disabled: true },
@@ -165,6 +178,7 @@ export function buildGroupMenuItems(mods: ModuleState[], allFocused: boolean): M
                   icon: icons.focus,
                   tooltip: 'Add every selected module to the focus group',
               },
+        ...pageSection(pageItems),
         divider,
         {
             label: `Delete ${n} modules`,

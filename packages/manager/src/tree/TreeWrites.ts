@@ -10,6 +10,7 @@ import type { TopicBus, TreeCaller } from '@media-router/topic-tree';
 import type { PatchRouter } from '../PatchRouter.js';
 import type { EngineView } from './EngineView.js';
 import type { AdminWrites } from './AdminWrites.js';
+import { editorOpError } from './editorWrites.js';
 
 export interface WriteItem {
     index: number;
@@ -20,13 +21,15 @@ export interface WriteItem {
 const ENGINE_INFO_FIELDS = ['name', 'running', 'activeProfile'];
 const CONNECTION_FIELD = /^[A-Za-z][A-Za-z0-9]*$/;
 const INTERLOCK_FIELDS = ['name', 'members', 'color'];
+/** Profile branches written through the PatchRouter, one batch per engine. */
+const CONFIG_BRANCHES = ['modules', 'connections', 'interlocks', 'editor'];
 
 /** Which handler takes an op; consecutive ops with one key are applied together. */
 function groupKey(path: string[], op: PatchOp): string {
     const [root, id, branch, field] = path;
     if (root === 'engines' && id) {
         if (path.length === 2 && op.op === 'remove') return 'engine-delete';
-        if (branch === 'modules' || branch === 'connections' || branch === 'interlocks') return `config:${id}`;
+        if (CONFIG_BRANCHES.includes(branch)) return `config:${id}`;
         if (branch === 'info' && path.length === 4 && (field === 'groupId' || field === 'sortOrder')) return 'reorder';
         if (branch === 'info' && path.length === 4 && ENGINE_INFO_FIELDS.includes(field)) return `info:${id}`;
         if (branch === 'profiles' && path.length === 4) return `profiles:${id}`;
@@ -81,7 +84,11 @@ export class TreeWrites {
         }
     }
 
-    /** Module/connection/interlock ops of one engine → checks → PatchRouter. */
+    /**
+     * Module/connection/interlock/editor ops of one engine → checks → PatchRouter.
+     * A swallowed editor op (it changed nothing) is no failure: its writer alone
+     * gets the current value back, to settle on, with no toast.
+     */
     private config(caller: TreeCaller, engineId: string, group: WriteItem[], writeId: number): WriteRejection[] {
         if (!this.view.exists(engineId)) return group.map((g) => reject(g, 'unknown engine'));
         const rejected: WriteRejection[] = [];
@@ -94,14 +101,16 @@ export class TreeWrites {
             else accepted.push(item);
         }
         const rel = accepted.map((a) => ({ ...a.op, path: joinPath(a.path.slice(2)) }));
-        const dropped = this.patchRouter.onPatch(caller.socketId, engineId, rel, writeId);
-        for (const d of dropped) rejected.push(reject(accepted[d], 'not applied'));
+        const { dropped, swallowed, reasons } = this.patchRouter.write(caller.socketId, engineId, rel, writeId);
+        for (const d of dropped) rejected.push(reject(accepted[d], reasons[d] ?? 'not applied'));
+        for (const s of swallowed) this.bus.echo(caller.socketId, accepted[s].op.path, writeId);
         return rejected;
     }
 
     private checkConfigOp({ op, path }: WriteItem, checks: ModuleWriteCheck, added: Set<string>): string | null {
         const [, , branch, id, field] = path;
         const depth = path.length - 2;
+        if (branch === 'editor') return editorOpError(op, path.slice(3));
         if (branch === 'modules') {
             if (depth === 2) {
                 if (op.op === 'remove') return null;

@@ -1,4 +1,5 @@
 import {
+    applyJsonPatch,
     createLogger,
     isPlainObject,
     joinPath,
@@ -16,6 +17,7 @@ import type { EngineConnectionManager } from '../engines/EngineConnectionManager
 import type { EngineCommandService } from './EngineCommandService.js';
 import type { RuntimeCache } from '../tree/RuntimeCache.js';
 import type { TreePublisher } from '../tree/TreePublisher.js';
+import { idsOf, pruneRefsForPorts } from '../editorCleanup.js';
 
 const log = createLogger('EngineEventForwarder');
 
@@ -161,21 +163,32 @@ export class EngineEventForwarder {
             if (parsed) this.publisher.event(engineId, { type: 'rebootFailed', reason: parsed.reason });
         });
 
+        // Bypasses the PatchRouter, so the editor refs of vanished ports are pruned here (ADR-0030).
         em.on('engineDynamicPorts', (engineId: string, data: unknown) => {
             const parsed = safeParse(DynamicPortsSchema, data, 'engineDynamicPorts', log);
             if (!parsed) return;
             const { moduleId, ports } = parsed;
             const engine = this.configStore.getEngine(engineId);
+            let pruned: PatchOp[] = [];
             if (engine?.active_profile) {
                 this.configStore.modifyProfileConfig(engineId, engine.active_profile as string, (config) => {
                     const modules = config.modules as Record<string, Obj> | undefined;
-                    if (modules?.[moduleId]) modules[moduleId].ports = ports;
+                    if (modules?.[moduleId]) {
+                        modules[moduleId].ports = ports;
+                        pruned = pruneRefsForPorts(config.editor, moduleId, idsOf(ports));
+                        applyJsonPatch(config, pruned);
+                    }
                     return config;
                 });
             }
             this.publisher.publish([
                 { op: 'replace', path: joinPath(['engines', engineId, 'modules', moduleId, 'ports']), value: ports },
+                ...pruned.map((op) => ({ ...op, path: joinPath(['engines', engineId]) + op.path })),
             ]);
+            // The engine keeps its copy of the layout in step, as for any editor change.
+            if (pruned.length > 0 && em.isEngineOnline(engineId)) {
+                em.sendToEngine(engineId, 'patch', { ops: pruned }, { guaranteeDelivery: true });
+            }
         });
     }
 

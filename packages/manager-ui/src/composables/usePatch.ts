@@ -1,12 +1,15 @@
 import * as wire from '@media-router/shared-types/browser';
+import * as shared from '@media-router/shared-types';
 import { useSocketStore } from '@/stores/socket';
 import { useEngineStore } from '@/stores/engines';
 import { useToast } from '@/composables/useToast';
 import { fieldLabel } from '@/utils/fieldLabel';
 import { newModuleInstanceId } from '@/utils/ids';
+import { editorRefusalText, waitsForEcho } from '@/utils/editorPatch';
 
 // shared-types is CJS: named imports break under Vite's interop (see stores/engines.ts).
 const { splitPath } = wire;
+const { isEditorPath } = shared;
 
 // JSON round-trip clone — robust against Vue/Pinia reactive proxies, which can
 // trip `structuredClone` depending on the underlying values. Module state is
@@ -39,15 +42,25 @@ function refusalText(engineId: string, path: string, reason: string): string {
  * Send a patch: apply to the local store first (optimistic), then write it to
  * the tree at `/engines/<id>/…`. The echo brings the stored value back; a
  * rejected op snaps back the same way (ADR-0024), and is shown with its reason (B-107).
+ * Editor ref adds skip the optimistic step: their number comes with the echo.
+ * A refused editor batch rejects every op in it, so equal texts show once.
  */
 function emit(engineId: string, ops: PatchOp[]) {
-    useEngineStore().applyEnginePatch(engineId, ops);
+    const store = useEngineStore();
+    const editor = store.getEngine(engineId)?.editor;
+    const local = ops.filter((op) => !waitsForEcho(editor, op));
+    if (local.length > 0) store.applyEnginePatch(engineId, local);
     const prefix = `/engines/${engineId}`;
     useSocketStore()
         .write(ops.map((op) => ({ ...op, path: prefix + op.path })))
         .then(({ rejected }) => {
             if (rejected.length > 0) console.warn('[patch] rejected by the manager', rejected);
-            for (const r of rejected) useToast().show(refusalText(engineId, r.path, r.reason));
+            const texts = rejected.map((r) =>
+                isEditorPath(r.path.slice(prefix.length))
+                    ? editorRefusalText(r.path, r.reason)
+                    : refusalText(engineId, r.path, r.reason),
+            );
+            for (const text of new Set(texts)) useToast().show(text);
         })
         .catch((err) => console.warn('[patch] write failed', err));
 }
@@ -63,6 +76,13 @@ function emit(engineId: string, ops: PatchOp[]) {
  */
 export const patch = {
     raw: emit,
+
+    /**
+     * Routing editor layout ops (ADR-0030), engine-relative (`/editor/...`;
+     * utils/pageOps.ts builds them), optionally mixed with module ops in one
+     * batch. Ref adds are sent without `n` and appear once the manager numbers them.
+     */
+    editor: emit,
 
     moduleSetting(engineId: string, moduleId: string, key: string, value: unknown) {
         emit(engineId, [{ op: 'replace', path: `/modules/${moduleId}/settings/${key}`, value }]);
@@ -115,10 +135,6 @@ export const patch = {
 
     moduleToggle(engineId: string, moduleId: string, enabled: boolean) {
         emit(engineId, [{ op: 'replace', path: `/modules/${moduleId}/enabled`, value: enabled }]);
-    },
-
-    addModule(engineId: string, instanceId: string, value: Record<string, unknown>) {
-        emit(engineId, [{ op: 'add', path: `/modules/${instanceId}`, value }]);
     },
 
     removeModule(engineId: string, moduleId: string) {

@@ -4,6 +4,7 @@ import {
     dashboardsOf,
     describeModule,
     dropUndefined,
+    parseStoredEditorLayout,
     type DescribableModule,
     type ModuleMeta,
 } from '@media-router/shared-types';
@@ -134,6 +135,9 @@ export class EngineView {
                 return this.profiles(engineId);
             case 'dashboards':
                 return dashboardsOf(this.profileConfig(engineId));
+            case 'editor':
+                // The routing editor's layout (ADR-0030); defaults for a profile without one.
+                return parseStoredEditorLayout(this.profileConfig(engineId)?.editor).layout;
             default:
                 return undefined;
         }

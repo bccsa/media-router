@@ -7,12 +7,14 @@ import { ref, computed } from 'vue';
 // gives us `esModuleInterop`-style access to the underlying CJS exports.
 import * as shared from '@media-router/shared-types';
 import type {
+    EditorLayout,
     ModuleSize,
     PatchOp,
     ResizableBounds,
     StatusValue,
     TimeSyncState,
 } from '@media-router/shared-types';
+import { editorForPatch, withoutBranches, type GraphBranch } from './engineGraph';
 const { applyTreeOp, coerceArray, getAt, splitPath } = shared;
 
 // --- Types ---
@@ -194,6 +196,8 @@ export interface EngineState {
     connectionCount?: number;
     /** Stored profiles of the engine (name → active flag). */
     profiles?: Record<string, { name: string; active: boolean }>;
+    /** Routing editor pages and cross-reference tags (ADR-0030); the mirror parses it. */
+    editor?: EditorLayout;
 }
 
 // --- Store ---
@@ -361,6 +365,7 @@ export const useEngineStore = defineStore('engines', () => {
             modules: { ...engine.modules },
             connections: [...engine.connections],
             interlocks: [...(engine.interlocks ?? [])],
+            editor: editorForPatch(engine.editor, ops),
         };
         for (const op of ops) applyTreeOp(updated as unknown as Record<string, unknown>, op);
 
@@ -412,15 +417,10 @@ export const useEngineStore = defineStore('engines', () => {
     }
 
     /** Forget an engine's graph once nothing subscribes to it any more. */
-    function dropGraph(engineId: string, branches: Array<'modules' | 'connections' | 'interlocks' | 'profiles'>) {
+    function dropGraph(engineId: string, branches: GraphBranch[]) {
         const engine = engines.value.get(engineId);
         if (!engine) return;
-        const next: EngineState = { ...engine };
-        if (branches.includes('modules')) next.modules = {};
-        if (branches.includes('connections')) next.connections = [];
-        if (branches.includes('interlocks')) next.interlocks = [];
-        if (branches.includes('profiles')) next.profiles = undefined;
-        engines.value.set(engineId, next);
+        engines.value.set(engineId, withoutBranches(engine, branches));
         engines.value = new Map(engines.value);
     }
     function setRunning(engineId: string, running: boolean) {

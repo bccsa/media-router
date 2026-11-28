@@ -2,6 +2,7 @@ import {
     createLogger,
     applyJsonPatch,
     dependentsOverMaximum,
+    isEditorPath,
     joinPath,
     splitPath,
     LiveArrayIndex,
@@ -12,7 +13,8 @@ import type { EngineConnectionManager } from './engines/EngineConnectionManager.
 import type { PluginRegistry } from './plugins/PluginRegistry.js';
 import type { RuntimeCache } from './tree/RuntimeCache.js';
 import type { ConfigOp, TreePublisher } from './tree/TreePublisher.js';
-import { dispatchRule, type RuleContext } from './patchRules.js';
+import { dispatchRule } from './patchRules.js';
+import { EditorBatch } from './editorRules.js';
 
 /** The router announced it keeps its interlocks itself (ADR-0028); until its stats say so, the manager does. */
 export function routerKeepsInterlocks(runtime: Pick<RuntimeCache, 'getData'>, engineId: string): boolean {
@@ -40,7 +42,7 @@ function idPath(op: PatchOp, arrays: Record<string, LiveArrayIndex<Keyed>>): Pat
     return typeof id === 'string' ? { ...op, path: `/${m[1]}/${id}${m[3] ?? ''}` } : op;
 }
 
-interface Processed {
+export interface Processed {
     /** Full ordered list applied to the stored config (index paths, for engines). */
     processed: PatchOp[];
     /** Ops preprocessing added on top of what the sender sent. */
@@ -49,7 +51,14 @@ interface Processed {
     published: ConfigOp[];
     /** Indexes of sender ops that the rules dropped (unknown id, …). */
     dropped: number[];
+    /** Indexes of sender editor ops that changed nothing (an add of an existing key, a remove of a missing one). */
+    swallowed: number[];
+    /** Why a dropped op was dropped, where there is more to say than "not applied". */
+    reasons: Record<number, string>;
 }
+
+/** What became of a sender's ops, by index. A swallowed op is no failure: its writer is sent the current value. */
+export type PatchOutcome = Pick<Processed, 'dropped' | 'swallowed' | 'reasons'>;
 
 /**
  * Manager-side patch router: persists config ops from a browser or an engine,
@@ -68,17 +77,25 @@ export class PatchRouter {
 
     /** Returns the indexes of `ops` that were dropped instead of applied. */
     onPatch(senderId: string, engineId: string, ops: PatchOp[], writeId?: number): number[] {
-        if (!ops || ops.length === 0) return [];
+        return this.write(senderId, engineId, ops, writeId).dropped;
+    }
+
+    /** `onPatch`, telling dropped ops (with their reasons) from swallowed ones. */
+    write(senderId: string, engineId: string, ops: PatchOp[], writeId?: number): PatchOutcome {
+        if (!ops || ops.length === 0) return { dropped: [], swallowed: [], reasons: {} };
         const engine = this.configStore.getEngine(engineId);
         if (!engine?.active_profile) {
             log.warn({ engineId }, 'No active profile — dropping patch');
-            return ops.map((_, i) => i);
+            return { dropped: ops.map((_, i) => i), swallowed: [], reasons: {} };
         }
 
-        let result: Processed = { processed: [], cascades: [], published: [], dropped: [] };
+        let result: Processed = { processed: [], cascades: [], published: [], dropped: [], swallowed: [], reasons: {} };
         this.configStore.modifyProfileConfig(engineId, engine.active_profile as string, (config) => {
             result = this.preprocessOps(engineId, config, ops);
-            applyJsonPatch(config, result.processed);
+            // Editor values go in as copies: a seed published ahead of the batch's
+            // later editor ops must not carry their effect.
+            const copied = result.processed.map((op) => (isEditorPath(op.path) ? { ...op, value: structuredClone(op.value) } : op));
+            applyJsonPatch(config, copied);
             const clamps = this.clampDependents(engineId, config, result.processed);
             if (clamps.length > 0) {
                 applyJsonPatch(config, clamps);
@@ -95,7 +112,8 @@ export class PatchRouter {
         if (result.processed.some((op) => /^\/(modules\/[^/]+|connections(\/[^/]+)?)$/.test(op.path))) {
             this.publisher.info(engineId);
         }
-        return result.dropped;
+        const { dropped, swallowed, reasons } = result;
+        return { dropped, swallowed, reasons };
     }
 
     /**
@@ -156,6 +174,8 @@ export class PatchRouter {
      * Run each op through the rule table. Module state is snapshotted once,
      * so cascades see the pre-patch world; array membership folds forward
      * (`LiveArrayIndex`) so an index is valid at the point its op applies.
+     * `/editor` ops go to the batch's `EditorBatch` instead (ADR-0030), which
+     * also sees every emitted op to clean the layout up after removals.
      */
     private preprocessOps(engineId: string, config: Record<string, unknown>, ops: PatchOp[]): Processed {
         if (!Array.isArray(config.interlocks)) config.interlocks = [];
@@ -169,24 +189,37 @@ export class PatchRouter {
             engineSchemas: this.runtime.getPluginSchemas(engineId),
             routerInterlocks: routerKeepsInterlocks(this.runtime, engineId),
         };
-        const out: Processed = { processed: [], cascades: [], published: [], dropped: [] };
+        const editor = new EditorBatch(config);
+        const out: Processed = { processed: [], cascades: [], published: [], dropped: [], swallowed: [], reasons: {} };
+        const emit = (op: PatchOp, fromSender: boolean) => {
+            out.processed.push(op);
+            if (!fromSender) out.cascades.push(op);
+            out.published.push({ op: idPath(op, arrays), fromSender });
+            arrays.connections.track(op);
+            arrays.interlocks.track(op);
+        };
         ops.forEach((op, index) => {
-            const ctx: RuleContext = {
-                ...base,
-                connections: arrays.connections.snapshot() as Array<Record<string, unknown>>,
-                interlocks: arrays.interlocks.snapshot() as Array<{ id: string; members: string[] }>,
-            };
-            const result = dispatchRule(op, ctx);
+            const result = isEditorPath(op.path)
+                ? editor.onSenderOp(op, index)
+                : dispatchRule(op, {
+                      ...base,
+                      connections: arrays.connections.snapshot() as Array<Record<string, unknown>>,
+                      interlocks: arrays.interlocks.snapshot() as Array<{ id: string; members: string[] }>,
+                  });
+            if (result === 'swallowed') {
+                out.swallowed.push(index);
+                return;
+            }
             const cascades = new Set(result.cascades);
             if (!result.processed.some((p) => !cascades.has(p))) out.dropped.push(index);
-            out.processed.push(...result.processed);
-            out.cascades.push(...result.cascades);
             for (const emitted of result.processed) {
-                out.published.push({ op: idPath(emitted, arrays), fromSender: !cascades.has(emitted) });
-                arrays.connections.track(emitted);
-                arrays.interlocks.track(emitted);
+                // Before the arrays move on, so a connection's index path still names it.
+                const cleanup = editor.onEmitted(emitted, arrays.connections);
+                emit(emitted, !cascades.has(emitted));
+                cleanup.forEach((c) => emit(c, false));
             }
         });
+        editor.finish(out);
         return out;
     }
 

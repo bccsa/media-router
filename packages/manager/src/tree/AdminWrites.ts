@@ -4,7 +4,10 @@ import {
     ProfileQuerySchema,
     ReorderEnginesSchema,
     UpdateGroupSchema,
+    createLogger,
+    isPlainObject,
     joinPath,
+    parseStoredEditorLayout,
     type WriteRejection,
 } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
@@ -24,6 +27,8 @@ export interface AdminWritesDeps {
     publisher: TreePublisher;
     tree: ManagerTree;
 }
+
+const log = createLogger('AdminWrites');
 
 const GROUP_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const GROUP_FIELDS = ['name', 'color', 'collapsed'];
@@ -121,7 +126,13 @@ export class AdminWrites {
         if (!engine) return [reject(item, 'unknown engine')];
         if (!ProfileQuerySchema.shape.profileName.safeParse(name).success) return [reject(item, 'invalid profile name')];
         if (item.op.op === 'add') {
-            const config = (item.op.value as { config?: Record<string, unknown> } | undefined)?.config ?? {};
+            let config = (item.op.value as { config?: Record<string, unknown> } | undefined)?.config ?? {};
+            // An imported layout keeps every valid entry (ADR-0030).
+            if (isPlainObject(config) && config.editor !== undefined) {
+                const { layout, dropped } = parseStoredEditorLayout(config.editor);
+                if (dropped.length > 0) log.warn({ engineId, profile: name, dropped }, 'Imported page layout: invalid entries dropped');
+                config = { ...config, editor: layout };
+            }
             configStore.createProfile(engineId, name, config);
         } else if (item.op.op === 'remove') {
             if (engine.active_profile === name) return [reject(item, 'Cannot delete the active profile')];

@@ -236,6 +236,7 @@ manager UI gives up after 10 s (5 min for uploads).
 /engines/<id>/connections/<cid>
 /engines/<id>/interlocks/<iid>
 /engines/<id>/dashboards/<did>  the active profile's dashboards (ADR-0026)
+/engines/<id>/editor          the routing editor's pages and tags (§6.5, ADR-0030)
 /engines/<id>/profiles/<name>
 /groups/<gid>                 sidebar groups
 /dashboards/<did>             manager dashboards: across routers (ADR-0026)
@@ -386,6 +387,7 @@ When a router goes offline:
 | `/engines/<id>/interlocks/-` | add | interlock object | |
 | `/engines/<id>/interlocks/<iid>` | remove | — | |
 | `/engines/<id>/interlocks/<iid>/name`, `…/members`, `…/color` | replace | | |
+| `/engines/<id>/editor/…` | see §6.5 | | the routing editor's layout |
 | `/groups/<gid>` | add | `{ name (1–64), color? ('#rgb'…'#rrggbbaa') }` | the id is yours to choose (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`); the UI uses `grp_<time36>_<rand6>` |
 | `/groups/<gid>` | remove | — | not the default group; its routers move to `ungrouped` |
 | `/groups/<gid>/name`, `…/color`, `…/collapsed` | replace | string / color or null / boolean | |
@@ -433,7 +435,7 @@ Anything else is rejected with `not writable` or `read-only`.
   in `modules`; unmapped modules show as missing there. Manager dashboards
   keep a history like profiles: a save stores a version at most once per
   10 minutes, and the last 10 are kept.
-- **Rollback.** It restores the version's graph, settings and dashboards; the run intent
+- **Rollback.** It restores the version's graph, settings, dashboards and editor layout (§6.5); the run intent
   (running or stopped) stays as it is. For the active profile the manager
   sends the router only the difference, as it does for any edit: live values
   take effect at once, restart-required settings wait for a module restart
@@ -441,6 +443,75 @@ Anything else is rejected with `not writable` or `read-only`.
   Nothing is restarted, and subscribers get the changes as ordinary ops. An
   offline router gets the change when it reconnects. Any other profile is only
   stored.
+
+### 6.5 The routing editor's layout (`/engines/<id>/editor`)
+
+The pages and cross-reference tags of the routing editor (ADR-0030), stored in
+the active profile under `editor` and sent to the router like module
+positions. The router stores it and ignores it.
+
+```
+{
+  pages:       { "<pg-id>": { name, order } },          // {} = one implicit "Page 1"
+  modulePages: { "<moduleId>": "<pg-id>" },             // missing or unknown = the lowest-order page
+  refs:        { "out|in:<moduleId>:<portId>": { n, name?, pos?: { x, y } } },
+  tagged:      { "<connectionId>": true },              // same-page connections drawn as tags
+  nextRef:     number                                   // the next tag number; the manager's own
+}
+```
+
+- **Snapshot.** A profile without `editor` serves the defaults
+  (`{ pages: {}, modulePages: {}, refs: {}, tagged: {}, nextRef: 1 }`). A stored
+  value is read entry by entry: unknown keys are stripped and an invalid entry
+  is left out on its own, never the whole layout. A profile activation
+  republishes it whole.
+- **Rules.** Page ids `^pg-[a-z0-9]+$` (never shown); page names trimmed,
+  1–40 characters, unique ignoring case; ref names ≤ 40 characters; ref numbers
+  unique and below `nextRef`; positions finite; keys hold no `/` or `~`;
+  256 KB at most.
+
+**Writes.** Editor ops go in the same batch as the engine's module and
+connection ops, so a module add and its page can be one write.
+
+| Path below `/engines/<id>/editor` | Op |
+|---|---|
+| (the whole layout) | replace |
+| `pages/<pg-id>` | add / remove |
+| `pages/<pg-id>/name`, `…/order` | replace |
+| `modulePages/<moduleId>` | add / replace / remove (an add of an existing key sets it) |
+| `refs/<key>` | add / remove |
+| `refs/<key>/name`, `…/pos` | add / replace / remove |
+| `tagged/<connectionId>` | add / remove |
+
+Anything else is rejected with `not writable`, `invalid page id` or
+`invalid ref key`.
+
+- **Numbering.** A new `refs/<key>`, or a field write on a ref that does not
+  exist yet, is stored as a whole record with `n = nextRef`; any `n` sent is
+  ignored. The writer's echo carries the number, and `replace …/editor/nextRef`
+  follows as an ordinary op. Numbers are never handed out twice, rollbacks
+  included. A whole replace keeps what of the value is valid and never lowers
+  `nextRef`.
+- **Seeding.** A profile without `editor` gets `add …/editor` with the
+  defaults just before the first editor op, so no op lands on a missing parent.
+  A stored layout that is incomplete or has invalid entries is rewritten with
+  its valid entries the same way.
+- **Swallowed ops.** An add of an existing key (a ref, a page, a tagged entry)
+  or a remove of a missing path changes nothing and is not rejected: the
+  writer alone gets the current value at that path, tagged with its write id
+  (`replace`, or `remove` when there is none), and nobody else hears anything.
+  Two browsers adding the same ref end with one number.
+- **Refused batches.** When the batch's result breaks a rule above, all its
+  editor ops are rejected, each with the rule's message (`Another page already
+  has this name`, `At most 40 characters`, …), and the batch's other ops still
+  apply. A field write on a page that no longer exists is rejected with
+  `That page no longer exists`.
+- **Cleanup.** Whoever removes them (a browser, a cascade, the router itself),
+  removing a module drops its `modulePages` entry, its refs and its
+  connections' `tagged` entries; removing a connection drops its `tagged`
+  entry; a module's ports replaced (a `pairCount` change, or the router's
+  dynamic ports) drop the refs of ports that are gone. These arrive as ordinary
+  `remove …/editor/…` ops, and the router is sent them too.
 
 ---
 

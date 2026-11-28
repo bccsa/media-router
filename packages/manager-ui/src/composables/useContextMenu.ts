@@ -5,19 +5,23 @@ import type { MenuItem } from '@/components/common/MrContextMenu.vue';
 import { engineActions } from '@/utils/engineActions';
 import { patch } from '@/composables/usePatch';
 import { createLiveWrites } from '@/utils/liveWrites';
-import {
-    buildEdgeMenuItems,
-    buildGroupMenuItems,
-    buildModuleMenuItems,
-} from '@/utils/moduleMenuItems';
-
-
+import { buildGroupMenuItems, buildModuleMenuItems } from '@/utils/moduleMenuItems';
+import { useEdgeMenu, type EdgeMenuRefs } from '@/composables/useEdgeMenu';
+import type { Pages } from '@/composables/usePages';
+import { buildPageMoveItems, PAGE_ACTION } from '@/utils/pageMenuItems';
+import { XREF_NODE_TYPE } from '@/utils/crossRefTypes';
 
 /** Canvas multi-selection hooks; omitted = single-module menus only. */
 export interface MenuSelection {
     selectedIds: () => string[];
     requestDelete: (moduleIds: string[]) => void;
 }
+
+/** The editor's pages (usePages); omitted = no "Move to" items, clones stay unassigned. */
+export type MenuPages = Pick<
+    Pages,
+    'pages' | 'pageOf' | 'moveRefusal' | 'moveModules' | 'newModuleOps'
+>;
 
 const isModule = (m: ModuleState | undefined): m is ModuleState => !!m;
 
@@ -26,15 +30,27 @@ export function useContextMenu(
     engine: ComputedRef<EngineState | undefined>,
     focusedModules: ComputedRef<Set<string>>,
     selection?: MenuSelection,
+    pages?: MenuPages,
+    /** Cross-reference tags (ADR-0030): stub clicks and "Show as cross-reference". */
+    refs?: EdgeMenuRefs,
 ) {
     // `targets` = modules the menu acts on: one, or the whole selection.
     const contextMenu = ref<{ x: number; y: number; targets: string[] } | null>(null);
-    const edgeContextMenu = ref<{ x: number; y: number; edgeId: string } | null>(null);
     const settingsPanel = ref<{ moduleId: string } | null>(null);
     let contextMenuOpenedAt = 0;
+    const edgeMenu = useEdgeMenu(engineId, engine, () => (contextMenuOpenedAt = Date.now()), refs);
 
     /** First target — the module inline settings sliders act on. */
     const menuModuleId = computed(() => contextMenu.value?.targets[0] ?? '');
+
+    const pageItems = (ids: string[]): MenuItem[] =>
+        pages && ids.length > 0
+            ? buildPageMoveItems(ids, {
+                  pages: pages.pages.value,
+                  pageOf: pages.pageOf,
+                  refusal: pages.moveRefusal,
+              })
+            : [];
 
     const contextMenuItems = computed<MenuItem[]>(() => {
         const targets = contextMenu.value?.targets ?? [];
@@ -42,10 +58,11 @@ export function useContextMenu(
         if (targets.length > 1) {
             const mods = targets.map((id) => modules[id]).filter(isModule);
             const allFocused = targets.every((id) => focusedModules.value.has(id));
-            return buildGroupMenuItems(mods, allFocused);
+            return buildGroupMenuItems(mods, allFocused, pageItems(mods.map((m) => m.instanceId)));
         }
         const id = targets[0] ?? '';
-        return buildModuleMenuItems(modules[id], focusedModules.value.has(id));
+        const mod = modules[id];
+        return buildModuleMenuItems(mod, focusedModules.value.has(id), mod ? pageItems([id]) : []);
     });
 
     /** Selection to act on when `id` is clicked: the group if `id` is in it. */
@@ -54,7 +71,9 @@ export function useContextMenu(
         return sel.length > 1 && sel.includes(id) ? sel : [id];
     }
 
-    function openAt(x: number, y: number, targets: string[]) {
+    function openAt(x: number, y: number, ids: string[]) {
+        // Module menus act on modules only (cross-reference tags have their own).
+        const targets = ids.filter((id) => !!engine.value?.modules[id]);
         if (targets.length === 0) return;
         contextMenu.value = { x, y, targets };
         contextMenuOpenedAt = Date.now();
@@ -65,7 +84,9 @@ export function useContextMenu(
         const e = payload.event;
         const x = 'clientX' in e ? e.clientX : e.touches[0].clientX;
         const y = 'clientY' in e ? e.clientY : e.touches[0].clientY;
-        openAt(x, y, targetsFor(payload.node.id));
+        // A cross-reference tag's right-click opens the tag's own dropdown.
+        if (payload.node.type === XREF_NODE_TYPE) refs?.openTagMenu(payload.node.id, x, y);
+        else openAt(x, y, targetsFor(payload.node.id));
     }
 
     /** Right-click on the dashed rectangle around a multi-selection. */
@@ -86,7 +107,7 @@ export function useContextMenu(
     function dismissContextMenus() {
         if (Date.now() - contextMenuOpenedAt < 300) return;
         contextMenu.value = null;
-        edgeContextMenu.value = null;
+        edgeMenu.edgeContextMenu.value = null;
     }
 
     function onContextAction(action: string) {
@@ -100,7 +121,12 @@ export function useContextMenu(
         } else if (action === 'clone') {
             // Open the copy so the user can edit it straight away (#675).
             const cloneId = patch.cloneModule(eid, moduleId);
-            if (cloneId) settingsPanel.value = { moduleId: cloneId };
+            if (cloneId) {
+                // The copy lands on the page being shown.
+                const ops = pages?.newModuleOps([cloneId]) ?? [];
+                if (ops.length > 0) patch.editor(eid, ops);
+                settingsPanel.value = { moduleId: cloneId };
+            }
         } else if (action === 'enable' || action === 'disable') {
             patch.modulesField(eid, ids, 'enabled', action === 'enable');
         } else if (action === 'focus' || action === 'unfocus') {
@@ -111,6 +137,8 @@ export function useContextMenu(
             else patch.removeModules(eid, ids);
         } else if (action === 'restart') {
             for (const id of ids) void engineActions.restartModule(eid, id);
+        } else if (action.startsWith(PAGE_ACTION)) {
+            pages?.moveModules(ids, action.slice(PAGE_ACTION.length));
         }
         contextMenu.value = null;
     }
@@ -138,82 +166,11 @@ export function useContextMenu(
         if (key) patch.moduleSetting(engineId(), menuModuleId.value, key, value);
     }
 
-    function eventPoint(e: any): { x: number; y: number } {
-        return {
-            x: 'clientX' in e ? e.clientX : (e.touches?.[0]?.clientX ?? 0),
-            y: 'clientY' in e ? e.clientY : (e.touches?.[0]?.clientY ?? 0),
-        };
-    }
-
-    function onEdgeClick(payload: any) {
-        edgeContextMenu.value = { ...eventPoint(payload.event), edgeId: payload.edge.id };
-        contextMenuOpenedAt = Date.now();
-    }
-
-    function onEdgeContextMenu(payload: any) {
-        payload.event.preventDefault();
-        edgeContextMenu.value = { ...eventPoint(payload.event), edgeId: payload.edge.id };
-    }
-
-    // --- Edge context menu items ---
-    const editingEdgeLabel = ref<{ edgeId: string; label: string } | null>(null);
-    const channelMapEdge = ref<string | null>(null);
-
-    const edgeMenuItems = computed<MenuItem[]>(() => {
-        const conn = edgeContextMenu.value
-            ? engine.value?.connections.find((c) => c.id === edgeContextMenu.value!.edgeId)
-            : null;
-        const srcStreamType = conn
-            ? engine.value?.modules[conn.sourceModuleId]?.ports?.find(
-                  (p) => p.id === conn.sourcePortId,
-              )?.streamType
-            : undefined;
-        // Channel maps apply to both audio transports: pw-links re-wire per
-        // the map; 302m edges render it as an audioconvert mix-matrix in the
-        // consumer's decode branch.
-        return buildEdgeMenuItems(srcStreamType === 'audio/pcm' || srcStreamType === 'audio/302m');
-    });
-
-    function onEdgeContextAction(action: string, onDelete: (edgeId: string) => void) {
-        if (!edgeContextMenu.value) return;
-        const edgeId = edgeContextMenu.value.edgeId;
-
-        switch (action) {
-            case 'delete':
-                onDelete(edgeId);
-                break;
-            case 'editLabel': {
-                const conn = engine.value?.connections.find((c) => c.id === edgeId);
-                editingEdgeLabel.value = { edgeId, label: conn?.label ?? '' };
-                break;
-            }
-            case 'channelMap':
-                channelMapEdge.value = edgeId;
-                break;
-        }
-        edgeContextMenu.value = null;
-    }
-
-    function saveEdgeLabel() {
-        if (!editingEdgeLabel.value) return;
-        patch.connectionField(
-            engineId(),
-            editingEdgeLabel.value.edgeId,
-            'label',
-            editingEdgeLabel.value.label || '',
-        );
-        editingEdgeLabel.value = null;
-    }
-
     return {
         contextMenu,
         menuModuleId,
-        edgeContextMenu,
         settingsPanel,
         contextMenuItems,
-        edgeMenuItems,
-        editingEdgeLabel,
-        channelMapEdge,
         onNodeContextMenu,
         onSelectionContextMenu,
         openContextMenuFromTouch,
@@ -222,9 +179,8 @@ export function useContextMenu(
         onContextAction,
         onContextSliderChange,
         onContextToggleChange,
-        onEdgeClick,
-        onEdgeContextMenu,
-        onEdgeContextAction,
-        saveEdgeLabel,
+        // Edge menu: edgeContextMenu, edgeMenuItems, editingEdgeLabel, channelMapEdge,
+        // onEdgeClick, onEdgeContextMenu, onEdgeContextAction, saveEdgeLabel.
+        ...edgeMenu,
     };
 }

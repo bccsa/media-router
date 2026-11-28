@@ -1,38 +1,32 @@
-import { ref, computed, watch, nextTick, type ComputedRef, type Ref } from 'vue';
-import { useVueFlow, type Node, type Edge, type Connection } from '@vue-flow/core';
-import type { EngineState, ModuleState } from '@/stores/engines';
+import { computed, nextTick, type ComputedRef, type Ref } from 'vue';
+import { useVueFlow, type Edge, type Node } from '@vue-flow/core';
+import type { PatchOp } from '@media-router/shared-types';
+import type { EngineState } from '@/stores/engines';
 import { useEngineStore } from '@/stores/engines';
-import { useSocketStore } from '@/stores/socket';
 import { patch } from '@/composables/usePatch';
 import { newModuleInstanceId } from '@/utils/ids';
-import { useToast } from '@/composables/useToast';
-import {
-    validateCandidateConnection,
-    type ValidationResult,
-} from '@/utils/connectionValidation';
+import { computeAutoLayout } from '@/utils/autoLayout';
+import { STUB_EDGE_PREFIX } from '@/utils/crossRefTypes';
+import { useGraphNodes } from '@/composables/useGraphNodes';
+import { useGraphEdges } from '@/composables/useGraphEdges';
+import { useGraphConnect } from '@/composables/useGraphConnect';
+import { useGraphDrag, type NodeDragPayload } from '@/composables/useGraphDrag';
+import { useCrossRefs } from '@/composables/useCrossRefs';
+import { useXrefNodes } from '@/composables/useXrefNodes';
+import type { Pages } from '@/composables/usePages';
 
-/** Edge colors by stream type — matches CSS variables in main.css. */
-const STREAM_TYPE_COLORS: Record<string, string> = {
-    'audio/pcm': '#3b82f6',
-    'audio/302m': '#06b6d4',
-    'muxed/mpegts': '#f59e0b',
-    'video/raw': '#10b981',
-};
-
-/** Idle edges (nothing flowing) and unknown stream types share this grey. */
-const IDLE_EDGE_COLOR = '#6b7280';
-
-function edgeColor(streamType?: string): string {
-    return STREAM_TYPE_COLORS[streamType ?? ''] ?? IDLE_EDGE_COLOR;
-}
+/** The editor's pages (usePages); omitted = one canvas showing every module. */
+export type GraphPages = Pick<Pages, 'currentPage' | 'pageOf' | 'selectPage' | 'newModuleOps'>;
 
 /**
- * Declarative Vue Flow sync:
- *   - `nodes` and `edges` are reactive refs, bound to <VueFlow :nodes :edges>
- *   - Edges are held in `pendingEdges` until onNodesInitialized fires (n8n pattern)
- *     — otherwise Vue Flow can't anchor them before handles mount.
- *   - `isValidConnection` is NOT passed to VueFlow as a prop (it was called during
- *     setEdges and dropped edges that hit maxConnections). Only used in onConnect.
+ * Declarative Vue Flow sync for the routing editor — composes the canvas parts:
+ *   - useGraphNodes: module nodes of the current page, live drag positions, fitView
+ *   - useCrossRefs + useXrefNodes: with pages, the page's cross-reference tags (ADR-0030)
+ *   - useGraphEdges: the page's wires and tag stubs, held until handles mount (onNodesInitialized)
+ *   - useGraphConnect: wire-drag validation and persistence; a wire dropped on
+ *     empty canvas opens the link picker
+ *   - useGraphDrag: drag tracking and position saves
+ * plus edge delete, module add, focus and Format.
  */
 export function useGraphSync(
     engineId: () => string,
@@ -40,251 +34,51 @@ export function useGraphSync(
     focusMode: Ref<boolean>,
     focusedModules: ComputedRef<Set<string>>,
     isEdgeDimmed: (sourceModuleId: string, sinkModuleId: string) => boolean,
+    pages?: GraphPages,
 ) {
-    const socket = useSocketStore();
     const engineStore = useEngineStore();
-    const toast = useToast();
-    const {
-        fitView,
-        setCenter,
-        screenToFlowCoordinate,
-        onNodesInitialized,
-        findNode,
-    } = useVueFlow();
-    const hasInitialFit = ref(false);
-
-    // --- Nodes ---
-    //
-    // Position sources: `mod.position` is persistent (DB-backed); during an
-    // active drag we read live position from `findNode(id).position` (Vue Flow's
-    // internal store), NOT from `nodes.value` — its two-way sync with Vue Flow
-    // lags by a microtask and was the source of the snap-back race.
-    //
-    // Per-node change detection preserves refs when nothing relevant changed,
-    // so deep mutations (statusData / health / VU) don't churn the array.
-
-    const nodes = ref<Node[]>([]);
-    const activeDrags = new Set<string>();
-
-    watch(
-        () => engine.value?.modules,
-        (modules) => {
-            if (!modules) {
-                nodes.value = [];
-                return;
-            }
-            const prev = new Map((nodes.value as Node[]).map((n) => [n.id, n]));
-            const incoming = Object.values(modules);
-            let changed = incoming.length !== nodes.value.length;
-            const next: Node[] = incoming.map((mod) => {
-                const livePos = activeDrags.has(mod.instanceId)
-                    ? findNode(mod.instanceId)?.position
-                    : undefined;
-                const desiredPos = livePos ?? mod.position ?? { x: 100, y: 100 };
-                const old = prev.get(mod.instanceId);
-                if (
-                    old &&
-                    old.data === mod &&
-                    old.position.x === desiredPos.x &&
-                    old.position.y === desiredPos.y
-                ) {
-                    return old;
-                }
-                changed = true;
-                return { id: mod.instanceId, type: 'module', position: desiredPos, data: mod };
-            });
-            if (changed) nodes.value = next;
-
-            if (!hasInitialFit.value && nodes.value.length > 0) {
-                hasInitialFit.value = true;
-                nextTick(() => fitView({ padding: 0.2 }));
-                setTimeout(() => fitView({ padding: 0.2 }), 200);
-            }
-        },
-        { deep: true, immediate: true },
+    const { setCenter, screenToFlowCoordinate } = useVueFlow();
+    const currentPage = pages ? () => pages.currentPage.value : undefined;
+    const modules = useGraphNodes(engine, currentPage);
+    const { hasInitialFit, activeDrags, fitView, keepViewOnPageChange } = modules;
+    // Cross-reference tags come with pages; a tag dims with its module.
+    const crossRefs = pages
+        ? useCrossRefs(engineId, engine, pages, keepViewOnPageChange)
+        : undefined;
+    const tags = useXrefNodes(
+        engine,
+        () => crossRefs?.pageRefs.value ?? [],
+        activeDrags,
+        (moduleId) => isEdgeDimmed(moduleId, moduleId),
+        () => crossRefs?.highlighted.value ?? null,
     );
-
-    // --- Edges: ref with deferred publish until handles are mounted ---
-    //
-    // n8n's pattern: hold pending edges in a NON-reactive `let` variable
-    // until onNodesInitialized fires. Publishing edges before handles are
-    // mounted causes Vue Flow to silently drop them.
-    const edges = ref<Edge[]>([]);
-    let pendingEdges: Edge[] | null = null;
-    let handlesInitialized = false;
-
-    function buildEdges(): Edge[] {
-        const conns = engine.value?.connections ?? [];
-        const modules = engine.value?.modules;
-        if (!modules) return [];
-
-        const engineRunning = engine.value?.running === true;
-
-        const result: Edge[] = [];
-        for (const conn of conns) {
-            const srcModule = modules[conn.sourceModuleId];
-            const sinkModule = modules[conn.sinkModuleId];
-            if (!srcModule || !sinkModule) continue;
-            const srcPort = srcModule.ports?.find((p) => p.id === conn.sourcePortId);
-            const dimmed = isEdgeDimmed(conn.sourceModuleId, conn.sinkModuleId);
-            // Only animate media that's actually flowing: the engine must be
-            // running AND both endpoints of this connection must be running.
-            const flowing = engineRunning && srcModule.running && sinkModule.running;
-            // Idle connections also drop their stream-type colour, so a stopped
-            // graph reads as grey wiring rather than live signal.
-            const color = flowing ? edgeColor(srcPort?.streamType) : IDLE_EDGE_COLOR;
-            const edge: Edge = {
-                id: conn.id,
-                source: conn.sourceModuleId,
-                sourceHandle: conn.sourcePortId,
-                target: conn.sinkModuleId,
-                targetHandle: conn.sinkPortId,
-                animated: flowing,
-                interactionWidth: 20,
-                style: {
-                    stroke: color,
-                    opacity: dimmed ? 0.1 : 1,
-                    transition: 'opacity 0.2s ease, stroke 0.2s ease',
-                },
-            };
-            if (conn.label) {
-                edge.label = conn.label;
-                edge.labelStyle = { fill: 'var(--text-secondary)', fontSize: '10px' };
-                edge.labelBgStyle = { fill: 'var(--bg-card)', fillOpacity: 0.9 };
-                edge.labelBgPadding = [4, 2] as [number, number];
-                edge.labelBgBorderRadius = 4;
-            } else {
-                edge.label = undefined;
-                edge.labelStyle = undefined;
-                edge.labelBgStyle = undefined;
-                edge.labelBgPadding = undefined;
-                edge.labelBgBorderRadius = undefined;
-            }
-            result.push(edge);
-        }
-        return result;
-    }
-
-    const edgeDeps = computed(() => ({
-        conn:
-            engine.value?.connections
-                ?.map((c) => `${c.id}|${c.label ?? ''}`)
-                .sort()
-                .join(',') ?? '',
-        mods: engine.value ? Object.keys(engine.value.modules).sort().join(',') : '',
-        // Edge `animated` tracks run state, so it has to be part of the
-        // fingerprint — otherwise starting/stopping leaves stale animations.
-        engineRunning: engine.value?.running === true,
-        running: engine.value
-            ? Object.values(engine.value.modules)
-                  .filter((m) => m.running)
-                  .map((m) => m.instanceId)
-                  .sort()
-                  .join(',')
-            : '',
-        focus: focusMode.value,
-        focused: Array.from(focusedModules.value).sort().join(','),
-    }));
-
-    watch(
-        edgeDeps,
-        () => {
-            const built = buildEdges();
-            if (handlesInitialized) {
-                edges.value = built;
-            } else {
-                pendingEdges = built;
-            }
-        },
-        { immediate: true },
-    );
-
-    // Flush held edges once Vue Flow confirms handles are mounted
-    onNodesInitialized(() => {
-        handlesInitialized = true;
-        if (pendingEdges) {
-            edges.value = pendingEdges;
-            pendingEdges = null;
-        }
+    const nodes = computed<Node[]>(() => {
+        const mods = modules.nodes.value as Node[];
+        return tags.xrefNodes.value.length > 0 ? [...mods, ...tags.xrefNodes.value] : mods;
     });
+    const { edges } = useGraphEdges(
+        engine,
+        focusMode,
+        focusedModules,
+        isEdgeDimmed,
+        currentPage,
+        crossRefs && {
+            direct: () => crossRefs.pageDirect.value,
+            stubs: () => crossRefs.pageStubs.value,
+        },
+    );
+    const { isValidConnection, onConnect, onConnectStart, onConnectEnd } = useGraphConnect(
+        engineId,
+        engine,
+        crossRefs &&
+            ((origin, x, y) =>
+                crossRefs.openLinkPicker(origin, x, y, screenToFlowCoordinate({ x, y }))),
+    );
+    const drag = useGraphDrag(engineId, activeDrags, crossRefs?.saveRefPositions);
 
-    // --- Connection validation ---
-
-    /**
-     * Resolve the dragged handles to ports and delegate to the pure validator
-     * (`utils/connectionValidation.ts` — tested there). Every reject carries
-     * a human-readable reason so `onConnect` can explain the silent Vue Flow
-     * snap-back via a toast.
-     */
-    function validateConnection(connection: Connection): ValidationResult {
-        const srcModule = engine.value?.modules[connection.source!];
-        const tgtModule = engine.value?.modules[connection.target!];
-        const srcPort = srcModule?.ports?.find((p) => p.id === connection.sourceHandle);
-        const tgtPort = tgtModule?.ports?.find((p) => p.id === connection.targetHandle);
-        if (!srcPort || !tgtPort) return { ok: false, reason: 'Port not found' };
-        return validateCandidateConnection(
-            { moduleId: connection.source!, port: srcPort },
-            { moduleId: connection.target!, port: tgtPort },
-            engine.value?.connections ?? [],
-        );
-    }
-
-    function isValidConnection(connection: Connection): boolean {
-        return validateConnection(connection).ok;
-    }
-
-    function onConnect(connection: Connection) {
-        const verdict = validateConnection(connection);
-        if (!verdict.ok) {
-            toast.show(verdict.reason);
-            return;
-        }
-
-        const srcModule = engine.value?.modules[connection.source!];
-        const srcPort = srcModule?.ports?.find((p) => p.id === connection.sourceHandle);
-
-        let outModule = connection.source!;
-        let outPort = connection.sourceHandle!;
-        let inModule = connection.target!;
-        let inPort = connection.targetHandle!;
-
-        if (srcPort?.direction === 'input') {
-            outModule = connection.target!;
-            outPort = connection.targetHandle!;
-            inModule = connection.source!;
-            inPort = connection.sourceHandle!;
-        }
-
-        const edgeId = `${outModule}:${outPort}-${inModule}:${inPort}`;
-        // Just persist — the computed `edges` will reactively add the edge when
-        // the store updates via socket response.
-        patch.addConnection(engineId(), {
-            id: edgeId,
-            sourceModuleId: outModule,
-            sourcePortId: outPort,
-            sinkModuleId: inModule,
-            sinkPortId: inPort,
-        });
-    }
-
-    // Group drags report every moved node in `nodes`; `node` is only the one grabbed.
-    function draggedNodes(event: { node?: Node; nodes?: Node[] }): Node[] {
-        if (event.nodes?.length) return event.nodes;
-        return event.node ? [event.node] : [];
-    }
-
-    function onNodeDragStart(event: { node?: Node; nodes?: Node[] }) {
-        for (const n of draggedNodes(event)) activeDrags.add(n.id);
-    }
-
-    function onNodeDragStop(event: { node?: Node; nodes?: Node[] }) {
-        const moved = draggedNodes(event);
-        for (const n of moved) activeDrags.delete(n.id);
-        if (moved.length === 0) return;
-        patch.modulePositions(
-            engineId(),
-            moved.map((n) => ({ id: n.id, x: n.position.x, y: n.position.y })),
-        );
+    function onNodeDragStop(event: NodeDragPayload) {
+        drag.onNodeDragStop(event);
+        tags.afterDrag();
     }
 
     function onEdgeDelete(edgeId: string) {
@@ -330,7 +124,7 @@ export function useGraphSync(
         // the broadcast via N-1) sees the same shape that other browsers
         // receive from `enrichOpsForBroadcast`. Without `resizable` here, a
         // freshly-added note plugin has no resize grip until refresh.
-        patch.addModule(engineId(), instanceId, {
+        const value = {
             instanceId,
             pluginId: plugin.pluginId,
             displayName,
@@ -347,19 +141,45 @@ export function useGraphSync(
             enabled: true,
             running: false,
             health: 'stopped',
-        });
+        };
+        // One write: the module and, with real pages, its place on the page shown.
+        patch.editor(engineId(), [
+            { op: 'add', path: `/modules/${instanceId}`, value },
+            ...(pages?.newModuleOps([instanceId]) ?? []),
+        ]);
     }
 
+    /** Centre on a module, switching to its page first. */
     function focusModule(moduleId: string) {
         const node = (nodes.value as Node[]).find((n) => n.id === moduleId);
-        if (node) {
-            setCenter(node.position.x + 100, node.position.y + 40, { zoom: 1, duration: 300 });
-        } else {
-            const mod = engine.value?.modules[moduleId];
-            if (mod?.position)
-                setCenter(mod.position.x + 100, mod.position.y + 40, { zoom: 1, duration: 300 });
-            else fitView({ padding: 0.2 });
+        const pos = node?.position ?? engine.value?.modules[moduleId]?.position;
+        const page = pages?.pageOf(moduleId);
+        if (pages && page !== undefined && page !== pages.currentPage.value) {
+            // Centring replaces the page's fit; with no position the fit shows the page.
+            if (pos) keepViewOnPageChange();
+            pages.selectPage(page);
+            if (!pos) return;
         }
+        if (pos) setCenter(pos.x + 100, pos.y + 40, { zoom: 1, duration: 300 });
+        else fitView({ padding: 0.2 });
+    }
+
+    /** Lay out the current page's modules; its dragged tags go back beside their ports. */
+    function formatPage() {
+        const wires = (edges.value as Edge[]).filter((e) => !e.id.startsWith(STUB_EDGE_PREFIX));
+        const positions = computeAutoLayout(modules.nodes.value as Node[], wires);
+        const ops: PatchOp[] = Array.from(positions, ([moduleId, value]) => ({
+            op: 'replace' as const,
+            path: `/modules/${moduleId}/position`,
+            value,
+        }));
+        ops.push(...(crossRefs?.clearPositionOps() ?? []));
+        if (ops.length === 0) return;
+        patch.raw(engineId(), ops);
+        // Vue Flow's coordinate cache lags the optimistic store update by a
+        // microtask and a layout pass, so a single nextTick can fit stale bounds.
+        nextTick(() => fitView({ padding: 0.2 }));
+        setTimeout(() => fitView({ padding: 0.2 }), 200);
     }
 
     return {
@@ -369,11 +189,15 @@ export function useGraphSync(
         fitView,
         isValidConnection,
         onConnect,
-        onNodeDragStart,
+        onConnectStart,
+        onConnectEnd,
+        onNodeDragStart: drag.onNodeDragStart,
+        onNodeDrag: tags.onNodeDrag,
         onNodeDragStop,
         onEdgeDelete,
         onAddModule,
         focusModule,
-        edgeColor,
+        formatPage,
+        crossRefs,
     };
 }
